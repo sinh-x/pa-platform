@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, symlinkSync, linkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, symlinkSync, linkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -603,9 +603,12 @@ test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and
     await runtime.dispatch("tool_execution_end", { toolName: name, toolCallId: id, result, isError: false }, context);
     return result;
   };
-  for (const command of ["ppa bulletin list", "ppa repos list", "ppa ticket show PAP-256 --json", "date -u"]) {
+  const gitPacket = `pwd; git rev-parse --show-toplevel; git branch --show-current; git rev-parse HEAD; git remote -v; git status --porcelain=v2 -z --untracked-files=all; printf '\\nRuntime roots\\n'; printf 'PA_REPO=%s\\nPA_WORKTREE_ROOT=%s\\n' "$PA_REPO" "$PA_WORKTREE_ROOT"`;
+  const mvm217Packet = `pwd; git rev-parse --show-toplevel; git branch --show-current; git rev-parse HEAD; git remote -v; git status --porcelain=v2 -z --untracked-files=all; printf '\\nRuntime paths\\n'; printenv PA_REPO PA_WORKTREE_ROOT PA_DEPLOY_MODE; ppa repos list`;
+  for (const command of ["ppa bulletin list", "ppa repos list", "ppa ticket show PAP-256 --json", "date -u", gitPacket, mvm217Packet]) {
     const result = await execute("bash", { command });
     assert.equal(result.details.exitCode, 0, JSON.stringify(result));
+    if (command === gitPacket || command === mvm217Packet) assert.match(JSON.stringify(result), new RegExp(f.base));
   }
   assert.deepEqual(session.service.status(session.actor), before, "administration is neither source work nor a phase check");
   const deny = async (name: string, input: Record<string, unknown>) => {
@@ -626,11 +629,28 @@ test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and
   finally { process.env.PA_TICKET_ID = priorTicket; }
   await execute("pa_ticket", { action: "comment", id: "PAP-256", author: "builder/team-manager", content: "Startup checked; project command unsupported, preserve state." });
   assert.match(readFileSync(f.ticketPath, "utf8"), /project command unsupported/);
+  const logRelative = `sessions/2026/10/agent-team/2026-10-23-${f.opts.deployId}-builder--builder-agent--PAP-256--preflight-blocked.md`;
+  const logPath = join(f.ai, logRelative); const logText = "# Native failure log\nProject phase contract unsupported; preserve source and custody.\n";
+  await execute("write", { path: logPath, content: logText });
+  assert.equal(readFileSync(logPath, "utf8"), logText); assert.equal(statSync(logPath).mode & 0o777, 0o600);
+  await execute("write", { path: logPath, content: logText }); // byte-identical retry only
+  await assert.rejects(runtime.tools.get("write")!.execute("overwrite-log", { path: logPath, content: "replacement" }, undefined, undefined, context));
+  assert.equal(readFileSync(logPath, "utf8"), logText);
+  const cancelledPath = logPath.replace("preflight-blocked", "cancelled"); const abort = new AbortController(); abort.abort();
+  await assert.rejects(runtime.tools.get("write")!.execute("cancelled-log", { path: cancelledPath, content: logText }, abort.signal, undefined, context));
+  assert.equal(existsSync(cancelledPath), false);
+  await deny("write", { path: logPath.replace(f.opts.deployId, "d-ffffff"), content: logText });
+  await deny("edit", { path: logPath, edits: [{ oldText: "Native", newText: "forged" }] });
   const previous = process.env.PA_PI_EXECUTION_MODE; process.env.PA_PI_EXECUTION_MODE = "foreground";
   try {
-    const result = await execute("bash", { command: `ppa registry complete ${f.opts.deployId} --status partial --summary 'Project command unsupported; preserve state'` });
+    const completionBefore = readPiForegroundCompletion(directory);
+    await assert.rejects(runtime.tools.get("bash")!.execute("missing-log-ref", { command: `ppa registry complete ${f.opts.deployId} --status partial --summary 'Stopped' --log-file '${cancelledPath}'` }, undefined, undefined, context));
+    assert.deepEqual(readPiForegroundCompletion(directory), completionBefore);
+    const result = await execute("bash", { command: `ppa registry complete ${f.opts.deployId} --status partial --summary 'Project command unsupported; preserve state' --log-file '${logPath}' --rating-source agent --rating-overall 2 --rating-productivity 1 --rating-quality 2 --rating-efficiency 3 --rating-insight 3` });
     assert.equal(result.details.exitCode, 0, JSON.stringify(result));
     assert.equal(readPiForegroundCompletion(directory)?.status, "partial");
+    assert.equal(readPiForegroundCompletion(directory)?.logFile, logRelative);
+    assert.equal(readPiForegroundCompletion(directory)?.rating?.overall, 2);
     assert.equal(getDeploymentEvents(f.opts.deployId).some((event) => event.event === "completed"), false, "staging cannot release live custody");
   } finally { if (previous === undefined) delete process.env.PA_PI_EXECUTION_MODE; else process.env.PA_PI_EXECUTION_MODE = previous; }
   const holder = session.observe("holder");
@@ -642,6 +662,8 @@ test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and
   release(); await administrative;
   assert.equal(await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "in-flight", input: { path: "src/file.ts", content: "not dispatched" } }, context), undefined);
   await deny("bash", { command: "ppa bulletin list" });
+  await deny("write", { path: cancelledPath, content: logText });
+  assert.equal(existsSync(cancelledPath), false);
   await deny("pa_ticket", { action: "comment", id: "PAP-256", content: "cannot overlap source work" });
   assert.equal(session.service.status(session.actor).operation?.id, "in-flight");
   assert.equal(f.git(["status", "--porcelain"], f.checkout), sourceBefore);

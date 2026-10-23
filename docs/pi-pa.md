@@ -132,17 +132,39 @@ started operations, original failed checks and limits. Writes invalidate affecte
 checks/acceptance, named checks must pass in order before commit, and independent
 review retains its separate exact-candidate read-only reservation.
 
-Before a phase plan, the same authenticated ordinary holder can run the exact
-`ppa bulletin list`, `ppa repos list`, own `ppa ticket show <ticket>` / `ppa status
-<deployment>` (optionally `--json`), and `date` / `date -u` observations. These are
-in-process calls to existing core owners, not shell grants or passing checks.
+Before a phase plan, the same authenticated ordinary holder can run `ppa bulletin
+list`, `ppa repos list`, own `ppa ticket show <ticket>` / `ppa status <deployment>`
+(optionally `--json`), and `date` / `date -u` observations. Read-only preflight also
+admits `pwd`, `git rev-parse --show-toplevel`, `git branch --show-current`, `git
+rev-parse HEAD`, `git remote -v`, `git status` / `--short` / `--porcelain=v2 -z
+--untracked-files=all`, and `git log -n 5 --oneline`. Finite preflight packets may
+join only these observations, `ppa repos list`, and the fixed runtime-root label
+and printing forms with `;` or `&&`. Selected `printenv PA_REPO PA_WORKTREE_ROOT
+PA_MODE` (or the historical `PA_DEPLOY_MODE` spelling) is allowed, never a general
+environment dump. An absent variable is not fabricated. These strings are parsed,
+not run in a shell: Git uses fixed argv, authenticated physical CWD, no ambient
+Git overrides, disabled optional locks/fsmonitor/hooks, and bounded time/output.
+None is a phase-check pass, source grant, arbitrary shell or network operation.
+
 Own-ticket `pa_ticket` blocker comments require author `builder/team-manager`.
-Foreground failure reporting accepts only `ppa registry complete <self> --status
-partial|failed --summary '<text>'` (or a double-quoted literal); it stages the
-normal completion payload without publishing a terminal event or releasing live
-custody. Wrong identities, compound commands, arbitrary flags and reporting that
-overlaps an active source operation remain denied. Reporting never resets a
-failure, counter, or in-flight barrier.
+The write tool also admits a new private self-deployment/self-ticket Markdown log
+under the pinned AI usage `sessions/YYYY/MM/agent-team` namespace. Names must be
+`YYYY-MM-DD-<self>-builder--builder-agent|team-manager--<ticket>--<slug>.md`.
+The date directories must match; source roots, path aliases, symlinks, hardlinks,
+foreign/writable directories, external edits and overwrites are refused. Logs
+are bounded to512KiB and atomically published mode0600 with byte-identical retry
+only; existing files are never chmodded, repaired or replaced.
+
+Foreground failure reporting accepts `ppa registry complete <self> --status
+partial|failed --summary '<text>'` (or a double-quoted literal), optionally with
+`--log-file` referencing an existing private own log and agent-only integer0..5
+`--rating-overall`, `--rating-productivity`, `--rating-quality`,
+`--rating-efficiency`, `--rating-insight`, and `--rating-source agent`. Duplicate
+or unknown flags, user/system ratings, success and fallback remain denied. It
+stages the normal completion payload without publishing a terminal event or
+releasing live custody. Wrong identities, unrecognized compound commands and
+reporting that overlaps an active source operation remain denied. Reporting
+never resets a failure, counter, check proof or in-flight barrier.
 
 Project-specific implementation checks still need an authenticated typed phase
 command contract. The fixed PA-platform check vocabulary is **not** a general

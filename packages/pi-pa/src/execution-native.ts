@@ -18,7 +18,7 @@ import type { PiExecutionBinding, PiExecutionEndEvent } from "./pi-extension/pre
 import type { PiToolCall } from "./pi-extension/index.js";
 import { interceptToolCall } from "./pi-extension/safety.js";
 import { environmentSecrets } from "./diagnostics.js";
-import { executionAdministration, runExecutionAdministration, type ExecutionAdministration } from "./native-execution-administration.js";
+import { executionAdministration, runExecutionAdministration, type ExecutionAdministration, type ExecutionAdministrationIdentity } from "./native-execution-administration.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -371,9 +371,13 @@ export class NativeExecutionSession {
   /** Startup/reporting is not source work and needs no model phase plan. The
    * same live caller/sole holder is still required; never cross an active tool
    * barrier or let reporting manufacture a check, recovery or terminal release. */
+  #administrativeIdentity(): ExecutionAdministrationIdentity {
+    return { deploymentId: this.actor.deploymentId, ticket: this.contract.ticket, worktreeRoot: this.contract.worktreeRoot,
+      aiUsageRoot: dirname(dirname(getDeployPaths(this.actor.deploymentId).deployDir)), sourceRoots: [this.contract.repoRoot, this.contract.worktreeRoot] };
+  }
   administration(call: PiToolCall, context: unknown): ExecutionAdministration | null {
     if (!this.#ordinary) return null;
-    const request = executionAdministration(call, { deploymentId: this.actor.deploymentId, ticket: this.contract.ticket });
+    const request = executionAdministration(call, this.#administrativeIdentity());
     if (!request) return null;
     this.assertCaller(context); this.#soleOwner();
     if (this.#administrationRunning || this.service.status(this.actor).operation !== null) throw workflowError();
@@ -396,11 +400,12 @@ export class NativeExecutionSession {
       throw error;
     } finally { this.#administrationRunning = false; }
   }
-  async runAdministration(id: string, input: Record<string, unknown>, context: unknown): Promise<{ text: string; exitCode: number }> {
-    const call = { toolName: "bash", input };
+  async runAdministration(id: string, input: Record<string, unknown>, context: unknown, toolName: "bash" | "write" = "bash"): Promise<{ text: string; exitCode: number }> {
+    const call = { toolName, input };
     const request = this.administration(call, context);
     if (!request || request.kind === "ticket-comment") throw workflowError();
-    return this.executeAdministration(id, call, context, () => runExecutionAdministration(request));
+    const identity = this.#administrativeIdentity();
+    return this.executeAdministration(id, call, context, () => runExecutionAdministration(request, identity));
   }
   #newWork(): void {
     if (this.#consumed && !this.#retained().active) throw workflowError();
