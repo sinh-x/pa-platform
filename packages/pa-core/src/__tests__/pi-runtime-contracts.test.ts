@@ -139,6 +139,10 @@ test("deploy request runtime accepts Pi and rejects unsupported runtimes", () =>
 });
 
 test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawning on invalid input", async () => {
+  const teams = mkdtempSync(join(tmpdir(), "pap264-rest-routing-"));
+  const priorTeams = process.env.PA_PLATFORM_TEAMS;
+  process.env.PA_PLATFORM_TEAMS = teams;
+  writeFileSync(join(teams, "builder.yaml"), `${baseConfig}default_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n`);
   let opencodeCalls = 0;
   let piCalls = 0;
   const api = createAgentApiApp({
@@ -150,16 +154,22 @@ test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawni
     },
   });
 
-  const omitted = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder" }) });
-  const pi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "pi" }) });
-  const invalid = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "unsupported-synthetic" }) });
+  try {
+    const omitted = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder" }) });
+    const pi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "pi" }) });
+    const invalid = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "unsupported-synthetic" }) });
 
-  assert.equal(omitted.status, 202);
-  assert.equal(pi.status, 202);
-  assert.equal(invalid.status, 400);
-  assert.equal(opencodeCalls, 1);
-  assert.equal(piCalls, 1);
-  api.cleanup();
+    assert.equal(omitted.status, 202);
+    assert.equal(pi.status, 202);
+    assert.equal(invalid.status, 400);
+    assert.equal(opencodeCalls, 1);
+    assert.equal(piCalls, 1);
+  } finally {
+    api.cleanup();
+    if (priorTeams === undefined) delete process.env.PA_PLATFORM_TEAMS;
+    else process.env.PA_PLATFORM_TEAMS = priorTeams;
+    rmSync(teams, { recursive: true, force: true });
+  }
 });
 
 test("explicit Pi protected REST objectives retain raw authority while OpenCode keeps prose sanitization", async () => {

@@ -132,6 +132,24 @@ started operations, original failed checks and limits. Writes invalidate affecte
 checks/acceptance, named checks must pass in order before commit, and independent
 review retains its separate exact-candidate read-only reservation.
 
+Before a phase plan, the same authenticated ordinary holder can run the exact
+`ppa bulletin list`, `ppa repos list`, own `ppa ticket show <ticket>` / `ppa status
+<deployment>` (optionally `--json`), and `date` / `date -u` observations. These are
+in-process calls to existing core owners, not shell grants or passing checks.
+Own-ticket `pa_ticket` blocker comments require author `builder/team-manager`.
+Foreground failure reporting accepts only `ppa registry complete <self> --status
+partial|failed --summary '<text>'` (or a double-quoted literal); it stages the
+normal completion payload without publishing a terminal event or releasing live
+custody. Wrong identities, compound commands, arbitrary flags and reporting that
+overlaps an active source operation remain denied. Reporting never resets a
+failure, counter, or in-flight barrier.
+
+Project-specific implementation checks still need an authenticated typed phase
+command contract. The fixed PA-platform check vocabulary is **not** a general
+npm/Gradle permission, and model plan text cannot authorize extra commands. Do not
+repurpose the independently owned full-review matrix. Startup/reporting support
+alone does not qualify MVM/TTL implementation, rollout, or installed readiness.
+
 Run the packaged isolated check from the clean, committed candidate root:
 
 ```bash

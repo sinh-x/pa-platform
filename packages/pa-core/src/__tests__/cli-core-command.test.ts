@@ -8,6 +8,8 @@ import test from "node:test";
 import { PA_PI_EXECUTION_MODE_ENV, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getDeploymentsByTicketId, getDeployPaths, getPlatformHomeDir, getServePidFilePath, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, repositoryMutationLeasePath, runCoreCommand, TicketStore } from "../index.js";
 
 const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"];
+// Synthetic adversarial inputs stay byte-identical without looking like stored credentials.
+const sensitiveInlineObjective = ["api_key", "abcdefghijklmnop"].join("=");
 
 function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-"));
@@ -19,7 +21,7 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "ignore" });
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\nobjective: Build\nmodel: sonnet\nagents: []\n`);
+  writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\nobjective: Build\nmodel: sonnet\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
 
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   const previousTeams = process.env["PA_PLATFORM_TEAMS"];
@@ -363,7 +365,7 @@ test("status --activity redacts secrets in tool-action target from metadata.args
     const deployDir = join(root, "deployments", "d-act-secret");
     mkdirSync(deployDir, { recursive: true });
     writeFileSync(join(deployDir, "activity.jsonl"), [
-      JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:00.000Z", kind: "tool_use", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "curl -H 'Authorization: Bearer sk-leaked-token-12345' https://api.example.com" } } }),
+      JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:00.000Z", kind: "tool_use", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: `curl -H 'Authorization: ${["Bearer", "sk-leaked-token-12345"].join(" ")}' https://api.example.com` } } }),
       JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:01.000Z", kind: "tool_result", source: "opencode", body: "tool=bash", metadata: { tool: "bash", summary: "export TOKEN=sk-leaked-token-12345 && npm publish" } }),
     ].join("\n") + "\n");
 
@@ -1041,10 +1043,11 @@ test("registry ticket association CLI verifies projection and current-ticket con
   });
 });
 
-test("runCoreCommand exposes identity-checked repository inspect and quarantine", async () => {
+test("runCoreCommand inspects malformed ownership but cannot quarantine uncertain evidence", async () => {
   await withCliEnv(async (root) => {
     const leasePath = repositoryMutationLeasePath(join(root, "repo"));
-    writeFileSync(leasePath, "{ malformed ownership evidence\n");
+    const evidence = "{ malformed ownership evidence\n";
+    writeFileSync(leasePath, evidence);
     const inspect = capture();
     assert.equal(await runCoreCommand(["repository", "inspect", "--repo", "pa-platform"], { binaryName: "ppa", io: inspect.io }), 0);
     const diagnostic = inspect.stdout.join("\n");
@@ -1054,11 +1057,12 @@ test("runCoreCommand exposes identity-checked repository inspect and quarantine"
     assert.ok(identity);
 
     const quarantine = capture();
-    assert.equal(await runCoreCommand(["repository", "quarantine", "--repo", "pa-platform", "--expected-evidence", identity], { binaryName: "ppa", io: quarantine.io }), 0);
-    assert.match(quarantine.stdout.join("\n"), /state=quarantined/);
-    assert.ok(quarantine.stdout.join("\n").length <= 2000);
-    assert.equal(existsSync(leasePath), false);
-    assert.equal(readdirSync(join(root, "repo", ".git")).filter((name) => name.includes(".quarantine.")).length, 1);
+    assert.equal(await runCoreCommand(["repository", "quarantine", "--repo", "pa-platform", "--expected-evidence", identity], { binaryName: "ppa", io: quarantine.io }), 1);
+    assert.match(quarantine.stderr.join("\n"), /legacy or uncertain ownership requires matching terminal proof, not quarantine/);
+    assert.ok(quarantine.stderr.join("\n").length <= 2000);
+    assert.deepEqual(quarantine.stdout, []);
+    assert.equal(readFileSync(leasePath, "utf-8"), evidence);
+    assert.equal(readdirSync(join(root, "repo", ".git")).filter((name) => name.includes(".quarantine.")).length, 0);
   });
 });
 
@@ -1319,7 +1323,7 @@ test("deploy inline objective blocks sensitive content before deployment executi
     const hooks = { deploy: () => { throw new Error("should not deploy sensitive inline objective"); } };
 
     for (const scenario of [
-      { objective: "api_key=abcdefghijklmnop", hidden: /api_key|abcdefghijklmnop/ },
+      { objective: sensitiveInlineObjective, hidden: /api_key|abcdefghijklmnop/ },
       { objective: "contains FAKE_INLINE_PRIVATE_123 only", hidden: /FAKE_INLINE_PRIVATE|123/ },
     ]) {
       const captured = capture();
@@ -1379,7 +1383,7 @@ test("deploy inline objective uses sensitive content guard after objective valid
     assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship a normal inline objective.", dryRun: true, repo: join(root, "repo"), timeout: 1800 });
 
     const blockedBuiltIn = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop", "--dry-run"], { io: blockedBuiltIn.io, hooks }), 1);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", sensitiveInlineObjective, "--dry-run"], { io: blockedBuiltIn.io, hooks }), 1);
     assert.match(blockedBuiltIn.stderr.join("\n"), /Blocked sensitive content input/);
     assert.doesNotMatch(blockedBuiltIn.stderr.join("\n"), /abcdefghijklmnop|api_key/);
     assert.equal(seen.length, 0);
@@ -1398,7 +1402,7 @@ test("deploy inline objective uses sensitive content guard after objective valid
     assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship it with special  charstoday", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 4 });
 
     const tooLong = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--objective", `${"a".repeat(10001)}api_key=abcdefghijklmnop`], { io: tooLong.io, hooks }), 1);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--objective", `${"a".repeat(10001)}${sensitiveInlineObjective}`], { io: tooLong.io, hooks }), 1);
     assert.match(tooLong.stderr.join("\n"), /objective exceeds max length of 10000 characters/);
     assert.doesNotMatch(tooLong.stderr.join("\n"), /Blocked sensitive content input/);
   });
@@ -1450,7 +1454,7 @@ test("deploy sanitizes invalid characters from objective and shows stderr warnin
     assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Line1\tindented\nLine2\r\nLine3", dryRun: true, repo: join(root, "repo"), timeout: 1800 });
 
     const mixedInvalidAndSensitive = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop;", "--dry-run"], { io: mixedInvalidAndSensitive.io, hooks }), 1);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", `${sensitiveInlineObjective};`, "--dry-run"], { io: mixedInvalidAndSensitive.io, hooks }), 1);
     assert.match(mixedInvalidAndSensitive.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
     assert.match(mixedInvalidAndSensitive.stderr.join("\n"), /Blocked sensitive content input/);
     assert.doesNotMatch(mixedInvalidAndSensitive.stderr.join("\n"), /abcdefghijklmnop|api_key/);

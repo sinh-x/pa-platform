@@ -112,7 +112,9 @@ async function nativeFixture(options: { marker?: string; declared?: string; mode
   closeDb();
   try {
     const directory = join(root, "deployments/d-263aaa"); mkdirSync(directory, { recursive: true });
-    process.env = { ...previous, PA_AI_USAGE_HOME: root, PA_REGISTRY_DB: join(root, "registry.db"), PA_DEPLOYMENT_ID: "d-263aaa", PA_DEPLOYMENT_DIR: directory, PA_TEAM: "builder", PA_MODE: options.mode ?? "orchestrator" };
+    const teams = join(root, "teams"); mkdirSync(teams);
+    writeFileSync(join(teams, "builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Fixture\nagents: []\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n  - id: implement\n    label: Legacy bootstrap\n");
+    process.env = { ...previous, PA_PLATFORM_TEAMS: teams, PA_AI_USAGE_HOME: root, PA_REGISTRY_DB: join(root, "registry.db"), PA_DEPLOYMENT_ID: "d-263aaa", PA_DEPLOYMENT_DIR: directory, PA_TEAM: "builder", PA_MODE: options.mode ?? "orchestrator" };
     appendRegistryEvent({ deployment_id: "d-263aaa", team: "builder", mode: process.env.PA_MODE, runtime: "pi", binary: "ppa", event: "started", timestamp: time, ...(options.declared === undefined ? {} : { note: `prepared-native-consumption/v1:${options.declared}` }) });
     if (options.marker !== undefined) { const path = join(directory, "prepared-consumption.json"); writeFileSync(path, options.marker, { mode: 0o600 }); if (options.insecure) chmodSync(path, 0o644); }
     await run(new PiNativeExecutionAdapter({ authority: new PiPreparedNativeAuthority({ root: join(root, "authority"), aiUsageRoot: root }) }), directory);

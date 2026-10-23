@@ -309,15 +309,19 @@ test("comment writer interleaving with failed update readback retains ticket and
       getCalls += 1;
       if (getCalls === 2) {
         const script = `
-          const { writeFileSync } = await import("node:fs");
+          const { renameSync, writeFileSync } = await import("node:fs");
           const { TicketStore } = await import(process.env.PA_STORE_MODULE_URL);
           writeFileSync(process.env.PA_READY_PATH, "ready");
+          let result;
           try {
             new TicketStore(process.env.PA_TICKETS_DIR, { privileged: true }).comment(process.env.PA_TICKET_ID, "writer-b", "Concurrent retained comment");
-            writeFileSync(process.env.PA_DONE_PATH, "ok");
+            result = "ok";
           } catch (error) {
-            writeFileSync(process.env.PA_DONE_PATH, \`error: \${error instanceof Error ? error.message : String(error)}\`);
+            result = \`error: \${error instanceof Error ? error.message : String(error)}\`;
           }
+          // Existence must mean the complete result is readable, not just opened/truncated.
+          writeFileSync(process.env.PA_DONE_PATH + ".tmp", result);
+          renameSync(process.env.PA_DONE_PATH + ".tmp", process.env.PA_DONE_PATH);
         `;
         spawn(process.execPath, ["--import=tsx", "--input-type=module", "--eval", script], {
           cwd: process.cwd(),
