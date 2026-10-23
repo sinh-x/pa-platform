@@ -42,14 +42,18 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
     for (const name of ["bash", "write", "edit"] as const) {
       const template = name === "bash" ? createBashTool(cwd) : name === "write" ? createWriteTool(cwd) : createEditTool(cwd);
       pi.registerTool?.({
-        name, label: template.label, description: template.description, parameters: template.parameters,
+        name, label: template.label,
+        description: template.description + (name === "bash"
+          ? " Before a source plan, authenticated PA reads admit only pwd; git rev-parse --show-toplevel or HEAD; git branch --show-current; git remote -v; git status, git status --short, or git status --porcelain=v2 -z --untracked-files=all; git log -n 5 --oneline; ppa bulletin list; ppa repos list; own ticket/status reads; date or date -u. A preflight may join only fixed Git/pwd/root observations and ppa repos list with ; or &&; no arbitrary shell, environment dump or project checks. For paths use printenv PA_REPO PA_WORKTREE_ROOT PA_MODE. Own foreground registry complete admits only partial/failed, a summary, an optional existing private own --log-file, and agent integer0..5 ratings; not success, user/system ratings or fallback."
+          : name === "write" ? ` Before a source plan, only an ABSOLUTE private new self log under the AI usage sessions/YYYY/MM/agent-team directory is additionally allowed: YYYY-MM-DD-${session.actor.deploymentId}-builder--builder-agent--${session.contract.ticket}--<slug>.md (or team-manager). Maximum512KiB; mode0600, atomic no-clobber creation or byte-identical retry, never overwrite/edit or external source writes. Completion --log-file may reference this log.` : ""),
+        parameters: template.parameters,
         executionMode: "sequential",
         execute: async (id, input, signal, update, ctx) => {
           const execute = async (): Promise<PiToolResult> => {
             if (signal?.aborted) throw workflowError();
             const current = adapter.resolve(ctx); if (!current) throw workflowError();
-            if (name === "bash" && current.administration({ toolName: name, input }, ctx)) {
-              const result = await current.runAdministration(id, input, ctx);
+            if ((name === "bash" || name === "write") && current.administration({ toolName: name, input }, ctx)) {
+              const result = await current.runAdministration(id, input, ctx, name);
               if (result.exitCode !== 0) throw workflowError();
               return { content: [{ type: "text", text: administrativeText(result.text, current) }], details: { exitCode: result.exitCode } };
             }

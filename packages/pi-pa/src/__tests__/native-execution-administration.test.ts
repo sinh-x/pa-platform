@@ -3,6 +3,8 @@ import test from "node:test";
 import { executionAdministration } from "../native-execution-administration.js";
 
 const identity = { deploymentId: "d-aaaaaa", ticket: "TTL-006" };
+const physicalIdentity = { ...identity, worktreeRoot: "/fixture/worktree", aiUsageRoot: "/fixture/usage" };
+const log = "sessions/2026/10/agent-team/2026-10-23-d-aaaaaa-builder--builder-agent--TTL-006--preflight-blocked.md";
 const bash = (command: string, extra: Record<string, unknown> = {}) => executionAdministration({ toolName: "bash", input: { command, ...extra } }, identity);
 
 test("PAP-264 administrative vocabulary is exact, inert argv and self-bound, not phase-check authority", () => {
@@ -37,4 +39,40 @@ test("PAP-264 only typed comments on the current ticket use the existing ticket 
   for (const patch of [{ action: "update" }, { id: "TTL-999" }, { author: "sinh" }, { content: "" }, { content: "x".repeat(16_385) }, { status: "done" }, { content: { text: "claim" } }]) assert.equal(call(patch), null);
   assert.equal(executionAdministration({ toolName: "mcp__unknown.pa_ticket", input }, identity), null);
   assert.deepEqual(executionAdministration({ toolName: "functions.pa_ticket", input }, identity), { kind: "ticket-comment" });
+});
+
+test("PAP-264 d-9e8ccf compound Git preflight is parsed as finite inert observations, never a shell", () => {
+  const command = `pwd; git rev-parse --show-toplevel; git branch --show-current; git rev-parse HEAD; git remote -v; git status --porcelain=v2 -z --untracked-files=all; printf '\\nRuntime roots\\n'; printf 'PA_REPO=%s\\nPA_WORKTREE_ROOT=%s\\n' "$PA_REPO" "$PA_WORKTREE_ROOT"`;
+  const parse = (command: string) => executionAdministration({ toolName: "bash", input: { command, timeout: 30 } }, physicalIdentity);
+  const result = parse(command);
+  assert.equal(result?.kind, "preflight");
+  if (result?.kind === "preflight") { assert.equal(result.observations.length, 8); assert.equal(result.timeoutSeconds, 30); }
+  assert.equal(parse("git rev-parse HEAD && git status --short")?.kind, "preflight");
+  const mvm217 = parse(`pwd; git rev-parse --show-toplevel; git branch --show-current; git rev-parse HEAD; git remote -v; git status --porcelain=v2 -z --untracked-files=all; printf '\\nRuntime paths\\n'; printenv PA_REPO PA_WORKTREE_ROOT PA_DEPLOY_MODE; ppa repos list`);
+  assert.equal(mvm217?.kind, "preflight");
+  if (mvm217?.kind === "preflight") assert.equal(mvm217.observations.length, 9);
+  for (const command of ["pwd; touch forbidden", "git -C /canonical status", "git --git-dir=/canonical/.git status", "git -c core.fsmonitor=evil status",
+    "git status | tee output", "git status > file", "git status;", ";git status", "git status;;pwd", "git status & pwd", "git fetch", "git remote set-url origin bad",
+    "git rev-parse $(touch forbidden)", "git status --porcelain=v2 -z --untracked-files=all; npm test", "printf '%s' \"$TOKEN\"", "git status\\ntrue",
+    "printenv", "printenv PA_REPO PA_WORKTREE_ROOT PASSWORD", "ppa repos list; ppa deploy builder",
+    Array(17).fill("git status").join(";")]) assert.equal(parse(command), null, command);
+});
+
+test("PAP-264 completion accepts self agent metadata only, with duplicate and log namespace denial", () => {
+  const parse = (command: string) => executionAdministration({ toolName: "bash", input: { command } }, physicalIdentity);
+  const command = `ppa registry complete d-aaaaaa --status partial --summary "Blocked preflight; preserve state" --log-file /fixture/usage/${log} --rating-source agent --rating-overall 2 --rating-productivity 1 --rating-quality 2 --rating-efficiency 3 --rating-insight 3`;
+  const result = parse(command);
+  assert.equal(result?.kind, "core");
+  if (result?.kind === "core") { assert.equal(result.logFile, log); assert.equal(result.argv[result.argv.indexOf("--log-file") + 1], log); }
+  for (const suffix of ["--rating-source user", "--rating-source system", "--rating-overall 9", "--rating-overall 1.5", "--rating-overall 2oops",
+    "--rating-overall 2 --rating-overall 3", "--summary extra", "--fallback", "--log-file /tmp/unknown.md", `--log-file ${log.replace("d-aaaaaa", "d-bbbbbb")}`]) {
+    assert.equal(parse(`ppa registry complete d-aaaaaa --status partial --summary 'stopped' ${suffix}`), null, suffix);
+  }
+});
+
+test("PAP-264 only bounded self session Markdown writes are administrative; no source, edit or unknown fields", () => {
+  const call = (patch: Record<string, unknown> = {}, name = "write") => executionAdministration({ toolName: name, input: { path: `/fixture/usage/${log}`, content: "# Retained log", ...patch } }, physicalIdentity);
+  assert.deepEqual(call(), { kind: "session-log", path: log, content: "# Retained log" });
+  for (const patch of [{ path: "/fixture/canonical/src/file.ts" }, { path: log }, { path: `/fixture/usage/${log.replace("TTL-006", "TTL-007")}` }, { content: "" }, { content: "x".repeat(512 * 1024 + 1) }, { overwrite: true }]) assert.equal(call(patch), null);
+  assert.equal(call({}, "edit"), null);
 });
