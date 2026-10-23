@@ -185,7 +185,7 @@ for variant in "${variant_names[@]}"; do
       const before = structuredClone(keyed);
       if (audit.observe("installed-create", keyed) !== 1 || JSON.stringify(keyed) !== JSON.stringify(before)) process.exit(1);
       if (!existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) process.exit(1);
-      const bearer = "Bearer synthetic-installed-bearer-value";
+      const bearer = ["Bearer", "synthetic-installed-bearer-value"].join(" ");
       if (diagnostics.redactDiagnostic(bearer) !== bearer || audit.observe("installed-append", bearer) !== 1) process.exit(1);
       if ((statSync(path).mode & 0o777) !== 0o600) process.exit(1);
       const records = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);

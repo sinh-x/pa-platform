@@ -18,6 +18,7 @@ import type { PiExecutionBinding, PiExecutionEndEvent } from "./pi-extension/pre
 import type { PiToolCall } from "./pi-extension/index.js";
 import { interceptToolCall } from "./pi-extension/safety.js";
 import { environmentSecrets } from "./diagnostics.js";
+import { executionAdministration, runExecutionAdministration, type ExecutionAdministration } from "./native-execution-administration.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -224,6 +225,7 @@ export class NativeExecutionSession {
   readonly #grantId: string | null;
   readonly #resultLinks = new Map<string, SourceVersion>();
   readonly #started = new Set<string>();
+  #administrationRunning = false;
   constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown> | null, physical: HelperContext, ordinary: RegistryEvent | null = null) {
     this.#authority = authority; this.#helper = helper; this.#consumed = consumed; this.#physical = physical;
     if (Boolean(consumed) === Boolean(ordinary)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
@@ -318,6 +320,7 @@ export class NativeExecutionSession {
     }
     this.binding = {
       bindingIdentity: workflowDigest(JSON.stringify([this.contract, launch])), service: this.service, actor: this.actor,
+      authorizeAdministration: (call, context) => this.administration(call, context) !== null,
       assertToolCall: (call, _context, current) => this.#assertCall(call, current),
       resolveCheck: (call, current) => current.plan?.checks.find((name) => checkText(name) === call.input.command) ?? null,
       prepareOperation: (call, _context, current, operationId) => this.prepare(call, current, operationId),
@@ -365,6 +368,40 @@ export class NativeExecutionSession {
     if (!equal(readProcessFingerprint(owner.processFingerprint.pid), owner.processFingerprint)
       || !processIsWithinFingerprintLineage(anchor.pid, owner.processFingerprint)) throw executionFailure("EXECUTION_CALLER_STALE");
   }
+  /** Startup/reporting is not source work and needs no model phase plan. The
+   * same live caller/sole holder is still required; never cross an active tool
+   * barrier or let reporting manufacture a check, recovery or terminal release. */
+  administration(call: PiToolCall, context: unknown): ExecutionAdministration | null {
+    if (!this.#ordinary) return null;
+    const request = executionAdministration(call, { deploymentId: this.actor.deploymentId, ticket: this.contract.ticket });
+    if (!request) return null;
+    this.assertCaller(context); this.#soleOwner();
+    if (this.#administrationRunning || this.service.status(this.actor).operation !== null) throw workflowError();
+    if (request.kind === "core" && request.argv[0] === "registry" && process.env.PA_PI_EXECUTION_MODE !== "foreground") throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
+    return request;
+  }
+  async executeAdministration<T>(id: string, call: PiToolCall, context: unknown, action: () => Promise<T>): Promise<T> {
+    const request = this.administration(call, context); if (!request) throw workflowError();
+    const before = captureNativeScope(this.contract.worktreeRoot);
+    const intent = this.evidence.publish("administrative-intent", { executionId: this.service.executionId, toolCallId: id, request, inputSha256: workflowDigest(JSON.stringify(call.input)) });
+    this.#administrationRunning = true;
+    try {
+      const result = await action(); this.assertCaller(context);
+      if (!equal(before, captureNativeScope(this.contract.worktreeRoot))) throw workflowError();
+      // Independent audit evidence, never a phase-check pass or operation finish.
+      this.evidence.publish("administrative-result", { intent, result });
+      return result;
+    } catch (error) {
+      this.evidence.publish("administrative-error", { intent });
+      throw error;
+    } finally { this.#administrationRunning = false; }
+  }
+  async runAdministration(id: string, input: Record<string, unknown>, context: unknown): Promise<{ text: string; exitCode: number }> {
+    const call = { toolName: "bash", input };
+    const request = this.administration(call, context);
+    if (!request || request.kind === "ticket-comment") throw workflowError();
+    return this.executeAdministration(id, call, context, () => runExecutionAdministration(request));
+  }
   #newWork(): void {
     if (this.#consumed && !this.#retained().active) throw workflowError();
     this.#authenticateSourceCustody();
@@ -407,7 +444,7 @@ export class NativeExecutionSession {
     return passed;
   }
   #assertCall(call: PiToolCall, state: ExecutionState): void {
-    this.#newWork(); if (!state.plan || !interceptToolCall(call).allowed) throw workflowError(); this.#assertKnown(state);
+    this.#newWork(); if (this.#administrationRunning || !state.plan || !interceptToolCall(call).allowed) throw workflowError(); this.#assertKnown(state);
     const name = call.toolName ?? call.name;
     if (name === "write" || name === "edit") { const path = workflowText(call.input.path); const rel = isAbsolute(path) ? relative(this.#physical.worktreeRoot, path) : path;
       if (!state.plan.paths.includes(rel)) throw workflowError(); scopedPath(this.#physical.worktreeRoot, rel); return; }

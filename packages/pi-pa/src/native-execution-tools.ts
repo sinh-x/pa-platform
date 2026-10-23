@@ -2,6 +2,13 @@ import { createBashTool, createEditTool, createWriteTool } from "@earendil-works
 import { executionFailure, workflowError } from "@pa-platform/pa-core";
 import type { PiNativeExecutionAdapter, NativeExecutionSession } from "./execution-native.js";
 import type { PiRuntime, PiSessionLifecycle, PiToolDefinition, PiToolResult } from "./pi-extension/index.js";
+import { createPaTicketTool } from "./pi-extension/ticket-tool.js";
+
+function administrativeText(text: string, session: NativeExecutionSession): string {
+  const safe = session.publicText(text); const lines = safe.split("\n");
+  if (Buffer.byteLength(safe) <= 50 * 1024 && lines.length <= 2000) return safe;
+  return Buffer.from(lines.slice(0, 1998).join("\n")).subarray(0, 50 * 1024 - 128).toString("utf8") + "\n[Truncated administrative output; original retained in private evidence.]";
+}
 
 function publicResult(result: unknown, session: NativeExecutionSession): PiToolResult {
   const value = JSON.parse(JSON.stringify(result), (_key, item: unknown) => typeof item === "string" ? session.publicText(item) : item) as PiToolResult;
@@ -17,6 +24,21 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
     const session = adapter.resolve(context); if (!session) return;
     if (!pi.registerTool) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
     const cwd = session.contract.worktreeRoot;
+    const ticket = createPaTicketTool();
+    pi.registerTool({
+      ...ticket, executionMode: "sequential",
+      execute: async (id, input, signal, update, ctx) => {
+        if (signal?.aborted) throw workflowError();
+        if (["read", "show", "list"].includes(String(input.action))) return ticket.execute(id, input, signal, update, ctx);
+        const execute = async () => {
+          const current = adapter.resolve(ctx); if (!current) throw workflowError();
+          const result = await current.executeAdministration(id, { toolName: "pa_ticket", input }, ctx, () => ticket.execute(id, input, signal, update, ctx));
+          return publicResult(result, current);
+        };
+        try { return await (lifecycle ? lifecycle.trackRegistryAccess(execute) : execute()); }
+        catch { throw workflowError(); }
+      },
+    });
     for (const name of ["bash", "write", "edit"] as const) {
       const template = name === "bash" ? createBashTool(cwd) : name === "write" ? createWriteTool(cwd) : createEditTool(cwd);
       pi.registerTool?.({
@@ -24,7 +46,13 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
         executionMode: "sequential",
         execute: async (id, input, signal, update, ctx) => {
           const execute = async (): Promise<PiToolResult> => {
+            if (signal?.aborted) throw workflowError();
             const current = adapter.resolve(ctx); if (!current) throw workflowError();
+            if (name === "bash" && current.administration({ toolName: name, input }, ctx)) {
+              const result = await current.runAdministration(id, input, ctx);
+              if (result.exitCode !== 0) throw workflowError();
+              return { content: [{ type: "text", text: administrativeText(result.text, current) }], details: { exitCode: result.exitCode } };
+            }
             return current.execute(id, input, async (native) => {
               const tool = name === "write" ? createWriteTool(cwd, { operations: {
                 writeFile: async (path, content) => { native.file(path, content); },

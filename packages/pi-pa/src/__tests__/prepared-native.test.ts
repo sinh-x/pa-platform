@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { closeDb, appendRegistryEvent, getDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { readPiForegroundCompletion, closeDb, appendRegistryEvent, getDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
@@ -13,7 +13,7 @@ import { PiNativeExecutionAdapter, ORDINARY_NATIVE_EXECUTION_START } from "../ex
 import { PiNativePhaseReportAdapter } from "../phase-report-native.js";
 import { recordPiProcessIdentity, recordPiReadonlyRoleProcessIdentity } from "../process-identity.js";
 import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, createPiExecutionModule, createPiPhaseReportModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
-import { interceptToolCall, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
+import { createPaTools, interceptToolCall, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
 const time = "2026-10-17T00:00:00.000Z"; const sha = "a".repeat(40);
 const facts: PreparedNativeRuntime = { sourceSha: sha, packageVersion: "fixture", configSha: "b".repeat(40), storeRoot: "/fixture/immutable-runtime" };
 const env = { PA_TEAM: "requirements", PA_MODE: "analyze", PA_PI_EXECUTION_MODE: "foreground" };
@@ -330,7 +330,7 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       const runtime = executionRuntime(); const context = { cwd: f.checkout };
       createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi);
       await runtime.dispatch("session_start", {}, context);
-      assert.deepEqual([...runtime.tools.keys()], ["pa_execution", "pa_feature_update", "bash", "write", "edit"]);
+      assert.deepEqual([...runtime.tools.keys()], ["pa_execution", "pa_feature_update", "pa_ticket", "bash", "write", "edit"]);
       const control = (input: Record<string, unknown>) => runtime.tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
       const observe = async (kind: string) => (await control({ action: "observe", kind })).details.evidence as SourceVersion;
       const select = async () => { const holder = await observe("holder"); await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder }); };
@@ -585,6 +585,68 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
   }); } finally { closeDb(); process.chdir(previousCwd); process.env = previousEnv; }
 }
 
+test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and own completion use authenticated native ports", () => ordinaryFixture(async (f) => {
+  const directory = join(f.ai, "deployments", f.opts.deployId); const context = { cwd: f.checkout };
+  recordPiProcessIdentity(f.opts.deployId, directory, process.pid); f.opts.onPid?.(process.pid);
+  const adapter = new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } });
+  const runtime = executionRuntime();
+  for (const tool of createPaTools()) runtime.tools.set(tool.name, tool);
+  createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi);
+  await runtime.dispatch("session_start", {}, context);
+  const session = adapter.resolve(context)!;
+  const before = session.service.status(session.actor); const sourceBefore = f.git(["status", "--porcelain"], f.checkout);
+  let sequence = 0;
+  const execute = async (name: string, input: Record<string, unknown>) => {
+    const id = `startup-${++sequence}`;
+    assert.equal(await runtime.dispatch("tool_call", { toolName: name, toolCallId: id, input }, context), undefined);
+    const result = await runtime.tools.get(name)!.execute(id, input, undefined, undefined, context);
+    await runtime.dispatch("tool_execution_end", { toolName: name, toolCallId: id, result, isError: false }, context);
+    return result;
+  };
+  for (const command of ["ppa bulletin list", "ppa repos list", "ppa ticket show PAP-256 --json", "date -u"]) {
+    const result = await execute("bash", { command });
+    assert.equal(result.details.exitCode, 0, JSON.stringify(result));
+  }
+  assert.deepEqual(session.service.status(session.actor), before, "administration is neither source work nor a phase check");
+  const deny = async (name: string, input: Record<string, unknown>) => {
+    const response = await runtime.dispatch("tool_call", { toolName: name, toolCallId: `denied-${++sequence}`, input }, context) as { block: boolean };
+    assert.equal(response.block, true);
+  };
+  await deny("write", { path: "src/file.ts", content: "not planned" });
+  await deny("bash", { command: "npm run test" }); // no authenticated project phase contract
+  await deny("bash", { command: "ppa bulletin list; touch forbidden" });
+  await deny("bash", { command: `ppa registry complete ${f.opts.deployId} --status success --summary 'not acceptance'` });
+  await deny("pa_ticket", { action: "comment", id: "PAP-999", content: "wrong ticket" });
+  await deny("pa_ticket", { action: "comment", id: "PAP-256", author: "sinh", content: "forged approval" });
+  const ticketBeforeDenial = readFileSync(f.ticketPath);
+  await assert.rejects(runtime.tools.get("pa_ticket")!.execute("unguarded-comment", { action: "comment", id: "PAP-999", author: "builder/team-manager", content: "wrong ticket" }, undefined, undefined, context));
+  assert.deepEqual(readFileSync(f.ticketPath), ticketBeforeDenial);
+  const priorTicket = process.env.PA_TICKET_ID; process.env.PA_TICKET_ID = "PAP-999";
+  try { await deny("bash", { command: "ppa bulletin list" }); }
+  finally { process.env.PA_TICKET_ID = priorTicket; }
+  await execute("pa_ticket", { action: "comment", id: "PAP-256", author: "builder/team-manager", content: "Startup checked; project command unsupported, preserve state." });
+  assert.match(readFileSync(f.ticketPath, "utf8"), /project command unsupported/);
+  const previous = process.env.PA_PI_EXECUTION_MODE; process.env.PA_PI_EXECUTION_MODE = "foreground";
+  try {
+    const result = await execute("bash", { command: `ppa registry complete ${f.opts.deployId} --status partial --summary 'Project command unsupported; preserve state'` });
+    assert.equal(result.details.exitCode, 0, JSON.stringify(result));
+    assert.equal(readPiForegroundCompletion(directory)?.status, "partial");
+    assert.equal(getDeploymentEvents(f.opts.deployId).some((event) => event.event === "completed"), false, "staging cannot release live custody");
+  } finally { if (previous === undefined) delete process.env.PA_PI_EXECUTION_MODE; else process.env.PA_PI_EXECUTION_MODE = previous; }
+  const holder = session.observe("holder");
+  session.service.apply(session.actor, { action: "plan", plan: { phaseId: "phase-startup", scope: "barrier fixture", paths: ["src/file.ts"], requirements: ["AC3"], prerequisites: [], checks: ["typecheck"], size: "M", complexity: "high", rationale: "Startup ports cannot clear source barriers." } });
+  session.service.apply(session.actor, { action: "select", executor: "orchestrator-direct", holder: session.actor, handover: holder });
+  let release!: () => void;
+  const administrative = session.executeAdministration("administrative-overlap", { toolName: "bash", input: { command: "ppa bulletin list" } }, context, () => new Promise<void>((resolve) => { release = resolve; }));
+  await deny("write", { path: "src/file.ts", content: "must not overlap administration" });
+  release(); await administrative;
+  assert.equal(await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "in-flight", input: { path: "src/file.ts", content: "not dispatched" } }, context), undefined);
+  await deny("bash", { command: "ppa bulletin list" });
+  await deny("pa_ticket", { action: "comment", id: "PAP-256", content: "cannot overlap source work" });
+  assert.equal(session.service.status(session.actor).operation?.id, "in-flight");
+  assert.equal(f.git(["status", "--porcelain"], f.checkout), sourceBefore);
+}, "retained-started-operation"));
+
 test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact ordered checks, first failure/reload/replan and commit", () => ordinaryFixture(async (f) => {
   const directory = join(f.ai, "deployments", f.opts.deployId); const context = { cwd: f.checkout };
   const start = getDeploymentEvents(f.opts.deployId).find((event) => event.event === "started")!;
@@ -645,6 +707,9 @@ test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact o
   const failedResult = session.evidence.read(original.output, "tool-result") as { process: { stdout: Parameters<typeof session.evidence.blob>[0]; stderr: Parameters<typeof session.evidence.blob>[0] } };
   assert.match(session.evidence.blob(failedResult.process.stdout).toString(), /ordinary-private-token/);
   assert.match(session.evidence.blob(failedResult.process.stderr).toString(), /actual ordinary stderr/);
+  const failureState = session.service.status(session.actor);
+  assert.equal((await execute("pa_ticket", { action: "comment", id: "PAP-256", author: "builder/team-manager", content: "Native phase check failed with exit2; original evidence retained." })).failed, false);
+  assert.deepEqual(session.service.status(session.actor), failureState, "failure reporting cannot clear the original failure or reset counters");
   await reload(); assert.deepEqual(session.service.status(session.actor).originalFailure, original);
   await settle(); await control({ action: "attempt", evidence: await observe("recovery") });
   await control({ action: "plan", plan }); await reload();

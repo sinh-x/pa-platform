@@ -496,6 +496,8 @@ export interface PiExecutionBinding {
   readonly bindingIdentity: string;
   readonly service: ExecutionCustodyService;
   readonly actor: ExecutionHolder;
+  /** Native-only exact startup/reporting port. Never source/check authority. */
+  authorizeAdministration?(call: PiToolCall, context: unknown): boolean;
   /** Validate actual tool arguments, exact physical cwd/paths/shell scope and native correlation. */
   assertToolCall(call: PiToolCall, context: unknown, state: ExecutionState): void;
   /** Match exact approved shell check command; null for ordinary operations. */
@@ -683,6 +685,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         // A failed/not-yet-observed startup must never dispatch an unguarded
         // built-in after binding discovery. A hook alone is not SDK support.
         if (nativeBuiltinsReady && !nativeBuiltinsReady()) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
+        if (binding.authorizeAdministration && nativeExecutionCall(() => binding.authorizeAdministration!(call, context)) === true) return;
         const id = workflowText(call.toolCallId); if (pending.has(id)) throw workflowError();
         const state = binding.service.status(binding.actor);
         assertExecutionCall(() => binding.assertToolCall(call, context, state));

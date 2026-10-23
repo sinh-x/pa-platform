@@ -1,10 +1,13 @@
 import { Type, type TSchema } from "typebox";
-import { BulletinStore, TicketStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
+import { BulletinStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
 import { interceptToolCall } from "./safety.js";
 export { interceptToolCall } from "./safety.js";
 import { auditPiValueFromEnvironment } from "../diagnostics.js";
 import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
+import { boundJson } from "./tool-result.js";
+import { createPaTicketTool } from "./ticket-tool.js";
+export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
 import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
@@ -27,9 +30,6 @@ export const PI_EXAMPLE_SOURCES = [
   "examples/extensions/status-line.ts",
   "examples/extensions/overlay-qa-tests.ts",
 ] as const;
-
-export const MAX_TOOL_BYTES = 50 * 1024;
-export const MAX_TOOL_LINES = 2000;
 
 export interface PiToolCall { name?: string; toolName?: string; input: Record<string, unknown> }
 export type PiTicketAction = "read" | "show" | "list" | "comment";
@@ -149,17 +149,7 @@ function captureModuleShutdownHandlers(pi: PiRuntime, lifecycle: PiSessionLifecy
 }
 
 export function createPaTools(lifecycle?: PiSessionLifecycle): PiToolDefinition[] {
-  const ticket: PiToolDefinition = {
-    name: "pa_ticket", label: "PA Ticket", description: "Read, show, list, or comment on a PA ticket.",
-    parameters: Type.Object({
-      action: Type.Union([Type.Literal("read"), Type.Literal("show"), Type.Literal("list"), Type.Literal("comment")]),
-      id: Type.Optional(Type.String()),
-      author: Type.Optional(Type.String()),
-      content: Type.Optional(Type.String()),
-      search: Type.Optional(Type.String()),
-    }),
-    execute: async (_toolCallId, input, _signal, _onUpdate, _context) => toolResult(() => ticketTool(input)),
-  };
+  const ticket = createPaTicketTool();
   return [
     ticket,
     {
@@ -241,20 +231,6 @@ export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: str
   if (diagnostic) auditPiValueFromEnvironment(env, "extension-diagnostic", diagnostic);
 }
 
-function ticketTool(input: Record<string, unknown>): unknown {
-  const store = new TicketStore();
-  const action = ticketActionInput(input);
-  if (action === "read" || action === "show") return store.get(stringInput(input, "id")) ?? { error: "Ticket not found" };
-  if (action === "list") return store.list({ search: typeof input.search === "string" ? input.search : undefined });
-  return store.comment(stringInput(input, "id"), stringInput(input, "author"), stringInput(input, "content"));
-}
-
-function ticketActionInput(input: Record<string, unknown>): PiTicketAction {
-  const action = stringInput(input, "action");
-  if (action === "read" || action === "show" || action === "list" || action === "comment") return action;
-  throw new Error(`Unsupported ticket action "${action}". Accepted actions: read, show, list, comment.`);
-}
-
 function registryTool(input: Record<string, unknown>): unknown {
   const action = stringInput(input, "action");
   if (action === "show") { const id = stringInput(input, "id"); return { status: queryDeploymentStatus(id), events: getDeploymentEvents(id) }; }
@@ -270,29 +246,5 @@ function trackedRegistryResult(lifecycle: PiSessionLifecycle | undefined, read: 
   return lifecycle ? lifecycle.trackRegistryAccess(() => toolResult(read)) : Promise.resolve(toolResult(read));
 }
 
-export function boundJson(value: unknown): string {
-  const json = JSON.stringify(value, null, 2);
-  const lines = json.split("\n");
-  if (Buffer.byteLength(json, "utf8") <= MAX_TOOL_BYTES && lines.length <= MAX_TOOL_LINES) return json;
-  const candidate = lines.slice(0, MAX_TOOL_LINES).join("\n");
-  const notice = "Inspect the PA registry, ticket, or deployment artifact for the complete result.";
-  let low = 0;
-  let high = candidate.length;
-  let result = JSON.stringify({ truncated: true, preview: "", notice });
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const end = middle > 0 && isHighSurrogate(candidate.charCodeAt(middle - 1)) ? middle - 1 : middle;
-    const encoded = JSON.stringify({ truncated: true, preview: candidate.slice(0, end), notice });
-    if (Buffer.byteLength(encoded, "utf8") <= MAX_TOOL_BYTES) {
-      result = encoded;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return result;
-}
-
 function stringInput(input: Record<string, unknown>, key: string): string { const value = input[key]; if (typeof value !== "string" || value.length === 0) throw new Error(`${key} is required.`); return value; }
 function assistantText(value: unknown): string { if (typeof value === "string") return value; if (Array.isArray(value)) return value.map((item) => item && typeof item === "object" && "text" in item && typeof item.text === "string" ? item.text : "").filter(Boolean).join(" "); return ""; }
-function isHighSurrogate(value: number): boolean { return value >= 0xd800 && value <= 0xdbff; }
