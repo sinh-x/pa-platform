@@ -20,6 +20,7 @@ import { interceptToolCall } from "./pi-extension/safety.js";
 import { environmentSecrets } from "./diagnostics.js";
 import { executionAdministration, runExecutionAdministration, type ExecutionAdministration, type ExecutionAdministrationIdentity } from "./native-execution-administration.js";
 import { ProjectCommandContract } from "./project-command-contract.js";
+import { readPiForegroundCompletion } from "./terminal-status.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -280,7 +281,7 @@ export class NativeExecutionSession {
         this.assertCaller({ cwd: process.cwd() }); if (!equal(actor, this.actor)) throw workflowError();
         if (command !== "status" && !(command === "initialize" && exists) && (typeof command === "string" || !["finish", "settle"].includes(command.action))) this.#newWork();
         if (typeof command !== "string" && ["finish", "settle"].includes(command.action)) this.#authenticateSourceCustody();
-        if (typeof command !== "string" && command.action === "plan") {
+        if (typeof command !== "string" && (command.action === "plan" || command.action === "advance")) {
           if (command.plan.checks.some((name) => !this.#checkText(name)) || new Set(command.plan.checks.map((name) => this.#checkText(name))).size !== command.plan.checks.length)
             throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
           if (this.#commands && JSON.stringify(command.plan.checks.map((name) => this.#checkText(name))) !== JSON.stringify(this.#commands.checks.map((check) => check.command))) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
@@ -330,7 +331,8 @@ export class NativeExecutionSession {
       assertToolCall: (call, _context, current) => this.#assertCall(call, current),
       resolveCheck: (call, current) => current.plan?.checks.find((name) => this.#checkText(name) === call.input.command) ?? null,
       prepareOperation: (call, _context, current, operationId) => this.prepare(call, current, operationId),
-      observe: (kind) => this.observe(kind),
+      observe: (kind, rationale) => this.observe(kind, rationale),
+      report: () => this.localReport(),
       resolveToolResult: (event, current) => this.result(event, current),
       resolveHolder: (source) => { const row = this.evidence.read(source, "holder") as { actor: ExecutionHolder }; if (!equal(row.actor, this.actor)) throw workflowError(); return this.actor; },
       resolveInventory: (source) => this.inventory(source),
@@ -445,7 +447,7 @@ export class NativeExecutionSession {
     for (let sequence = 1; sequence <= state.sequence; sequence += 1) {
       const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
       const command = event.command;
-      if (["plan", "candidate", "attempt"].includes(command.action)) passed = [];
+      if (["plan", "advance", "candidate", "attempt"].includes(command.action)) passed = [];
       if (command.action !== "finish") continue;
       const result = this.evidence.read(command.evidence, "tool-result") as NativeToolResult;
       const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
@@ -532,7 +534,9 @@ export class NativeExecutionSession {
     const link = workflowDigest(JSON.stringify(["native-result-link/v1", this.service.executionId, operationId]));
     withPreparedWorkflowLocks(this.locks, (scope) => this.evidence.store.publish(scope, `${link}.intent.json`, { schemaVersion: "native-result-link/v1", intent: start.source, result: proof }));
     this.#resultLinks.set(operationId, proof);
-    if (error) throw workflowError(); return result as T;
+    if (error) throw process && process.groupSettled && exitCode !== 0 && start.state.operation?.check
+      ? executionFailure("EXECUTION_PRODUCT_CHECK_FAILED") : workflowError();
+    return result as T;
   }
   #activeProcess: NativeProcessResult | null = null;
   #unprovenProcess: SourceVersion | null = null;
@@ -644,27 +648,89 @@ export class NativeExecutionSession {
     this.assertCaller({ cwd: process.cwd() });
     return Object.freeze({ state, snapshot, checks: Object.freeze(checks), operations: Object.freeze(operations), scopeProven, diff, omissions: Object.freeze(omissions), pendingResult });
   }
+  localReport(): Readonly<Record<string, unknown>> {
+    const facts = this.reportFacts();
+    const staged = readPiForegroundCompletion(getDeployPaths(this.actor.deploymentId).deployDir);
+    const failed = facts.checks.filter((check) => check.exitCode !== 0);
+    const lines = [`# Local phase ${facts.state.plan?.phaseId ?? "unplanned"}`, `Scope: ${facts.state.plan?.scope ?? "no source plan"}`,
+      `Current HEAD: ${facts.snapshot.head}`, `Work: ${facts.state.operation ? "in-flight/unknown" : facts.state.originalFailure ? "blocked by unresolved check failure" : "settled local operations; independent acceptance not claimed"}`,
+      `Process: live. Completion: ${staged ? `staged ${staged.status}` : "not staged"}. Terminal settlement: pending normal process exit.`,
+      `No-progress: ${facts.state.bounds.consecutiveNoProgress}/3. Deadline: ${facts.state.bounds.deadlineAt}.`,
+      `Original historical failure: ${failed[0] ? `${failed[0].command}; exit ${failed[0].exitCode}; ${failed[0].output?.ref ?? "output unknown"}` : "none recorded"}.`,
+      "", "## Actual checks (historical candidate and output retained)",
+      ...facts.checks.map((check) => `- ${check.command}: ${check.state}, exit ${check.exitCode ?? "unknown"}, candidate ${check.candidateSha}, output ${check.output?.ref ?? "unknown"}`),
+      "", `Repair evidence: ${new Set(facts.state.remedyDigests).size} distinct native content changes; diagnosis evidence: ${new Set(facts.state.diagnosticDigests).size} distinct retained observations.`,
+      `First unproven action: ${facts.state.operation ? "settle the exact started native operation" : facts.state.originalFailure ? "diagnose/repair and pass every named affected check" : "next scoped phase or separately owned independent acceptance"}.`,
+      "Remaining: independent review, CI, human UAT and live adoption are separate; none is inferred from this report.", ...facts.omissions];
+    const markdown = this.publicText(lines.join("\n"));
+    const source = this.evidence.publish("local-report", { executionId: this.service.executionId, phaseId: facts.state.plan?.phaseId ?? null,
+      candidateSha: facts.snapshot.head, checks: facts.checks, originalFailures: failed, operations: facts.operations, markdown,
+      processState: "live", completionState: staged?.status ?? "not-staged", terminalSettlement: false });
+    const maximum = 16 * 1024;
+    const text = Buffer.byteLength(markdown) <= maximum ? markdown : Buffer.from(markdown).subarray(0, maximum).toString("utf8") + "\n[Reading view truncated; full native report retained at the returned source.]";
+    return Object.freeze({ source, markdown: text, processState: "live", completionState: staged?.status ?? "not-staged", terminalSettlement: false });
+  }
   publicText(value: string): string {
     const owner = observeReadonlyRepositoryAuthority(this.#physical.gitDir).owner;
     const slot = observeReadonlyRepositoryTicketSlot(this.contract.repoRoot, this.contract.ticket).slot;
     return nativePublicText(value, environmentSecrets(process.env, [owner?.ownershipToken ?? "", slot.slotToken]));
   }
-  observe(kind: string): SourceVersion {
+  #phaseFacts(state: ExecutionState) {
+    if (!this.#ordinary || !state.plan || state.custody.state !== "idle" || state.operation || state.originalFailure || state.recoveryPending) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
+    const snapshot = this.#assertKnown(state);
+    if (snapshot.git.dirty || snapshot.git.head === this.contract.initialHeadSha) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
+    for (let sequence = state.sequence; sequence > 0; sequence--) {
+      const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
+      if (["plan", "advance"].includes(event.command.action)) break;
+      if (event.command.action !== "finish") continue;
+      const result = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
+      const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
+      if (!intent.command.startsWith("git commit -m ")) continue;
+      if (result.exitCode !== 0 || !result.scopeValid || !result.process?.groupSettled || !equal(result.after, snapshot)
+        || this.#ordinaryPassedChecks({ ...state, sequence: sequence - 1 }).length !== state.plan.checks.length) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
+      return { executionId: this.service.executionId, sequence: state.sequence, phaseId: state.plan.phaseId, candidateSha: state.candidateSha,
+        commit: event.command.evidence, snapshot: snapshot.git };
+    }
+    throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
+  }
+  #recoveryFacts(state: ExecutionState) {
+    if (!state.originalFailure || state.custody.state !== "idle") throw workflowError();
+    let failure: ExecutionFailure | null = null;
+    let diagnostic: unknown = null, remedy: unknown = null;
+    for (let sequence = state.sequence; sequence > 0; sequence--) {
+      const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
+      if (event.command.action === "attempt") break;
+      if (event.command.action !== "finish") continue;
+      const result = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
+      const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
+      if (!failure && event.command.failure?.check === state.originalFailure.check) {
+        failure = event.command.failure;
+        if (failure.candidateSha !== state.candidateSha || failure.command !== state.originalFailure.command) throw workflowError();
+        // Content identity excludes process IDs, time, result nonce and prose.
+        // Identical failed output cannot become novel by relabelling/retry.
+        diagnostic = { executionId: this.service.executionId, originalFailure: state.originalFailure.output, command: failure.command, exitCode: failure.exitCode,
+          stdoutSha256: result.process?.stdout.sha256 ?? null, stderrSha256: result.process?.stderr.sha256 ?? result.sdkError?.sha256 ?? null };
+      }
+      if (equal(event.command.evidence, state.originalFailure.output)) break;
+      if (!remedy && result.exitCode === 0 && result.scopeValid && ["write", "edit"].includes(intent.toolName) && !equal(intent.before.files, result.after.files)) {
+        remedy = { executionId: this.service.executionId, originalFailure: state.originalFailure.output, before: intent.before.files, after: result.after.files };
+      }
+    }
+    if (!failure) throw workflowError();
+    return { failure, diagnostic, remedy };
+  }
+  observe(kind: string, rationale?: string): SourceVersion {
     const state = this.service.status(this.actor);
     if (kind === "last-result" && state.operation) return this.#resultSource(state.operation.id);
     const snapshot = this.#assertKnown(state); this.#soleOwner();
+    if (kind === "phase") return this.evidence.publish("phase", this.#phaseFacts(state));
     if (kind === "recovery") {
-      if (!state.originalFailure || state.custody.state !== "idle") throw workflowError();
-      for (let sequence = state.sequence; sequence > 0; sequence -= 1) {
-        const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
-        if (event.command.action === "attempt") break;
-        if (event.command.action === "finish" && event.command.failure && event.command.failure.check === state.originalFailure.check) {
-          const failure = event.command.failure;
-          if (failure.candidateSha !== state.candidateSha || failure.command !== state.originalFailure.command) throw workflowError();
-          return this.evidence.publish("recovery", { executionId: this.service.executionId, recovery: { originalFailure: state.originalFailure.output, diagnostic: null, remedy: null, rationale: null, recheck: failure } satisfies ExecutionRecovery });
-        }
-      }
-      throw workflowError();
+      const facts = this.#recoveryFacts(state);
+      if (rationale !== undefined && (typeof rationale !== "string" || !rationale.trim() || rationale.length > 4096)) throw workflowError();
+      return this.evidence.publish("recovery", { executionId: this.service.executionId, recovery: { originalFailure: state.originalFailure!.output,
+        diagnostic: rationale && facts.diagnostic ? this.evidence.publish("recovery-diagnostic", facts.diagnostic) : null,
+        remedy: rationale && facts.remedy ? this.evidence.publish("recovery-remedy", facts.remedy) : null,
+        rationale: rationale ?? null, recheck: facts.failure } satisfies ExecutionRecovery });
     }
     if (kind === "holder") return this.evidence.publish("holder", { actor: this.actor, snapshot });
     if (kind === "inventory") return this.evidence.publish("inventory", { actor: this.actor, snapshot, paths: names(snapshot.git).map((path) => { if (!state.plan?.paths.includes(path)) throw workflowError(); return { path, classification: "ticket-produced" }; }) });
@@ -689,19 +755,17 @@ export class NativeExecutionSession {
     }
     if (purpose === "select") { const row = this.evidence.read(source, "holder") as { actor: ExecutionHolder; snapshot: NativeScopeSnapshot }; if (!equal(row.actor, this.actor) || !equal(row.snapshot, this.#assertKnown(state))) throw workflowError(); return; }
     if (purpose === "settle") { const row = this.evidence.read(source, "inventory") as { snapshot: NativeScopeSnapshot }; if (!equal(row.snapshot, this.#assertKnown(state))) throw workflowError(); return; }
+    if (purpose === "advance") {
+      if (command.action !== "advance" || !equal(source, command.evidence) || !equal(this.evidence.read(source, "phase"), this.#phaseFacts(state))) throw workflowError(); return;
+    }
     if (purpose === "attempt") {
-      if (command.action !== "attempt" || !state.originalFailure || command.recovery.diagnostic !== null || command.recovery.remedy !== null || command.recovery.rationale !== null
-        || !equal(command.recovery.originalFailure, state.originalFailure.output)) throw workflowError();
-      // No invented semantic novelty: only a fresh native failed recheck opens
-      // a bounded retry. These attempts increment, never reset, no-progress.
-      let matched = false;
-      for (let sequence = state.sequence; sequence > 0; sequence -= 1) {
-        const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
-        if (event.command.action === "attempt") break;
-        if (event.command.action === "finish" && equal(event.command.failure, command.recovery.recheck)) { matched = true; break; }
-      }
-      if (!matched || ![state.originalFailure.output.sha256, command.recovery.recheck.output.sha256].includes(source.sha256)
-        || command.recovery.recheck.command !== state.originalFailure.command) throw workflowError(); return;
+      if (command.action !== "attempt" || !state.originalFailure || !equal(command.recovery.originalFailure, state.originalFailure.output)) throw workflowError();
+      const facts = this.#recoveryFacts(state), recovery = command.recovery;
+      if (!equal(facts.failure, recovery.recheck)) throw workflowError();
+      if (recovery.rationale !== null && (!recovery.rationale.trim() || recovery.rationale.length > 4096)) throw workflowError();
+      if (recovery.diagnostic && (!recovery.rationale || !equal(this.evidence.read(recovery.diagnostic, "recovery-diagnostic"), facts.diagnostic))) throw workflowError();
+      if (recovery.remedy && (!recovery.rationale || !facts.remedy || !equal(this.evidence.read(recovery.remedy, "recovery-remedy"), facts.remedy))) throw workflowError();
+      if (![recovery.originalFailure, recovery.recheck.output, recovery.diagnostic, recovery.remedy].some((item) => item && equal(item, source))) throw workflowError(); return;
     }
     if (purpose === "resolve") {
       if (command.action !== "resolve" || !state.originalFailure) throw workflowError();

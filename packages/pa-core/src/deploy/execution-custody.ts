@@ -1,6 +1,6 @@
 import { parseRepositoryGitStatus, repositoryGitSnapshotDigest, type ProcessFingerprint, type RepositoryGitSnapshot } from "./repository-admission.js";
 import { MAX_REPOSITORY_TICKET_SLOTS } from "./ticket-concurrency.js";
-import { parsePreparedReceipt, parseSourceVersion, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, workflowError, workflowObject, workflowPath, workflowSha, workflowSynchronous, workflowText, workflowTimestamp, type PreparedLockOwners, type PreparedLockScope, type PreparedReceipt, type SourceVersion } from "./prepared-workflow.js";
+import { parsePreparedReceipt, parseSourceVersion, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, executionFailure, workflowError, workflowObject, workflowPath, workflowSha, workflowSynchronous, workflowText, workflowTimestamp, type PreparedLockOwners, type PreparedLockScope, type PreparedReceipt, type SourceVersion } from "./prepared-workflow.js";
 
 /** Optional execution service; existing repository admission remains the lock/authority owner. */
 export const EXECUTION_CUSTODY_VERSION = "execution-custody/v1";
@@ -229,6 +229,7 @@ export interface ExecutionOperation {
 }
 export type ExecutionCommand =
   | { readonly action: "plan"; readonly plan: PhaseExecutionPlan }
+  | { readonly action: "advance"; readonly plan: PhaseExecutionPlan; readonly evidence: SourceVersion }
   | { readonly action: "select"; readonly executor: "orchestrator-direct" | "implement-child" | "review-reserved"; readonly holder: ExecutionHolder; readonly handover: SourceVersion }
   | { readonly action: "begin"; readonly operation: ExecutionOperation }
   | { readonly action: "finish"; readonly operationId: string; readonly evidence: SourceVersion; readonly failure: ExecutionFailure | null; readonly candidateSha?: string }
@@ -341,6 +342,7 @@ function parseCommand(value: unknown): ExecutionCommand {
   const action = (value as { action: unknown }).action;
   switch (action) {
     case "plan": { const row = workflowObject(value, ["action", "plan"]); return { action, plan: parseExecutionPlan(row.plan) }; }
+    case "advance": { const row = workflowObject(value, ["action", "plan", "evidence"]); return { action, plan: parseExecutionPlan(row.plan), evidence: parseSourceVersion(row.evidence) }; }
     case "select": {
       const row = workflowObject(value, ["action", "executor", "holder", "handover"]);
       if (row.executor !== "orchestrator-direct" && row.executor !== "implement-child" && row.executor !== "review-reserved") throw workflowError();
@@ -367,6 +369,7 @@ function parseCommand(value: unknown): ExecutionCommand {
 function sources(command: ExecutionCommand): readonly SourceVersion[] {
   switch (command.action) {
     case "plan": return command.plan.prerequisites;
+    case "advance": return [command.evidence, ...command.plan.prerequisites];
     case "select": return [command.handover];
     case "begin": return command.operation.intent ? [command.operation.intent] : [];
     case "finish": return [command.evidence, ...(command.failure ? [command.failure.output] : [])];
@@ -398,9 +401,18 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
       owner(state, actor); idle(); runnable(state, now);
       // Replanning cannot remove an unresolved check or launder it into a new phase.
       if (state.originalFailure && (!command.plan.checks.includes(state.originalFailure.check) || command.plan.phaseId !== state.plan?.phaseId)) throw workflowError();
-      // Phase transitions need the report/acceptance owner, not a plan edit.
+      // A new phase uses the separately validated advance command, never a plan edit.
       if (state.plan && command.plan.phaseId !== state.plan.phaseId) throw workflowError();
       next = { ...next, plan: command.plan, passedChecks: {}, actionPasses: {}, acceptance: {} }; break;
+    case "advance":
+      owner(state, actor); idle(); runnable(state, now);
+      if (!state.plan || state.originalFailure || state.recoveryPending || state.bounds.unresolvedFailureRef
+        || command.plan.phaseId === state.plan.phaseId || state.usedOperationIds.includes(`phase:${command.plan.phaseId}`)) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
+      if (!same(command.plan.paths, state.plan.paths) || !same(command.plan.checks, state.plan.checks)) throw executionFailure("EXECUTION_SCOPE_ESCALATION");
+      // Native evidence proves settled current-content checks and local commit.
+      // This transition preserves every bound/failure event and actual holder;
+      // it is not independent acceptance or a machine-certified rich report.
+      next = { ...next, plan: command.plan, usedOperationIds: [...state.usedOperationIds, `phase:${state.plan.phaseId}`], passedChecks: {}, actionPasses: {}, acceptance: {} }; break;
     case "select": {
       owner(state, actor); idle(); runnable(state, now);
       if (!state.plan || state.recoveryPending || (command.executor === "orchestrator-direct" && !same(command.holder, state.binding.owner))
@@ -543,7 +555,7 @@ export class ExecutionCustodyService {
       if (state.sequence >= 256) throw workflowError();
       // Apply the stricter named-check contract to new plans, not historical
       // journal replay: old valid records remain readable without migration.
-      if (command.action === "plan" && state.plan && !same(command.plan.checks, state.plan.checks)) throw workflowError();
+      if ((command.action === "plan" || command.action === "advance") && state.plan && !same(command.plan.checks, state.plan.checks)) throw workflowError();
       const now = workflowTimestamp(this.host.now()); const next = transition(state, actor, command, now);
       for (const source of sources(command)) nativeCheck(() => this.host.verifyEvidence(source, command.action, state, command));
       if (command.action === "select") nativeCheck(() => this.host.assertLive(command.holder));

@@ -122,6 +122,24 @@ const EXECUTION_DIAGNOSTICS = Object.freeze({
     correction: "custody owner: preserve barriers and settle through the supported owner procedure",
     resumeAction: "resume dependent work only after supported settlement and sole-holder proof",
   }),
+  EXECUTION_PHASE_PREREQUISITE: Object.freeze({
+    stage: "phase-continuation",
+    reason: "settled same-holder work, resolved failures, or current-content checks and local commit are not yet proven",
+    correction: "current task/runtime owner: preserve the original failures and barriers; complete the named checks and native commit settlement without resetting bounds",
+    resumeAction: "observe the completed phase and advance only after native prerequisites agree; no rich presentation or fresh routine permission is required",
+  }),
+  EXECUTION_SCOPE_ESCALATION: Object.freeze({
+    stage: "task-scope",
+    reason: "the requested next phase changes the established source paths or required command contract",
+    correction: "task-scope owner: reconcile a materially changed task separately; do not relabel a phase or drop checks to acquire authority",
+    resumeAction: "continue unchanged in-scope work, or use the supported separate scope decision before expanding effects",
+  }),
+  EXECUTION_PRODUCT_CHECK_FAILED: Object.freeze({
+    stage: "project-check-result",
+    reason: "an actual settled project process returned a nonzero result; original exit and output evidence are retained",
+    correction: "project developer: inspect the native local report and original check evidence, diagnose and perform bounded same-scope repair; this is not an infrastructure permission denial",
+    resumeAction: "rerun all named affected checks and resolve the original failure before commit or phase continuation",
+  }),
   EXECUTION_PROJECT_CONTRACT_INVALID: Object.freeze({
     stage: "project-command-admission",
     reason: "project check is unknown, changed, insecure or outside the exact registered command contract; dispatch was denied",
