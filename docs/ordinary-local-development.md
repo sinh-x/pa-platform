@@ -22,22 +22,34 @@ form, or the comment ID). The decision producer's complete comment is exactly:
 Approve TICKET REPO_KEY PHYSICAL_ROOT FEATURE_BRANCH exact base FULL_SHA; source requirements:agent-teams/requirements/artifacts/FILE.md.
 ```
 
-`from exact base` is also accepted. This finite initial-task clause cannot be
-inferred from a discussion that merely mentions or rejects the tuple. The
-native reader requires operator authorship; agents cannot supply this authority
-through tool parameters. PAPC-068 still needs to implement/review its producer
-and guidance. This source change does not require or solicit new decisions on
-unchanged phase, check, repair or commit steps.
+`from exact base` is also accepted. Existing richer requirements-producer
+whole-pair approvals do **not** need replacement decisions: the native reader
+recognizes their finite initial sign-off format, authenticates the exact immutable
+reviewed requirements preview path/raw SHA named in the original operator comment,
+and compares its repo/ticket/branch/handoff/full-base tuple with the promoted task.
+Hash, tuple, source/preview alias or explicit rejection mismatches deny. Mere
+keyword mentions in discussion cannot authorize a baseline. Operator authorship
+is required; tool parameters cannot manufacture it. PAPC-068's existing real
+signed source was observed read-only resolving the correct original base, without
+any source/checkout/approval mutation. Routine phases/checks/repairs/commits need
+no additional human decision.
 
 For planned branches, a divergent configured integration tip stops before
 permit/checkout acquisition. For materialized branches, compare immutable
 historical base instead; later integration advances do not rewrite history.
 Immediately before branch selection, under the existing repository transaction,
 reread the source/decision and configured evidence and reject digest drift.
-Dirty/unknown checkout work is preserved before branch creation. Independently
-created branches cannot be adopted. Optional preparation retains its separate
-contract and exactly-once reconciliation; legacy split-mode contracts are not
-silently upgraded. No fallback launch follows an ordinary denial.
+Dirty/unknown checkout work and existing repository holders are rejected before
+branch creation. The live ordinary launcher records its exact materialization
+intent in the **existing capacity slot**, fsynced under the existing repository
+transaction. Git compare-and-create (`update-ref` with an absent expected ref)
+records a native operation marker in the branch reflog before checkout. The same
+live authenticated owner can reconcile interruption after ref creation or before
+ticket publication, checking the retained intent/marker/exact base and creating
+the branch only once. Independently created branches, changed intent, unknown
+reflog proof and different/dead holders are not adopted/reset/reclaimed. No new
+ledger or retrospective receipt is introduced. Optional preparation retains its
+separate contract/reconciliation; legacy split-mode contracts are not upgraded. No fallback launch follows an ordinary denial.
 
 Public `ORDINARY_BASELINE_*` stops identify the action, evidence owner and
 supported reconciliation without echoing source bodies or authority tokens.
@@ -51,7 +63,7 @@ sha256: <exact digest> }` in its operator-managed configuration. The manifest is
 `project-command-contract/v1`, with exactly `effects: [project-read,
 isolated-temp-write]` and an ordered `checks` array. Each check names `id`, an
 exact root-owned executable, literal `argv`, literal application `environment`,
-content-hashed script/dependency `prerequisites`, `timeoutSeconds` (max 1800)
+explicit file-level `readPaths`, content-hashed script/dependency `prerequisites`, `timeoutSeconds` (max 1800)
 and `maximumOutputBytes` (max 16 MiB). No model argument selects or replaces this
 contract. Manifest/registration/script drift denies dispatch; an existing
 execution descriptor cannot silently adopt a different command digest.
@@ -63,9 +75,13 @@ additional environment/CWD inputs and shell suffixes are denied. Explicit progra
 argv, CWD and environment evidence accompanies actual stdout/stderr/exit records.
 
 This v1 Linux/Nix profile requires trusted installed Bubblewrap and working
-unprivileged namespace isolation. It exposes `/nix/store` and the exact linked
-project read-only, a fresh `/tmp` and HOME, new network/PID/IPC/user namespaces,
-no ambient credentials/authority/environment and no host account/service paths.
+unprivileged namespace isolation. It exposes `/nix/store` and only explicitly
+listed regular project inputs plus pinned script prerequisites read-only at the
+exact linked-project CWD, not the entire checkout. Other project files, Git
+metadata, ambient credentials/authority/environment and host account/service paths
+are absent. Inputs are bounded to 1 MiB each and validated against the existing
+sensitive filename/path/content policy before dispatch. A fresh `/tmp` and HOME
+and new network/PID/IPC/user namespaces isolate temporary writes and networking.
 Project writes and external network effects cannot inherit the check grant.
 Builds may write temporary artifacts and emit their results to captured output;
 project-tree build outputs, external services, other host layouts and unrestricted
@@ -119,11 +135,15 @@ history. This is developer/source evidence, not full independent AC1–AC8 UAT.
 Still required before PAP-268 completion:
 
 - Complete cross-scenario AC1–AC8 independent acceptance and human UAT.
-- Interrupted ordinary materialization reconciliation (current behavior safely
-  preserves a created-but-unpublished branch and refuses automatic adoption).
-- PAPC-068 reviewed producer/instructions and exact selected config pin.
+- Paired independent acceptance of PAPC-068 instructions and selected source pin
+  (developer pairing now uses the config-owned direct-only/scoped-local checker
+  and actual generated primers, not retired implement-borrower requirements).
 - Full nine-command independent matrix, CI and human UAT, separately attributed.
 
-Current config pin is `42aa9267a0618cdb7a92b31dd3418df137326c81`; no PAPC-068
-compatibility or installed qualification is claimed. No config source mutation,
-installation, live adoption, product-checkout repair, push, merge or release.
+Selected developer config pin is `b6f409187eed204ba9969982c937f177f282db3c`
+(PAPC-068's checked local source commit). The original runtime pin was
+`f51d1edc27858ae14ac5a21aa37304c1a6c6dd10`; `42aa9267a0618cdb7a92b31dd3418df137326c81`
+was the companion's implementation base, not that original runtime pin. Source
+pair validation is separate from independent/installed qualification. No config
+source mutation, installation, live adoption, product-checkout repair, push,
+merge or release.

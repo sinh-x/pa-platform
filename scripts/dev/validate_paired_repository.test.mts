@@ -157,6 +157,61 @@ function createFixture(): { root: string; sha: string } {
   return { root, sha: git(root, "rev-parse", "HEAD") };
 }
 
+function createDirectFixture() {
+  const fixture = createFixture(), { root } = fixture;
+  mkdirSync(join(root, "scripts"));
+  // Synthetic producer module proves profile selection/response checks only;
+  // the real selected PAPC producer has its own source/mutation test suite.
+  const checker = `import { readFileSync } from 'node:fs';\nexport const DIRECT_ONLY_DECLARATION = {version:4,candidatePolicy:'orchestrator-direct-only'};\nexport function checkScopedLocalText(source) { if (!source.includes('scoped ordinary fixture')) throw new Error('scoped instruction control missing'); }\nexport function checkDirectOnlyWorkflow(root) { checkScopedLocalText(readFileSync(root+'/teams/builder/modes/orchestrator.md','utf8')); return {ok:true,evidenceClass:'current-structural-and-synthetic-not-runtime-proof',scopedLocal:{runtimeOwner:'PAP-268',presentation:'Markdown-sufficient-rich-view-optional',acceptance:'paired-proof-required',sources:[{path:'fixture'}]}}; }\n`;
+  writeFileSync(join(root, "scripts/check-prepared-autonomy-workflow.mjs"), checker);
+  writeFileSync(join(root, "teams/builder/modes/orchestrator.md"), "# scoped ordinary fixture\nOne authenticated writer, explicit native command contract, Markdown only; no retired implement fallback.\n");
+  for (const [name, ids] of [["builder", ["orchestrator", "worker", "housekeeping", "data-analysis"]], ["requirements", ["analyze", "analyze-auto", "spike", "review", "review-auto", "focus"]]] as const) {
+    const modes = ids.map((id) => `  - id: ${id}\n    label: ${id}\n    provider: openai\n    model: openai/gpt-test\n${id === "orchestrator" ? "    objective: teams/builder/modes/orchestrator.md\n" : ["analyze", "analyze-auto", "spike"].includes(id) ? `    objective: skills/requirements/${id}-objective.md\n` : ""}`).join("");
+    writeFileSync(join(root, `teams/${name}.yaml`), `name: ${name}\ndescription: Fixture\nobjective: ${name === "builder" ? "teams/builder/modes/orchestrator.md" : "Read-only requirements"}\nagents: []\ndefault_mode: ${ids[0]}\ndeploy_modes:\n${modes}`);
+  }
+  git(root, "add", "."); git(root, "commit", "-qm", "direct fixture");
+  return { root, sha: git(root, "rev-parse", "HEAD"), checker };
+}
+
+test("PAP-268 paired direct-only profile validates source producer without restoring retired borrower policy", () => {
+  const f = createDirectFixture();
+  try {
+    const result = validatePairedRepository({ configRoot: f.root, expectedSha: f.sha });
+    assert.ok(result.includes("SOURCE_PROFILE=ordinary-local/v1")); assert.ok(result.includes("MODES_VALID=52/52"));
+    assert.ok(result.includes("BUILDER_EXCLUSIVE=4/4")); assert.ok(result.includes("REQUIREMENTS_READ_ONLY=6/6"));
+    assert.ok(result.includes("DIRTY_DIRECT_BORROWER_EXCEPTION=retired-no-fallback"));
+    assert.ok(!result.some((line) => line.includes("INSTALLED") || line.includes("UAT_PASSED")));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("PAP-268 paired producer cannot reuse a cached module from a different selected SHA", () => {
+  const f = createDirectFixture();
+  try {
+    assert.doesNotThrow(() => validatePairedRepository({ configRoot: f.root, expectedSha: f.sha }));
+    writeFileSync(join(f.root, "scripts/check-prepared-autonomy-workflow.mjs"), f.checker.replace("version:4", "version:3"));
+    git(f.root, "add", "."); git(f.root, "commit", "-qm", "changed selected producer");
+    assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: git(f.root, "rev-parse", "HEAD") }), /producer failed/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+for (const variant of ["producer-version", "producer-failed", "presentation", "empty-sources", "instruction-missing", "inventory"] as const) {
+  test(`PAP-268 paired direct-only ${variant} rejects without legacy fallback`, () => {
+    const f = createDirectFixture();
+    try {
+      let checker = f.checker;
+      if (variant === "producer-version") checker = checker.replace("version:4", "version:3");
+      if (variant === "producer-failed") checker = checker.replace("ok:true", "ok:false");
+      if (variant === "presentation") checker = checker.replace("Markdown-sufficient-rich-view-optional", "HTML-required");
+      if (variant === "empty-sources") checker = checker.replace("sources:[{path:'fixture'}]", "sources:[]");
+      writeFileSync(join(f.root, "scripts/check-prepared-autonomy-workflow.mjs"), checker);
+      if (variant === "instruction-missing") writeFileSync(join(f.root, "teams/builder/modes/orchestrator.md"), "unknown instruction\n");
+      if (variant === "inventory") { const path = join(f.root, "teams/builder.yaml"); writeFileSync(path, readFileSync(path, "utf8").replace(/  - id: worker\n[\s\S]*?(?=  - id:)/, "")); }
+      git(f.root, "add", "."); git(f.root, "commit", "--allow-empty", "-qm", "mutation");
+      assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: git(f.root, "rev-parse", "HEAD") }));
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+}
+
 test("paired repository gate accepts the exact clean 10-team/59-mode checkout", () => {
   const fixture = createFixture();
   try {

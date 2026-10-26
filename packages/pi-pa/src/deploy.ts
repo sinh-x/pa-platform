@@ -963,7 +963,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
       if (builderMode === "orchestrator" && !preparedBuilderAdmission) dependencies.observeOperation?.("branch");
       const branchEvidence = preparedBuilderAdmission ? preparedBuilderAdmission.branch : builderMode === "orchestrator"
-        ? materializeTicketBranch({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId, ...(intendedTaskBaseline ? { intendedTaskBaseline } : {}) })
+        ? materializeTicketBranch({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId, ...(intendedTaskBaseline ? { intendedTaskBaseline, ordinaryOwner: { ...activeTicketSlot!, deploymentId } } : {}) })
         : parent
           ? authenticateParentTicketBranch(initialRepository.repoKey, selectedRepository.worktreeRoot, ticketId)
           : refreshTicketLinkedBranchHead({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId });

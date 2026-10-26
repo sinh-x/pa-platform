@@ -208,8 +208,13 @@ export async function isolatedDriver(root, share) {
     // terminal-settlement claim: the synthetic custodian is this live process.
     if (malformed) fs.writeFileSync(legacyPath, restoreBytes);
     assert.equal(core.releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: checkout, slot: "implement", ownershipToken: legacy.lease.ownershipToken }).status, "released");
-    const slot = core.observeReadonlyRepositoryTicketSlot(repo, ticket).slot;
-    assert.equal(core.releaseRepositoryTicketSlot(slot).status, "released");
+    // A pre-materialization custody denial can now roll back the allocating
+    // process's own launchless permit before immutable start publication. The
+    // pre-existing live/uncertain repository holder above must remain intact.
+    if (fs.existsSync(core.repositoryTicketSlotPath(repo, ticket))) {
+      const slot = core.observeReadonlyRepositoryTicketSlot(repo, ticket).slot;
+      assert.equal(core.releaseRepositoryTicketSlot(slot).status, "released");
+    }
   }
   let bodyError; let nativeResult;
   const adapter = { ...inert, async spawn(opts) {

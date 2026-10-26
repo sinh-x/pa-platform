@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { materializeTicketBranch, resolveOrdinaryTaskBaseline } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
+import { acquireRepositoryTicketSlot, repositoryTicketSlotPath } from "../deploy/ticket-concurrency.js";
 
 function fixture(run: (f: ReturnType<typeof setup>) => void) {
   const root = mkdtempSync(join(tmpdir(), "pap268-baseline-"));
@@ -86,6 +88,69 @@ test("PAP-268 intent is reauthenticated at materialization and never becomes a c
   assert.throws(() => materializeTicketBranch({ ...f.options, worktreeRoot: f.worktree, intendedTaskBaseline: { ...f.resolve(), baseSha: "a".repeat(40) } }), /ORDINARY_BASELINE_CHANGED/);
   assert.deepEqual(f.inventory(), before);
 }));
+
+test("PAP-268 uncertain checkout custody stops before branch mutation and preserves its evidence", () => fixture((f) => {
+  const gitDir = f.git(["rev-parse", "--absolute-git-dir"], f.worktree);
+  const ownerPath = join(gitDir, "pa-repository-mutation.lease.json");
+  const unknown = "{UNKNOWN-OWNER-SENTINEL"; writeFileSync(ownerPath, unknown, { mode: 0o600 });
+  const before = f.inventory(); assert.throws(f.materialize, /ORDINARY_BASELINE_HOLDER_UNCERTAIN/);
+  assert.deepEqual(f.inventory(), before); assert.equal(readFileSync(ownerPath, "utf8"), unknown);
+}));
+
+for (const interruption of ["after-ref-create", "before-ticket-publication"] as const) {
+  test(`PAP-268 same native owner reconciles ${interruption} exactly once without adopting independent work`, () => fixture((f) => {
+    const acquired = acquireRepositoryTicketSlot({ canonicalRepoKey: "fixture", canonicalRepoRoot: f.repo, ticket: "PAP-1", deploymentId: "d-268abc", deploymentDirectory: join(f.root, "deployment") });
+    assert.equal(acquired.status, "acquired"); if (acquired.status !== "acquired") return;
+    const ordinaryOwner = { ...acquired.slot };
+    let interrupted = false, creations = 0;
+    const originalUpdate = f.store.update.bind(f.store);
+    f.store.update = (...args: Parameters<TicketStore["update"]>) => {
+      if (interruption === "before-ticket-publication" && !interrupted) { interrupted = true; throw new Error("injected publication interruption"); }
+      return originalUpdate(...args);
+    };
+    const runGit = (args: readonly string[], cwd: string) => {
+      const output = execFileSync("git", [...args], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      if (args[0] === "update-ref") { creations++; if (interruption === "after-ref-create" && !interrupted) { interrupted = true; throw new Error("injected return interruption"); } }
+      return output;
+    };
+    const options = { ...f.options, worktreeRoot: f.worktree, intendedTaskBaseline: f.resolve(), ordinaryOwner, runGit };
+    const canonical = f.git(["rev-parse", "HEAD"]);
+    assert.throws(() => materializeTicketBranch(options), /injected|ORDINARY_BASELINE_BRANCH_RESULT_UNCERTAIN/);
+    assert.equal(f.store.get("PAP-1")!.linkedBranches[0]!.state, "planned");
+    assert.equal(f.git(["rev-parse", `refs/heads/${f.branch}`]), f.base);
+    const slotBefore = readFileSync(repositoryTicketSlotPath(f.repo, "PAP-1"));
+    assert.ok(JSON.parse(slotBefore.toString()).materializationIntent);
+    assert.throws(() => materializeTicketBranch({ ...options, ordinaryOwner: { ...ordinaryOwner, slotToken: "not-the-holder" } }), /ORDINARY_BASELINE_OWNER_INTENT_REJECTED/);
+    assert.deepEqual(readFileSync(repositoryTicketSlotPath(f.repo, "PAP-1")), slotBefore);
+    const resumed = materializeTicketBranch(options); assert.equal(resumed.created, false); assert.equal(resumed.baseSha, f.base);
+    assert.equal(creations, 1); assert.equal(f.git(["rev-parse", "HEAD"]), canonical);
+    assert.equal(f.store.get("PAP-1")!.linkedBranches[0]!.state, "materialized");
+    assert.deepEqual(readFileSync(repositoryTicketSlotPath(f.repo, "PAP-1")), slotBefore, "intent/custody is retained, not reset or recreated");
+  }));
+}
+
+for (const style of ["standard-pair", "owner-directed-pair", "bad-hash", "changed-tuple", "rejected-pair", "preview-alias"] as const) {
+  test(`PAP-268 existing reviewed-pair producer ${style} requires no replacement approval`, () => fixture((f) => {
+    const current = f.markdown.replace("> Status:", "> Review Revision: r001\n> Status:");
+    writeFileSync(f.sourcePath, current);
+    const previewPath = "agent-teams/requirements/artifacts/reviews/PAP-1/r001/requirements.md";
+    const previewAbsolute = join(f.ai, previewPath); mkdirSync(join(f.ai, "agent-teams/requirements/artifacts/reviews/PAP-1/r001"), { recursive: true });
+    const preview = current.replace("Approved — plan only", "Draft — UNAPPROVED"); writeFileSync(previewAbsolute, preview);
+    const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+    const source = "requirements:agent-teams/requirements/artifacts/task.md";
+    const decision = style === "owner-directed-pair" ? 'Explicit foreground PA sign-off in d-123abc: I selected "Approve this exact pair" for owner-directed PAP-1 r001.'
+      : "Explicit standalone foreground PA sign-off in d-123abc: I selected Approve exact pair and matrix for PAP-1 r001.";
+    const ticket = structuredClone(f.ticket);
+    ticket.comments[0]!.content = `${decision} Reviewed requirements source: ${previewPath}, raw SHA-256 ${style === "bad-hash" ? "f".repeat(64) : digest(preview)}; reviewed companion: separate. Matrix Source: ${source}. Approved intent: local scope; not UAT or rollout.`;
+    if (style === "changed-tuple") writeFileSync(f.sourcePath, current.replace(f.base, "a".repeat(40)));
+    if (style === "rejected-pair") ticket.comments[0]!.content = "Rejected this pair. " + ticket.comments[0]!.content;
+    if (style === "preview-alias") { const other = join(f.root, "preview.md"); writeFileSync(other, preview); rmSync(previewAbsolute); symlinkSync(other, previewAbsolute); }
+    writeFileSync(f.ticketPath, JSON.stringify(ticket)); const before = f.inventory();
+    if (style === "standard-pair" || style === "owner-directed-pair") assert.equal(f.resolve().baseSha, f.base);
+    else assert.throws(f.resolve, /ORDINARY_BASELINE_/);
+    assert.deepEqual(f.inventory(), before);
+  }));
+}
 
 for (const variant of ["dirty", "independent-branch", "configured-drift"] as const) {
   test(`PAP-268 ${variant} checkout is preserved without branch adoption/reset`, () => fixture((f) => {

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { executionFailure, loadRepoEntry, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, workflowObject, workflowSha, type RepoEntry } from "@pa-platform/pa-core";
+import { executionFailure, findSensitiveMatch, loadRepoEntry, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, workflowObject, workflowSha, type RepoEntry } from "@pa-platform/pa-core";
 
 export interface ProjectCheck {
   readonly id: string;
@@ -9,6 +9,7 @@ export interface ProjectCheck {
   readonly executable: string;
   readonly argv: readonly string[];
   readonly environment: Readonly<Record<string, string>>;
+  readonly readPaths: readonly string[];
   readonly prerequisites: readonly { readonly path: string; readonly sha256: string }[];
   readonly timeoutSeconds: number;
   readonly maximumOutputBytes: number;
@@ -16,7 +17,7 @@ export interface ProjectCheck {
 const invalid = () => executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
 function path(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 4096 || isAbsolute(value) || !/^[A-Za-z0-9_./-]+$/.test(value)
-    || value.startsWith("-") || value.split("/").some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw invalid();
+    || value.startsWith("-") || findSensitiveMatch("filename", basename(value)) || findSensitiveMatch("path", value) || value.split("/").some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw invalid();
   return value;
 }
 function installedExecutable(value: string): string {
@@ -37,7 +38,9 @@ function read(root: string, relative: string): Uint8Array {
   try {
     const absolute = join(root, path(relative)), stat = lstatSync(absolute);
     if (realpathSync(absolute) !== absolute || !stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o022) || (process.getuid && stat.uid !== process.getuid())) throw invalid();
-    return readReviewEvidenceFile(absolute, 1_048_576, "project command provenance");
+    const bytes = readReviewEvidenceFile(absolute, 1_048_576, "project command provenance");
+    if (findSensitiveMatch("content", Buffer.from(bytes).toString("utf8"))) throw invalid();
+    return bytes;
   } catch { throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID"); }
 }
 function count(value: unknown, maximum: number): number {
@@ -64,9 +67,9 @@ export class ProjectCommandContract {
     if (manifest.schemaVersion !== "project-command-contract/v1" || JSON.stringify(manifest.effects) !== JSON.stringify(["project-read", "isolated-temp-write"])) throw invalid();
     if (!Array.isArray(manifest.checks) || !manifest.checks.length || manifest.checks.length > 64) throw invalid();
     this.checks = Object.freeze(manifest.checks.map((item): ProjectCheck => {
-      const row = workflowObject(item, ["id", "executable", "argv", "environment", "prerequisites", "timeoutSeconds", "maximumOutputBytes"]);
+      const row = workflowObject(item, ["id", "executable", "argv", "environment", "readPaths", "prerequisites", "timeoutSeconds", "maximumOutputBytes"]);
       if (typeof row.id !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(row.id) || typeof row.executable !== "string"
-        || !Array.isArray(row.argv) || row.argv.length > 128 || row.argv.some((arg) => typeof arg !== "string" || arg.length > 4096 || /[\u0000-\u001f\u007f]/.test(arg))) throw invalid();
+        || !Array.isArray(row.argv) || row.argv.length > 128 || row.argv.some((arg) => typeof arg !== "string" || arg.length > 4096 || /[\u0000-\u001f\u007f]/.test(arg) || findSensitiveMatch("content", arg))) throw invalid();
       const executable = installedExecutable(row.executable);
       // No ambient credential, runtime authority, PATH/HOME, loader, Git, Node
       // or package-manager injection. These are literal inert application values.
@@ -74,15 +77,19 @@ export class ProjectCommandContract {
       const environment: Record<string, string> = {};
       for (const [key, value] of Object.entries(row.environment)) {
         if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(key) || /^(?:PA_|PI_|GIT_|NODE|NPM|npm|LD_|BASH|ENV$|PATH$|HOME$|SHELL|PYTHON|RUBY|PERL)/.test(key)
-          || typeof value !== "string" || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value)) throw invalid();
+          || /TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH|COOKIE/.test(key)
+          || typeof value !== "string" || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value) || findSensitiveMatch("content", value)) throw invalid();
         environment[key] = value;
       }
+      if (!Array.isArray(row.readPaths) || row.readPaths.length > 128) throw invalid();
+      const readPaths = Object.freeze(row.readPaths.map(path));
+      if (new Set(readPaths).size !== readPaths.length) throw invalid();
       if (!Array.isArray(row.prerequisites) || !row.prerequisites.length || row.prerequisites.length > 128) throw invalid();
       const prerequisites = row.prerequisites.map((value) => { const source = workflowObject(value, ["path", "sha256"]); return Object.freeze({ path: path(source.path), sha256: workflowSha(source.sha256) }); });
       if (new Set(prerequisites.map((source) => source.path)).size !== prerequisites.length) throw invalid();
       const argv = Object.freeze([...row.argv] as string[]);
       return Object.freeze({ id: row.id, command: [basename(executable), ...argv.map(quoted)].join(" "), executable, argv,
-        environment: Object.freeze(environment), prerequisites: Object.freeze(prerequisites), timeoutSeconds: count(row.timeoutSeconds, 1800), maximumOutputBytes: count(row.maximumOutputBytes, 16 * 1024 * 1024) });
+        environment: Object.freeze(environment), readPaths, prerequisites: Object.freeze(prerequisites), timeoutSeconds: count(row.timeoutSeconds, 1800), maximumOutputBytes: count(row.maximumOutputBytes, 16 * 1024 * 1024) });
     }));
     if (new Set(this.checks.map((check) => check.id)).size !== this.checks.length || new Set(this.checks.map((check) => check.command)).size !== this.checks.length) throw invalid();
     this.sha256 = workflowDigest(bytes); this.#bwrap = bubblewrap(); this.assertCurrent();
@@ -100,16 +107,21 @@ export class ProjectCommandContract {
     const repo = loadRepoEntry(this.repoKey);
     if (repo?.path !== this.repoRoot || repo.projectCommands?.manifest !== this.#pin.manifest || repo.projectCommands.sha256 !== this.#pin.sha256
       || workflowDigest(read(this.worktreeRoot, this.#pin.manifest)) !== this.sha256) throw invalid();
-    for (const check of this.checks) for (const source of check.prerequisites) if (workflowDigest(read(this.worktreeRoot, source.path)) !== source.sha256) throw invalid();
+    for (const check of this.checks) {
+      for (const source of check.prerequisites) if (workflowDigest(read(this.worktreeRoot, source.path)) !== source.sha256) throw invalid();
+      for (const input of check.readPaths) read(this.worktreeRoot, input);
+    }
   }
   check(name: string): ProjectCheck | undefined { return this.checks.find((check) => check.id === name || check.command === name); }
-  #sandbox(): string[] {
+  #sandbox(check?: ProjectCheck): string[] {
     return ["--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--ro-bind", "/nix/store", "/nix/store",
-      "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/pa-check-home", "--ro-bind", this.worktreeRoot, this.worktreeRoot, "--chdir", this.worktreeRoot, "--clearenv"];
+      "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/pa-check-home", "--tmpfs", this.worktreeRoot,
+      ...[...new Set(check ? [...check.readPaths, ...check.prerequisites.map((source) => source.path)] : [])].flatMap((input) => ["--ro-bind", join(this.worktreeRoot, input), join(this.worktreeRoot, input)]),
+      "--remount-ro", this.worktreeRoot, "--chdir", this.worktreeRoot, "--clearenv"];
   }
   program(check: ProjectCheck): { executable: string; argv: readonly string[]; environment: Readonly<Record<string, string>> } {
     this.assertCurrent(); if (!this.checks.includes(check)) throw invalid();
     const environment = { CI: "true", LANG: "C.UTF-8", TZ: "UTC", HOME: "/tmp/pa-check-home", PATH: dirname(check.executable), ...check.environment };
-    return { executable: this.#bwrap, argv: [...this.#sandbox(), ...Object.entries(environment).flatMap(([key, value]) => ["--setenv", key, value]), "--", check.executable, ...check.argv], environment };
+    return { executable: this.#bwrap, argv: [...this.#sandbox(check), ...Object.entries(environment).flatMap(([key, value]) => ["--setenv", key, value]), "--", check.executable, ...check.argv], environment };
   }
 }

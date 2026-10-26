@@ -16,7 +16,7 @@ function setup(root: string) {
   mkdirSync(repo); mkdirSync(checkout); mkdirSync(config); process.env.PA_PLATFORM_CONFIG = config;
   const script = "console.log('fixture command')\n"; writeFileSync(join(checkout, "test.cjs"), script);
   const manifest = { schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [
-    { id: "test", executable: realpathSync(process.execPath), argv: ["test.cjs"], environment: { PROJECT_MODE: "test" }, prerequisites: [{ path: "test.cjs", sha256: workflowDigest(script) }], timeoutSeconds: 10, maximumOutputBytes: 1024 },
+    { id: "test", executable: realpathSync(process.execPath), argv: ["test.cjs"], environment: { PROJECT_MODE: "test" }, readPaths: [] as string[], prerequisites: [{ path: "test.cjs", sha256: workflowDigest(script) }], timeoutSeconds: 10, maximumOutputBytes: 1024 },
   ] };
   const save = () => { const bytes = JSON.stringify(manifest); writeFileSync(join(checkout, "checks.json"), bytes);
     writeFileSync(join(config, "config.yaml"), `repos:\n  fixture:\n    path: ${repo}\n    projectCommands:\n      manifest: checks.json\n      sha256: ${workflowDigest(bytes)}\n`); };
@@ -34,11 +34,13 @@ test("PAP-268 versioned project contract resolves exact argv/environment and man
   writeFileSync(join(f.checkout, "test.cjs"), "changed script\n"); assert.throws(() => contract.program(check), /EXECUTION_PROJECT_CONTRACT_INVALID/);
 }));
 
-for (const variant of ["environment", "effect", "path", "duplicate", "timeout", "output", "script-alias", "script-hardlink", "script-permissions", "manifest-drift", "canonical-root", "unavailable-containment"] as const) {
+for (const variant of ["environment", "effect", "path", "duplicate", "timeout", "output", "script-alias", "script-hardlink", "script-permissions", "sensitive-read", "read-escape", "manifest-drift", "canonical-root", "unavailable-containment"] as const) {
   test(`PAP-268 project command ${variant} is rejected before project dispatch`, () => fixture((f) => {
     if (variant === "environment") Object.assign(f.manifest.checks[0]!.environment, { NODE_OPTIONS: "--require /outside" });
     if (variant === "effect") f.manifest.effects.push("external-account");
     if (variant === "path") f.manifest.checks[0]!.prerequisites[0]!.path = "../outside";
+    if (variant === "sensitive-read") f.manifest.checks[0]!.readPaths = [".env"];
+    if (variant === "read-escape") f.manifest.checks[0]!.readPaths = ["../outside"];
     if (variant === "duplicate") f.manifest.checks.push({ ...f.manifest.checks[0]! });
     if (variant === "timeout") f.manifest.checks[0]!.timeoutSeconds = 1801;
     if (variant === "output") f.manifest.checks[0]!.maximumOutputBytes = 0;

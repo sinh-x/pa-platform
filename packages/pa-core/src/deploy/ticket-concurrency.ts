@@ -29,6 +29,19 @@ export interface RepositoryTicketSlot {
   readonly repositoryPermit: 1 | 2 | 3 | 4;
   readonly processFingerprint: ProcessFingerprint;
   readonly acquiredAt: string;
+  /** Native ordinary materializer intent under this same live capacity owner. */
+  readonly materializationIntent?: OrdinaryMaterializationIntent;
+}
+export interface OrdinaryMaterializationIntent {
+  readonly schemaVersion: "ordinary-materialization/v1";
+  readonly baselineSha256: string;
+  readonly worktreeRoot: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly operationId: string;
+}
+export interface RepositoryTicketTransaction {
+  ordinaryIntent(owner: RepositoryTicketSlotHandoff & { deploymentId: string }, input: Omit<OrdinaryMaterializationIntent, "schemaVersion" | "operationId">, existingOnly?: boolean): OrdinaryMaterializationIntent;
 }
 
 export interface RepositoryTicketSlotHandoff {
@@ -378,7 +391,18 @@ function isSlot(value: unknown): value is RepositoryTicketSlot {
     && bounded(row["deploymentDirectory"]) && isAbsolute(row["deploymentDirectory"] as string)
     && (row["repositoryPermit"] === 1 || row["repositoryPermit"] === 2 || row["repositoryPermit"] === 3 || row["repositoryPermit"] === 4)
     && isFingerprint(row["processFingerprint"])
-    && typeof row["acquiredAt"] === "string" && Number.isFinite(Date.parse(row["acquiredAt"] as string));
+    && typeof row["acquiredAt"] === "string" && Number.isFinite(Date.parse(row["acquiredAt"] as string))
+    && (row["materializationIntent"] === undefined || isOrdinaryIntent(row["materializationIntent"]));
+}
+
+function isOrdinaryIntent(value: unknown): value is OrdinaryMaterializationIntent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).sort().join(",") === "baseSha,baselineSha256,branch,operationId,schemaVersion,worktreeRoot"
+    && row.schemaVersion === "ordinary-materialization/v1" && typeof row.operationId === "string" && /^[0-9a-f]{64}$/.test(row.operationId)
+    && typeof row.baselineSha256 === "string" && /^[0-9a-f]{64}$/.test(row.baselineSha256)
+    && typeof row.baseSha === "string" && /^[0-9a-f]{40}$/.test(row.baseSha)
+    && bounded(row.branch) && bounded(row.worktreeRoot) && isAbsolute(row.worktreeRoot as string);
 }
 
 function assertSlot(slot: RepositoryTicketSlot): void {
@@ -390,20 +414,20 @@ function publishExclusive(path: string, slot: RepositoryTicketSlot, createToken:
   const temporary = `${path}.${required(createToken(), "publication token")}.tmp`;
   try {
     writeSlot(temporary, slot);
-    linkSync(temporary, path);
+    linkSync(temporary, path); syncPreparedCapacityDirectory(slot.canonicalRepoRoot);
   } finally { try { unlinkSync(temporary); } catch { /* published or absent */ } }
 }
 
 function replaceAtomic(path: string, slot: RepositoryTicketSlot, createToken: () => string): void {
   const temporary = `${path}.${required(createToken(), "publication token")}.tmp`;
-  try { writeSlot(temporary, slot); renameSync(temporary, path); }
+  try { writeSlot(temporary, slot); renameSync(temporary, path); syncPreparedCapacityDirectory(slot.canonicalRepoRoot); }
   finally { try { unlinkSync(temporary); } catch { /* rename consumed it */ } }
 }
 
 function writeSlot(path: string, slot: RepositoryTicketSlot): void {
   assertSlot(slot);
-  writeFileSync(path, `${JSON.stringify(slot, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  chmodSync(path, 0o600);
+  const descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeFileSync(descriptor, `${JSON.stringify(slot, null, 2)}\n`); fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
 /**
@@ -534,8 +558,33 @@ function syncPreparedCapacityDirectory(root: string): void {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
-export function withRepositoryTicketTransaction<T>(canonicalRepoRoot: string, operation: () => T): T {
-  return withTicketMutex(canonicalRepoRoot, operation);
+export function withRepositoryTicketTransaction<T>(canonicalRepoRoot: string, operation: (transaction: RepositoryTicketTransaction) => T): T {
+  return withTicketMutex(canonicalRepoRoot, () => {
+    let active = true;
+    const transaction: RepositoryTicketTransaction = Object.freeze({ ordinaryIntent(owner: RepositoryTicketSlotHandoff & { deploymentId: string }, input: Omit<OrdinaryMaterializationIntent, "schemaVersion" | "operationId">, existingOnly = false) {
+      if (!active || owner.canonicalRepoRoot !== canonicalRepoRoot) throw new Error("ordinary materialization transaction is not active");
+      const observed = observeReadonlyRepositoryTicketSlot(canonicalRepoRoot, owner.ticket);
+      const slot = observed.slot;
+      if (!slotMatchesHandoff(slot, owner) || slot.slotToken !== owner.slotToken || slot.deploymentId !== owner.deploymentId || !fingerprintsEqual(slot.processFingerprint, readProcessFingerprint(process.pid))) throw new Error("ordinary materialization holder does not authenticate");
+      const intent: OrdinaryMaterializationIntent = Object.freeze({ schemaVersion: "ordinary-materialization/v1", ...input,
+        operationId: createHash("sha256").update(JSON.stringify([slot.slotToken, input])).digest("hex") });
+      if (!isOrdinaryIntent(intent)) throw new Error("ordinary materialization intent is invalid");
+      if (slot.materializationIntent) {
+        if (JSON.stringify(slot.materializationIntent) !== JSON.stringify(intent)) throw new Error("ordinary materialization intent changed; retain existing work");
+        return slot.materializationIntent;
+      }
+      if (existingOnly) throw new Error("existing branch has no retained ordinary materialization intent; preserve it");
+      replaceAtomic(repositoryTicketSlotPath(canonicalRepoRoot, slot.ticket), { ...slot, materializationIntent: intent }, randomUUID);
+      const retained = observeReadonlyRepositoryTicketSlot(canonicalRepoRoot, slot.ticket).slot.materializationIntent;
+      if (JSON.stringify(retained) !== JSON.stringify(intent)) throw new Error("ordinary materialization intent publication is uncertain");
+      return intent;
+    } });
+    try {
+      const result = operation(transaction);
+      if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("repository ticket transaction must be synchronous");
+      return result;
+    } finally { active = false; }
+  });
 }
 
 function withTicketMutex<T>(canonicalRepoRoot: string, operation: () => T): T {

@@ -4,7 +4,8 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { getAiUsageDir } from "../paths.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
+import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction, type RepositoryTicketSlotHandoff, type RepositoryTicketTransaction } from "../deploy/ticket-concurrency.js";
+import { observeReadonlyRepositoryAuthority } from "../deploy/repository-admission.js";
 import { loadRepoEntry, MAX_REPOSITORY_DIAGNOSTIC_CHARS, resolveRepoExecutionPath } from "../repos.js";
 import { requireTicketLinkedBranch } from "./git-validation.js";
 import { TicketStore } from "./store.js";
@@ -23,6 +24,8 @@ export interface MaterializeTicketBranchOptions {
   /** Native ordinary launcher only. Reauthenticated against durable task/sign-off
    * evidence inside the transaction; never an agent/environment SHA override. */
   intendedTaskBaseline?: OrdinaryTaskBaseline;
+  /** Existing live launcher capacity owner, never supplied by tool/CLI JSON. */
+  ordinaryOwner?: RepositoryTicketSlotHandoff & { deploymentId: string };
   /** Live existing repository owner; avoids recursive mutex acquisition during preparation. */
   preparedCapacityOwner?: PreparedTicketCapacityTransaction;
   /** Durable operation identity, required for exact post-crash branch/ticket reconciliation. */
@@ -70,8 +73,8 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
   // Canonical metadata is confined to the document preamble; body examples and
   // fenced duplicate fields cannot supply or shadow the actual task identity.
   const preamble = markdown.split(/^##[ \t]/m)[0]!;
-  const header = (label: string): string => {
-    const matches = preamble.split(/\r?\n/).filter((line) => new RegExp(`^>[ \\t]+(?:\\*\\*)?${label}:`).test(line));
+  const header = (label: string, from = preamble): string => {
+    const matches = from.split(/\r?\n/).filter((line) => new RegExp(`^>[ \\t]+(?:\\*\\*)?${label}:`).test(line));
     const prefix = `> ${label}: `;
     if (matches.length !== 1 || !matches[0]!.startsWith(prefix) || !matches[0]!.slice(prefix.length)) return fail("CONTRACT_INVALID");
     return matches[0]!.slice(prefix.length);
@@ -96,7 +99,28 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
   // independent of routine phase/check/commit authorization.
   const decision = `Approve ${options.ticketId} ${options.canonicalRepoKey} ${root} ${linked.branch}`;
   const approved = ["", "from "].some((prefix) => comments[0]?.content === `${decision} ${prefix}exact base ${baseSha}; source ${ref}.`);
-  if (comments.length !== 1 || comments[0]!.author !== "sinh" || !approved) fail("APPROVAL_REJECTED");
+  // Existing requirements producers have already recorded a richer whole-pair
+  // decision. Authenticate its exact reviewed preview hash and task tuple instead
+  // of demanding a new unchanged-facts baseline-only approval. This is a finite
+  // producer format, not keyword approval inferred from arbitrary discussion.
+  const reviewedPairApproved = (): boolean => {
+    if (comments.length !== 1 || comments[0]!.author !== "sinh") return false;
+    const content = comments[0]!.content;
+    const revision = header("Review Revision");
+    if (!/^r\d{3,}$/.test(revision) || /\b(?:revoke|revoked|reject|rejected|withdraw|withdrawn|cancel|cancelled)\b/i.test(content)) return false;
+    const prefix = new RegExp(`^Explicit(?: standalone)? foreground PA sign-off in d-[0-9a-f]{6}: I selected (?:"Approve this exact pair" for owner-directed|Approve exact pair and matrix for) ${options.ticketId} ${revision}\\.`);
+    const matches = [...content.matchAll(/Reviewed requirements(?: source)?: ([A-Za-z0-9_./-]+)[;,] raw SHA-256 ([0-9a-f]{64})(?=[;.,\s])/g)];
+    if (!prefix.test(content) || matches.length !== 1 || !content.includes(`Matrix Source: ${ref}.`)) return false;
+    const previewPath = `agent-teams/requirements/artifacts/reviews/${options.ticketId}/${revision}/requirements.md`;
+    if (matches[0]![1] !== previewPath) return false;
+    let preview: Uint8Array;
+    try { preview = readReviewEvidenceFile(join(getAiUsageDir(), previewPath), 1_048_576, "ordinary reviewed task preview"); } catch { return false; }
+    if (createHash("sha256").update(preview).digest("hex") !== matches[0]![2]) return false;
+    let previewText: string;
+    try { previewText = new TextDecoder("utf-8", { fatal: true }).decode(preview).split(/^##[ \t]/m)[0]!; } catch { return false; }
+    return ["Ticket", "Repository Key", "Repository Root", "Handoff Type", "Feature Branch", baseLabel].every((label) => header(label, previewText) === header(label));
+  };
+  if (comments.length !== 1 || comments[0]!.author !== "sinh" || (!approved && !reviewedPairApproved())) fail("APPROVAL_REJECTED");
   const git = options.runGit ?? defaultGit;
   if (fullCommit(git, root, `${baseSha}^{commit}`, "intended task base") !== baseSha) fail("CONTRACT_INVALID");
   if (linked.state === "materialized") {
@@ -175,11 +199,11 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
   if (ordinary && options.approvedPreparationBaseSha !== undefined) throw ordinaryBaselineError("CONTRACT_INVALID");
   const approvedBase = ordinary?.baseSha ?? options.approvedPreparationBaseSha;
   if (approvedBase !== undefined && !/^[0-9a-f]{40}$/.test(approvedBase)) throw diagnostic("preparation base is not one exact full commit SHA", "resolve the immutable approved base before resource actions");
-  const transaction = <T>(action: () => T): T => options.preparedCapacityOwner
-    ? withPreparedRepositoryTicketOwner(options.preparedCapacityOwner, canonicalRoot, action)
+  const transaction = <T>(action: (capacity?: RepositoryTicketTransaction) => T): T => options.preparedCapacityOwner
+    ? withPreparedRepositoryTicketOwner(options.preparedCapacityOwner, canonicalRoot, () => action())
     : withRepositoryTicketTransaction(canonicalRoot, action);
 
-  return transaction(() => {
+  return transaction((capacity) => {
     authenticateLinkedWorktree(options.canonicalRepoKey, canonicalRoot, worktreeRoot);
     const currentTicket = store.get(options.ticketId);
     if (!currentTicket) throw diagnostic(`ticket ${options.ticketId} disappeared during materialization`, "restore the same ticket evidence and retry");
@@ -192,6 +216,10 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
       const current = resolveOrdinaryTaskBaseline(options);
       if (JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");
       if (gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], worktreeRoot)).length) throw ordinaryBaselineError("CHECKOUT_DIRTY");
+      const gitDir = gitText(runGit(["rev-parse", "--absolute-git-dir"], worktreeRoot)).trim();
+      let authority;
+      try { authority = observeReadonlyRepositoryAuthority(gitDir); } catch { throw ordinaryBaselineError("HOLDER_UNCERTAIN"); }
+      if (authority.owner || authority.borrower || authority.implement || authority.review) throw ordinaryBaselineError("HOLDER_CONFLICT");
     }
     const developBranch = repo.developBranch ?? "develop";
     const developSha = fullCommit(runGit, canonicalRoot, `refs/heads/${developBranch}^{commit}`, `configured local ${developBranch}`);
@@ -204,6 +232,13 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
       throw diagnostic(`ticket branch ${linked.branch} is already checked out at ${occupiedAt}`, "stop the other checkout or reconcile it under operator control; do not replace the branch");
     }
 
+    let intent;
+    if (ordinary && options.ordinaryOwner && linked.state === "planned") {
+      if (!capacity) throw ordinaryBaselineError("HOLDER_CONFLICT");
+      try { intent = capacity.ordinaryIntent(options.ordinaryOwner, { baselineSha256: createHash("sha256").update(JSON.stringify(ordinary)).digest("hex"), worktreeRoot, branch: linked.branch, baseSha: selectedBase }, existingHead !== undefined); }
+      catch { throw ordinaryBaselineError("OWNER_INTENT_REJECTED"); }
+    }
+    const marker = intent ? `pa-ordinary-materialization:${intent.operationId}` : null;
     let created = false;
     if (linked.state === "planned") {
       if (existingHead) {
@@ -211,12 +246,23 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
         const ownedExactPreparation = !ordinary && approvedBase !== undefined && options.preparationOperationId !== undefined
           && reservation && "operationId" in reservation && reservation.operationId === options.preparationOperationId && reservation.occupancy === "preparing"
           && existingHead === selectedBase && occupiedAt === worktreeRoot && symbolicBranch(runGit, worktreeRoot) === linked.branch;
-        if (!ownedExactPreparation) throw diagnostic("planned branch evidence raced with an independently created local branch", "refresh and reconcile the ticket branch evidence before retrying");
+        const ownedExactOrdinary = marker !== null && existingHead === selectedBase && (!occupiedAt || occupiedAt === worktreeRoot)
+          && gitText(runGit(["reflog", "show", "--format=%H%x00%gs", "-n", "1", `refs/heads/${linked.branch}`], canonicalRoot)).trim() === `${selectedBase}\0${marker}`;
+        if (!ownedExactPreparation && !ownedExactOrdinary) throw diagnostic("planned branch evidence raced with an independently created local branch", "refresh and reconcile the ticket branch evidence before retrying");
+        if (ownedExactOrdinary && !occupiedAt) gitText(runGit(["checkout", "--no-guess", linked.branch], worktreeRoot));
         // The optional service has prior durable operation intent, exact capacity
         // custody and this same vacant checkout/base. Finish ticket publication;
         // never recreate/reset/checkout an independently observed branch.
       } else {
-        gitText(runGit(["checkout", "--no-guess", "-b", linked.branch, selectedBase], worktreeRoot));
+        if (marker) {
+          // Compare-and-create plus a native operation marker supplies durable
+          // result proof even if interrupted before checkout/ticket publication.
+          // The existing capacity owner stores intent; no parallel ledger/reset.
+          try {
+            gitText(runGit(["update-ref", "--create-reflog", "-m", marker, `refs/heads/${linked.branch}`, selectedBase, "0".repeat(40)], canonicalRoot));
+            gitText(runGit(["checkout", "--no-guess", linked.branch], worktreeRoot));
+          } catch { throw ordinaryBaselineError("BRANCH_RESULT_UNCERTAIN"); }
+        } else gitText(runGit(["checkout", "--no-guess", "-b", linked.branch, selectedBase], worktreeRoot));
         created = true;
       }
     } else {

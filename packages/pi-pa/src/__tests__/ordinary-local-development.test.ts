@@ -32,16 +32,17 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     let commandPin = "";
     if (variant.startsWith("project-")) {
       mkdirSync(join(repo, "scripts"));
-      const testScript = `const fs = require('node:fs');\nconsole.log('project-test', process.env.TEST_PRIVATE_TOKEN || 'no-ambient-secret');\ntry { fs.writeFileSync('host-effect.txt','forbidden'); throw new Error('writable project'); } catch (e) { if (e.message === 'writable project') throw e; }\ntry { fs.readFileSync(${JSON.stringify(join(root, "host-secret"))}); throw new Error('host visible'); } catch(e) { if(e.message === 'host visible') throw e; }\nprocess.exit(fs.readFileSync('README.md','utf8').includes('repaired') ? 0 : 2);\n`;
+      const testScript = `const fs = require('node:fs');\nconsole.log('project-test', process.env.TEST_PRIVATE_TOKEN || 'no-ambient-secret');\ntry { fs.writeFileSync('host-effect.txt','forbidden'); throw new Error('writable project'); } catch (e) { if (e.message === 'writable project') throw e; }\ntry { fs.readFileSync('unlisted.txt'); throw new Error('unlisted project input visible'); } catch(e) { if(e.message === 'unlisted project input visible') throw e; }\ntry { fs.readFileSync(${JSON.stringify(join(root, "host-secret"))}); throw new Error('host visible'); } catch(e) { if(e.message === 'host visible') throw e; }\nprocess.exit(fs.readFileSync('README.md','utf8').includes('repaired') ? 0 : 2);\n`;
       const buildScript = "const fs = require('node:fs'); const source = fs.readFileSync('README.md','utf8'); fs.writeFileSync('/tmp/build.txt',source.toUpperCase()); console.log('project-build',fs.readFileSync('/tmp/build.txt','utf8'));\n";
       writeFileSync(join(repo, "scripts/test.cjs"), testScript); writeFileSync(join(repo, "scripts/build.cjs"), buildScript);
       writeFileSync(join(root, "host-secret"), "HOST-SECRET-SENTINEL");
+      writeFileSync(join(repo, "unlisted.txt"), "unlisted fixture input must remain hidden from checks\n");
       const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [
-        { id: "project-test", executable: realpathSync(process.execPath), argv: ["scripts/test.cjs"], environment: {}, prerequisites: [{ path: "scripts/test.cjs", sha256: workflowDigest(testScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
-        { id: "project-build", executable: realpathSync(process.execPath), argv: ["scripts/build.cjs"], environment: {}, prerequisites: [{ path: "scripts/build.cjs", sha256: workflowDigest(buildScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
+        { id: "project-test", executable: realpathSync(process.execPath), argv: ["scripts/test.cjs"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "scripts/test.cjs", sha256: workflowDigest(testScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
+        { id: "project-build", executable: realpathSync(process.execPath), argv: ["scripts/build.cjs"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "scripts/build.cjs", sha256: workflowDigest(buildScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
       ] });
       writeFileSync(join(repo, "checks.json"), manifest); commandPin = `    projectCommands:\n      manifest: checks.json\n      sha256: ${workflowDigest(manifest)}\n`;
-      git(["add", "checks.json", "scripts/test.cjs", "scripts/build.cjs"]);
+      git(["add", "checks.json", "scripts/test.cjs", "scripts/build.cjs", "unlisted.txt"]);
     }
     git(["add", "README.md"]); git(["commit", "-qm", "base A"]);
     const base = git(["rev-parse", "HEAD"]); git(["worktree", "add", "--detach", checkout, base]);
