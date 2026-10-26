@@ -122,6 +122,18 @@ const EXECUTION_DIAGNOSTICS = Object.freeze({
     correction: "custody owner: preserve barriers and settle through the supported owner procedure",
     resumeAction: "resume dependent work only after supported settlement and sole-holder proof",
   }),
+  EXECUTION_PROJECT_CONTRACT_INVALID: Object.freeze({
+    stage: "project-command-admission",
+    reason: "project check is unknown, changed, insecure or outside the exact registered command contract; dispatch was denied",
+    correction: "project command/configuration owner: revalidate the pinned manifest and script provenance; preserve source and do not use arbitrary shell",
+    resumeAction: "retry the named check only after its supported contract, physical CWD and current prerequisites agree",
+  }),
+  EXECUTION_PROJECT_PREREQUISITE: Object.freeze({
+    stage: "project-command-prerequisite",
+    reason: "the required trusted executable or isolated local-check containment is unavailable; no project check was run",
+    correction: "runtime/toolchain owner: provide supported installed tooling and namespace confinement; do not install, change host configuration or fall back to unconfined execution",
+    resumeAction: "resume the same scoped check after its native prerequisite probe succeeds",
+  }),
   EXECUTION_UNKNOWN: Object.freeze({
     stage: "fallback",
     reason: "unclassified failure or insufficient safe evidence; cause remains unproven",

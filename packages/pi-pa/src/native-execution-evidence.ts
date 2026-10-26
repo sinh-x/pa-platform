@@ -117,6 +117,8 @@ function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JS
 export async function runNativeExecutionProcess(input: {
   evidence: NativeExecutionEvidence; intent: SourceVersion; command: string; cwd: string;
   timeoutSeconds: number; maximumOutputBytes?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv;
+  /** Trusted native command contract only; never sourced from tool arguments. */
+  program?: { readonly executable: string; readonly argv: readonly string[]; readonly environment: Readonly<Record<string, string>> };
 }): Promise<NativeProcessResult> {
   if (!Number.isFinite(input.timeoutSeconds) || input.timeoutSeconds <= 0 || input.timeoutSeconds > 14_400 || !input.command || Buffer.byteLength(input.command) > 16_384
     || realpathSync(input.cwd) !== input.cwd) throw workflowError();
@@ -150,7 +152,8 @@ export async function runNativeExecutionProcess(input: {
     const bash = trustedBash();
     const env = { ...(input.env ?? process.env) };
     for (const name of Object.keys(env)) if (name.startsWith("GIT_") || name.startsWith("BASH") || ["ENV", "SHELLOPTS", "LD_PRELOAD", "LD_LIBRARY_PATH"].includes(name)) delete env[name];
-    child = spawn(bash, ["--noprofile", "--norc", "-c", 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$1" --noprofile --norc -c "$2"', "pa-native-execution", bash, input.command], {
+    const program = input.program ? [input.program.executable, ...input.program.argv] : [bash, "--noprofile", "--norc", "-c", input.command];
+    child = spawn(bash, ["--noprofile", "--norc", "-c", 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"', "pa-native-execution", ...program], {
       cwd: input.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"],
     });
     const completed = new Promise<void>((resolve) => {
@@ -170,7 +173,8 @@ export async function runNativeExecutionProcess(input: {
     fingerprint = readProcessFingerprint(child.pid);
     const initial = members(child.pid);
     if (!fingerprint || !same(readProcessFingerprint(child.pid), fingerprint) || !initial.some((member) => member.pid === child!.pid && member.session === child!.pid)) throw workflowError();
-    frame = input.evidence.publish("process-frame", { intent: input.intent, process: fingerprint, groupId: child.pid, sessionId: child.pid, executable: bash });
+    frame = input.evidence.publish("process-frame", { intent: input.intent, process: fingerprint, groupId: child.pid, sessionId: child.pid, executable: bash,
+      command: input.command, cwd: input.cwd, program: input.program ?? null, environment: input.program ? {} : { declaration: "legacy sanitized inherited environment" } });
     const start = child.stdio[3] as import("node:stream").Writable;
     start.on("error", () => { ioFailed = true; stop(); });
     if (aborted) { start.end(); stop(); }

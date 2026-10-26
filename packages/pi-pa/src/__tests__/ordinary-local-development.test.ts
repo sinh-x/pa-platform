@@ -1,21 +1,23 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { closeDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, workflowDigest, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { TreehouseClient } from "../treehouse.js";
 import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
+import { createPiExecutionModule } from "../pi-extension/prepared-workflow.js";
+import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 
 /** Actual source-built deploy/native adapter, real Git and native owner storage.
  * Provider spawn and Treehouse status are simulated; no installed-runtime,
  * real-service, independent-review, or full AC1–AC8 acceptance is claimed. */
-async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty") {
+async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands") {
   const root = mkdtempSync(join(tmpdir(), "pap268-launch-")); const env = process.env, cwd = process.cwd();
   process.env = { ...env }; for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   const repo = join(root, "repo"), checkout = join(root, "checkout"), branch = "feature/PAP-268-disposable";
@@ -26,9 +28,24 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     const git = (args: string[], at = repo) => execFileSync("git", args, { cwd: at, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     git(["init", "-q", "-b", "develop"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
     git(["config", "commit.gpgsign", "false"]); git(["config", "core.hooksPath", "/dev/null"]);
-    writeFileSync(join(repo, "README.md"), "A\n"); git(["add", "README.md"]); git(["commit", "-qm", "base A"]);
+    writeFileSync(join(repo, "README.md"), "A\n");
+    let commandPin = "";
+    if (variant === "project-commands") {
+      mkdirSync(join(repo, "scripts"));
+      const testScript = `const fs = require('node:fs');\nconsole.log('project-test', process.env.TEST_PRIVATE_TOKEN || 'no-ambient-secret');\ntry { fs.writeFileSync('host-effect.txt','forbidden'); throw new Error('writable project'); } catch (e) { if (e.message === 'writable project') throw e; }\ntry { fs.readFileSync(${JSON.stringify(join(root, "host-secret"))}); throw new Error('host visible'); } catch(e) { if(e.message === 'host visible') throw e; }\nprocess.exit(fs.readFileSync('README.md','utf8').includes('repaired') ? 0 : 2);\n`;
+      const buildScript = "const fs = require('node:fs'); const source = fs.readFileSync('README.md','utf8'); fs.writeFileSync('/tmp/build.txt',source.toUpperCase()); console.log('project-build',fs.readFileSync('/tmp/build.txt','utf8'));\n";
+      writeFileSync(join(repo, "scripts/test.cjs"), testScript); writeFileSync(join(repo, "scripts/build.cjs"), buildScript);
+      writeFileSync(join(root, "host-secret"), "HOST-SECRET-SENTINEL");
+      const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [
+        { id: "project-test", executable: realpathSync(process.execPath), argv: ["scripts/test.cjs"], environment: {}, prerequisites: [{ path: "scripts/test.cjs", sha256: workflowDigest(testScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
+        { id: "project-build", executable: realpathSync(process.execPath), argv: ["scripts/build.cjs"], environment: {}, prerequisites: [{ path: "scripts/build.cjs", sha256: workflowDigest(buildScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
+      ] });
+      writeFileSync(join(repo, "checks.json"), manifest); commandPin = `    projectCommands:\n      manifest: checks.json\n      sha256: ${workflowDigest(manifest)}\n`;
+      git(["add", "checks.json", "scripts/test.cjs", "scripts/build.cjs"]);
+    }
+    git(["add", "README.md"]); git(["commit", "-qm", "base A"]);
     const base = git(["rev-parse", "HEAD"]); git(["worktree", "add", "--detach", checkout, base]);
-    writeFileSync(join(root, "config/config.yaml"), `repos:\n  fixture:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n`);
+    writeFileSync(join(root, "config/config.yaml"), `repos:\n  fixture:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n${commandPin}`);
     writeFileSync(join(root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
     const ticketPath = join(root, "tickets/PAP-268.json");
     writeFileSync(ticketPath, JSON.stringify({ id: "PAP-268", project: "fixture", title: "Disposable", status: "implementing", linkedBranches: [{ repo: "fixture", branch, state: "planned" }] }));
@@ -56,13 +73,17 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
         const previous = process.env; process.env = { ...previous, ...opts.env }; process.chdir(checkout);
         try {
           const directory = join(root, "deployments", opts.deployId); recordPiProcessIdentity(opts.deployId, directory, process.pid); opts.onPid?.(process.pid);
-          const session = new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } }).resolve({ cwd: checkout })!;
+          const native = new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } });
+          const session = native.resolve({ cwd: checkout })!;
           assert.ok(session); assert.equal(session.contract.initialHeadSha, base);
           const plan = { phaseId: "A", scope: "Characterization only", paths: ["README.md"], requirements: ["AC3"], prerequisites: [], checks: ["diff-check"], size: "S", complexity: "bounded", rationale: "No source effects in this baseline slice." };
-          session.service.apply(session.actor, { action: "plan", plan });
-          // Explicit debt characterization, NOT the AC1/AC4 positive acceptance:
-          assert.throws(() => session.service.apply(session.actor, { action: "plan", plan: { ...plan, phaseId: "B" } }), "phase continuation remains unsupported");
-          assert.throws(() => session.service.apply(session.actor, { action: "plan", plan: { ...plan, checks: ["npm run test"] } }), "generic project contracts remain unsupported");
+          if (variant === "project-commands") await exerciseProjectCommands(native, checkout);
+          else {
+            session.service.apply(session.actor, { action: "plan", plan });
+            // Explicit debt characterization, NOT full AC1–AC8 acceptance:
+            assert.throws(() => session.service.apply(session.actor, { action: "plan", plan: { ...plan, phaseId: "B" } }), "phase continuation remains unsupported");
+            assert.throws(() => session.service.apply(session.actor, { action: "plan", plan: { ...plan, checks: ["npm run test"] } }), "unregistered project contracts remain unsupported");
+          }
           assert.equal(session.service.status(session.actor).custody.state, "idle");
           assert.equal(existsSync(join(directory, "prepared-consumption.json")), false);
           assert.equal(getDeploymentEvents(opts.deployId).filter((event) => event.event === "started").length, 1);
@@ -74,7 +95,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
       provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: authority, observeOperation: (operation) => { if (operation === "branch") branchEffects++; } });
     assert.equal(forbidden, 0);
     assert.deepEqual({ head: git(["rev-parse", "HEAD"]), status: git(["status", "--porcelain=v2", "--untracked-files=all"]) }, canonical);
-    if (variant === "matching") {
+    if (variant === "matching" || variant === "project-commands") {
       assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
       assert.equal(JSON.parse(readFileSync(ticketPath, "utf8")).linkedBranches[0].baseSha, base);
       assert.equal(existsSync(repositoryMutationLeasePath(checkout)), false);
@@ -90,6 +111,51 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
   } finally { process.chdir(cwd); closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); }
 }
 
-for (const variant of ["matching", "stale", "missing", "source-drift", "dirty"] as const) {
+async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checkout: string) {
+  const tools = new Map<string, PiToolDefinition>(); const handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
+  const context = { cwd: checkout };
+  const pi = { registerTool(tool: PiToolDefinition) { tools.set(tool.name, tool); }, on(name: string, handler: (event: unknown, context: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } } as PiRuntime;
+  const dispatch = async (name: string, event: unknown) => { for (const handler of handlers.get(name) ?? []) { const result = await handler(event, context); if (result !== undefined) return result; } };
+  createPiExecutionModule({ nativeAdapter: adapter })(pi); await dispatch("session_start", {});
+  const session = adapter.resolve(context)!;
+  const control = (input: Record<string, unknown>) => tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
+  const observe = async (kind: string) => (await control({ action: "observe", kind })).details.evidence;
+  const select = async () => { const holder = await observe("holder"); await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder }); };
+  const settle = async () => control({ action: "settle", evidence: await observe("inventory") });
+  let sequence = 0;
+  const execute = async (name: string, input: Record<string, unknown>) => {
+    const id = `project-${++sequence}`; assert.equal(await dispatch("tool_call", { toolName: name, toolCallId: id, input }), undefined);
+    let result: unknown, failed = false;
+    try { result = await tools.get(name)!.execute(id, input, undefined, undefined, context); } catch (error) { failed = true; result = String(error); }
+    await dispatch("tool_execution_end", { toolName: name, toolCallId: id, result, isError: failed }); return { result, failed };
+  };
+  const deny = async (input: Record<string, unknown>) => {
+    const response = await dispatch("tool_call", { toolName: "bash", toolCallId: `deny-${++sequence}`, input }) as { block: boolean; reason: string };
+    assert.equal(response.block, true); assert.ok(response.reason.length <= 2000); assert.doesNotMatch(response.reason, /HOST-SECRET|TEST_PRIVATE_TOKEN|bootId/);
+  };
+  await control({ action: "plan", plan: { phaseId: "A", scope: "Non-PA real project check/repair", paths: ["README.md"], requirements: ["AC1", "AC4"], prerequisites: [], checks: ["project-test", "project-build"], size: "S", complexity: "bounded", rationale: "Native approved contract and namespace-contained actual processes." } });
+  await select();
+  await deny({ command: "node 'scripts/test.cjs'; true" }); await deny({ command: "npm run unknown" });
+  await deny({ command: "node 'scripts/test.cjs'", env: { NODE_OPTIONS: "--require evil" } });
+  await deny({ command: "git commit -m 'feat: premature'" });
+  assert.equal((await execute("bash", { command: "node 'scripts/test.cjs'", timeout: 20 })).failed, true);
+  const failure = session.service.status(session.actor).originalFailure!; assert.equal(failure.exitCode, 2);
+  await settle(); await control({ action: "attempt", evidence: await observe("recovery") }); await select();
+  await execute("write", { path: "README.md", content: "repaired\n" });
+  assert.equal((await execute("bash", { command: "node 'scripts/test.cjs'", timeout: 20 })).failed, false);
+  assert.equal((await execute("bash", { command: "node 'scripts/build.cjs'", timeout: 20 })).failed, false);
+  await settle();
+  const facts = session.reportFacts(); assert.deepEqual(facts.checks.map((check) => check.exitCode), [2, 0, 0]);
+  const passed = facts.checks[1]!.output!; await control({ action: "resolve", evidence: passed }); await select();
+  await execute("bash", { command: "git add -- README.md" });
+  assert.equal((await execute("bash", { command: "git commit -m 'feat: non-PA project repair'" })).failed, false);
+  await settle();
+  assert.equal(existsSync(join(checkout, "host-effect.txt")), false);
+  const original = session.evidence.read(failure.output, "tool-result") as { process: { frame: Parameters<typeof session.evidence.read>[0] } };
+  const frame = session.evidence.read(original.process.frame, "process-frame") as { cwd: string; program: { environment: Record<string, string>; argv: string[] } };
+  assert.equal(frame.cwd, checkout); assert.equal(frame.program.environment.HOME, "/tmp/pa-check-home"); assert.ok(frame.program.argv.includes("--unshare-all"));
+}
+
+for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands"] as const) {
   test(`PAP-268 actual ordinary launch: ${variant} intended baseline (simulated provider/Treehouse)`, () => fixture(variant));
 }

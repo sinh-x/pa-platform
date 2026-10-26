@@ -44,18 +44,50 @@ supported reconciliation without echoing source bodies or authority tokens.
 Post-acquisition denials may retain their existing permit/lease for owning
 reconciliation: no forced release or terminal claim is performed.
 
+## Validated project commands (source capability)
+
+A registered repository can select `projectCommands: { manifest: checks.json,
+sha256: <exact digest> }` in its operator-managed configuration. The manifest is
+`project-command-contract/v1`, with exactly `effects: [project-read,
+isolated-temp-write]` and an ordered `checks` array. Each check names `id`, an
+exact root-owned executable, literal `argv`, literal application `environment`,
+content-hashed script/dependency `prerequisites`, `timeoutSeconds` (max 1800)
+and `maximumOutputBytes` (max 16 MiB). No model argument selects or replaces this
+contract. Manifest/registration/script drift denies dispatch; an existing
+execution descriptor cannot silently adopt a different command digest.
+
+The native bash tool matches the exact rendered command (`node 'scripts/test.cjs'`,
+for example), but executes the pinned argv directly, not that text through an
+arbitrary shell. Plans must retain all contract checks in order. Unknown commands,
+additional environment/CWD inputs and shell suffixes are denied. Explicit program,
+argv, CWD and environment evidence accompanies actual stdout/stderr/exit records.
+
+This v1 Linux/Nix profile requires trusted installed Bubblewrap and working
+unprivileged namespace isolation. It exposes `/nix/store` and the exact linked
+project read-only, a fresh `/tmp` and HOME, new network/PID/IPC/user namespaces,
+no ambient credentials/authority/environment and no host account/service paths.
+Project writes and external network effects cannot inherit the check grant.
+Builds may write temporary artifacts and emit their results to captured output;
+project-tree build outputs, external services, other host layouts and unrestricted
+checks are unsupported by v1, not silently run outside confinement. Missing
+containment is a toolchain-owner prerequisite denial, never an install/host-change
+or unconfined fallback. The runner retains process-group/timeout/output evidence.
+Existing unregistered legacy PA check contracts are not retroactively upgraded.
+
 ## Verification and remaining work
 
 Disposable core and actual source-built ordinary-launch tests use real Git,
 ticket storage and native custody. Provider spawn and Treehouse status are
 simulated and labelled. Optional activation/grants remain absent. Existing SDK
 startup/reporting and single-phase fail/repair/commit regressions are retained.
-The new integration file **characterizes rejection** of generic commands and
-phase changes; it does not yet prove the AC1–AC8 positive loop.
+The new integration file additionally runs real non-PA test/build processes in
+confinement, preserves an exit-2 failure, performs SDK repair/rechecks and a local
+commit. It verifies read-only project/hidden host effects and exact process
+metadata. It still characterizes rejection of phase changes; it does not yet
+prove the full AC1–AC8 positive loop.
 
 Still required before PAP-268 completion:
 
-- Versioned validated project-command contract and non-PA real test/build path.
 - Same-holder phase advance and evidence-backed diagnosis/remedy, retained limits.
 - Full two-phase SDK integration, complete AC1–AC8 negatives and Markdown reports.
 - Interrupted ordinary materialization reconciliation (current behavior safely

@@ -10,6 +10,7 @@ import { expandHome, getPlatformHomeDir, getUserConfigPath } from "./paths.js";
 
 export interface RepoEntry {
   path: string;
+  projectCommands?: { manifest: string; sha256: string };
   description?: string;
   prefix?: string;
   mainBranch?: string;

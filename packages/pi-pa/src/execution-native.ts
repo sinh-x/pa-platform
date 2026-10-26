@@ -19,6 +19,7 @@ import type { PiToolCall } from "./pi-extension/index.js";
 import { interceptToolCall } from "./pi-extension/safety.js";
 import { environmentSecrets } from "./diagnostics.js";
 import { executionAdministration, runExecutionAdministration, type ExecutionAdministration, type ExecutionAdministrationIdentity } from "./native-execution-administration.js";
+import { ProjectCommandContract } from "./project-command-contract.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -223,6 +224,7 @@ export class NativeExecutionSession {
   readonly #physical: HelperContext;
   readonly #initial: NativeScopeSnapshot;
   readonly #grantId: string | null;
+  readonly #commands: ProjectCommandContract | null;
   readonly #resultLinks = new Map<string, SourceVersion>();
   readonly #started = new Set<string>();
   #administrationRunning = false;
@@ -269,6 +271,7 @@ export class NativeExecutionSession {
     // No storage creation before full live source authentication. Optional
     // qualification/activation is deliberately not consulted for ordinary work.
     this.assertCaller({ cwd: process.cwd() }); this.#authenticateSourceCustody();
+    this.#commands = ProjectCommandContract.resolve(physical.repoKey, physical.repoRoot, physical.worktreeRoot);
     const store = authority.execution(this.#ordinary !== null || native?.active === true); if (!store) throw executionFailure("EXECUTION_STORAGE_REJECTED");
     this.evidence = new NativeExecutionEvidence(store, authority.evidenceRoot(), this.locks);
     const host: ExecutionHost = {
@@ -278,7 +281,9 @@ export class NativeExecutionSession {
         if (command !== "status" && !(command === "initialize" && exists) && (typeof command === "string" || !["finish", "settle"].includes(command.action))) this.#newWork();
         if (typeof command !== "string" && ["finish", "settle"].includes(command.action)) this.#authenticateSourceCustody();
         if (typeof command !== "string" && command.action === "plan") {
-          if (command.plan.checks.some((name) => !checkText(name)) || new Set(command.plan.checks.map(checkText)).size !== command.plan.checks.length) throw workflowError();
+          if (command.plan.checks.some((name) => !this.#checkText(name)) || new Set(command.plan.checks.map((name) => this.#checkText(name))).size !== command.plan.checks.length)
+            throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
+          if (this.#commands && JSON.stringify(command.plan.checks.map((name) => this.#checkText(name))) !== JSON.stringify(this.#commands.checks.map((check) => check.command))) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
           for (const path of command.plan.paths) scopedPath(physical.worktreeRoot, path);
         }
       },
@@ -306,7 +311,8 @@ export class NativeExecutionSession {
     const originField = this.#ordinary ? "launchSha256" : "consumptionSha256";
     const descriptorVersion = this.#ordinary ? "native-ordinary-execution-descriptor/v1" : "native-execution-descriptor/v1";
     if (exists) {
-      const descriptor = workflowObject(store.read(descriptorName), ["schemaVersion", "binding", originField, "initial"]);
+      const descriptor = workflowObject(store.read(descriptorName), ["schemaVersion", "binding", originField, "initial", ...(this.#commands ? ["projectCommandsSha256"] : [])]);
+      if (this.#commands && descriptor.projectCommandsSha256 !== this.#commands.sha256) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
       if (descriptor.schemaVersion !== descriptorVersion || !equal(descriptor.binding, this.contract) || descriptor[originField] !== workflowDigest(JSON.stringify(launch))) throw workflowError();
       this.#initial = descriptor.initial as NativeScopeSnapshot;
     } else {
@@ -316,13 +322,13 @@ export class NativeExecutionSession {
     const state = this.service.initialize(this.actor);
     if (!exists) {
       if (state.sequence !== 0) throw workflowError();
-      withPreparedWorkflowLocks(this.locks, (scope) => store.publish(scope, descriptorName, { schemaVersion: descriptorVersion, binding: this.contract, [originField]: workflowDigest(JSON.stringify(launch)), initial: this.#initial }));
+      withPreparedWorkflowLocks(this.locks, (scope) => store.publish(scope, descriptorName, { schemaVersion: descriptorVersion, binding: this.contract, [originField]: workflowDigest(JSON.stringify(launch)), initial: this.#initial, ...(this.#commands ? { projectCommandsSha256: this.#commands.sha256 } : {}) }));
     }
     this.binding = {
       bindingIdentity: workflowDigest(JSON.stringify([this.contract, launch])), service: this.service, actor: this.actor,
       authorizeAdministration: (call, context) => this.administration(call, context) !== null,
       assertToolCall: (call, _context, current) => this.#assertCall(call, current),
-      resolveCheck: (call, current) => current.plan?.checks.find((name) => checkText(name) === call.input.command) ?? null,
+      resolveCheck: (call, current) => current.plan?.checks.find((name) => this.#checkText(name) === call.input.command) ?? null,
       prepareOperation: (call, _context, current, operationId) => this.prepare(call, current, operationId),
       observe: (kind) => this.observe(kind),
       resolveToolResult: (event, current) => this.result(event, current),
@@ -337,6 +343,7 @@ export class NativeExecutionSession {
       recordFeatureUpdateIntent: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); }, recordFeatureUpdate: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); },
     };
   }
+  #checkText(name: string): string | undefined { return this.#commands ? this.#commands.check(name)?.command : checkText(name); }
   #retained() { if (!this.#grantId) throw executionFailure("EXECUTION_BINDING_CONFLICT"); return this.#authority.retained({ repoKey: this.#physical.repoKey, repoRoot: this.#physical.repoRoot, ticket: this.#physical.ticket! }, this.#grantId); }
   /** Audit/finish authority deliberately does not require unchanged HEAD. New
    * source work independently takes the full strict helper reread below. */
@@ -444,7 +451,7 @@ export class NativeExecutionSession {
       const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
       if (!result.scopeValid || result.exitCode !== 0 || intent.toolName !== "bash" || !equal(intent.before.files, result.after.files) || intent.before.git.head !== result.after.git.head) { passed = []; continue; }
       const next = state.plan.checks[passed.length];
-      if (next && checkText(next) === intent.command && result.process?.groupSettled === true) passed.push(next);
+      if (next && this.#checkText(next) === intent.command && result.process?.groupSettled === true) passed.push(next);
     }
     return passed;
   }
@@ -456,8 +463,10 @@ export class NativeExecutionSession {
     if (name !== "bash") throw workflowError();
     const command = parseExecutionCommandText(call.input.command);
     if (call.input.timeout !== undefined && (typeof call.input.timeout !== "number" || !Number.isFinite(call.input.timeout) || call.input.timeout <= 0 || call.input.timeout > 14_400)) throw workflowError();
-    const check = state.plan.checks.find((name) => checkText(name) === command);
+    const check = state.plan.checks.find((name) => this.#checkText(name) === command);
+    if (Object.keys(call.input).some((key) => !["command", "timeout"].includes(key))) throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
     if (check) {
+      this.#commands?.assertCurrent();
       if (this.#ordinary && state.plan.checks[this.#ordinaryPassedChecks(state).length] !== check) throw workflowError();
       return;
     }
@@ -470,7 +479,7 @@ export class NativeExecutionSession {
       return;
     }
     if (command.startsWith("git add -- ")) { const paths = command.slice(11).split(" "); if (!paths.length || paths.some((path) => !state.plan!.paths.includes(path))) throw workflowError(); for (const path of paths) scopedPath(this.#physical.worktreeRoot, path); return; }
-    throw workflowError();
+    throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
   }
   prepare(call: PiToolCall, state: ExecutionState, operationId: string): SourceVersion {
     this.#assertCall(call, state);
@@ -532,7 +541,11 @@ export class NativeExecutionSession {
     if (!this.#started.has(operationId) || start.intent.toolName !== "bash" || start.intent.command !== command || cwd !== this.#physical.worktreeRoot) throw workflowError();
     const remaining = (Date.parse(start.state.bounds.deadlineAt) - Date.now()) / 1000;
     try {
-      const result = await runNativeExecutionProcess({ evidence: this.evidence, intent: start.source, command, cwd, timeoutSeconds: Math.min(timeout, remaining), signal });
+      const check = this.#commands?.checks.find((check) => check.command === command);
+      const program = check ? this.#commands!.program(check) : undefined;
+      const result = await runNativeExecutionProcess({ evidence: this.evidence, intent: start.source, command, cwd,
+        timeoutSeconds: Math.min(timeout, remaining, check?.timeoutSeconds ?? 14_400), signal,
+        ...(check ? { maximumOutputBytes: check.maximumOutputBytes, program, env: {} } : {}) });
       this.#activeProcess = result; return result;
     } catch (error) { if (error instanceof NativeProcessEvidenceError) this.#unprovenProcess = error.evidence; throw workflowError(); }
   }

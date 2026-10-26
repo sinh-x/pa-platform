@@ -69,10 +69,11 @@ export async function isolatedDriver(root, share) {
       const allowedMutex = executable === "flock" && name === "spawn" && args[0] === "--exclusive" && inside(root, physical(args[3]))
         && args[4] === "/bin/sh" && args[5] === "-c" && inside(root, physical(args[8])) && inside(root, physical(args[9]));
       // Native runner has shell executable and command following the fixed frame.
-      const framedBash = executable === "bash" && name === "spawn" && inside(root, physical(cwd)) && args.length === 7
+      const framedBash = executable === "bash" && name === "spawn" && inside(root, physical(cwd)) && args.length === 10
         && args[0] === "--noprofile" && args[1] === "--norc" && args[2] === "-c"
-        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$1" --noprofile --norc -c "$2"'
-        && args[4] === "pa-native-execution" && args[5] === command && nativeCommands.has(args[6]);
+        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"'
+        && args[4] === "pa-native-execution" && args[5] === command && args[6] === "--noprofile"
+        && args[7] === "--norc" && args[8] === "-c" && nativeCommands.has(args[9]);
       if (!allowedGit && !allowedMutex && !framedBash) { counts.forbiddenProcesses++; throw new Error("unapproved fixture process"); }
       counts[allowedGit ? "gitProcesses" : allowedMutex ? "mutexProcesses" : "nativeBashProcesses"]++;
       try { return original(command, args, options); }

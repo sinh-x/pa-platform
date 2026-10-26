@@ -678,7 +678,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
     }
     pi.on?.("tool_call", (raw: unknown, context: unknown) => {
       try {
-        const call = raw as PiToolCall & { toolCallId?: string };
+        const call = executionInput(raw) as unknown as PiToolCall & { toolCallId?: string };
         const name = executionToolName(call);
         if (name === "pa_execution" || name === "pa_feature_update" || name === "pa_phase_report" || readOnlyExecutionCall(name, call.input)) return;
         const binding = resolve(context); if (!binding) return;
@@ -695,7 +695,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         const intent = binding.prepareOperation ? nativeExecutionCall(() => binding.prepareOperation!(call, context, state, id)) : null;
         binding.service.apply(binding.actor, { action: "begin", operation: { id, kind: check === null ? operationKind(name) : "check", check, intent } });
         pending.set(id, { binding, name });
-      } catch { return { block: true, reason: workflowError().message }; }
+      } catch (error) { return { block: true, reason: executionWorkflowError(error).message }; }
     });
     pi.on?.("tool_execution_end", (raw, context) => {
       try {

@@ -293,6 +293,8 @@ export interface PlatformConfig {
 
 export interface RepoConfig {
   path: string;
+  /** Operator-managed pin; source plans/tool arguments cannot select commands. */
+  projectCommands?: { manifest: string; sha256: string };
   description?: string;
   prefix?: string;
   mainBranch?: string;
