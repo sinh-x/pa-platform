@@ -399,8 +399,8 @@ test("generatePrimer live requirements config satisfies the versioned compatibil
     assert.match(piPrimer, /canonical `?repo_key`?\/?`?repo_root`?[\s\S]{0,1400}exact ticket[\s\S]{0,1400}approved full base SHA[\s\S]{0,1400}`?planned`?[\s\S]{0,1400}`?create`?/i);
     assert.match(piPrimer, /(?:(?:requires? no|must not require)[\s\S]{0,320}requirements-time[\s\S]{0,320}(?:builder )?(?:checkout|worktree)[\s\S]{0,240}lease|requirements-time[\s\S]{0,320}(?:builder )?(?:checkout|worktree)[\s\S]{0,240}lease[\s\S]{0,320}neither required nor accepted)/i);
     assert.match(piPrimer, /trusted PPA builder\/orchestrator launcher[\s\S]{0,640}reserve(?:s)?[^.\n]{0,160}capacity[\s\S]{0,640}acquire(?:s)? or reuse(?:s)?[\s\S]{0,320}authenticat/i);
-    assert.match(piPrimer, /one active builder lineage per repository\/ticket[\s\S]{0,240}at most four active ticket checkouts per canonical repository/i);
-    assert.match(piPrimer, /only Sinh\/operator[\s\S]{0,240}return the checkout[\s\S]{0,240}explicit approval/i);
+    assert.match(piPrimer, /one active builder lineage per repository\/ticket[\s\S]{0,240}at most four active ticket checkouts(?: per canonical repository|; duplicate and fifth requests reject before mutation or spawn)/i);
+    assert.match(piPrimer, /only Sinh\/operator[\s\S]{0,240}(?:return the checkout|approve checkout return)[\s\S]{0,240}explicit approval/i);
     assert.doesNotMatch(piPrimer, /Operator-Prepared Checkout Evidence:|must carry authenticated worktree_root and operator-prepared checkout evidence before orchestrator dispatch/i);
   }
 });
@@ -408,10 +408,12 @@ test("generatePrimer live requirements config satisfies the versioned compatibil
 test("generatePrimer representative builder fixture stays free of legacy opencode references", (t) => {
   const builder = parseExternalBuilder();
   if (!builder) return t.skip("external pa-platform-config fixture not available or still uses removed runtimes schema");
+  const mode = builder.deploy_modes?.some((entry) => entry.id === "implement") ? "implement" : "orchestrator";
+  assert.ok(builder.deploy_modes?.some((entry) => entry.id === mode), "selected builder profile must have its actual implementation mode");
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: builder,
-    mode: "implement",
+    mode,
     objective: "Implement PAP-022 phase 4.4.",
     resolveFile: resolveConfigFile,
     skillsDir: configPath("skills", "global"),
@@ -425,7 +427,8 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assert.match(primer, /## Deployment Instructions/);
   assert.match(primer, /## Available Procedures/);
   assert.match(primer, /- pa-cli:.*Path: `.*skills\/global\/pa-cli\/SKILL\.md`/);
-  assert.match(primer, /- google-workspace:.*Path: `.*skills\/global\/google-workspace\/SKILL\.md`/);
+  if (mode === "implement") assert.match(primer, /- google-workspace:.*Path: `.*skills\/global\/google-workspace\/SKILL\.md`/);
+  else assert.match(primer, /- pa-session-log:.*Path: `.*skills\/global\/pa-session-log\/SKILL\.md`/);
   assert.doesNotMatch(primer, /## Reference Skills/);
   assert.doesNotMatch(primer, /missing skill/);
   assertNoBannedOpencodeOperationalReferences(primer);
