@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, workflowDigest, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { closeDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, workflowDigest, TicketStore, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
@@ -17,7 +17,7 @@ import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 /** Actual source-built deploy/native adapter, real Git and native owner storage.
  * Provider spawn and Treehouse status are simulated; no installed-runtime,
  * real-service, independent-review, or full AC1–AC8 acceptance is claimed. */
-async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress") {
+async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "publication-interruption") {
   const root = mkdtempSync(join(tmpdir(), "pap268-launch-")); const env = process.env, cwd = process.cwd();
   process.env = { ...env }; for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   const repo = join(root, "repo"), checkout = join(root, "checkout"), branch = "feature/PAP-268-disposable";
@@ -94,8 +94,15 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
         return { sessionId: opts.sessionId!, exitCode: variant === "project-no-progress" ? 1 : 0, metadata: { sessionId: opts.sessionId! } };
       } };
     process.chdir(repo);
-    const result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-268", repo: "fixture", timeout: 1800,
-      provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: authority, observeOperation: (operation) => { if (operation === "branch") branchEffects++; } });
+    const originalUpdate = TicketStore.prototype.update;
+    if (variant === "publication-interruption") TicketStore.prototype.update = function (...args: Parameters<TicketStore["update"]>) {
+      if (args[0] === "PAP-268" && args[1].add_linked_branch) throw new Error("fixture publication interruption");
+      return originalUpdate.apply(this, args);
+    };
+    let result;
+    try { result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-268", repo: "fixture", timeout: 1800,
+      provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: authority, observeOperation: (operation) => { if (operation === "branch") branchEffects++; } }); }
+    finally { TicketStore.prototype.update = originalUpdate; }
     if (bodyFailure) throw bodyFailure;
     assert.equal(forbidden, 0);
     assert.deepEqual({ head: git(["rev-parse", "HEAD"]), status: git(["status", "--porcelain=v2", "--untracked-files=all"]) }, canonical);
@@ -103,13 +110,18 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
       assert.equal(result.status, variant === "project-no-progress" ? "failed" : "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
       assert.equal(JSON.parse(readFileSync(ticketPath, "utf8")).linkedBranches[0].baseSha, base);
       assert.equal(existsSync(repositoryMutationLeasePath(checkout)), false);
+    } else if (variant === "publication-interruption") {
+      assert.equal(result.status, "failed"); assert.equal(spawns, 0); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
+      assert.equal(git(["rev-parse", `refs/heads/${branch}`]), base);
+      const retained = JSON.parse(readFileSync(repositoryTicketSlotPath(repo, "PAP-268"), "utf8"));
+      assert.equal(retained.materializationIntent.branch, branch); assert.equal(retained.materializationIntent.baseSha, base);
     } else {
       assert.equal(result.status, "failed"); assert.equal(spawns, 0); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
       assert.equal(git(["branch", "--list", branch]), "");
       if (variant === "stale" || variant === "missing") { assert.equal(treehouseCalls, 0); assert.equal(branchEffects, 0); }
       assert.match(result.reason ?? "", /ORDINARY_BASELINE_/);
     }
-    assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-268")), variant === "source-drift" || variant === "dirty",
+    assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-268")), variant === "source-drift" || variant === "dirty" || variant === "publication-interruption",
       "post-acquisition denials retain existing custody for owning reconciliation; no forced release");
     if (existsSync(join(root, "authority/native"))) assert.deepEqual(readdirSync(join(root, "authority/native")), []);
   } finally { process.chdir(cwd); closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); }
@@ -216,6 +228,6 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
   assert.equal(frame.cwd, checkout); assert.equal(frame.program.environment.HOME, "/tmp/pa-check-home"); assert.ok(frame.program.argv.includes("--unshare-all"));
 }
 
-for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress"] as const) {
+for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "publication-interruption"] as const) {
   test(`PAP-268 actual ordinary launch: ${variant} intended baseline (simulated provider/Treehouse)`, () => fixture(variant));
 }

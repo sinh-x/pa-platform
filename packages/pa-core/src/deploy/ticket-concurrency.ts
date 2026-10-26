@@ -244,6 +244,11 @@ export function releaseRepositoryTicketSlot(options: RepositoryTicketSlotHandoff
     try {
       const events = queryReadonlyDeploymentEvents(slot.deploymentId);
       if (events.length === 0) {
+        // Once ordinary materialization intent is durable, an unstarted launch
+        // may already own a created ref/checkout even if its call was interrupted.
+        // Keep that same owner's intent/permit for reconciliation, never roll it
+        // back merely because no runtime start was published yet.
+        if (slot.materializationIntent) return { status: "invalid-evidence" };
         // Allocation precedes immutable launch publication. Only the actual
         // allocating process may roll back that launchless reservation; absence
         // of registry evidence or PID death never authorizes external recovery.

@@ -54,7 +54,11 @@ separate contract/reconciliation; legacy split-mode contracts are not upgraded. 
 Public `ORDINARY_BASELINE_*` stops identify the action, evidence owner and
 supported reconciliation without echoing source bodies or authority tokens.
 Post-acquisition denials may retain their existing permit/lease for owning
-reconciliation: no forced release or terminal claim is performed.
+reconciliation: no forced release or terminal claim is performed. In particular,
+unstarted-launch cleanup cannot delete a slot once ordinary materialization intent
+has been published: a ref may already exist despite an interrupted call. Only the
+same live owner can reconcile that intent/result; a missing start event is not
+proof that resources are absent or safe to release.
 
 ## Validated project commands (source capability)
 

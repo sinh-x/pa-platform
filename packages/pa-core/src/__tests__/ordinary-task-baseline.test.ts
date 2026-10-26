@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { materializeTicketBranch, resolveOrdinaryTaskBaseline } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
-import { acquireRepositoryTicketSlot, repositoryTicketSlotPath } from "../deploy/ticket-concurrency.js";
+import { acquireRepositoryTicketSlot, releaseRepositoryTicketSlot, repositoryTicketSlotPath } from "../deploy/ticket-concurrency.js";
 
 function fixture(run: (f: ReturnType<typeof setup>) => void) {
   const root = mkdtempSync(join(tmpdir(), "pap268-baseline-"));
@@ -120,6 +120,8 @@ for (const interruption of ["after-ref-create", "before-ticket-publication"] as 
     assert.equal(f.git(["rev-parse", `refs/heads/${f.branch}`]), f.base);
     const slotBefore = readFileSync(repositoryTicketSlotPath(f.repo, "PAP-1"));
     assert.ok(JSON.parse(slotBefore.toString()).materializationIntent);
+    assert.equal(releaseRepositoryTicketSlot(ordinaryOwner).status, "invalid-evidence", "unstarted cleanup cannot erase materialization intent/result proof");
+    assert.deepEqual(readFileSync(repositoryTicketSlotPath(f.repo, "PAP-1")), slotBefore);
     assert.throws(() => materializeTicketBranch({ ...options, ordinaryOwner: { ...ordinaryOwner, slotToken: "not-the-holder" } }), /ORDINARY_BASELINE_OWNER_INTENT_REJECTED/);
     assert.deepEqual(readFileSync(repositoryTicketSlotPath(f.repo, "PAP-1")), slotBefore);
     const resumed = materializeTicketBranch(options); assert.equal(resumed.created, false); assert.equal(resumed.baseSha, f.base);
