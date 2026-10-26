@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readPiForegroundCompletion, closeDb, appendRegistryEvent, getDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
+import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
 import { PiNativeExecutionAdapter, ORDINARY_NATIVE_EXECUTION_START } from "../execution-native.js";
@@ -548,6 +549,7 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
     const base = git(["rev-parse", "HEAD"]); const checkout = join(f.root, "checkout");
     git(["worktree", "add", "-b", "feature/PAP-256-fixture", checkout, base]);
     writeFileSync(f.ticketPath, JSON.stringify({ ...f.ticket, status: "implementing", title: "Ordinary fixture", linkedBranches: [{ repo: f.caller.repoKey, branch: "feature/PAP-256-fixture", state: "materialized", baseSha: base, headSha: base, sha: base }] }));
+    seedOrdinaryTaskBaseline({ ai: f.ai, repo: f.repo, repoKey: f.caller.repoKey, ticket: "PAP-256", branch: "feature/PAP-256-fixture", base });
     Object.assign(process.env, { PA_AI_USAGE_HOME: f.ai, PA_REGISTRY_DB: join(f.ai, "registry.db"), PA_PLATFORM_HOME: f.root });
     save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
     let spawns = 0; let forbidden = 0;

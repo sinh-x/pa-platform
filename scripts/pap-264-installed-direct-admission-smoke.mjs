@@ -116,8 +116,13 @@ export async function isolatedDriver(root, share) {
   const teamPath = join(teams, "builder.yaml");
   const team = (defaultMode = "orchestrator") => save(teamPath, `name: builder\ndescription: Isolated\nobjective: Fixture\nagents: []\ndefault_mode: ${defaultMode}\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n`);
   team();
+  const baselinePath = "agent-teams/requirements/artifacts/ordinary-baseline.md";
+  const baselineApproval = "c-20261026000000268";
+  save(join(ai, baselinePath), `# Disposable baseline\n\n> Status: Approved — fixture only\n> Ticket: ${ticket}\n> Repository Key: fixture-repo\n> Repository Root: ${repo}\n> Handoff Type: fresh\n> Approved Base SHA: ${base}\n> Feature Branch: ${branch}\n> Review Approval Evidence: ${ticket}#${baselineApproval}\n\n## Work\nSource/installed smoke fixture only.\n`);
   save(join(ai, "tickets", `${ticket}.json`), JSON.stringify({ id: ticket, project: "fixture-repo", title: "Isolated smoke", status: "implementing",
-    linkedBranches: [{ repo: "fixture-repo", branch, state: "materialized", baseSha: base, headSha: base, sha: base }] }));
+    linkedBranches: [{ repo: "fixture-repo", branch, state: "materialized", baseSha: base, headSha: base, sha: base }],
+    doc_refs: [{ type: "requirements", path: baselinePath, primary: true }],
+    comments: [{ id: baselineApproval, author: "sinh", content: `Approve ${ticket} fixture-repo ${repo} ${branch} exact base ${base}; source requirements:${baselinePath}.` }] }));
   Object.assign(process.env, { PA_PLATFORM_CONFIG: config, PA_PLATFORM_HOME: root, PA_PLATFORM_TEAMS: teams, PA_AI_USAGE_HOME: ai, PA_REGISTRY_DB: join(ai, "registry.db"),
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
   process.chdir(repo);

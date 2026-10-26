@@ -17,6 +17,7 @@ import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSes
 import { finalizeRepositoryReview, repositoryReviewReservationPath, resolveExecutionPlan, type RepositoryReviewFinalEvidence } from "@pa-platform/pa-core";
 import { TREEHOUSE_TIMEOUT_MS, MAX_TREEHOUSE_JSON_BYTES } from "../treehouse.js";
 import { TreehouseClient } from "./treehouse-fixture.js";
+import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
 import { PI_VALIDATION_HANDOFF_FILE, type PiProtectedValidationLaunch } from "../validation-supervisor.js";
 import { extractMatrixAuthority } from "../matrix-compatibility.js";
 import { NIXOS_BASELINE_VERSION, NIXOS_APPROVAL_VERSION, NIXOS_TOOLS, nixosTupleDigest, type NixosBaseline, type NixosLaunchTuple } from "../nixos-prerequisites.js";
@@ -76,6 +77,7 @@ test("PAP-264 actual ordinary native holder relinquishes execution before indepe
   git(["worktree", "add", "-b", branch, checkout, base], repo);
   writeFileSync(join(root, "tickets/PAP-198.json"), JSON.stringify({ id: "PAP-198", project: "pa-platform", title: "Isolated Phase 3", status: "implementing",
     linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: base, headSha: base, sha: base }] }));
+  seedOrdinaryTaskBaseline({ ai: root, repo, repoKey: "pa-platform", ticket: "PAP-198", branch, base });
   writeFileSync(join(root, "teams/builder.yaml"), "name: builder\ndescription: fixture\nobjective: fixture\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
   const authority = new PiPreparedNativeAuthority({ root: join(root, "authority"), aiUsageRoot: root,
     runtime: () => ({ sourceSha: "a".repeat(40), packageVersion: "isolated-fixture", configSha: "b".repeat(40), storeRoot: "/fixture/runtime" }) });

@@ -1,6 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { getAiUsageDir } from "../paths.js";
+import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
 import { loadRepoEntry, MAX_REPOSITORY_DIAGNOSTIC_CHARS, resolveRepoExecutionPath } from "../repos.js";
 import { requireTicketLinkedBranch } from "./git-validation.js";
@@ -17,12 +20,95 @@ export interface MaterializeTicketBranchOptions {
   runGit?: (args: readonly string[], cwd: string) => string | Buffer;
   /** Trusted preparation service only: an authenticated exact base, never a CLI/agent override. */
   approvedPreparationBaseSha?: string;
+  /** Native ordinary launcher only. Reauthenticated against durable task/sign-off
+   * evidence inside the transaction; never an agent/environment SHA override. */
+  intendedTaskBaseline?: OrdinaryTaskBaseline;
   /** Live existing repository owner; avoids recursive mutex acquisition during preparation. */
   preparedCapacityOwner?: PreparedTicketCapacityTransaction;
   /** Durable operation identity, required for exact post-crash branch/ticket reconciliation. */
   preparationOperationId?: string;
   /** Trusted terminal owner: exact materialized predecessor, never CLI inputs. */
   settlement?: { branch: string; baseSha: string; expectedHeadSha: string; headSha: string };
+}
+
+/** Observation of the existing task owner, not a second approval or ownership
+ * ledger. The full source/comment digests detect changes between selection and
+ * materialization. A source plan or this object alone cannot authorize a base. */
+export interface OrdinaryTaskBaseline {
+  readonly schemaVersion: "ordinary-task-baseline/v1";
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly ticket: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly requirements: { readonly ref: string; readonly sha256: string };
+  readonly approval: { readonly commentId: string; readonly sha256: string };
+}
+export type OrdinaryTaskBaselineOptions = Pick<MaterializeTicketBranchOptions, "canonicalRepoKey" | "canonicalRepoRoot" | "ticketId" | "ticketStore" | "runGit">;
+
+/** Resolve only the single primary approved task source and its own-ticket
+ * operator sign-off. No review matrix, optional policy activation, new prompt,
+ * CLI SHA argument or environment baseline is consulted. */
+export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions): OrdinaryTaskBaseline {
+  const fail = (code: string): never => { throw ordinaryBaselineError(code); };
+  const root = exactPhysicalPath(options.canonicalRepoRoot, "canonical repository root");
+  const repo = loadRepoEntry(options.canonicalRepoKey);
+  if (!repo || repo.path !== root) fail("IDENTITY");
+  const ticket = (options.ticketStore ?? new TicketStore()).get(options.ticketId);
+  if (!ticket || ticket.id !== options.ticketId) return fail("MISSING");
+  const linked = requireTicketLinkedBranch(ticket, options.canonicalRepoKey);
+  const sources = ticket.doc_refs.filter((ref) => ref.type === "requirements" && ref.primary === true);
+  if (sources.length !== 1) fail("MISSING_OR_AMBIGUOUS");
+  const path = sources[0]!.path;
+  if (!/^agent-teams\/requirements\/artifacts\/[A-Za-z0-9_./-]+\.md$/.test(path)
+    || path.split("/").some((part) => !part || part === "." || part === "..")) fail("SOURCE_REJECTED");
+  let bytes: Uint8Array;
+  try { bytes = readReviewEvidenceFile(join(getAiUsageDir(), path), 1_048_576, "ordinary task baseline"); }
+  catch { return fail("SOURCE_REJECTED"); }
+  let markdown: string;
+  try { markdown = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return fail("SOURCE_REJECTED"); }
+  // Canonical metadata is confined to the document preamble; body examples and
+  // fenced duplicate fields cannot supply or shadow the actual task identity.
+  const preamble = markdown.split(/^##[ \t]/m)[0]!;
+  const header = (label: string): string => {
+    const matches = preamble.split(/\r?\n/).filter((line) => new RegExp(`^>[ \\t]+(?:\\*\\*)?${label}:`).test(line));
+    const prefix = `> ${label}: `;
+    if (matches.length !== 1 || !matches[0]!.startsWith(prefix) || !matches[0]!.slice(prefix.length)) return fail("CONTRACT_INVALID");
+    return matches[0]!.slice(prefix.length);
+  };
+  if (!/^Approved(?:$|[ —])/.test(header("Status")) || header("Ticket") !== options.ticketId
+    || header("Repository Key") !== options.canonicalRepoKey || header("Repository Root") !== root
+    || header("Feature Branch") !== linked.branch) fail("CONTRACT_INVALID");
+  const handoff = header("Handoff Type");
+  if (handoff !== "fresh" && handoff !== "amendment") fail("CONTRACT_INVALID");
+  const baseLabel = handoff === "fresh" ? "Approved Base SHA" : "Retained Base SHA";
+  if (new RegExp(`^>[ \\t]+(?:\\*\\*)?${handoff === "fresh" ? "Retained" : "Approved"} Base SHA:`, "m").test(preamble)) fail("CONTRACT_INVALID");
+  const baseSha = header(baseLabel);
+  if (!/^[0-9a-f]{40}$/.test(baseSha)) fail("CONTRACT_INVALID");
+  const approval = header("Review Approval Evidence");
+  const ids = approval.match(/c-\d{17}/g) ?? [];
+  if (ids.length !== 1 || ![`${options.ticketId}#${ids[0]}`, `${options.ticketId} comment ${ids[0]} by sinh`, ids[0]].includes(approval)) fail("APPROVAL_REJECTED");
+  const comments = ticket.comments.filter((comment) => comment.id === ids[0]);
+  const ref = `requirements:${path}`;
+  // A finite producer clause, not keyword/substring inference from a human
+  // discussion (which might reject the very same tuple). No body suffix or
+  // negation can be interpreted as permission. This initial task decision is
+  // independent of routine phase/check/commit authorization.
+  const decision = `Approve ${options.ticketId} ${options.canonicalRepoKey} ${root} ${linked.branch}`;
+  const approved = ["", "from "].some((prefix) => comments[0]?.content === `${decision} ${prefix}exact base ${baseSha}; source ${ref}.`);
+  if (comments.length !== 1 || comments[0]!.author !== "sinh" || !approved) fail("APPROVAL_REJECTED");
+  const git = options.runGit ?? defaultGit;
+  if (fullCommit(git, root, `${baseSha}^{commit}`, "intended task base") !== baseSha) fail("CONTRACT_INVALID");
+  if (linked.state === "materialized") {
+    if (linked.baseSha !== baseSha) fail("RETAINED_CONFLICT");
+  } else if (fullCommit(git, root, `refs/heads/${repo!.developBranch ?? "develop"}^{commit}`, "configured integration branch") !== baseSha) fail("CONFIG_MISMATCH");
+  const digest = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+  return Object.freeze({ schemaVersion: "ordinary-task-baseline/v1", repoKey: options.canonicalRepoKey, repoRoot: root, ticket: options.ticketId,
+    branch: linked.branch, baseSha, requirements: Object.freeze({ ref, sha256: digest(bytes) }),
+    approval: Object.freeze({ commentId: ids[0]!, sha256: digest(JSON.stringify({ id: comments[0]!.id, author: comments[0]!.author, content: comments[0]!.content })) }) });
+}
+function ordinaryBaselineError(code: string): Error {
+  return new Error(`Condition: ORDINARY_BASELINE_${code}; ordinary branch materialization blocked. Source: primary approved task source and own-ticket operator sign-off. Reason: intended baseline is missing, changed, insecure or incompatible with current repository evidence. Correction: requirements/configuration owner must reconcile the exact repository, ticket, branch, full base and source-bound sign-off; preserve all existing work. Resume Action: retry ordinary launch after the owning evidence agrees; do not approve a substituted base, reset work or supply a SHA override.`);
 }
 
 export interface MaterializedTicketBranch {
@@ -85,7 +171,9 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
   if (!ticket) throw diagnostic(`ticket ${options.ticketId} does not exist`, "restore the durable ticket before acquiring a checkout");
   const linked = requireTicketLinkedBranch(ticket, options.canonicalRepoKey);
   const canonicalBefore = canonicalSnapshot(canonicalRoot, runGit);
-  const approvedBase = options.approvedPreparationBaseSha;
+  const ordinary = options.intendedTaskBaseline;
+  if (ordinary && options.approvedPreparationBaseSha !== undefined) throw ordinaryBaselineError("CONTRACT_INVALID");
+  const approvedBase = ordinary?.baseSha ?? options.approvedPreparationBaseSha;
   if (approvedBase !== undefined && !/^[0-9a-f]{40}$/.test(approvedBase)) throw diagnostic("preparation base is not one exact full commit SHA", "resolve the immutable approved base before resource actions");
   const transaction = <T>(action: () => T): T => options.preparedCapacityOwner
     ? withPreparedRepositoryTicketOwner(options.preparedCapacityOwner, canonicalRoot, action)
@@ -100,9 +188,14 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
       throw diagnostic("linked-branch evidence changed after checkout selection", "preserve the checkout and retry from fresh ticket evidence");
     }
 
+    if (ordinary) {
+      const current = resolveOrdinaryTaskBaseline(options);
+      if (JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");
+      if (gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], worktreeRoot)).length) throw ordinaryBaselineError("CHECKOUT_DIRTY");
+    }
     const developBranch = repo.developBranch ?? "develop";
     const developSha = fullCommit(runGit, canonicalRoot, `refs/heads/${developBranch}^{commit}`, `configured local ${developBranch}`);
-    const selectedBase = approvedBase === undefined ? developSha : fullCommit(runGit, canonicalRoot, `${approvedBase}^{commit}`, "approved preparation base");
+    const selectedBase = approvedBase === undefined ? developSha : fullCommit(runGit, canonicalRoot, `${approvedBase}^{commit}`, ordinary ? "intended task base" : "approved preparation base");
     if (approvedBase !== undefined && selectedBase !== approvedBase) throw diagnostic("approved preparation base did not resolve exactly", "preserve the checkout and reconcile the immutable approval source");
     if (approvedBase !== undefined && linked.state === "materialized" && linked.baseSha !== approvedBase) throw diagnostic("retained materialization base does not match the current exact approved preparation base", "preserve historical provenance and obtain the owning changed-base or migration decision");
     const existingHead = optionalCommit(runGit, canonicalRoot, `refs/heads/${linked.branch}`);
@@ -115,7 +208,7 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
     if (linked.state === "planned") {
       if (existingHead) {
         const reservation = options.preparedCapacityOwner?.inventory().find((row) => row.ticket === options.ticketId);
-        const ownedExactPreparation = approvedBase !== undefined && options.preparationOperationId !== undefined
+        const ownedExactPreparation = !ordinary && approvedBase !== undefined && options.preparationOperationId !== undefined
           && reservation && "operationId" in reservation && reservation.operationId === options.preparationOperationId && reservation.occupancy === "preparing"
           && existingHead === selectedBase && occupiedAt === worktreeRoot && symbolicBranch(runGit, worktreeRoot) === linked.branch;
         if (!ownedExactPreparation) throw diagnostic("planned branch evidence raced with an independently created local branch", "refresh and reconcile the ticket branch evidence before retrying");
