@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -34,10 +34,13 @@ test("PAP-268 versioned project contract resolves exact argv/environment and man
   writeFileSync(join(f.checkout, "test.cjs"), "changed script\n"); assert.throws(() => contract.program(check), /EXECUTION_PROJECT_CONTRACT_INVALID/);
 }));
 
-for (const variant of ["environment", "effect", "path", "duplicate", "timeout", "output", "script-alias", "script-hardlink", "script-permissions", "sensitive-read", "read-escape", "manifest-drift", "canonical-root", "unavailable-containment"] as const) {
+for (const variant of ["environment", "effect", "missing-field", "extra-field", "bad-digest", "malformed-json", "path", "duplicate", "timeout", "output", "script-alias", "script-hardlink", "script-permissions", "sensitive-read", "read-escape", "manifest-drift", "canonical-root", "unavailable-containment"] as const) {
   test(`PAP-268 project command ${variant} is rejected before project dispatch`, () => fixture((f) => {
     if (variant === "environment") Object.assign(f.manifest.checks[0]!.environment, { NODE_OPTIONS: "--require /outside" });
     if (variant === "effect") f.manifest.effects.push("external-account");
+    if (variant === "missing-field") delete (f.manifest.checks[0] as { readPaths?: string[] }).readPaths;
+    if (variant === "extra-field") Object.assign(f.manifest, { extraAuthority: true });
+    if (variant === "bad-digest") f.manifest.checks[0]!.prerequisites[0]!.sha256 = "A".repeat(64);
     if (variant === "path") f.manifest.checks[0]!.prerequisites[0]!.path = "../outside";
     if (variant === "sensitive-read") f.manifest.checks[0]!.readPaths = [".env"];
     if (variant === "read-escape") f.manifest.checks[0]!.readPaths = ["../outside"];
@@ -49,6 +52,11 @@ for (const variant of ["environment", "effect", "path", "duplicate", "timeout", 
     if (variant === "script-permissions") chmodSync(join(f.checkout, "test.cjs"), 0o666);
     f.save();
     if (variant === "manifest-drift") writeFileSync(join(f.checkout, "checks.json"), "{}");
+    if (variant === "malformed-json") {
+      writeFileSync(join(f.checkout, "checks.json"), "{");
+      const config = join(f.config, "config.yaml");
+      writeFileSync(config, readFileSync(config, "utf8").replace(/sha256: [0-9a-f]{64}/, `sha256: ${workflowDigest("{")}`));
+    }
     if (variant === "unavailable-containment") process.env.PATH = f.root;
     const action = variant === "canonical-root" ? () => ProjectCommandContract.resolve("fixture", f.repo, f.repo) : f.resolve;
     assert.throws(action, /EXECUTION_PROJECT_(?:CONTRACT_INVALID|PREREQUISITE)/);

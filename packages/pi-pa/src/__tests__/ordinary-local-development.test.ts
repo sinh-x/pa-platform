@@ -17,7 +17,7 @@ import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 /** Actual source-built deploy/native adapter, real Git and native owner storage.
  * Provider spawn and Treehouse status are simulated; no installed-runtime,
  * real-service, independent-review, or full AC1–AC8 acceptance is claimed. */
-async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "publication-interruption") {
+async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "project-blocked-reporting" | "project-output-limit" | "publication-interruption") {
   const root = mkdtempSync(join(tmpdir(), "pap268-launch-")); const env = process.env, cwd = process.cwd();
   process.env = { ...env }; for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   const repo = join(root, "repo"), checkout = join(root, "checkout"), branch = "feature/PAP-268-disposable";
@@ -32,13 +32,13 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     let commandPin = "";
     if (variant.startsWith("project-")) {
       mkdirSync(join(repo, "scripts"));
-      const testScript = `const fs = require('node:fs');\nconsole.log('project-test', process.env.TEST_PRIVATE_TOKEN || 'no-ambient-secret');\ntry { fs.writeFileSync('host-effect.txt','forbidden'); throw new Error('writable project'); } catch (e) { if (e.message === 'writable project') throw e; }\ntry { fs.readFileSync('unlisted.txt'); throw new Error('unlisted project input visible'); } catch(e) { if(e.message === 'unlisted project input visible') throw e; }\ntry { fs.readFileSync(${JSON.stringify(join(root, "host-secret"))}); throw new Error('host visible'); } catch(e) { if(e.message === 'host visible') throw e; }\nprocess.exit(fs.readFileSync('README.md','utf8').includes('repaired') ? 0 : 2);\n`;
+      const testScript = variant === "project-output-limit" ? "console.log('partial-output-sentinel'+'x'.repeat(4096));\n" : `const fs = require('node:fs');\nconsole.log('project-test', process.env.TEST_PRIVATE_TOKEN || 'no-ambient-secret');\nconsole.error('attempt clock',Date.now());\ntry { fs.writeFileSync('host-effect.txt','forbidden'); throw new Error('writable project'); } catch (e) { if (e.message === 'writable project') throw e; }\ntry { fs.readFileSync('unlisted.txt'); throw new Error('unlisted project input visible'); } catch(e) { if(e.message === 'unlisted project input visible') throw e; }\ntry { fs.readFileSync(${JSON.stringify(join(root, "host-secret"))}); throw new Error('host visible'); } catch(e) { if(e.message === 'host visible') throw e; }\nprocess.exit(fs.readFileSync('README.md','utf8').includes('repaired') ? 0 : 2);\n`;
       const buildScript = "const fs = require('node:fs'); const source = fs.readFileSync('README.md','utf8'); fs.writeFileSync('/tmp/build.txt',source.toUpperCase()); console.log('project-build',fs.readFileSync('/tmp/build.txt','utf8'));\n";
       writeFileSync(join(repo, "scripts/test.cjs"), testScript); writeFileSync(join(repo, "scripts/build.cjs"), buildScript);
       writeFileSync(join(root, "host-secret"), "HOST-SECRET-SENTINEL");
       writeFileSync(join(repo, "unlisted.txt"), "unlisted fixture input must remain hidden from checks\n");
       const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [
-        { id: "project-test", executable: realpathSync(process.execPath), argv: ["scripts/test.cjs"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "scripts/test.cjs", sha256: workflowDigest(testScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
+        { id: "project-test", executable: realpathSync(process.execPath), argv: ["scripts/test.cjs"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "scripts/test.cjs", sha256: variant === "project-blocked-reporting" ? "f".repeat(64) : workflowDigest(testScript) }], timeoutSeconds: 20, maximumOutputBytes: variant === "project-output-limit" ? 128 : 1048576 },
         { id: "project-build", executable: realpathSync(process.execPath), argv: ["scripts/build.cjs"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "scripts/build.cjs", sha256: workflowDigest(buildScript) }], timeoutSeconds: 20, maximumOutputBytes: 1048576 },
       ] });
       writeFileSync(join(repo, "checks.json"), manifest); commandPin = `    projectCommands:\n      manifest: checks.json\n      sha256: ${workflowDigest(manifest)}\n`;
@@ -79,7 +79,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
           const session = native.resolve({ cwd: checkout })!;
           assert.ok(session); assert.equal(session.contract.initialHeadSha, base);
           const plan = { phaseId: "A", scope: "Characterization only", paths: ["README.md"], requirements: ["AC3"], prerequisites: [], checks: ["diff-check"], size: "S", complexity: "bounded", rationale: "No source effects in this baseline slice." };
-          if (variant.startsWith("project-")) await exerciseProjectCommands(native, checkout, () => new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } }), variant === "project-no-progress");
+          if (variant.startsWith("project-")) await exerciseProjectCommands(native, checkout, () => new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } }), variant === "project-no-progress", variant === "project-blocked-reporting", variant === "project-output-limit");
           else {
             session.service.apply(session.actor, { action: "plan", plan });
             // Explicit debt characterization, NOT full AC1–AC8 acceptance:
@@ -91,7 +91,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
           assert.equal(getDeploymentEvents(opts.deployId).filter((event) => event.event === "started").length, 1);
         } catch (error) { bodyFailure = error; throw error; }
         finally { process.chdir(repo); process.env = previous; }
-        return { sessionId: opts.sessionId!, exitCode: variant === "project-no-progress" ? 1 : 0, metadata: { sessionId: opts.sessionId! } };
+        return { sessionId: opts.sessionId!, exitCode: variant === "project-no-progress" || variant === "project-blocked-reporting" || variant === "project-output-limit" ? 1 : 0, metadata: { sessionId: opts.sessionId! } };
       } };
     process.chdir(repo);
     const originalUpdate = TicketStore.prototype.update;
@@ -107,7 +107,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     assert.equal(forbidden, 0);
     assert.deepEqual({ head: git(["rev-parse", "HEAD"]), status: git(["status", "--porcelain=v2", "--untracked-files=all"]) }, canonical);
     if (variant === "matching" || variant.startsWith("project-")) {
-      assert.equal(result.status, variant === "project-no-progress" ? "failed" : "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
+      assert.equal(result.status, variant === "project-no-progress" || variant === "project-blocked-reporting" || variant === "project-output-limit" ? "failed" : "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
       assert.equal(JSON.parse(readFileSync(ticketPath, "utf8")).linkedBranches[0].baseSha, base);
       assert.equal(existsSync(repositoryMutationLeasePath(checkout)), false);
     } else if (variant === "publication-interruption") {
@@ -127,7 +127,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
   } finally { process.chdir(cwd); closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); }
 }
 
-async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checkout: string, fresh: () => PiNativeExecutionAdapter, stopAtNoProgress = false) {
+async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checkout: string, fresh: () => PiNativeExecutionAdapter, stopAtNoProgress = false, blockedReporting = false, outputLimited = false) {
   const tools = new Map<string, PiToolDefinition>(); const handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
   const context = { cwd: checkout };
   const pi = { registerTool(tool: PiToolDefinition) { tools.set(tool.name, tool); }, on(name: string, handler: (event: unknown, context: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } } as PiRuntime;
@@ -146,21 +146,54 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
   let sequence = 0;
   const execute = async (name: string, input: Record<string, unknown>) => {
     const id = `project-${++sequence}`; assert.equal(await dispatch("tool_call", { toolName: name, toolCallId: id, input }), undefined);
-    let result: unknown, failed = false;
-    try { result = await tools.get(name)!.execute(id, input, undefined, undefined, context); } catch (error) { failed = true; result = String(error); }
-    await dispatch("tool_execution_end", { toolName: name, toolCallId: id, result, isError: failed }); return { result, failed };
+    let result: unknown, failed = false; const updates: unknown[] = [];
+    try { result = await tools.get(name)!.execute(id, input, undefined, (value: unknown) => updates.push(value), context); } catch (error) { failed = true; result = String(error); }
+    await dispatch("tool_execution_end", { toolName: name, toolCallId: id, result, isError: failed }); return { result, failed, updates };
   };
   const deny = async (input: Record<string, unknown>) => {
     const response = await dispatch("tool_call", { toolName: "bash", toolCallId: `deny-${++sequence}`, input }) as { block: boolean; reason: string };
     assert.equal(response.block, true); assert.ok(response.reason.length <= 2000); assert.doesNotMatch(response.reason, /HOST-SECRET|TEST_PRIVATE_TOKEN|bootId/);
   };
   const plan = { phaseId: "A", scope: "Non-PA real project check/repair", paths: ["README.md"], requirements: ["AC1", "AC4", "AC5", "AC8"], prerequisites: [], checks: ["project-test", "project-build"], size: "S", complexity: "bounded", rationale: "Native approved contract and namespace-contained actual processes." };
+  if (blockedReporting) {
+    const before = session.service.status(session.actor);
+    await assert.rejects(control({ action: "plan", plan }), /EXECUTION_PROJECT_CONTRACT_INVALID/);
+    assert.equal((await execute("bash", { command: "ppa bulletin list" })).failed, false);
+    assert.equal((await dispatch("tool_call", { toolName: "write", toolCallId: "blocked-source", input: { path: "README.md", content: "not authorized" } }) as { block: boolean }).block, true);
+    const report = await control({ action: "report" });
+    assert.match(String(report.details.markdown), /blocked\/unplanned; no source phase or checks admitted/);
+    assert.equal(report.details.processState, "live"); assert.equal(report.details.terminalSettlement, false);
+    assert.equal((await execute("write", { path: join(process.env.PA_AI_USAGE_HOME!, `sessions/2026/10/agent-team/2026-10-26-${session.actor.deploymentId}-builder--builder-agent--PAP-268--project-blocked.md`), content: String(report.details.markdown) })).failed, false);
+    assert.deepEqual(session.service.status(session.actor), before, "source-contract denial cannot obstruct reporting or manufacture check/phase authority");
+    // Simulated owning-config drift is not a protected record edit or a source
+    // permission producer. Reload must retain the original admitted pointer,
+    // still permit factual reporting, and deny source use of the changed pin.
+    const configPath = join(process.env.PA_AI_USAGE_HOME!, "config/config.yaml");
+    writeFileSync(configPath, readFileSync(configPath, "utf8").replace(/sha256: [0-9a-f]{64}/, `sha256: ${"0".repeat(64)}`));
+    await reload();
+    assert.equal((await control({ action: "report" })).details.terminalSettlement, false);
+    await assert.rejects(control({ action: "plan", plan }), /EXECUTION_PROJECT_CONTRACT_INVALID/);
+    assert.deepEqual(session.service.status(session.actor), before);
+    return;
+  }
   await control({ action: "plan", plan });
   await assert.rejects(control({ action: "observe", kind: "phase" }), "a plan is not completed work");
   await select();
   await deny({ command: "node 'scripts/test.cjs'; true" }); await deny({ command: "npm run unknown" });
   await deny({ command: "node 'scripts/test.cjs'", env: { NODE_OPTIONS: "--require evil" } });
   await deny({ command: "git commit -m 'feat: premature'" });
+  if (outputLimited) {
+    const result = await execute("bash", { command: "node 'scripts/test.cjs'", timeout: 20 });
+    assert.equal(result.failed, true); assert.doesNotMatch(JSON.stringify(result), /partial-output-sentinel|EXECUTION_PRODUCT_CHECK_FAILED/);
+    const last = session.reportFacts().checks.at(-1)!;
+    const raw = session.evidence.read(last.output!, "tool-result") as { exitCode: number; process: { stdout: Parameters<typeof session.evidence.blob>[0]; outputLimitExceeded: boolean } };
+    assert.equal(raw.process.outputLimitExceeded, true); assert.notEqual(raw.exitCode, 0);
+    assert.match(session.evidence.blob(raw.process.stdout).toString(), /partial-output-sentinel/);
+    assert.equal(session.service.status(session.actor).passedChecks["project-test"], undefined);
+    const report = await control({ action: "report" });
+    assert.match(String(report.details.markdown), /output-limit true/); assert.doesNotMatch(String(report.details.markdown), /partial-output-sentinel/);
+    await settle(); return;
+  }
   const firstCheck = await execute("bash", { command: "node 'scripts/test.cjs'", timeout: 20 });
   assert.equal(firstCheck.failed, true); assert.match(String(firstCheck.result), /EXECUTION_PRODUCT_CHECK_FAILED/);
   const failure = session.service.status(session.actor).originalFailure!; assert.equal(failure.exitCode, 2);
@@ -177,6 +210,10 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
       await control({ action: "attempt", evidence: await observe("recovery", `Relabelled prose ${count}, but the same actual failed output is not new diagnosis.`) });
       const current = session.service.status(session.actor);
       assert.equal(current.bounds.consecutiveNoProgress, count); assert.equal(current.diagnosticDigests.at(-1), diagnostic);
+      const latest = session.reportFacts().checks.at(-1)!.output!;
+      const latestResult = session.evidence.read(latest, "tool-result") as { process: { stderr: { sha256: string } } };
+      const firstResult = session.evidence.read(failure.output, "tool-result") as { process: { stderr: { sha256: string } } };
+      assert.notEqual(latestResult.process.stderr.sha256, firstResult.process.stderr.sha256, "changing log timestamps cannot manufacture semantic progress");
       assert.deepEqual(current.originalFailure, failure); assert.equal(current.bounds.deadlineAt, deadline); await reload();
     }
     await assert.rejects(select(), "three consecutive no-progress attempts stop source work");
@@ -203,6 +240,8 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
   const phaseReport = await control({ action: "report" });
   const markdown = String(phaseReport.details.markdown);
   assert.match(markdown, /Original historical failure:.*exit 2/); assert.match(markdown, /Process: live/);
+  assert.match(markdown, /project-test no-ambient-secret/); assert.match(markdown, /attempt clock/);
+  assert.doesNotMatch(markdown, /HOST-SECRET-SENTINEL/);
   assert.equal(phaseReport.details.terminalSettlement, false);
   await execute("write", { path: join(reportRoot, `sessions/2026/10/agent-team/2026-10-26-${session.actor.deploymentId}-builder--builder-agent--PAP-268--phase-a.md`), content: markdown });
   const phaseEvidence = await observe("phase");
@@ -228,6 +267,6 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
   assert.equal(frame.cwd, checkout); assert.equal(frame.program.environment.HOME, "/tmp/pa-check-home"); assert.ok(frame.program.argv.includes("--unshare-all"));
 }
 
-for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "publication-interruption"] as const) {
+for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "project-blocked-reporting", "project-output-limit", "publication-interruption"] as const) {
   test(`PAP-268 actual ordinary launch: ${variant} intended baseline (simulated provider/Treehouse)`, () => fixture(variant));
 }

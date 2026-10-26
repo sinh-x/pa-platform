@@ -68,9 +68,15 @@ sha256: <exact digest> }` in its operator-managed configuration. The manifest is
 isolated-temp-write]` and an ordered `checks` array. Each check names `id`, an
 exact root-owned executable, literal `argv`, literal application `environment`,
 explicit file-level `readPaths`, content-hashed script/dependency `prerequisites`, `timeoutSeconds` (max 1800)
-and `maximumOutputBytes` (max 16 MiB). No model argument selects or replaces this
+and `maximumOutputBytes` (max 16 MiB combined across stdout/stderr). No model argument selects or replaces this
 contract. Manifest/registration/script drift denies dispatch; an existing
-execution descriptor cannot silently adopt a different command digest.
+execution descriptor cannot silently adopt a different command registration.
+The registration fingerprint is retained across reload; manifest/script/toolchain
+validation is deferred to source/check boundaries so an invalid contract or
+unavailable containment cannot block authenticated startup observations and own
+partial/failed Markdown reporting. Reporting cannot repair or activate that
+contract, and changed registration still denies command/commit authority after
+reload; it cannot silently adopt a new command contract.
 
 The native bash tool matches the exact rendered command (`node 'scripts/test.cjs'`,
 for example), but executes the pinned argv directly, not that text through an
@@ -106,8 +112,10 @@ replacement/review accounting and the no-progress stop. No independent acceptanc
 or optional rich-report receipt is inferred.
 
 `observe` kind `recovery` optionally accepts a bounded `rationale`. This prose
-never supplies authority. Native diagnostic identity derives from actual failed
-command/exit/output content, without process IDs, time or prose. Remedy identity
+never supplies authority. One initial native diagnosis is bound to the immutable original failed
+command/exit/output content, without process IDs, retry log timestamps or prose.
+Later volatile output alone is not progress; further progress requires new native
+source-change/remedy evidence. Remedy identity
 comes from real successful scoped write/edit byte changes after failure. Only new
 native evidence plus rationale can qualify as progress; repeating identical
 output with different prose increments the existing three-consecutive-no-progress
@@ -115,10 +123,14 @@ stop across reload/replan. The first failure and every result remain immutable.
 
 `pa_execution` action `report` returns concise native Markdown and a reference to
 the complete durable report. It lists historical commands/candidates/exits/output
-refs, original failure, repair evidence, current HEAD, remaining risks and first
-unproven action. Work state, live process, staged completion and terminal
-settlement are distinct. Reporting cannot grant source authority, clear an
-operation barrier, reset limits or release a live holder. The bounded reading
+refs, original failure, bounded whole-buffer-redacted failure reading excerpts,
+repair evidence, current HEAD, remaining risks and first unproven action. Work state, live process, staged completion and terminal
+settlement are distinct. Reporting pins physical roots/Git-pointer identity before Git
+observations, uses fenced/control-sanitized reading excerpts, distinguishes the
+native process exit/timeout/abort/output-limit/settlement from wrapper/check
+failure, withholds incomplete channel prefixes rather than exposing partial
+secrets, and does not require full-diff or rich-view generation. Reporting cannot grant source authority, clear an operation
+barrier, reset limits or release a live holder. The bounded reading
 view explicitly labels truncation; full native evidence is retained. Browser,
 HTML, Obsidian and machine-certified closure are not ordinary prerequisites.
 

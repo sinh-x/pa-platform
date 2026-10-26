@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
-  captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
+  captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
   parseExecutionBinding, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
-  executionFailure, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
+  executionFailure, executionWorkflowError, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
   type PreparedLockOwners, type PreparedTicketCapacityTransaction, type ExecutionWorktreeTransaction, type RegistryEvent, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
 } from "@pa-platform/pa-core";
@@ -223,14 +223,17 @@ export class NativeExecutionSession {
   readonly #ordinary: ReturnType<typeof ordinaryLineage> | null;
   readonly #launch: Record<string, unknown>;
   readonly #physical: HelperContext;
+  readonly #physicalIdentity: string;
   readonly #initial: NativeScopeSnapshot;
   readonly #grantId: string | null;
-  readonly #commands: ProjectCommandContract | null;
+  #commands: ProjectCommandContract | null = null;
+  readonly #commandRegistration: string | null;
   readonly #resultLinks = new Map<string, SourceVersion>();
   readonly #started = new Set<string>();
   #administrationRunning = false;
   constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown> | null, physical: HelperContext, ordinary: RegistryEvent | null = null) {
     this.#authority = authority; this.#helper = helper; this.#consumed = consumed; this.#physical = physical;
+    this.#physicalIdentity = this.#capturePhysicalIdentity();
     if (Boolean(consumed) === Boolean(ordinary)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     this.#ordinary = ordinary ? ordinaryLineage(ordinary, physical) : null;
     this.#launch = consumed ?? this.#ordinary!; const launch = this.#launch;
@@ -272,7 +275,6 @@ export class NativeExecutionSession {
     // No storage creation before full live source authentication. Optional
     // qualification/activation is deliberately not consulted for ordinary work.
     this.assertCaller({ cwd: process.cwd() }); this.#authenticateSourceCustody();
-    this.#commands = ProjectCommandContract.resolve(physical.repoKey, physical.repoRoot, physical.worktreeRoot);
     const store = authority.execution(this.#ordinary !== null || native?.active === true); if (!store) throw executionFailure("EXECUTION_STORAGE_REJECTED");
     this.evidence = new NativeExecutionEvidence(store, authority.evidenceRoot(), this.locks);
     const host: ExecutionHost = {
@@ -312,18 +314,21 @@ export class NativeExecutionSession {
     const originField = this.#ordinary ? "launchSha256" : "consumptionSha256";
     const descriptorVersion = this.#ordinary ? "native-ordinary-execution-descriptor/v1" : "native-execution-descriptor/v1";
     if (exists) {
-      const descriptor = workflowObject(store.read(descriptorName), ["schemaVersion", "binding", originField, "initial", ...(this.#commands ? ["projectCommandsSha256"] : [])]);
-      if (this.#commands && descriptor.projectCommandsSha256 !== this.#commands.sha256) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
+      const rawDescriptor = store.read(descriptorName);
+      const hasRegistration = rawDescriptor !== null && typeof rawDescriptor === "object" && Object.hasOwn(rawDescriptor, "projectCommandsRegistrationSha256");
+      const descriptor = workflowObject(rawDescriptor, ["schemaVersion", "binding", originField, "initial", ...(hasRegistration ? ["projectCommandsRegistrationSha256"] : [])]);
+      this.#commandRegistration = hasRegistration ? workflowSha(descriptor.projectCommandsRegistrationSha256) : null;
       if (descriptor.schemaVersion !== descriptorVersion || !equal(descriptor.binding, this.contract) || descriptor[originField] !== workflowDigest(JSON.stringify(launch))) throw workflowError();
       this.#initial = descriptor.initial as NativeScopeSnapshot;
     } else {
+      this.#commandRegistration = this.#currentCommandRegistration();
       this.#initial = captureNativeScope(physical.worktreeRoot);
       if ((!this.#ordinary && !native?.active) || this.#initial.git.head !== launch.headSha || names(this.#initial.git).length) throw workflowError();
     }
     const state = this.service.initialize(this.actor);
     if (!exists) {
       if (state.sequence !== 0) throw workflowError();
-      withPreparedWorkflowLocks(this.locks, (scope) => store.publish(scope, descriptorName, { schemaVersion: descriptorVersion, binding: this.contract, [originField]: workflowDigest(JSON.stringify(launch)), initial: this.#initial, ...(this.#commands ? { projectCommandsSha256: this.#commands.sha256 } : {}) }));
+      withPreparedWorkflowLocks(this.locks, (scope) => store.publish(scope, descriptorName, { schemaVersion: descriptorVersion, binding: this.contract, [originField]: workflowDigest(JSON.stringify(launch)), initial: this.#initial, ...(this.#commandRegistration ? { projectCommandsRegistrationSha256: this.#commandRegistration } : {}) }));
     }
     this.binding = {
       bindingIdentity: workflowDigest(JSON.stringify([this.contract, launch])), service: this.service, actor: this.actor,
@@ -345,12 +350,45 @@ export class NativeExecutionSession {
       recordFeatureUpdateIntent: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); }, recordFeatureUpdate: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); },
     };
   }
-  #checkText(name: string): string | undefined { return this.#commands ? this.#commands.check(name)?.command : checkText(name); }
+  #currentCommandRegistration(): string | null {
+    try {
+      const repo = loadRepoEntry(this.contract.repoKey);
+      if (!repo || repo.path !== this.contract.repoRoot) throw workflowError();
+      return repo.projectCommands === undefined ? null : workflowDigest(JSON.stringify(repo.projectCommands));
+    } catch { return workflowDigest("invalid-current-project-command-registration"); }
+  }
+  #projectCommands(): ProjectCommandContract | null {
+    // Source prerequisites never gate authenticated startup/reporting. Retain
+    // the admitted registration identity across reload, but resolve/validate the
+    // actual manifest, scripts and containment only at source/check boundaries.
+    if (this.#currentCommandRegistration() !== this.#commandRegistration) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
+    if (this.#commandRegistration === null) return null;
+    this.#commands ??= ProjectCommandContract.resolve(this.contract.repoKey, this.contract.repoRoot, this.contract.worktreeRoot);
+    if (!this.#commands) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
+    return this.#commands;
+  }
+  #checkText(name: string): string | undefined { const commands = this.#projectCommands(); return commands ? commands.check(name)?.command : checkText(name); }
   #retained() { if (!this.#grantId) throw executionFailure("EXECUTION_BINDING_CONFLICT"); return this.#authority.retained({ repoKey: this.#physical.repoKey, repoRoot: this.#physical.repoRoot, ticket: this.#physical.ticket! }, this.#grantId); }
-  /** Audit/finish authority deliberately does not require unchanged HEAD. New
-   * source work independently takes the full strict helper reread below. */
+  #capturePhysicalIdentity(): string {
+    try {
+      const p = this.#physical;
+      const roots = [...new Set([p.repoRoot, p.worktreeRoot, p.gitDir, p.gitCommonDir])].map((path) => {
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) throw workflowError();
+        return { path, dev: stat.dev, ino: stat.ino, uid: stat.uid, mode: stat.mode };
+      });
+      const pointer = join(p.worktreeRoot, ".git"), stat = lstatSync(pointer);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw workflowError();
+      const bytes = readReviewEvidenceFile(pointer, 16_384, "native physical Git pointer");
+      return workflowDigest(JSON.stringify([roots, { dev: stat.dev, ino: stat.ino, uid: stat.uid, mode: stat.mode, sha256: workflowDigest(bytes) }]));
+    } catch { throw executionFailure("EXECUTION_BINDING_UNCERTAIN"); }
+  }
+  /** Audit/finish authority deliberately does not require unchanged HEAD. Physical
+   * roots/Git-pointer identity remains pinned even for reporting, before any Git
+   * observation. Source work independently takes the strict helper reread below. */
   assertCaller(context: unknown): void {
     const p = this.#physical; const id = String(this.#launch.deploymentId); const env = process.env;
+    if (this.#capturePhysicalIdentity() !== this.#physicalIdentity) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
     const status = queryReadonlyHelperRegistry(id).status;
     if ((context as { cwd?: string } | null)?.cwd !== p.worktreeRoot || process.cwd() !== p.worktreeRoot || env.PA_DEPLOYMENT_ID !== id || env.PA_DEPLOYMENT_DIR !== getDeployPaths(id).deployDir
       || env.PA_TEAM !== "builder" || env.PA_MODE !== "orchestrator" || env.PA_TICKET_ID !== p.ticket || env.PA_REPO !== p.worktreeRoot || env.PA_WORKTREE_ROOT !== p.worktreeRoot) throw executionFailure("EXECUTION_BINDING_CONFLICT");
@@ -534,8 +572,8 @@ export class NativeExecutionSession {
     const link = workflowDigest(JSON.stringify(["native-result-link/v1", this.service.executionId, operationId]));
     withPreparedWorkflowLocks(this.locks, (scope) => this.evidence.store.publish(scope, `${link}.intent.json`, { schemaVersion: "native-result-link/v1", intent: start.source, result: proof }));
     this.#resultLinks.set(operationId, proof);
-    if (error) throw process && process.groupSettled && exitCode !== 0 && start.state.operation?.check
-      ? executionFailure("EXECUTION_PRODUCT_CHECK_FAILED") : workflowError();
+    if (error) throw process && process.groupSettled && process.exitCode !== null && process.exitCode !== 0 && !process.timedOut && !process.aborted && !process.outputLimitExceeded && start.state.operation?.check
+      ? executionFailure("EXECUTION_PRODUCT_CHECK_FAILED") : executionWorkflowError(error);
     return result as T;
   }
   #activeProcess: NativeProcessResult | null = null;
@@ -551,7 +589,7 @@ export class NativeExecutionSession {
         timeoutSeconds: Math.min(timeout, remaining, check?.timeoutSeconds ?? 14_400), signal,
         ...(check ? { maximumOutputBytes: check.maximumOutputBytes, program, env: {} } : {}) });
       this.#activeProcess = result; return result;
-    } catch (error) { if (error instanceof NativeProcessEvidenceError) this.#unprovenProcess = error.evidence; throw workflowError(); }
+    } catch (error) { if (error instanceof NativeProcessEvidenceError) this.#unprovenProcess = error.evidence; throw executionWorkflowError(error); }
   }
   /** Lower file boundary uses dirfd-relative, no-follow traversal. The SDK still
    * owns edit matching/queueing; these operations cannot write through aliases. */
@@ -601,7 +639,7 @@ export class NativeExecutionSession {
   /** Native report input, never a model-supplied check list or path classifier.
    * Historical results remain labelled with their original candidate. Unknown
    * scope/in-flight work yields metadata only, not guessed safe diff contents. */
-  reportFacts(): NativeExecutionReportFacts {
+  reportFacts(includeDiff = true): NativeExecutionReportFacts {
     this.assertCaller({ cwd: process.cwd() });
     const state = this.service.status(this.actor);
     const snapshot = captureRepositoryGitSnapshot(this.contract.worktreeRoot, git);
@@ -628,7 +666,7 @@ export class NativeExecutionSession {
     }
     const omissions: string[] = [];
     let diff = Buffer.alloc(0);
-    if (scopeProven && state.plan) {
+    if (scopeProven && state.plan && includeDiff) {
       const arguments_ = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", this.contract.initialHeadSha, "--", ...state.plan.paths];
       const pieces = [git(arguments_, this.contract.worktreeRoot)];
       for (const entry of snapshot.statusEntries ?? []) {
@@ -641,7 +679,8 @@ export class NativeExecutionSession {
       diff = Buffer.concat(pieces);
       if (diff.length > 1_048_576) throw workflowError(); // no silent truncation of the full companion
       if (diff.includes(Buffer.from("Binary files "))) omissions.push("Binary patch bytes are omitted; Git binary-change metadata and the private content inventory are retained.");
-    } else omissions.push("Full diff omitted: current source scope or operation settlement is unproven. Preserve all work for its owner.");
+    } else omissions.push(includeDiff ? "Full diff omitted: current source scope or operation settlement is unproven. Preserve all work for its owner."
+      : "Full diff not requested for this bounded local Markdown report; native result references and Git history retain source evidence.");
     let pendingResult: SourceVersion | null = null;
     if (state.operation) { try { pendingResult = this.#resultSource(state.operation.id); } catch { omissions.push("The started operation has no durable native result; no terminal cause or process death is inferred."); } }
     if (!equal(snapshot, captureRepositoryGitSnapshot(this.contract.worktreeRoot, git))) throw workflowError();
@@ -649,18 +688,46 @@ export class NativeExecutionSession {
     return Object.freeze({ state, snapshot, checks: Object.freeze(checks), operations: Object.freeze(operations), scopeProven, diff, omissions: Object.freeze(omissions), pendingResult });
   }
   localReport(): Readonly<Record<string, unknown>> {
-    const facts = this.reportFacts();
+    const facts = this.reportFacts(false);
     const staged = readPiForegroundCompletion(getDeployPaths(this.actor.deploymentId).deployDir);
     const failed = facts.checks.filter((check) => check.exitCode !== 0);
-    const lines = [`# Local phase ${facts.state.plan?.phaseId ?? "unplanned"}`, `Scope: ${facts.state.plan?.scope ?? "no source plan"}`,
-      `Current HEAD: ${facts.snapshot.head}`, `Work: ${facts.state.operation ? "in-flight/unknown" : facts.state.originalFailure ? "blocked by unresolved check failure" : "settled local operations; independent acceptance not claimed"}`,
+    const stopped = facts.state.bounds.consecutiveNoProgress >= 3 || Date.now() >= Date.parse(facts.state.bounds.deadlineAt);
+    let committed = false;
+    if (this.#ordinary && facts.scopeProven && !facts.snapshot.dirty) {
+      for (let sequence = facts.state.sequence; sequence > 0; sequence--) {
+        const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
+        if (["plan", "advance"].includes(event.command.action)) break;
+        if (event.command.action !== "finish") continue;
+        const row = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
+        const intent = this.evidence.read(row.intent, "tool-intent") as NativeIntent;
+        if (!intent.command.startsWith("git commit -m ")) continue;
+        committed = row.exitCode === 0 && row.process?.groupSettled === true && row.scopeValid
+          && row.after.git.head !== intent.before.git.head && row.after.git.digestSha256 === facts.snapshot.digestSha256;
+        break;
+      }
+    }
+    const readingViews = [...new Set([failed[0], ...failed.slice(-3)].filter((check) => check !== undefined))].map((check) => {
+      if (!check.output) return "- Failure output is unknown; do not infer a result.";
+      const row = this.evidence.read(check.output, "tool-result") as NativeToolResult;
+      const incomplete = row.process && (!row.process.groupSettled || row.process.timedOut || row.process.aborted || row.process.outputLimitExceeded);
+      const bytes = incomplete ? Buffer.from("[Incomplete native output and SDK error retained privately; partial secret values must not be exposed.]") : Buffer.concat([...(row.process ? [this.evidence.blob(row.process.stdout), this.evidence.blob(row.process.stderr)] : []),
+        ...(row.sdkError ? [this.evidence.blob(row.sdkError)] : [])]);
+      // Redact the complete buffer before clipping, including cross-chunk secrets.
+      const safe = this.publicText(bytes.toString("utf8"));
+      const excerpt = safe.slice(0, 2048).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "?");
+      const fence = "`".repeat(Math.max(2, ...[...excerpt.matchAll(/`+/g)].map((match) => match[0].length)) + 1);
+      return `### ${check.command}; check result ${check.exitCode}; native process exit ${row.process?.exitCode ?? "unknown"}; timeout ${row.process?.timedOut ?? "unknown"}; aborted ${row.process?.aborted ?? "unknown"}; output-limit ${row.process?.outputLimitExceeded ?? "unknown"}; group-settled ${row.process?.groupSettled ?? "unknown"}\n${fence}text\n${excerpt}\n${fence}${safe.length > 2048 ? "\n[Excerpt clipped; complete channels retained at the check output reference.]" : ""}`;
+    });
+    const lines = [`# Local phase ${(facts.state.plan?.phaseId ?? "unplanned").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}`, `Agent-planned scope: ${(facts.state.plan?.scope ?? "no source plan").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}`,
+      `Current HEAD: ${facts.snapshot.head}`, `Work: ${facts.state.operation ? "in-flight/unknown" : !facts.state.plan ? "blocked/unplanned; no source phase or checks admitted" : !facts.scopeProven ? "blocked by unproven current source scope" : facts.state.originalFailure ? "blocked by unresolved check failure" : committed ? "local phase committed; independent acceptance not claimed" : "local work incomplete; current checks and commit still need proof"}`,
       `Process: live. Completion: ${staged ? `staged ${staged.status}` : "not staged"}. Terminal settlement: pending normal process exit.`,
       `No-progress: ${facts.state.bounds.consecutiveNoProgress}/3. Deadline: ${facts.state.bounds.deadlineAt}.`,
       `Original historical failure: ${failed[0] ? `${failed[0].command}; exit ${failed[0].exitCode}; ${failed[0].output?.ref ?? "output unknown"}` : "none recorded"}.`,
+      "", "## Failure reading views (redacted; original channels remain private)", ...readingViews,
       "", "## Actual checks (historical candidate and output retained)",
       ...facts.checks.map((check) => `- ${check.command}: ${check.state}, exit ${check.exitCode ?? "unknown"}, candidate ${check.candidateSha}, output ${check.output?.ref ?? "unknown"}`),
       "", `Repair evidence: ${new Set(facts.state.remedyDigests).size} distinct native content changes; diagnosis evidence: ${new Set(facts.state.diagnosticDigests).size} distinct retained observations.`,
-      `First unproven action: ${facts.state.operation ? "settle the exact started native operation" : facts.state.originalFailure ? "diagnose/repair and pass every named affected check" : "next scoped phase or separately owned independent acceptance"}.`,
+      `First unproven action: ${facts.state.operation ? "settle the exact started native operation" : stopped ? "handoff retained state: native bounds stop further execution; do not reset limits" : !facts.state.plan ? "establish a supported scoped plan and validated project prerequisites" : !facts.scopeProven ? "reconcile the current source scope through its owner without adopting unknown work" : facts.state.originalFailure ? "diagnose/repair and pass every named affected check" : committed ? "next scoped phase within native bounds or separately owned independent acceptance" : "prove every named current-content check and a local commit before phase continuation"}.`,
       "Remaining: independent review, CI, human UAT and live adoption are separate; none is inferred from this report.", ...facts.omissions];
     const markdown = this.publicText(lines.join("\n"));
     const source = this.evidence.publish("local-report", { executionId: this.service.executionId, phaseId: facts.state.plan?.phaseId ?? null,
@@ -686,7 +753,7 @@ export class NativeExecutionSession {
       const result = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
       const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
       if (!intent.command.startsWith("git commit -m ")) continue;
-      if (result.exitCode !== 0 || !result.scopeValid || !result.process?.groupSettled || !equal(result.after, snapshot)
+      if (result.exitCode !== 0 || !result.scopeValid || !result.process?.groupSettled || result.after.git.head === intent.before.git.head || !equal(result.after, snapshot)
         || this.#ordinaryPassedChecks({ ...state, sequence: sequence - 1 }).length !== state.plan.checks.length) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
       return { executionId: this.service.executionId, sequence: state.sequence, phaseId: state.plan.phaseId, candidateSha: state.candidateSha,
         commit: event.command.evidence, snapshot: snapshot.git };
@@ -706,10 +773,12 @@ export class NativeExecutionSession {
       if (!failure && event.command.failure?.check === state.originalFailure.check) {
         failure = event.command.failure;
         if (failure.candidateSha !== state.candidateSha || failure.command !== state.originalFailure.command) throw workflowError();
-        // Content identity excludes process IDs, time, result nonce and prose.
-        // Identical failed output cannot become novel by relabelling/retry.
-        diagnostic = { executionId: this.service.executionId, originalFailure: state.originalFailure.output, command: failure.command, exitCode: failure.exitCode,
-          stdoutSha256: result.process?.stdout.sha256 ?? null, stderrSha256: result.process?.stderr.sha256 ?? result.sdkError?.sha256 ?? null };
+        // One initial diagnosis is bound to the immutable original failure, not
+        // to volatile retry logs (timestamps alone must never reset no-progress).
+        // Further progress requires genuinely new native source-change evidence.
+        const original = this.evidence.read(state.originalFailure.output, "tool-result") as NativeToolResult;
+        diagnostic = { executionId: this.service.executionId, originalFailure: state.originalFailure.output, command: state.originalFailure.command, exitCode: state.originalFailure.exitCode,
+          stdoutSha256: original.process?.stdout.sha256 ?? null, stderrSha256: original.process?.stderr.sha256 ?? original.sdkError?.sha256 ?? null };
       }
       if (equal(event.command.evidence, state.originalFailure.output)) break;
       if (!remedy && result.exitCode === 0 && result.scopeValid && ["write", "edit"].includes(intent.toolName) && !equal(intent.before.files, result.after.files)) {

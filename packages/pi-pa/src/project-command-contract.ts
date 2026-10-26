@@ -15,6 +15,13 @@ export interface ProjectCheck {
   readonly maximumOutputBytes: number;
 }
 const invalid = () => executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
+function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  try { return workflowObject(value, [...keys]); } catch { throw invalid(); }
+}
+function sha(value: unknown): string { try { return workflowSha(value); } catch { throw invalid(); } }
+function json(bytes: Uint8Array): unknown {
+  try { return parseReviewEvidenceJson(bytes, "project command contract"); } catch { throw invalid(); }
+}
 function path(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 4096 || isAbsolute(value) || !/^[A-Za-z0-9_./-]+$/.test(value)
     || value.startsWith("-") || findSensitiveMatch("filename", basename(value)) || findSensitiveMatch("path", value) || value.split("/").some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw invalid();
@@ -59,15 +66,15 @@ export class ProjectCommandContract {
   readonly #pin: NonNullable<RepoEntry["projectCommands"]>;
   readonly #bwrap: string;
   private constructor(readonly repoKey: string, readonly repoRoot: string, readonly worktreeRoot: string, pin: NonNullable<RepoEntry["projectCommands"]>) {
-    const rawPin = workflowObject(pin, ["manifest", "sha256"]);
-    this.#pin = Object.freeze({ manifest: path(rawPin.manifest), sha256: workflowSha(rawPin.sha256) });
+    const rawPin = object(pin, ["manifest", "sha256"]);
+    this.#pin = Object.freeze({ manifest: path(rawPin.manifest), sha256: sha(rawPin.sha256) });
     const bytes = read(worktreeRoot, this.#pin.manifest);
     if (workflowDigest(bytes) !== this.#pin.sha256) throw invalid();
-    const manifest = workflowObject(parseReviewEvidenceJson(bytes, "project command contract"), ["schemaVersion", "effects", "checks"]);
+    const manifest = object(json(bytes), ["schemaVersion", "effects", "checks"]);
     if (manifest.schemaVersion !== "project-command-contract/v1" || JSON.stringify(manifest.effects) !== JSON.stringify(["project-read", "isolated-temp-write"])) throw invalid();
     if (!Array.isArray(manifest.checks) || !manifest.checks.length || manifest.checks.length > 64) throw invalid();
     this.checks = Object.freeze(manifest.checks.map((item): ProjectCheck => {
-      const row = workflowObject(item, ["id", "executable", "argv", "environment", "readPaths", "prerequisites", "timeoutSeconds", "maximumOutputBytes"]);
+      const row = object(item, ["id", "executable", "argv", "environment", "readPaths", "prerequisites", "timeoutSeconds", "maximumOutputBytes"]);
       if (typeof row.id !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(row.id) || typeof row.executable !== "string"
         || !Array.isArray(row.argv) || row.argv.length > 128 || row.argv.some((arg) => typeof arg !== "string" || arg.length > 4096 || /[\u0000-\u001f\u007f]/.test(arg) || findSensitiveMatch("content", arg))) throw invalid();
       const executable = installedExecutable(row.executable);
@@ -85,7 +92,7 @@ export class ProjectCommandContract {
       const readPaths = Object.freeze(row.readPaths.map(path));
       if (new Set(readPaths).size !== readPaths.length) throw invalid();
       if (!Array.isArray(row.prerequisites) || !row.prerequisites.length || row.prerequisites.length > 128) throw invalid();
-      const prerequisites = row.prerequisites.map((value) => { const source = workflowObject(value, ["path", "sha256"]); return Object.freeze({ path: path(source.path), sha256: workflowSha(source.sha256) }); });
+      const prerequisites = row.prerequisites.map((value) => { const source = object(value, ["path", "sha256"]); return Object.freeze({ path: path(source.path), sha256: sha(source.sha256) }); });
       if (new Set(prerequisites.map((source) => source.path)).size !== prerequisites.length) throw invalid();
       const argv = Object.freeze([...row.argv] as string[]);
       return Object.freeze({ id: row.id, command: [basename(executable), ...argv.map(quoted)].join(" "), executable, argv,

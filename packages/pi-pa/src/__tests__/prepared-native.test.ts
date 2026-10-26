@@ -732,6 +732,10 @@ test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact o
   assert.match(session.evidence.blob(failedResult.process.stdout).toString(), /ordinary-private-token/);
   assert.match(session.evidence.blob(failedResult.process.stderr).toString(), /actual ordinary stderr/);
   const failureState = session.service.status(session.actor);
+  const reading = await control({ action: "report" });
+  assert.match(String(reading.details.markdown), /actual ordinary stderr/);
+  assert.doesNotMatch(String(reading.details.markdown), /ordinary-private-token/);
+  assert.deepEqual(session.service.status(session.actor), failureState, "a redacted reading view is not source authority or failure resolution");
   assert.equal((await execute("pa_ticket", { action: "comment", id: "PAP-256", author: "builder/team-manager", content: "Native phase check failed with exit2; original evidence retained." })).failed, false);
   assert.deepEqual(session.service.status(session.actor), failureState, "failure reporting cannot clear the original failure or reset counters");
   await reload(); assert.deepEqual(session.service.status(session.actor).originalFailure, original);
@@ -793,6 +797,15 @@ test("PAP-264 ordinary drift, adopted correlation loss/reload and started operat
   try { await assertDenied(); } finally { writeFileSync(slotPath, slotBytes); }
   const ticketBytes = readFileSync(f.ticketPath); const ticket = JSON.parse(ticketBytes.toString()); ticket.linkedBranches[0].baseSha = "f".repeat(40); writeFileSync(f.ticketPath, JSON.stringify(ticket));
   try { await assertDenied(); } finally { writeFileSync(f.ticketPath, ticketBytes); }
+  // Audit/reporting still requires the authenticated physical checkout. A
+  // replaced Git pointer must reject before any Git observation or publication.
+  const pointer = join(f.checkout, ".git"), pointerBytes = readFileSync(pointer);
+  const reportBefore = session.evidence.store.records();
+  writeFileSync(pointer, "gitdir: /missing\n");
+  try {
+    await assert.rejects(control({ action: "report" }), /EXECUTION_BINDING_UNCERTAIN/);
+    assert.deepEqual(session.evidence.store.records(), reportBefore);
+  } finally { writeFileSync(pointer, pointerBytes); }
   // Same physical checkout but wrong branch or HEAD, restored only in this disposable fixture.
   const gitDir = f.git(["rev-parse", "--absolute-git-dir"], f.checkout); const headBytes = readFileSync(join(gitDir, "HEAD"));
   writeFileSync(join(gitDir, "HEAD"), `ref: refs/heads/develop\n`);

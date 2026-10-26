@@ -129,7 +129,7 @@ export async function runNativeExecutionProcess(input: {
   try { stderr = input.evidence.sink(id, "stderr", maximum); } catch (error) { stdout.close(); throw error; }
   let child: ReturnType<typeof spawn> | undefined; let fingerprint: ProcessFingerprint | undefined;
   let frame: SourceVersion | undefined; let timedOut = false; let aborted = input.signal?.aborted ?? false;
-  let outputLimitExceeded = false; let ioFailed = false; let exitCode: number | null = null; let exitSignal: string | null = null;
+  let outputLimitExceeded = false; let capturedOutputBytes = 0; let ioFailed = false; let exitCode: number | null = null; let exitSignal: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined; let escalation: ReturnType<typeof setTimeout> | undefined;
   let nativeError: unknown;
   const stop = (): void => {
@@ -165,7 +165,11 @@ export async function runNativeExecutionProcess(input: {
       child!.once("close", (code, signal) => { exitCode = code; exitSignal = signal; resolve(); });
     });
     const channel = (sink: typeof stdout) => (data: Buffer) => {
-      try { if (!sink.write(data)) { outputLimitExceeded = true; stop(); } }
+      try {
+        const accepted = data.subarray(0, Math.max(0, maximum - capturedOutputBytes));
+        capturedOutputBytes += accepted.length;
+        if (!sink.write(accepted) || accepted.length !== data.length) { outputLimitExceeded = true; stop(); }
+      }
       catch { ioFailed = true; stop(); }
     };
     child.stdout!.on("data", channel(stdout)); child.stderr!.on("data", channel(stderr));
