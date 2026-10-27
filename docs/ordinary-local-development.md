@@ -14,11 +14,11 @@ TypeScript build, code tests, paired source validation and completion checks rem
 in CI. Core tests run serially so the existing 500 ms dashboard p95 assertion is
 not measured against other concurrent test files; its threshold is unchanged.
 
-The Pi code runner prints an explicit inventory of deferred manual integration
-files: ordinary local-development, project-command-contract, prepared-native and
-pi-deploy suites. These mixed native/deployment suites need the qualified
-immutable/sandbox environment; they are neither passing tests nor hidden skips in
-the code-only lane. All other source test files are included by discovery, and a
+The shared code runner prints explicit inventories of deferred manual integration
+files: Pi ordinary local-development, project-command-contract, prepared-native
+and pi-deploy suites, plus core artifact manifest/render/session suites. These
+mixed native/deployment and immutable review-renderer suites need a qualified
+runtime; they are neither passing tests nor hidden skips in the code-only lane. All other source test files are included by discovery, and a
 stale manual inventory fails. `corepack pnpm test` still runs the complete suite
 in the supported environment as a **separate manual integration gate**. Installed
 smoke and independent review/UAT also remain separate. Green code-only CI does

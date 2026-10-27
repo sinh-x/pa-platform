@@ -18,6 +18,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
+    "test:code": "node ../../scripts/dev/run_code_tests.mjs pa-core",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

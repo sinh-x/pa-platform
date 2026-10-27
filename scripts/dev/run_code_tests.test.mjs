@@ -2,17 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { load } from 'js-yaml';
-import { manualIntegration, partitionTests } from './run-code-tests.mjs';
+import { manualIntegration, partitionTests } from './run_code_tests.mjs';
 
 test('code-only inventory explicitly accounts for manual integration and includes new code tests', () => {
-  const manual = Object.keys(manualIntegration);
-  const selected = partitionTests([...manual, 'src/a.test.ts', 'src/new.test.ts', 'src/a.test.ts']);
+  const profile = manualIntegration['pi-pa'];
+  const manual = Object.keys(profile);
+  const selected = partitionTests([...manual, 'src/a.test.ts', 'src/new.test.ts', 'src/a.test.ts'], profile);
   assert.deepEqual(selected.code, ['src/a.test.ts', 'src/new.test.ts']);
   assert.deepEqual(selected.manual, [...manual].sort());
   assert.equal(selected.code.length + selected.manual.length, manual.length + 2);
 });
 test('ordinary CI has no Nix step and package builds are manual/release-only', () => {
-  const root = new URL('../../../', import.meta.url);
+  const root = new URL('../../', import.meta.url);
   const code = load(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
   const packaging = load(readFileSync(new URL('.github/workflows/nix-build.yml', root), 'utf8'));
   assert.doesNotMatch(JSON.stringify(code), /nix develop|nix build|nix-installer/);
@@ -24,5 +25,5 @@ test('ordinary CI has no Nix step and package builds are manual/release-only', (
 });
 
 test('stale manual inventory fails instead of silently omitting coverage', () => {
-  assert.throws(() => partitionTests(['src/a.test.ts']), /Manual integration entry no longer exists/);
+  assert.throws(() => partitionTests(['src/a.test.ts'], manualIntegration['pa-core']), /Manual integration entry no longer exists/);
 });
