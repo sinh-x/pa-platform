@@ -162,6 +162,159 @@ for (const style of ["standard-pair", "owner-directed-pair", "bad-hash", "change
   }));
 }
 
+type PairStyle = "waw" | "ttl012" | "ttl014";
+/** Sanitized retained producer grammar; no live artifact is read or written. */
+function retainedPair(f: ReturnType<typeof setup>, style: PairStyle) {
+  const revision = "r001", source = "requirements:agent-teams/requirements/artifacts/task.md";
+  const current = f.markdown.replace("> Status:", `> Review Revision: ${revision}\n> Status:`);
+  const previewPath = `agent-teams/requirements/artifacts/reviews/PAP-1/${revision}/requirements.md`;
+  const preview = current.replace("Approved — plan only", "Draft — UNAPPROVED");
+  const previewAbsolute = join(f.ai, previewPath);
+  mkdirSync(join(f.ai, "agent-teams/requirements/artifacts/reviews/PAP-1", revision), { recursive: true });
+  writeFileSync(previewAbsolute, preview); writeFileSync(f.sourcePath, current);
+  const hash = createHash("sha256").update(preview).digest("hex");
+  const tuple = `Handoff Type: fresh. Repository Key: fixture. Repository Root: ${f.repo}. Feature Branch: ${f.branch}. Approved Base SHA: ${f.base}.`;
+  const content = style === "waw"
+    ? `Explicit PA sign-off from interactive deployment d-123abc: Approve ${revision} pair and exact matrix. I approve the complete PAP-1 requirements revision ${revision} and companion UAT, local scope. Reviewed requirements: ${previewPath}, raw SHA-256 ${hash}. Reviewed UAT: separate. ${tuple} Matrix Source: ${source}. I approve that exact 10-command matrix and requirements/UAT pair for promotion after final Shape-Conformance 13/13. This is not implementation authorization, AWS access/apply/rollout/backfill/Billing authorization, paired-runtime readiness, or successful UAT.`
+    : style === "ttl012"
+      ? `APPROVED in standalone PA sign-off, deployment d-123abc: complete requirements/UAT pair ${revision}. Requirements source ${source} reviewed as reviews/PAP-1/${revision}/requirements.md raw SHA-256 ${hash}. Companion UAT source separate. Intent: local scope. Route builder/orchestrator. Handoff fresh, canonical fixture root ${f.repo}, approved base ${f.base}, exact branch ${f.branch}, planned/create. Matrix Source: ${source}. Approve this exact four-command matrix and pair, permitting only administrative approval/status/link metadata changes for final promotion. Device tests, candidate CI, human UAT and authenticated runtime/preparation readiness remain separate gates no implementation spawn authorized.`
+      : `Final standalone PA sign-off in d-123abc. Sinh selected Approve exact ${revision} pair and matrix after complete whole-document Markdown requirements and sixteen-scenario UAT review was offered. Approved intent: local scope. Requirements Source and Matrix Source ${source}. Reviewed revision ${revision} requirements raw SHA-256 ${hash}. Companion UAT Source separate. Repository Key fixture Repository Root ${f.repo} Ticket PAP-1 Route builder/orchestrator Handoff Type fresh Feature Branch ${f.branch} Approved Base SHA ${f.base} Linked Branch State planned Branch Action create exact ticket value fixture|${f.branch} [planned]. No source implementation, live service/network/certificate/phone effect, matrix execution, review/builder spawn, merge or checkout return is authorized. Plan approval is not executed UAT or application acceptance.`;
+  const ticket = structuredClone(f.ticket); ticket.comments[0]!.content = content;
+  writeFileSync(f.ticketPath, JSON.stringify(ticket));
+  return { ticket, current, preview, previewAbsolute, previewPath, hash, source };
+}
+
+for (const style of ["waw", "ttl012", "ttl014"] as const) {
+  test(`PAP-269 retained ${style} producer resolves exact source and decision without replacement`, () => fixture((f) => {
+    const p = retainedPair(f, style), before = f.inventory();
+    const baseline = f.resolve();
+    assert.equal(baseline.baseSha, f.base); assert.equal(baseline.requirements.ref, p.source);
+    assert.equal(baseline.approval.commentId, p.ticket.comments[0]!.id);
+    assert.equal(baseline.requirements.sha256, createHash("sha256").update(p.current).digest("hex"));
+    assert.equal(baseline.approval.sha256, createHash("sha256").update(JSON.stringify(p.ticket.comments[0])).digest("hex"));
+    assert.deepEqual(f.inventory(), before); assert.equal(readFileSync(p.previewAbsolute, "utf8"), p.preview);
+  }));
+}
+
+function legacyStandardPair(f: ReturnType<typeof setup>) {
+  const p = retainedPair(f, "waw");
+  p.ticket.comments[0]!.content = `Explicit standalone foreground PA sign-off in d-9b82df: I selected Approve exact pair and matrix for PAP-1 r001. Reviewed requirements: ${p.previewPath}; raw SHA-256 ${p.hash}. Reviewed UAT: agent-teams/requirements/artifacts/reviews/PAP-1/r001/uat-preview.md; raw SHA-256 ${"b".repeat(64)}. Approved intent: scoped ordinary local PPA instruction/tests, Markdown sufficient for local reporting, automatic safety and separate downstream/risky-effect gates retained, actual runtime capability limits disclosed and paired proof required before acceptance/adoption. Handoff: builder/orchestrator; canonical fixture at ${f.repo}; fresh planned/create; ${f.branch} from exact base ${f.base}; exact verified planned link retained. Matrix Source: ${p.source}. Matrix Authority SHA-256: ${"c".repeat(64)}. Approve the exact eleven-command matrix and all eight paired UAT scenarios as plans, not results. Permit only administrative approval/status/hash/link metadata insertion and unchanged paired publication after final 13 checks; no material requirement/matrix/UAT change. This does not launch implementation/review, authenticate custody, approve UAT success, install or activate policy. Recorded by the analyst from my explicit standalone foreground decision.`;
+  writeFileSync(f.ticketPath, JSON.stringify(p.ticket)); return p;
+}
+
+test("PAP-269 preserves actual legacy PAPC-068 complete sign-off grammar and safety boundaries", () => fixture((f) => {
+  legacyStandardPair(f); const before = f.inventory(); assert.equal(f.resolve().baseSha, f.base); assert.deepEqual(f.inventory(), before);
+}));
+for (const variant of ["repo", "root", "handoff", "branch", "base", "duplicate-handoff", "negated", "extra-grant", "repeated-grant", "conditional"] as const) {
+  test(`PAP-269 legacy PAPC-068 producer rejects ${variant} before Git`, () => fixture((f) => {
+    const p = legacyStandardPair(f), comment = p.ticket.comments[0]!;
+    if (variant === "repo") comment.content = comment.content.replace("canonical fixture at", "canonical other at");
+    if (variant === "root") comment.content = comment.content.replace(f.repo, f.worktree);
+    if (variant === "handoff") comment.content = comment.content.replace("fresh planned/create", "amendment materialized/reuse");
+    if (variant === "branch") comment.content = comment.content.replace(f.branch, f.branch + "-other");
+    if (variant === "base") comment.content = comment.content.replace(f.base, "f".repeat(40));
+    if (variant === "duplicate-handoff") comment.content += ` Handoff: builder/orchestrator; canonical fixture at ${f.repo}; fresh planned/create; ${f.branch} from exact base ${f.base};`;
+    if (variant === "negated") comment.content += " I do not approve this pair.";
+    if (variant === "extra-grant") comment.content += " I approve UAT success.";
+    if (variant === "repeated-grant") comment.content += " Approve the exact eleven-command matrix and all eight paired UAT scenarios as plans, not results.";
+    if (variant === "conditional") comment.content += " Only if another review passes.";
+    writeFileSync(f.ticketPath, JSON.stringify(p.ticket)); const before = f.inventory(); let gitCalls = 0;
+    assert.throws(() => resolveOrdinaryTaskBaseline({ ...f.options, runGit: () => { gitCalls++; throw new Error("must not reach Git"); } }), /ORDINARY_BASELINE_/);
+    assert.equal(gitCalls, 0); assert.deepEqual(f.inventory(), before);
+  }));
+}
+
+const invalidPairs = ["author", "ticket", "source", "revision", "hash", "repo", "root", "handoff", "branch", "base", "duplicate-comment", "duplicate-source", "duplicate-matrix", "duplicate-tuple", "malformed-tuple", "duplicate-preview", "wrong-preview-revision", "wrong-preview-tuple", "preview-alias", "directory-alias", "oversized", "malformed-utf8", "unknown", "negated", "rejected", "revoked", "conditional", "partial", "ambiguous", "withdrawal-id", "withdrawal-source", "uncertain-withdrawal", "conflicting-header", "opposite-preview-base", "malformed-tab-clause", "negative-permission", "discussion-only", "bad-header-hash", "malformed-header-hash", "malformed-source-utf8", "oversized-source"] as const;
+for (const style of ["waw", "ttl012", "ttl014"] as const) for (const variant of invalidPairs) {
+  test(`PAP-269 ${style} rejects ${variant} before Git and preserves evidence`, () => fixture((f) => {
+    const p = retainedPair(f, style), comment = p.ticket.comments[0]!;
+    if (variant === "author") comment.author = "requirements/analyst";
+    if (variant === "ticket") comment.content = comment.content.replaceAll("PAP-1", "PAP-2");
+    if (variant === "source") comment.content = comment.content.replaceAll(p.source, p.source.replace("task.md", "other.md"));
+    if (variant === "revision") comment.content = comment.content.replaceAll("r001", "r002");
+    if (variant === "hash") comment.content = comment.content.replace(p.hash, "a".repeat(64));
+    if (variant === "repo") comment.content = comment.content.replace("Key: fixture", "Key: other").replace("canonical fixture root", "canonical other root").replace("Key fixture", "Key other");
+    if (variant === "root") comment.content = comment.content.replace(f.repo, f.worktree);
+    if (variant === "handoff") comment.content = comment.content.replaceAll("fresh", "amendment");
+    if (variant === "branch") comment.content = comment.content.replaceAll(f.branch, "feature/PAP-1-other");
+    if (variant === "base") comment.content = comment.content.replace(f.base, "f".repeat(40));
+    if (variant === "duplicate-comment") p.ticket.comments.push({ ...comment });
+    if (variant === "duplicate-source") p.ticket.doc_refs.push({ ...p.ticket.doc_refs[0]! });
+    if (variant === "duplicate-matrix") comment.content += ` Matrix Source: ${p.source}.`;
+    if (variant === "duplicate-tuple") comment.content += " Repository Key: other.";
+    if (variant === "malformed-tuple") comment.content += " Repository Key: .";
+    if (variant === "duplicate-preview") comment.content += ` Reviewed requirements: ${p.previewPath}, raw SHA-256 ${p.hash}.`;
+    if (variant === "wrong-preview-revision" || variant === "wrong-preview-tuple" || variant === "opposite-preview-base") {
+      const preview = variant === "wrong-preview-revision" ? p.preview.replace("Review Revision: r001", "Review Revision: r002")
+        : variant === "wrong-preview-tuple" ? p.preview.replace("Key: fixture", "Key: other")
+        : p.preview.replace("> Approved Base SHA:", `> Retained Base SHA: ${f.base}\n> Approved Base SHA:`);
+      writeFileSync(p.previewAbsolute, preview); comment.content = comment.content.replace(p.hash, createHash("sha256").update(preview).digest("hex"));
+    }
+    if (variant === "preview-alias") { rmSync(p.previewAbsolute); symlinkSync(f.sourcePath, p.previewAbsolute); }
+    if (variant === "directory-alias") {
+      const dir = join(f.ai, "agent-teams/requirements/artifacts/reviews/PAP-1/r001"), other = join(f.root, "other");
+      mkdirSync(other); writeFileSync(join(other, "requirements.md"), p.preview); rmSync(dir, { recursive: true }); symlinkSync(other, dir);
+    }
+    if (variant === "oversized") writeFileSync(p.previewAbsolute, "x".repeat(1_048_577));
+    if (variant === "malformed-utf8") {
+      const bytes = Buffer.from([0xc3, 0x28]); writeFileSync(p.previewAbsolute, bytes);
+      comment.content = comment.content.replace(p.hash, createHash("sha256").update(bytes).digest("hex"));
+    }
+    if (variant === "unknown") comment.content = "We discussed approval. " + comment.content;
+    if (variant === "negated") comment.content += " I do not approve this pair.";
+    if (variant === "rejected") comment.content += " Rejected.";
+    if (variant === "revoked") comment.content += " Approval revoked.";
+    if (variant === "conditional") comment.content += " Only if another review passes.";
+    if (variant === "partial") comment.content += " I approve only part of this pair.";
+    if (variant === "ambiguous") comment.content += " Approve exact r002 pair instead.";
+    if (variant.startsWith("withdrawal") || variant === "uncertain-withdrawal") p.ticket.comments.push({ id: "c-20261027000000001", author: "sinh", content: variant === "withdrawal-id" ? `I revoke approval ${comment.id}.` : variant === "withdrawal-source" ? `Withdraw ${p.source} revision r001.` : "I withdraw this approval." });
+    if (variant === "conflicting-header") writeFileSync(f.sourcePath, p.current.replace("> Review Revision:", "> Review Revision: r002\n> Review Revision:"));
+    if (variant === "malformed-tab-clause") comment.content += " Repository Key:\tother.";
+    if (variant === "negative-permission") comment.content += " I am not granting permission.";
+    if (variant === "discussion-only") comment.content += " This is discussion only.";
+    if (variant === "bad-header-hash" || variant === "malformed-header-hash") writeFileSync(f.sourcePath, p.current.replace("> Status:", `> Review Source SHA-256: ${variant === "bad-header-hash" ? "a".repeat(64) : "malformed"}\n> Status:`));
+    if (variant === "malformed-source-utf8") writeFileSync(f.sourcePath, Buffer.from([0xc3, 0x28]));
+    if (variant === "oversized-source") writeFileSync(f.sourcePath, "x".repeat(1_048_577));
+    writeFileSync(f.ticketPath, JSON.stringify(p.ticket));
+    const before = f.inventory(), sourceBefore = readFileSync(f.sourcePath); let gitCalls = 0;
+    assert.throws(() => resolveOrdinaryTaskBaseline({ ...f.options, runGit: () => { gitCalls++; throw new Error("must not reach Git"); } }), /ORDINARY_BASELINE_/);
+    assert.equal(gitCalls, 0); assert.deepEqual(f.inventory(), before); assert.deepEqual(readFileSync(f.sourcePath), sourceBefore);
+  }));
+}
+
+for (const change of ["retained base", "materialized/reuse"]) test(`PAP-269 compact producer rejects conflicting ${change}`, () => fixture((f) => {
+  const p = retainedPair(f, "ttl012"); p.ticket.comments[0]!.content = p.ticket.comments[0]!.content.replace(change === "retained base" ? "approved base" : "planned/create", change);
+  writeFileSync(f.ticketPath, JSON.stringify(p.ticket)); assert.throws(f.resolve, /ORDINARY_BASELINE_APPROVAL_REJECTED/);
+}));
+
+test("PAP-269 simple producer without from and unrelated discussion remain supported", () => fixture((f) => {
+  f.ticket.comments[0]!.content = f.ticket.comments[0]!.content.replace("from exact", "exact");
+  f.ticket.comments.push({ id: "c-20261027000000001", author: "sinh", content: "Discuss revocation policy for a different ticket; no decision here." });
+  writeFileSync(f.ticketPath, JSON.stringify(f.ticket)); assert.equal(f.resolve().baseSha, f.base);
+}));
+
+test("PAP-269 diagnostics distinguish unsupported format, invalid evidence and changed base without leaking bodies", () => fixture((f) => {
+  const p = retainedPair(f, "waw");
+  for (const [content, expected] of [["SECRET-BODY-TOKEN", "APPROVAL_REJECTED_UNSUPPORTED_PRODUCER"], [p.ticket.comments[0]!.content + " Rejected SECRET-BODY-TOKEN.", "APPROVAL_REJECTED_INVALID_EVIDENCE"]]) {
+    p.ticket.comments[0]!.content = content!; writeFileSync(f.ticketPath, JSON.stringify(p.ticket));
+    assert.throws(f.resolve, (error: Error) => { assert.match(error.message, new RegExp(expected!));
+      assert.ok(error.message.length <= 2000); for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.ok(error.message.includes(label + ":"));
+      assert.doesNotMatch(error.message, /SECRET-BODY-TOKEN/); return true; });
+  }
+  retainedPair(f, "waw"); writeFileSync(join(f.repo, "README.md"), "B\n"); f.git(["commit", "-am", "advance integration"]);
+  assert.throws(f.resolve, /ORDINARY_BASELINE_CONFIG_MISMATCH/);
+}));
+
+test("PAP-269 exact materialized base survives integration advance; comment drift remains rejected", () => fixture((f) => {
+  retainedPair(f, "ttl014"); f.materialize();
+  writeFileSync(join(f.repo, "README.md"), "B\n"); f.git(["commit", "-am", "advance integration"]);
+  const intendedTaskBaseline = f.resolve(); assert.equal(intendedTaskBaseline.baseSha, f.base);
+  const ticket = JSON.parse(readFileSync(f.ticketPath, "utf8")); ticket.comments[0].content += " Descriptive scope note."; writeFileSync(f.ticketPath, JSON.stringify(ticket));
+  const before = f.inventory();
+  assert.throws(() => materializeTicketBranch({ ...f.options, worktreeRoot: f.worktree, intendedTaskBaseline }), /ORDINARY_BASELINE_CHANGED/);
+  assert.deepEqual(f.inventory(), before);
+}));
+
 for (const variant of ["dirty", "independent-branch", "configured-drift"] as const) {
   test(`PAP-268 ${variant} checkout is preserved without branch adoption/reset`, () => fixture((f) => {
     const intendedTaskBaseline = f.resolve();
