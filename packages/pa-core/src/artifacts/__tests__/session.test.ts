@@ -302,7 +302,16 @@ test("private read retries are bounded and do not accept in-place mutation or un
           if (kind === "in-place") {
             writeFileSync(path, "mutated!"); fs.utimesSync(path, 1, 1);
           } else if (kind === "metadata-only") {
-            fs.chmodSync(path, 0o400); fs.chmodSync(path, 0o600);
+            // Some supported filesystems publish ctime at a coarse clock tick.
+            // Establish a genuinely observable metadata change in this race
+            // fixture; do not assume two immediate chmods advance that clock.
+            const before = fs.fstatSync(file, { bigint: true }).ctimeNs;
+            const deadline = performance.now() + 1000;
+            do {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+              fs.chmodSync(path, 0o400); fs.chmodSync(path, 0o600);
+            } while (fs.fstatSync(file, { bigint: true }).ctimeNs === before && performance.now() < deadline);
+            assert.notEqual(fs.fstatSync(file, { bigint: true }).ctimeNs, before, "metadata-only fixture must change native ctime");
           } else {
             replacePrivate(fd, "probe.json", Buffer.from(kind === "oversize" ? "too many bytes" : "replaced"));
             if (kind === "mode") fs.chmodSync(path, 0o644);
@@ -312,7 +321,7 @@ test("private read retries are bounded and do not accept in-place mutation or un
         }
         return count;
       }) as typeof fs.readSync; syncBuiltinESMExports();
-      assert.throws(() => readPrivate(fd, "probe.json", 8));
+      assert.throws(() => readPrivate(fd, "probe.json", 8), undefined, `reject private ${kind} mutation`);
       assert.ok(publications > 0 && publications <= 4, "no unbounded retry on publication churn");
       fs.readSync = realRead; syncBuiltinESMExports();
     }

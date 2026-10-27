@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSes
 import { finalizeRepositoryReview, repositoryReviewReservationPath, resolveExecutionPlan, type RepositoryReviewFinalEvidence } from "@pa-platform/pa-core";
 import { TREEHOUSE_TIMEOUT_MS, MAX_TREEHOUSE_JSON_BYTES } from "../treehouse.js";
 import { TreehouseClient } from "./treehouse-fixture.js";
+import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
 import { PI_VALIDATION_HANDOFF_FILE, type PiProtectedValidationLaunch } from "../validation-supervisor.js";
 import { extractMatrixAuthority } from "../matrix-compatibility.js";
 import { NIXOS_BASELINE_VERSION, NIXOS_APPROVAL_VERSION, NIXOS_TOOLS, nixosTupleDigest, type NixosBaseline, type NixosLaunchTuple } from "../nixos-prerequisites.js";
@@ -72,10 +73,22 @@ function initializeGitRepo(path: string): void {
 
 test("PAP-264 actual ordinary native holder relinquishes execution before independent review reservation", async () => withPiEnv(async (root) => {
   const repo = join(root, "repo"); const checkout = join(root, "candidate"); const branch = "feature/PAP-198-phase-three";
+  // Ordinary custody is not a legacy-shell permission. This fixture exercises
+  // reservation exclusion, with the same bounded source prerequisite as users.
+  const script = "process.exit(0);\n", digest = (text: string) => createHash("sha256").update(text).digest("hex");
+  const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [
+    { id: "reservation-check", executable: realpathSync(process.execPath), argv: ["reservation-check.cjs"], environment: {}, readPaths: ["README.md"],
+      prerequisites: [{ path: "reservation-check.cjs", sha256: digest(script) }], timeoutSeconds: 10, maximumOutputBytes: 1024 },
+  ] });
+  writeFileSync(join(repo, "reservation-check.cjs"), script); writeFileSync(join(repo, "checks.json"), manifest);
+  git(["add", "reservation-check.cjs", "checks.json"], repo); git(["commit", "-m", "fixture bounded commands"], repo);
+  const configPath = join(root, "config/repos.yaml");
+  writeFileSync(configPath, readFileSync(configPath, "utf8") + `    projectCommands:\n      manifest: checks.json\n      sha256: ${digest(manifest)}\n`);
   const base = git(["rev-parse", "HEAD"], repo);
   git(["worktree", "add", "-b", branch, checkout, base], repo);
   writeFileSync(join(root, "tickets/PAP-198.json"), JSON.stringify({ id: "PAP-198", project: "pa-platform", title: "Isolated Phase 3", status: "implementing",
     linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: base, headSha: base, sha: base }] }));
+  seedOrdinaryTaskBaseline({ ai: root, repo, repoKey: "pa-platform", ticket: "PAP-198", branch, base });
   writeFileSync(join(root, "teams/builder.yaml"), "name: builder\ndescription: fixture\nobjective: fixture\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
   const authority = new PiPreparedNativeAuthority({ root: join(root, "authority"), aiUsageRoot: root,
     runtime: () => ({ sourceSha: "a".repeat(40), packageVersion: "isolated-fixture", configSha: "b".repeat(40), storeRoot: "/fixture/runtime" }) });
@@ -97,7 +110,7 @@ test("PAP-264 actual ordinary native holder relinquishes execution before indepe
         const fresh = () => new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } }).resolve({ cwd: checkout })!;
         let session = fresh();
         session.service.apply(session.actor, { action: "plan", plan: { phaseId: "phase-3", scope: "reservation exclusion", paths: ["README.md"],
-          requirements: ["FR5", "FR6", "FR7"], prerequisites: [], checks: ["diff-check"], size: "M", complexity: "high", rationale: "Actual native custody fixture; not loaded-runtime acceptance." } });
+          requirements: ["FR5", "FR6", "FR7"], prerequisites: [], checks: ["reservation-check"], size: "M", complexity: "high", rationale: "Actual native custody fixture; not loaded-runtime acceptance." } });
         const holder = session.observe("holder");
         session.service.apply(session.actor, { action: "select", executor: "orchestrator-direct", holder: session.actor, handover: holder });
         const selected = selectPiReviewCandidateBeforePlanning({ request: { team: "requirements", mode: "review-auto", ticket: "PAP-198", repo: "pa-platform" }, runtime: "pi", cwd: repo,

@@ -84,15 +84,15 @@ export class NativeExecutionEvidence {
   }
 }
 
-/** Resolve only a root-owned installed shell; never accept a model/env pathname
- * as the interpreter for the custody handshake. */
-function trustedBash(): string {
+/** Resolve only a root-owned installed executable; never accept a model/env
+ * pathname as the interpreter or Git control program for native custody. */
+export function trustedNativeExecutable(name: "bash" | "git"): string {
   for (const directory of (process.env.PATH ?? "").split(":")) {
     try {
-      const path = realpathSync(join(directory, "bash")); const stat = lstatSync(path);
+      const path = realpathSync(join(directory, name)); const stat = lstatSync(path);
       if ((path.startsWith("/nix/store/") || path.startsWith("/usr/bin/") || path.startsWith("/bin/"))
         && stat.isFile() && stat.uid === 0 && !(stat.mode & 0o022) && (stat.mode & 0o111)) return path;
-    } catch { /* not an eligible installed interpreter */ }
+    } catch { /* not an eligible installed executable */ }
   }
   throw workflowError();
 }
@@ -117,6 +117,8 @@ function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JS
 export async function runNativeExecutionProcess(input: {
   evidence: NativeExecutionEvidence; intent: SourceVersion; command: string; cwd: string;
   timeoutSeconds: number; maximumOutputBytes?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv;
+  /** Trusted native command contract only; never sourced from tool arguments. */
+  program?: { readonly executable: string; readonly argv: readonly string[]; readonly environment: Readonly<Record<string, string>> };
 }): Promise<NativeProcessResult> {
   if (!Number.isFinite(input.timeoutSeconds) || input.timeoutSeconds <= 0 || input.timeoutSeconds > 14_400 || !input.command || Buffer.byteLength(input.command) > 16_384
     || realpathSync(input.cwd) !== input.cwd) throw workflowError();
@@ -127,7 +129,7 @@ export async function runNativeExecutionProcess(input: {
   try { stderr = input.evidence.sink(id, "stderr", maximum); } catch (error) { stdout.close(); throw error; }
   let child: ReturnType<typeof spawn> | undefined; let fingerprint: ProcessFingerprint | undefined;
   let frame: SourceVersion | undefined; let timedOut = false; let aborted = input.signal?.aborted ?? false;
-  let outputLimitExceeded = false; let ioFailed = false; let exitCode: number | null = null; let exitSignal: string | null = null;
+  let outputLimitExceeded = false; let capturedOutputBytes = 0; let ioFailed = false; let exitCode: number | null = null; let exitSignal: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined; let escalation: ReturnType<typeof setTimeout> | undefined;
   let nativeError: unknown;
   const stop = (): void => {
@@ -147,10 +149,11 @@ export async function runNativeExecutionProcess(input: {
   };
   const abort = () => { aborted = true; stop(); };
   try {
-    const bash = trustedBash();
+    const bash = trustedNativeExecutable("bash");
     const env = { ...(input.env ?? process.env) };
     for (const name of Object.keys(env)) if (name.startsWith("GIT_") || name.startsWith("BASH") || ["ENV", "SHELLOPTS", "LD_PRELOAD", "LD_LIBRARY_PATH"].includes(name)) delete env[name];
-    child = spawn(bash, ["--noprofile", "--norc", "-c", 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$1" --noprofile --norc -c "$2"', "pa-native-execution", bash, input.command], {
+    const program = input.program ? [input.program.executable, ...input.program.argv] : [bash, "--noprofile", "--norc", "-c", input.command];
+    child = spawn(bash, ["--noprofile", "--norc", "-c", 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"', "pa-native-execution", ...program], {
       cwd: input.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"],
     });
     const completed = new Promise<void>((resolve) => {
@@ -162,7 +165,11 @@ export async function runNativeExecutionProcess(input: {
       child!.once("close", (code, signal) => { exitCode = code; exitSignal = signal; resolve(); });
     });
     const channel = (sink: typeof stdout) => (data: Buffer) => {
-      try { if (!sink.write(data)) { outputLimitExceeded = true; stop(); } }
+      try {
+        const accepted = data.subarray(0, Math.max(0, maximum - capturedOutputBytes));
+        capturedOutputBytes += accepted.length;
+        if (!sink.write(accepted) || accepted.length !== data.length) { outputLimitExceeded = true; stop(); }
+      }
       catch { ioFailed = true; stop(); }
     };
     child.stdout!.on("data", channel(stdout)); child.stderr!.on("data", channel(stderr));
@@ -170,7 +177,8 @@ export async function runNativeExecutionProcess(input: {
     fingerprint = readProcessFingerprint(child.pid);
     const initial = members(child.pid);
     if (!fingerprint || !same(readProcessFingerprint(child.pid), fingerprint) || !initial.some((member) => member.pid === child!.pid && member.session === child!.pid)) throw workflowError();
-    frame = input.evidence.publish("process-frame", { intent: input.intent, process: fingerprint, groupId: child.pid, sessionId: child.pid, executable: bash });
+    frame = input.evidence.publish("process-frame", { intent: input.intent, process: fingerprint, groupId: child.pid, sessionId: child.pid, executable: bash,
+      command: input.command, cwd: input.cwd, program: input.program ?? null, environment: input.program ? {} : { declaration: "legacy sanitized inherited environment" } });
     const start = child.stdio[3] as import("node:stream").Writable;
     start.on("error", () => { ioFailed = true; stop(); });
     if (aborted) { start.end(); stop(); }

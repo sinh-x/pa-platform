@@ -58,7 +58,7 @@ export async function isolatedDriver(root, share) {
     owner[name] = () => { counts.outsideWrites++; throw new Error("unobserved async write"); };
   }
   fs.createWriteStream = () => { counts.outsideWrites++; throw new Error("unobserved stream write"); };
-  const nativeCommands = new Set(["git diff --check", "git add -- fixture.txt", "git commit -m 'packaged SDK fixture'"]);
+  const nativeCommands = new Set(["git add -- fixture.txt", "git commit -m 'packaged SDK fixture'"]);
   for (const name of ["execFileSync", "spawnSync", "spawn"]) {
     const original = cp[name]; cp[name] = (command, args, options = {}) => {
       const cwd = options.cwd ?? process.cwd();
@@ -69,11 +69,26 @@ export async function isolatedDriver(root, share) {
       const allowedMutex = executable === "flock" && name === "spawn" && args[0] === "--exclusive" && inside(root, physical(args[3]))
         && args[4] === "/bin/sh" && args[5] === "-c" && inside(root, physical(args[8])) && inside(root, physical(args[9]));
       // Native runner has shell executable and command following the fixed frame.
-      const framedBash = executable === "bash" && name === "spawn" && inside(root, physical(cwd)) && args.length === 7
+      const framedBash = executable === "bash" && name === "spawn" && inside(root, physical(cwd)) && args.length === 10
         && args[0] === "--noprofile" && args[1] === "--norc" && args[2] === "-c"
-        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$1" --noprofile --norc -c "$2"'
-        && args[4] === "pa-native-execution" && args[5] === command && nativeCommands.has(args[6]);
-      if (!allowedGit && !allowedMutex && !framedBash) { counts.forbiddenProcesses++; throw new Error("unapproved fixture process"); }
+        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"'
+        && args[4] === "pa-native-execution" && args[5] === command && args[6] === "--noprofile"
+        && args[7] === "--norc" && args[8] === "-c" && nativeCommands.has(args[9]);
+      const isolated = (values) => values[0] === "--unshare-all" && values.includes("--cap-drop") && values.includes("--clearenv")
+        && values.includes("--remount-ro") && values.includes(checkout) && values.includes("/nix/store");
+      const probe = executable === "bwrap" && name === "execFileSync" && inside(root, physical(cwd)) && isolated(args) && args.at(-1) === "--version";
+      const framedProject = executable === "bash" && name === "spawn" && inside(root, physical(cwd))
+        && args[0] === "--noprofile" && args[1] === "--norc" && args[2] === "-c"
+        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"' && args[4] === "pa-native-execution"
+        && basename(args[5]) === "bwrap" && isolated(args.slice(6)) && args.at(-1) === "fixture-check.cjs";
+      const framedGit = executable === "bash" && name === "spawn" && inside(root, physical(cwd))
+        && args[0] === "--noprofile" && args[1] === "--norc" && args[2] === "-c"
+        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"' && args[4] === "pa-native-execution"
+        && basename(args[5]) === "git" && [
+          ["--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "add", "--", "fixture.txt"],
+          ["--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-m", "packaged SDK fixture"],
+        ].some((expected) => JSON.stringify(args.slice(6)) === JSON.stringify(expected));
+      if (!allowedGit && !allowedMutex && !framedBash && !probe && !framedProject && !framedGit) { counts.forbiddenProcesses++; throw new Error("unapproved fixture process"); }
       counts[allowedGit ? "gitProcesses" : allowedMutex ? "mutexProcesses" : "nativeBashProcesses"]++;
       try { return original(command, args, options); }
       catch (error) { fs.writeFileSync(join(root, "process-error.txt"), String(error.stack), { mode: 0o600 }); throw error; }
@@ -110,14 +125,23 @@ export async function isolatedDriver(root, share) {
   fs.mkdirSync(repo); git(["init", "-b", "develop"]);
   for (const [key, value] of [["user.email", "fixture@example.invalid"], ["user.name", "Fixture"], ["commit.gpgsign", "false"], ["core.hooksPath", join(root, "empty-hooks")]]) git(["config", key, value]);
   fs.mkdirSync(join(root, "empty-hooks")); save(join(repo, "fixture.txt"), "value = 0;\n");
-  git(["add", "fixture.txt"]); git(["commit", "-m", "isolated base"]); const base = git(["rev-parse", "HEAD"]);
+  const checkScript = "const text=require('node:fs').readFileSync('fixture.txt','utf8');console.log('fixture whitespace check');process.exit(/[ \\t]+$/m.test(text)?2:0);\n";
+  save(join(repo, "fixture-check.cjs"), checkScript);
+  const commandManifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [{ id: "whitespace", executable: originalRealpath(process.execPath), argv: ["fixture-check.cjs"], environment: {}, readPaths: ["fixture.txt"], prerequisites: [{ path: "fixture-check.cjs", sha256: hash(checkScript) }], timeoutSeconds: 30, maximumOutputBytes: 1048576 }] });
+  save(join(repo, "fixture-checks.json"), commandManifest);
+  git(["add", "fixture.txt", "fixture-check.cjs", "fixture-checks.json"]); git(["commit", "-m", "isolated base"]); const base = git(["rev-parse", "HEAD"]);
   git(["worktree", "add", "-b", branch, checkout, base]);
-  save(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n  fixture-repo:\n    path: ${repo}\n    prefix: PAP\n`);
+  save(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n  fixture-repo:\n    path: ${repo}\n    prefix: PAP\n    projectCommands:\n      manifest: fixture-checks.json\n      sha256: ${hash(commandManifest)}\n`);
   const teamPath = join(teams, "builder.yaml");
   const team = (defaultMode = "orchestrator") => save(teamPath, `name: builder\ndescription: Isolated\nobjective: Fixture\nagents: []\ndefault_mode: ${defaultMode}\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n`);
   team();
+  const baselinePath = "agent-teams/requirements/artifacts/ordinary-baseline.md";
+  const baselineApproval = "c-20261026000000268";
+  save(join(ai, baselinePath), `# Disposable baseline\n\n> Status: Approved — fixture only\n> Ticket: ${ticket}\n> Repository Key: fixture-repo\n> Repository Root: ${repo}\n> Handoff Type: fresh\n> Approved Base SHA: ${base}\n> Feature Branch: ${branch}\n> Review Approval Evidence: ${ticket}#${baselineApproval}\n\n## Work\nSource/installed smoke fixture only.\n`);
   save(join(ai, "tickets", `${ticket}.json`), JSON.stringify({ id: ticket, project: "fixture-repo", title: "Isolated smoke", status: "implementing",
-    linkedBranches: [{ repo: "fixture-repo", branch, state: "materialized", baseSha: base, headSha: base, sha: base }] }));
+    linkedBranches: [{ repo: "fixture-repo", branch, state: "materialized", baseSha: base, headSha: base, sha: base }],
+    doc_refs: [{ type: "requirements", path: baselinePath, primary: true }],
+    comments: [{ id: baselineApproval, author: "sinh", content: `Approve ${ticket} fixture-repo ${repo} ${branch} exact base ${base}; source requirements:${baselinePath}.` }] }));
   Object.assign(process.env, { PA_PLATFORM_CONFIG: config, PA_PLATFORM_HOME: root, PA_PLATFORM_TEAMS: teams, PA_AI_USAGE_HOME: ai, PA_REGISTRY_DB: join(ai, "registry.db"),
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
   process.chdir(repo);
@@ -202,8 +226,13 @@ export async function isolatedDriver(root, share) {
     // terminal-settlement claim: the synthetic custodian is this live process.
     if (malformed) fs.writeFileSync(legacyPath, restoreBytes);
     assert.equal(core.releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: checkout, slot: "implement", ownershipToken: legacy.lease.ownershipToken }).status, "released");
-    const slot = core.observeReadonlyRepositoryTicketSlot(repo, ticket).slot;
-    assert.equal(core.releaseRepositoryTicketSlot(slot).status, "released");
+    // A pre-materialization custody denial can now roll back the allocating
+    // process's own launchless permit before immutable start publication. The
+    // pre-existing live/uncertain repository holder above must remain intact.
+    if (fs.existsSync(core.repositoryTicketSlotPath(repo, ticket))) {
+      const slot = core.observeReadonlyRepositoryTicketSlot(repo, ticket).slot;
+      assert.equal(core.releaseRepositoryTicketSlot(slot).status, "released");
+    }
   }
   let bodyError; let nativeResult;
   const adapter = { ...inert, async spawn(opts) {
@@ -251,7 +280,7 @@ export async function isolatedDriver(root, share) {
         assert.deepEqual(session.evidence.store.records(), records); assert.deepEqual(fs.readFileSync(join(checkout, "fixture.txt")), bytes);
       };
       const plan = { phaseId: "phase-4", scope: "isolated packaged SDK", paths: ["fixture.txt"], requirements: ["FR8", "FR9", "AC1", "AC3", "AC5", "AC7"], prerequisites: [],
-        checks: ["git diff --check"], size: "L", complexity: "high", rationale: "Real packaged SDK/process evidence; no provider, production qualification or loaded-runtime acceptance." };
+        checks: ["node 'fixture-check.cjs'"], size: "L", complexity: "high", rationale: "Real packaged SDK/process evidence and pinned contained checks; no provider, production qualification or loaded-runtime acceptance." };
       await control({ action: "plan", plan }); await select();
       await deny("bash", { command: "git commit -m 'premature'" });
       await deny("write", { path: join(repo, "fixture.txt"), content: "forbidden" });
@@ -264,9 +293,9 @@ export async function isolatedDriver(root, share) {
       await execute("write", { path: "fixture.txt", content: "value = 1; \n" });
       await execute("edit", { path: "fixture.txt", edits: [{ oldText: "value = 1", newText: "value = 2" }] });
       assert.equal(fs.readFileSync(join(checkout, "fixture.txt"), "utf8"), "value = 2; \n");
-      await execute("bash", { command: "git diff --check", timeout: 30 }, true);
+      await execute("bash", { command: "node 'fixture-check.cjs'", timeout: 30 }, true);
       const original = session.service.status(session.actor).originalFailure;
-      assert.equal(original.exitCode, 2); assert.equal(original.command, "git diff --check");
+      assert.equal(original.exitCode, 2); assert.equal(original.command, "node 'fixture-check.cjs'");
       const failed = session.evidence.read(original.output, "tool-result"); assert.equal(failed.process.groupSettled, true);
       assert.ok(session.evidence.blob(failed.process.stdout).length > 0);
       await reload(); assert.deepEqual(session.service.status(session.actor).originalFailure, original);
@@ -274,8 +303,8 @@ export async function isolatedDriver(root, share) {
       await settle(); await control({ action: "attempt", evidence: await observe("recovery") }); await control({ action: "plan", plan });
       await reload(); assert.equal(session.service.status(session.actor).bounds.consecutiveNoProgress, 1);
       await select(); await execute("edit", { path: "fixture.txt", edits: [{ oldText: "value = 2; ", newText: "value = 2;" }] });
-      await execute("bash", { command: "git diff --check", timeout: 30 }); await settle();
-      const passed = session.reportFacts().checks.findLast((row) => row.command === "git diff --check" && row.exitCode === 0);
+      await execute("bash", { command: "node 'fixture-check.cjs'", timeout: 30 }); await settle();
+      const passed = session.reportFacts().checks.findLast((row) => row.command === "node 'fixture-check.cjs'" && row.exitCode === 0);
       await control({ action: "resolve", evidence: passed.output }); await select();
       await execute("bash", { command: "git add -- fixture.txt" }); await execute("bash", { command: "git commit -m 'packaged SDK fixture'" });
       const committed = session.service.status(session.actor); assert.notEqual(committed.candidateSha, base);

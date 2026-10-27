@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures } from "../../packages/pa-core/src/index.js";
 
@@ -20,7 +20,7 @@ function git(root: string, args: string[]): string {
 
 const planFirstRequirementsModes = ["analyze", "analyze-auto", "spike"] as const;
 
-function validatePlanFirstRequirementsContracts(configRoot: string): number {
+function validatePlanFirstRequirementsContracts(configRoot: string, directLocal = false): number {
   const requirements = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams", "requirements.yaml"), "utf8"));
   const configuredModes = new Set(requirements.deploy_modes?.map((mode) => mode.id) ?? []);
   const requiredCases = [
@@ -35,6 +35,11 @@ function validatePlanFirstRequirementsContracts(configRoot: string): number {
     // active runtime admission still accepts only Pi/OpenCode.
     ["adapter and runtime-authority boundaries", /(?=[\s\S]*OPA(?:\/OpenCode)?\b[\s\S]{0,240}\bno Treehouse (?:behavior )?claim)(?=[\s\S]*PAP-189 runtime)(?=[\s\S]*PAP-215)[\s\S]+/iu],
   ] as const;
+  const directLocalCases: Readonly<Record<string, RegExp>> = {
+    "one-lineage/four-ticket capacity": /Allow one active builder lineage per repository\/ticket and at most four active ticket checkouts; duplicate and fifth requests reject before mutation or spawn/iu,
+    "zero requirements lifecycle or branch action": /Requirements discovery\/drafting performs no checkout lifecycle operation or branch action/iu,
+    "builder-owned ordered materialization": /trusted launcher independently authenticates[\s\S]{0,640}REUSES it without a second reservation or branch construction[\s\S]{0,480}acquires\/authenticates[\s\S]{0,1800}Persist checkout, lease, capacity, lineage, correlation, branch result and launch snapshot before implementation spawn/iu,
+  };
   const prohibited = [
     "Operator-Prepared Checkout Evidence:",
     "For Pi/PPA with an authenticated operator-prepared ticket checkout, requirements must use the distinct authenticated worktree_root.",
@@ -56,7 +61,7 @@ function validatePlanFirstRequirementsContracts(configRoot: string): number {
       templateVars: { DEPLOY_ID: `paired-${mode}`, TEAM_NAME: "requirements", TICKET_ID: "PAPC-024", TODAY: "2026-09-19" },
     });
     for (const [label, pattern] of requiredCases) {
-      if (!pattern.test(primer)) throw new Error(`requirements/${mode}: generated primer is missing plan-first contract: ${label}`);
+      if (!pattern.test(primer) && !(directLocal && directLocalCases[label]?.test(primer))) throw new Error(`requirements/${mode}: generated primer is missing plan-first contract: ${label}`);
     }
     for (const stale of prohibited) {
       if (primer.includes(stale)) throw new Error(`requirements/${mode}: generated primer restores a requirements-time checkout prerequisite`);
@@ -65,7 +70,39 @@ function validatePlanFirstRequirementsContracts(configRoot: string): number {
   return planFirstRequirementsModes.length;
 }
 
+/** Current direct-only config owns its instruction/model checker. Historical
+ * split-mode fixtures retain their old checks below; requiring an implement
+ * borrower or per-fix approval in a direct-only candidate would restore the bug.
+ * This is source pairing, never runtime readiness or independent acceptance. */
+export function validateDirectLocalProfile(configRoot: string): number {
+  const checkerPath = resolve(configRoot, "scripts/check-prepared-autonomy-workflow.mjs");
+  if (realpathSync(checkerPath) !== checkerPath) throw new Error("Direct local producer checker must be a physical file in the selected config");
+  const team = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
+  const mode = team.deploy_modes?.find((entry) => entry.id === "orchestrator");
+  if (!mode || team.deploy_modes?.some((entry) => entry.id === "implement")) throw new Error("Direct local producer cannot restore an implement fallback");
+  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: "orchestrator", objective: "Validate the scoped ordinary local source pair.", repository: { repoKey: "pa-platform-config", repoRoot: configRoot },
+    resolveFile: (path) => resolve(configRoot, path), skillsDir: resolve(configRoot, "skills/global"),
+    templateVars: { DEPLOY_ID: "paired-local", TEAM_NAME: "builder", TICKET_ID: "PAP-268", TODAY: "2026-10-26" } });
+  // A fresh process prevents ESM/require cache from certifying bytes belonging
+  // to a previously selected config SHA. Only this fixed source-only checker
+  // runs; it receives no ambient credentials or PA/PI/Git authority environment.
+  const script = `import{readFileSync}from'node:fs';import{pathToFileURL}from'node:url';import{resolve}from'node:path';
+    const input=JSON.parse(readFileSync(0,'utf8')); const c=await import(pathToFileURL(resolve(input.root,'scripts/check-prepared-autonomy-workflow.mjs')).href);
+    if(c.DIRECT_ONLY_DECLARATION?.version!==4||c.DIRECT_ONLY_DECLARATION.candidatePolicy!=='orchestrator-direct-only'||typeof c.checkDirectOnlyWorkflow!=='function'||typeof c.checkScopedLocalText!=='function')throw Error('unsupported producer');
+    const r=c.checkDirectOnlyWorkflow(input.root); c.checkScopedLocalText(input.primer,'teams/builder/modes/orchestrator.md');
+    console.log(JSON.stringify({ok:r.ok,evidenceClass:r.evidenceClass,scopedLocal:r.scopedLocal}));`;
+  const checked = spawnSync(process.execPath, ["--input-type=module", "-e", script], { input: JSON.stringify({ root: configRoot, primer }),
+    env: { HOME: "/nonexistent", LANG: "C.UTF-8", TZ: "UTC" }, encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
+  if (checked.error || checked.status !== 0 || checked.signal) throw new Error("Selected direct-only/scoped-local producer failed its source check; no legacy fallback");
+  const result = JSON.parse(checked.stdout) as { ok?: boolean; evidenceClass?: string; scopedLocal?: { runtimeOwner?: string; presentation?: string; acceptance?: string; sources?: unknown[] } };
+  if (result.ok !== true || result.evidenceClass !== "current-structural-and-synthetic-not-runtime-proof" || result.scopedLocal?.runtimeOwner !== "PAP-268"
+    || result.scopedLocal.presentation !== "Markdown-sufficient-rich-view-optional" || result.scopedLocal.acceptance !== "paired-proof-required" || !result.scopedLocal.sources?.length) throw new Error("Direct local config checker did not prove its source-only instruction contract");
+  return validatePlanFirstRequirementsContracts(configRoot, true);
+}
+
 function validateRepositoryContracts(configRoot: string): number {
+  const builder = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
+  if (builder.deploy_modes?.some((mode) => mode.id === "orchestrator") && !builder.deploy_modes.some((mode) => mode.id === "implement")) return validateDirectLocalProfile(configRoot);
   const orchestratorPath = resolve(configRoot, "teams", "builder", "modes", "orchestrator.md");
   const orchestrator = readFileSync(orchestratorPath, "utf8");
   const ppaBranchContracts = [
@@ -179,6 +216,9 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
   }
   const reviewProducerCount = options.requireReviewV1 ? validateReviewProducerFixtures(configRoot) : undefined;
   const planFirstPrimerCount = validateRepositoryContracts(configRoot);
+  const builderConfig = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
+  const directLocal = builderConfig.deploy_modes?.some((mode) => mode.id === "orchestrator") === true && !builderConfig.deploy_modes.some((mode) => mode.id === "implement");
+  const expected = directLocal ? { modes: 52, builder: 4, requirements: 6, other: 42 } : { modes: 59, builder: 6, requirements: 11, other: 42 };
 
   const teamFiles = readdirSync(resolve(configRoot, "teams"))
     .filter((name) => name.endsWith(".yaml") && name !== "example.yaml")
@@ -210,10 +250,10 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     if (team.default_mode && !modeIds.has(team.default_mode)) throw new Error(`teams/${file}: default_mode ${team.default_mode} does not exist`);
   }
   if (teamFiles.length !== 10) throw new Error(`Expected 10 active teams, found ${teamFiles.length}`);
-  if (modeCount !== 59) throw new Error(`Expected 59 active modes, found ${modeCount}`);
-  if (builderExclusiveCount !== 6) throw new Error(`Expected 6 exclusive builder modes, found ${builderExclusiveCount}`);
-  if (requirementsReadOnlyCount !== 11) throw new Error(`Expected 11 read-only requirements modes, found ${requirementsReadOnlyCount}`);
-  if (otherNonLockingCount !== 42) throw new Error(`Expected 42 non-locking modes for other teams, found ${otherNonLockingCount}`);
+  if (modeCount !== expected.modes) throw new Error(`Expected ${expected.modes} active modes, found ${modeCount}`);
+  if (builderExclusiveCount !== expected.builder) throw new Error(`Expected ${expected.builder} exclusive builder modes, found ${builderExclusiveCount}`);
+  if (requirementsReadOnlyCount !== expected.requirements) throw new Error(`Expected ${expected.requirements} read-only requirements modes, found ${requirementsReadOnlyCount}`);
+  if (otherNonLockingCount !== expected.other) throw new Error(`Expected ${expected.other} non-locking modes for other teams, found ${otherNonLockingCount}`);
   // Absolute project guides are operator-owned inputs and cannot be present on a
   // generic CI runner. Runtime deploy validation remains responsible for them.
   const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"))
@@ -230,19 +270,20 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     ...(reviewProducerCount === undefined ? [] : [`REVIEW_V1_PRODUCER_PROFILES=${reviewProducerCount}/3`]),
     "CONFIG_CLEAN=true",
     `TEAMS_VALID=${teamFiles.length}/10`,
-    `MODES_VALID=${modeCount}/59`,
+    `MODES_VALID=${modeCount}/${expected.modes}`,
+    ...(directLocal ? ["SOURCE_PROFILE=ordinary-local/v1"] : []),
     "LEGACY_RUNTIMES=0",
     "INVALID_PAIRS=0",
-    `BUILDER_EXCLUSIVE=${builderExclusiveCount}/6`,
-    `REQUIREMENTS_READ_ONLY=${requirementsReadOnlyCount}/11`,
-    `OTHER_NON_LOCKING=${otherNonLockingCount}/42`,
-    `REPOSITORY_ADMISSION_MATRIX=${modeCount}/59`,
-    "PPA_BRANCH_GATE=6/6",
+    `BUILDER_EXCLUSIVE=${builderExclusiveCount}/${expected.builder}`,
+    `REQUIREMENTS_READ_ONLY=${requirementsReadOnlyCount}/${expected.requirements}`,
+    `OTHER_NON_LOCKING=${otherNonLockingCount}/${expected.other}`,
+    `REPOSITORY_ADMISSION_MATRIX=${modeCount}/${expected.modes}`,
+    directLocal ? "PPA_BRANCH_GATE=current-direct-source-checked" : "PPA_BRANCH_GATE=6/6",
     `PLAN_FIRST_REQUIREMENTS_PRIMERS=${planFirstPrimerCount}/${planFirstRequirementsModes.length}`,
     "REQUIREMENTS_TIME_CHECKOUT_PREREQUISITES=0",
     "BUILDER_OWNED_TREEHOUSE_MATERIALIZATION=true",
-    "DIRTY_DIRECT_BORROW_POLICY=6/6",
-    "DIRTY_DIRECT_BORROWER_EXCEPTION=1/1",
+    directLocal ? "DIRTY_DIRECT_BORROW_POLICY=historical-read-only" : "DIRTY_DIRECT_BORROW_POLICY=6/6",
+    directLocal ? "DIRTY_DIRECT_BORROWER_EXCEPTION=retired-no-fallback" : "DIRTY_DIRECT_BORROWER_EXCEPTION=1/1",
     "GENERAL_DIRTY_BACKGROUND_REJECTION=true",
     "REFERENCES_MISSING=0",
   ];

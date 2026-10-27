@@ -64,6 +64,12 @@ test("bounded output retains exact captured prefix and a distinct limit flag, ne
   assert.equal(evidence.blob(result.stdout).length, 256);
 }));
 
+test("PAP-268 output limit is combined across stdout/stderr, not two independent allowances", () => fixture(async (evidence, root) => {
+  const result = await runNativeExecutionProcess({ evidence, intent: intent(evidence), command: "printf '%0200d' 1; printf '%0200d' 2 >&2", cwd: root, timeoutSeconds: 5, maximumOutputBytes: 256 });
+  assert.equal(result.outputLimitExceeded, true); assert.equal(result.stdout.bytes + result.stderr.bytes, 256);
+  assert.equal(evidence.blob(result.stdout).length + evidence.blob(result.stderr).length, 256);
+}));
+
 test("whole-buffer public redaction leaves raw native bytes intact and withholds private-key bodies", () => {
   const secret = "native-private-cross-chunk-fixture";
   assert.equal(nativePublicText(`before ${secret} after`, [secret]), "before [REDACTED] after");

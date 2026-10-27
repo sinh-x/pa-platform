@@ -9,6 +9,7 @@ import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, selec
 import { validateDeploymentCorrelationEvidence, validateReviewCheckoutCorrelationEvidence, type RuntimeName } from "@pa-platform/pa-core";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TREEHOUSE_TIMEOUT_MS, type TreehouseCommandResult } from "../treehouse.js";
 import { TreehouseClient } from "./treehouse-fixture.js";
+import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
 import { runPiManagedProcess } from "../adapter.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
@@ -711,6 +712,7 @@ test("ticketed orchestrator acquires an exact free row and materializes the plan
     "  - id: orchestrator", "    label: Orchestrator", "    require_ticket: true",
   ].join("\n") + "\n");
   writeFileSync(join(tickets, "PAP-1.json"), JSON.stringify({ id: "PAP-1", project: "registered", title: "fixture", linkedBranches: [{ repo: "registered", branch: "feature/PAP-1-work", state: "planned", linkedAt: "2026-09-17T00:00:00Z", linkedBy: "requirements" }] }));
+  seedOrdinaryTaskBaseline({ ai: root, repo, repoKey: "registered", ticket: "PAP-1", branch: "feature/PAP-1-work", base: approvedBase });
   const prior = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const priorCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = config;

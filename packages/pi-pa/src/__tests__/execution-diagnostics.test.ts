@@ -12,8 +12,8 @@ import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { createPiSessionLifecycle, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
 
-const codes = ["EXECUTION_NOT_ADOPTED", "EXECUTION_BINDING_UNCERTAIN", "EXECUTION_CAPABILITY_UNSUPPORTED", "EXECUTION_CONTRACT_INVALID", "EXECUTION_STORAGE_REJECTED", "EXECUTION_CALLER_STALE", "EXECUTION_BINDING_CONFLICT", "EXECUTION_HOLDER_CONFLICT", "EXECUTION_UNKNOWN"] as const satisfies readonly ExecutionFailureCode[];
-const stages = ["binding-resolution", "binding-resolution", "capability", "contract", "persistence", "caller", "binding-validation", "custody", "fallback"];
+const codes = ["EXECUTION_NOT_ADOPTED", "EXECUTION_BINDING_UNCERTAIN", "EXECUTION_CAPABILITY_UNSUPPORTED", "EXECUTION_CONTRACT_INVALID", "EXECUTION_STORAGE_REJECTED", "EXECUTION_CALLER_STALE", "EXECUTION_BINDING_CONFLICT", "EXECUTION_HOLDER_CONFLICT", "EXECUTION_PHASE_PREREQUISITE", "EXECUTION_SCOPE_ESCALATION", "EXECUTION_PRODUCT_CHECK_FAILED", "EXECUTION_PROJECT_CONTRACT_INVALID", "EXECUTION_PROJECT_PREREQUISITE", "EXECUTION_UNKNOWN"] as const satisfies readonly ExecutionFailureCode[];
+const stages = ["binding-resolution", "binding-resolution", "capability", "contract", "persistence", "caller", "binding-validation", "custody", "phase-continuation", "task-scope", "project-check-result", "project-command-admission", "project-command-prerequisite", "fallback"];
 const actor: ExecutionHolder = { deploymentId: "d-aaaaaa", process: { pid: 123, startTimeTicks: "1", bootId: "fixture" } };
 const source: SourceVersion = { ref: "fixture:holder", version: "fixture/v1", sha256: workflowDigest("holder") };
 const time = "2026-10-17T00:00:00.000Z";

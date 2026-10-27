@@ -325,7 +325,8 @@ test("dashboard shell endpoints are read-only, include empty states, and stay fa
         assert.equal(response.status, 200);
       }
     }
-    assert.ok(p95(durations) < 500);
+    const dashboardP95 = p95(durations);
+    assert.ok(dashboardP95 < 500, `dashboard p95 ${dashboardP95.toFixed(1)}ms must remain below 500ms`);
 
     const opencodeView = await dashboardApp.app.request("/api/dashboard/views/opencode-integration");
     assert.equal(opencodeView.status, 200);

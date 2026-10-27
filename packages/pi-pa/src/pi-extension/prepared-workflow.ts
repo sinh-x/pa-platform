@@ -506,7 +506,9 @@ export interface PiExecutionBinding {
   resolveToolResult(event: PiExecutionEndEvent, state: ExecutionState): { evidence: SourceVersion; failure: ExecutionFailure | null; candidateSha?: string };
   /** Native immutable pre-dispatch record, never supplied by the model. */
   prepareOperation?(call: PiToolCall, context: unknown, state: ExecutionState, operationId: string): SourceVersion;
-  observe?(kind: string): SourceVersion;
+  observe?(kind: string, rationale?: string): SourceVersion;
+  /** Factual native Markdown; no rich presentation/phase-closure authority. */
+  report?(): Readonly<Record<string, unknown>>;
   resolveHolder(source: SourceVersion): ExecutionHolder;
   resolveInventory(source: SourceVersion): ExecutionRecoveryInventory;
   resolveRecovery(source: SourceVersion): ExecutionRecovery;
@@ -536,8 +538,10 @@ const PlanParams = Type.Object({ phaseId: Type.String(), scope: Type.String(), p
   checks: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }), size: Type.String(), complexity: Type.String(), rationale: Type.String() }, { additionalProperties: false });
 export const PiExecutionParams = Type.Union([
   Type.Object({ action: Type.Literal("status") }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal("observe"), kind: Type.Union([Type.Literal("holder"), Type.Literal("inventory"), Type.Literal("last-result"), Type.Literal("recovery")]) }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("report") }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("observe"), kind: Type.Union([Type.Literal("holder"), Type.Literal("inventory"), Type.Literal("last-result"), Type.Literal("recovery"), Type.Literal("phase")]), rationale: Type.Optional(Type.String({ maxLength: 4096 })) }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("plan"), plan: PlanParams }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("advance"), plan: PlanParams, evidence: EvidenceParams }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("select"), executor: Type.Union([Type.Literal("orchestrator-direct"), Type.Literal("implement-child"), Type.Literal("review-reserved")]), holder: EvidenceParams, handover: EvidenceParams }, { additionalProperties: false }),
   ...["settle", "attempt", "resolve", "candidate"].map((action) => Type.Object({ action: Type.Literal(action), evidence: EvidenceParams }, { additionalProperties: false })),
   Type.Object({ action: Type.Literal("accept"), kind: Type.Union([Type.Literal("review"), Type.Literal("ci"), Type.Literal("uat"), Type.Literal("integration")]), evidence: EvidenceParams }, { additionalProperties: false }),
@@ -626,7 +630,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
     };
     if (env.PA_TEAM === "builder" && ["orchestrator", "implement"].includes(env.PA_MODE ?? "")) {
       pi.registerTool?.({
-        name: "pa_execution", label: "PA Execution", description: "Record a bounded phase plan and authenticated executor/recovery evidence. Optional automation is inactive without native lineage authority.",
+        name: "pa_execution", label: "PA Execution", description: "Record a scoped local phase and authenticated writer/recovery evidence. Use report for factual native Markdown, observe phase then advance for checked/committed same-scope continuation; plan alone cannot change phases. A recovery rationale is narrative, never evidence or a cap reset. Optional rich-report/preparation automation is separate.",
         parameters: PiExecutionParams, executionMode: "sequential",
         execute: async (_id, input, signal, _update, context) => run(() => {
           if (signal?.aborted) throw workflowError();
@@ -635,9 +639,17 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
           input = executionInput(input);
           const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
           if (action === "status") { workflowObject(input, ["action"]); return executionResult(projectExecution(service.status(actor))); }
-          if (action === "observe") { const row = workflowObject(input, ["action", "kind"]); if (!binding.observe) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); if (!["holder", "inventory", "last-result", "recovery"].includes(String(row.kind))) throw workflowError(); return executionResult({ evidence: nativeExecutionCall(() => binding.observe!(String(row.kind))) }); }
+          if (action === "report") { workflowObject(input, ["action"]); if (!binding.report) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); return executionResult(nativeExecutionCall(() => binding.report!())); }
+          if (action === "observe") {
+            const hasRationale = Object.hasOwn(input, "rationale");
+            const row = workflowObject(input, ["action", "kind", ...(hasRationale ? ["rationale"] : [])]);
+            if (!binding.observe) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
+            if (!["holder", "inventory", "last-result", "recovery", "phase"].includes(String(row.kind)) || (hasRationale && (row.kind !== "recovery" || typeof row.rationale !== "string" || !row.rationale.trim() || row.rationale.length > 4096))) throw workflowError();
+            return executionResult({ evidence: nativeExecutionCall(() => binding.observe!(String(row.kind), hasRationale ? row.rationale as string : undefined)) });
+          }
           let command: ExecutionCommand;
           if (action === "plan") { const row = workflowObject(input, ["action", "plan"]); command = { action, plan: parseExecutionPlan(row.plan) }; }
+          else if (action === "advance") { const row = workflowObject(input, ["action", "plan", "evidence"]); command = { action, plan: parseExecutionPlan(row.plan), evidence: parseEvidence(row.evidence) }; }
           else if (action === "select") {
             const row = workflowObject(input, ["action", "executor", "holder", "handover"]);
             if (row.executor !== "orchestrator-direct" && row.executor !== "implement-child" && row.executor !== "review-reserved") throw workflowError();
@@ -678,7 +690,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
     }
     pi.on?.("tool_call", (raw: unknown, context: unknown) => {
       try {
-        const call = raw as PiToolCall & { toolCallId?: string };
+        const call = executionInput(raw) as unknown as PiToolCall & { toolCallId?: string };
         const name = executionToolName(call);
         if (name === "pa_execution" || name === "pa_feature_update" || name === "pa_phase_report" || readOnlyExecutionCall(name, call.input)) return;
         const binding = resolve(context); if (!binding) return;
@@ -695,7 +707,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         const intent = binding.prepareOperation ? nativeExecutionCall(() => binding.prepareOperation!(call, context, state, id)) : null;
         binding.service.apply(binding.actor, { action: "begin", operation: { id, kind: check === null ? operationKind(name) : "check", check, intent } });
         pending.set(id, { binding, name });
-      } catch { return { block: true, reason: workflowError().message }; }
+      } catch (error) { return { block: true, reason: executionWorkflowError(error).message }; }
     });
     pi.on?.("tool_execution_end", (raw, context) => {
       try {

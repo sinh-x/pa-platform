@@ -1,5 +1,5 @@
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-coding-agent";
-import { executionFailure, workflowError } from "@pa-platform/pa-core";
+import { executionFailure, executionWorkflowError, workflowError } from "@pa-platform/pa-core";
 import type { PiNativeExecutionAdapter, NativeExecutionSession } from "./execution-native.js";
 import type { PiRuntime, PiSessionLifecycle, PiToolDefinition, PiToolResult } from "./pi-extension/index.js";
 import { createPaTicketTool } from "./pi-extension/ticket-tool.js";
@@ -36,7 +36,7 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
           return publicResult(result, current);
         };
         try { return await (lifecycle ? lifecycle.trackRegistryAccess(execute) : execute()); }
-        catch { throw workflowError(); }
+        catch (error) { throw executionWorkflowError(error); }
       },
     });
     for (const name of ["bash", "write", "edit"] as const) {
@@ -70,9 +70,14 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
                   const result = await native.runBash(id, input, command, directory, options.timeout ?? 1200, options.signal);
                   // Keep channels separate in private evidence. Only the whole-
                   // buffer redacted reading stream reaches Pi/log/temp output.
+                  if (!result.groupSettled || result.timedOut || result.aborted || result.outputLimitExceeded) {
+                    // A truncated/interrupted channel can end inside a secret.
+                    // Keep its prefix private rather than leaking a partial value.
+                    options.onData(Buffer.from("[Incomplete native output retained privately; inspect report/status settlement flags.]"));
+                    throw workflowError();
+                  }
                   const text = native.publicText(native.evidence.blob(result.stdout).toString("utf8") + native.evidence.blob(result.stderr).toString("utf8"));
                   options.onData(Buffer.from(text));
-                  if (!result.groupSettled || result.timedOut || result.aborted || result.outputLimitExceeded) throw workflowError();
                   return { exitCode: result.exitCode };
                 },
               } });
@@ -84,7 +89,7 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
             });
           };
           try { return await (lifecycle ? lifecycle.trackRegistryAccess(execute) : execute()); }
-          catch { throw workflowError(); }
+          catch (error) { throw executionWorkflowError(error); }
         },
       });
     }

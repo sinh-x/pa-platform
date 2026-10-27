@@ -101,6 +101,28 @@ test("PAP-264 same-phase replan cannot remove, replace or reorder named rechecks
   assert.deepEqual(f.service.status(owner).bounds, before.bounds);
 }));
 
+test("PAP-268 explicit native-evidenced phase advance preserves lineage/bounds and rejects replay/scope expansion", () => fixture((f) => {
+  f.plan(); const before = f.service.status(owner);
+  const next = { ...executionPlan(), phaseId: "phase-4" };
+  assert.throws(() => f.apply({ action: "plan", plan: next }));
+  f.setEvidence(false); assert.throws(() => f.apply({ action: "advance", plan: next, evidence: source("completed-native-phase") }));
+  assert.deepEqual(f.service.status(owner), before); f.setEvidence(true);
+  assert.throws(() => f.apply({ action: "advance", plan: { ...next, paths: ["outside.ts"] }, evidence: source("completed-native-phase") }));
+  const advanced = f.apply({ action: "advance", plan: next, evidence: source("completed-native-phase") });
+  assert.deepEqual(advanced.bounds, before.bounds); assert.equal(advanced.binding.lineageId, before.binding.lineageId);
+  const reloaded = new ExecutionCustodyService(f.store, binding(), f.host);
+  assert.equal(reloaded.status(owner).plan?.phaseId, "phase-4");
+  assert.throws(() => reloaded.apply(owner, { action: "advance", plan: executionPlan(), evidence: source("completed-native-phase") }));
+}));
+
+test("PAP-268 failures, active operations and exhausted deadline prevent phase laundering", () => fixture((f) => {
+  failed(f); const next = { ...executionPlan(), phaseId: "phase-4" };
+  assert.throws(() => f.apply({ action: "advance", plan: next, evidence: source("forged-phase") }));
+  assert.deepEqual(f.service.status(owner).originalFailure, failure());
+  f.setNow("2026-10-17T02:00:00.000Z");
+  assert.throws(() => f.apply({ action: "advance", plan: next, evidence: source("forged-phase") }));
+}));
+
 test("PAP-264 historical valid replans remain byte-readable but cannot authorize another check-list replacement", () => fixture((f) => {
   f.plan();
   const first = f.store.read(`${f.service.executionId}.transaction-1.json`);
