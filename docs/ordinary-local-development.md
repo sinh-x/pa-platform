@@ -81,6 +81,85 @@ has been published: a ref may already exist despite an interrupted call. Only th
 same live owner can reconcile that intent/result; a missing start event is not
 proof that resources are absent or safe to release.
 
+## Finite requirements sign-off compatibility (PAP-269)
+
+The consumer supports the two exact simple sentences above and these **anchored,
+case-sensitive** retained whole-pair producer families (`d-HEX` is six lowercase
+hex digits; `rNNN` is the exact source revision). These are grammars, not keywords:
+
+| Family | Decision opening | Requirements preview binding |
+| --- | --- | --- |
+| Existing standard | `Explicit [standalone ]foreground PA sign-off in d-HEX: I selected Approve exact pair and matrix for TICKET rNNN.` | `Reviewed requirements[ source]: FULL_PATH, raw SHA-256 HASH` (semicolon also supported) |
+| Existing owner-directed | Same opening with `I selected "Approve this exact pair" for owner-directed TICKET rNNN.` | Same full-path clause |
+| WAW-016 | `Explicit PA sign-off from interactive deployment d-HEX: Approve rNNN pair and exact matrix.` then `I approve the complete TICKET requirements revision rNNN and companion UAT,` | `Reviewed requirements: FULL_PATH, raw SHA-256 HASH` |
+| TTL-012 | `APPROVED in standalone PA sign-off, deployment d-HEX: complete requirements/UAT pair rNNN.` | `Requirements source FINAL_REF reviewed as reviews/TICKET/rNNN/requirements.md raw SHA-256 HASH` |
+| TTL-014 | `Final standalone PA sign-off in d-HEX. Sinh selected Approve exact rNNN pair and matrix after complete whole-document Markdown requirements and sixteen-scenario UAT review was offered.` (scenario-count word/number is variable) | `Reviewed revision rNNN requirements raw SHA-256 HASH` |
+
+For every rich family, the one canonical preview is
+`agent-teams/requirements/artifacts/reviews/TICKET/rNNN/requirements.md`.
+Only TTL-012 expands the exact shortened `reviews/...` locator, under the fixed
+artifacts directory. Only TTL-014 derives the locator from the exact reviewed
+revision; it never searches files or chooses by hash/latest date. Each family
+requires one `Matrix Source: FINAL_REF` (TTL-014 combines this as `Requirements
+Source and Matrix Source FINAL_REF.`). Matrix execution/readiness is not added
+as an ordinary-baseline prerequisite.
+
+All adapters converge on the same own-ticket, exact `sinh` author, unique primary
+source/comment, preview raw SHA-256 and preview/promoted tuple checks. Both source
+and preview retain bounded (1 MiB), fatal UTF-8, regular-file/no-follow reads.
+Preview revision must agree. Numeric retained review hashes, when present, must
+also agree; external-record descriptions are not substituted hashes. Every
+present authoritative repository/root/ticket/handoff/branch/base clause must be
+unique and equal. Legacy rich producers may bind these through their preview;
+WAW/TTL-014 require explicit tuples. TTL-012 additionally requires its compact
+`Handoff fresh, canonical REPO root ROOT, approved base SHA, exact branch BRANCH,
+planned/create.` tuple (amendment/retained/materialized/reuse is also finite).
+
+Descriptive intent and execution boundaries cannot introduce another decision.
+Only the family's documented plan restatement is removed before rejecting extra
+approval/rejection/revocation/conditional clauses. Administrative approval metadata,
+approval-bound final review, `This is not implementation authorization`, `No source
+implementation ... is authorized` and `Plan approval is not executed UAT or
+application acceptance` are plan/execution boundaries, not denied plan decisions.
+Examples that **reject** include a discussion prepended to a valid decision,
+`I do not approve this pair`, `Rejected`, `Only if ...`, two source/preview/tuple
+clauses, an aliased preview and a wrong ticket/revision/hash/base. The retained
+PAPC-068 standard producer's compact `Handoff: builder/orchestrator; canonical
+REPO at ROOT; fresh planned/create; BRANCH from exact base SHA;` tuple is also
+validated when present. Its exact `Approve the exact eleven-command matrix and
+all eight paired UAT scenarios as plans, not results.` restatement (reviewed
+counts may vary), administrative approval/status/hash/link metadata wording and
+complete non-launch/non-UAT-success boundary remain supported. This is not
+permission for a second decision or conflicting compact tuple. Later explicit
+same-ticket operator withdrawals bound to the selected comment/source or referring
+to this approval reject; uncertain ordering/binding fails closed. Unrelated policy
+discussion grants nothing and does not revoke a decision.
+
+Additive diagnostic subcodes retain the `ORDINARY_BASELINE_APPROVAL_REJECTED`
+family: `_UNSUPPORTED_PRODUCER` identifies a producer/consumer contract gap owned
+by pa-platform/PAP-269 with requirements-producer coordination under PAPC-068;
+`_INVALID_EVIDENCE` identifies conflicting/invalid authority, and `_WITHDRAWN`
+identifies applicable withdrawal. `ORDINARY_BASELINE_CONFIG_MISMATCH` still means
+changed configured integration base, never a formatting issue. Every public stop
+has Condition/Source/Reason/Correction/Resume Action, is bounded below 2,000
+characters and omits approval bodies/tokens. Preserve signed history: do not rewrite
+artifacts, demand unchanged-facts approval, substitute a SHA or retry unchanged.
+
+Disposable built-consumer qualification (no materialization or launcher):
+
+```sh
+node scripts/dev/verify_ordinary_approval_compatibility.mjs --module packages/pa-core/dist/tickets/materialization.js
+```
+
+It reports the physical module path/SHA-256 and every required case, isolates
+PA/config/tickets/artifacts/Git in a temporary directory, and verifies evidence/ref
+preservation. Source and candidate-built results are **not** selected installed
+success. After separately authorized packaging/selection, the same driver can
+qualify the exact selected installed module path. No installation, live WAW/TTL
+retry, new checkout/link write, independent review, CI or human UAT is implied.
+PAPC-068 owns future producer changes; unknown formats need an explicit compatible
+contract/test change, not a prose-permission fallback or structured-only migration.
+
 ## Validated project commands (source capability)
 
 Ordinary source phases require a registered `projectCommands: { manifest: checks.json,

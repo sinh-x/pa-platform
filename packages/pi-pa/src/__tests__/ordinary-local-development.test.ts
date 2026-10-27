@@ -17,7 +17,7 @@ import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 /** Actual source-built deploy/native adapter, real Git and native owner storage.
  * Provider spawn and Treehouse status are simulated; no installed-runtime,
  * real-service, independent-review, or full AC1–AC8 acceptance is claimed. */
-async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "project-blocked-reporting" | "project-output-limit" | "project-unregistered" | "project-script-drift" | "project-hook" | "project-index-mismatch" | "publication-interruption") {
+async function fixture(variant: "waw" | "ttl012" | "ttl014" | "approval-invalid" | "comment-drift" | "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "project-blocked-reporting" | "project-output-limit" | "project-unregistered" | "project-script-drift" | "project-hook" | "project-index-mismatch" | "publication-interruption") {
   const root = mkdtempSync(join(tmpdir(), "pap268-launch-")); const env = process.env, cwd = process.cwd();
   process.env = { ...env }; for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   const repo = join(root, "repo"), checkout = join(root, "checkout"), branch = "feature/PAP-268-disposable";
@@ -61,18 +61,27 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     writeFileSync(join(root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
     const ticketPath = join(root, "tickets/PAP-268.json");
     writeFileSync(ticketPath, JSON.stringify({ id: "PAP-268", project: "fixture", title: "Disposable", status: "implementing", linkedBranches: [{ repo: "fixture", branch, state: "planned" }] }));
-    const source = seedOrdinaryTaskBaseline({ ai: root, repo, repoKey: "fixture", ticket: "PAP-268", branch, base });
+    const producer = variant === "waw" || variant === "ttl012" || variant === "ttl014" ? variant : variant === "approval-invalid" || variant === "comment-drift" ? "waw" : undefined;
+    const source = seedOrdinaryTaskBaseline({ ai: root, repo, repoKey: "fixture", ticket: "PAP-268", branch, base, producer });
+    if (variant === "approval-invalid") {
+      const ticket = JSON.parse(readFileSync(ticketPath, "utf8")); ticket.comments[0].content += " I do not approve this pair."; writeFileSync(ticketPath, JSON.stringify(ticket));
+    }
     if (variant === "stale") { writeFileSync(join(repo, "README.md"), "B\n"); git(["commit", "-am", "base B"]); }
     if (variant === "missing") { const ticket = JSON.parse(readFileSync(ticketPath, "utf8")); ticket.doc_refs = []; writeFileSync(ticketPath, JSON.stringify(ticket)); }
     if (variant === "dirty") writeFileSync(join(checkout, "unknown.txt"), "preserve\n");
     const canonical = { head: git(["rev-parse", "HEAD"]), status: git(["status", "--porcelain=v2", "--untracked-files=all"]) };
-    const ticketBefore = readFileSync(ticketPath); let spawns = 0, treehouseCalls = 0, forbidden = 0, branchEffects = 0;
+    let ticketBefore = readFileSync(ticketPath); let spawns = 0, treehouseCalls = 0, forbidden = 0, branchEffects = 0;
+    const operations: string[] = [];
     let bodyFailure: unknown;
     const treehouse = new TreehouseClient({ run(args) {
       treehouseCalls++;
       if (args[0] === "--version") return { status: 0, stdout: Buffer.from("v3.1.3\n"), stderr: Buffer.alloc(0) };
       if (args[0] === "status") {
         if (variant === "source-drift") writeFileSync(source, readFileSync(source, "utf8") + "Changed during selection\n");
+        if (variant === "comment-drift") {
+          const ticket = JSON.parse(readFileSync(ticketPath, "utf8")); ticket.comments[0].content += " Descriptive scope note.";
+          writeFileSync(ticketPath, JSON.stringify(ticket)); ticketBefore = readFileSync(ticketPath);
+        }
         return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: checkout, leased: true, lease_id: "disposable-lease", lease_holder: "pa:fixture:PAP-268" }])), stderr: Buffer.alloc(0) };
       }
       forbidden++; throw new Error("no allocation/return allowed");
@@ -111,12 +120,12 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     };
     let result;
     try { result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-268", repo: "fixture", timeout: 1800,
-      provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: authority, observeOperation: (operation) => { if (operation === "branch") branchEffects++; } }); }
+      provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: authority, observeOperation: (operation) => { operations.push(operation); if (operation === "branch") branchEffects++; } }); }
     finally { TicketStore.prototype.update = originalUpdate; }
     if (bodyFailure) throw bodyFailure;
     assert.equal(forbidden, 0);
     assert.deepEqual({ head: git(["rev-parse", "HEAD"]), status: git(["status", "--porcelain=v2", "--untracked-files=all"]) }, canonical);
-    if (variant === "matching" || variant.startsWith("project-")) {
+    if (variant === "matching" || variant === "waw" || variant === "ttl012" || variant === "ttl014" || variant.startsWith("project-")) {
       assert.equal(result.status, ["project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "project-hook", "project-index-mismatch"].includes(variant) ? "failed" : "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
       assert.equal(JSON.parse(readFileSync(ticketPath, "utf8")).linkedBranches[0].baseSha, base);
       assert.equal(existsSync(repositoryMutationLeasePath(checkout)), false);
@@ -128,10 +137,12 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     } else {
       assert.equal(result.status, "failed"); assert.equal(spawns, 0); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
       assert.equal(git(["branch", "--list", branch]), "");
-      if (variant === "stale" || variant === "missing") { assert.equal(treehouseCalls, 0); assert.equal(branchEffects, 0); }
+      if (variant === "stale" || variant === "missing" || variant === "approval-invalid") {
+        assert.equal(treehouseCalls, 0); assert.equal(branchEffects, 0); assert.deepEqual(operations, [], "denied approval has zero slot/permit/checkout/branch/spawn operations");
+      }
       assert.match(result.reason ?? "", /ORDINARY_BASELINE_/);
     }
-    assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-268")), variant === "source-drift" || variant === "dirty" || variant === "publication-interruption",
+    assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-268")), variant === "source-drift" || variant === "comment-drift" || variant === "dirty" || variant === "publication-interruption",
       "post-acquisition denials retain existing custody for owning reconciliation; no forced release");
     if (existsSync(join(root, "authority/native"))) assert.deepEqual(readdirSync(join(root, "authority/native")), []);
   } finally { process.chdir(cwd); closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); }
@@ -323,6 +334,6 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
   assert.equal(frame.cwd, checkout); assert.equal(frame.program.environment.HOME, "/tmp/pa-check-home"); assert.ok(frame.program.argv.includes("--unshare-all"));
 }
 
-for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "project-hook", "project-index-mismatch", "publication-interruption"] as const) {
+for (const variant of ["waw", "ttl012", "ttl014", "approval-invalid", "comment-drift", "matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "project-hook", "project-index-mismatch", "publication-interruption"] as const) {
   test(`PAP-268 actual ordinary launch: ${variant} intended baseline (simulated provider/Treehouse)`, () => fixture(variant));
 }

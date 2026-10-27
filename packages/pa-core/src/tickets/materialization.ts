@@ -100,28 +100,21 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
   // independent of routine phase/check/commit authorization.
   const decision = `Approve ${options.ticketId} ${options.canonicalRepoKey} ${root} ${linked.branch}`;
   const approved = ["", "from "].some((prefix) => comments[0]?.content === `${decision} ${prefix}exact base ${baseSha}; source ${ref}.`);
-  // Existing requirements producers have already recorded a richer whole-pair
-  // decision. Authenticate its exact reviewed preview hash and task tuple instead
-  // of demanding a new unchanged-facts baseline-only approval. This is a finite
-  // producer format, not keyword approval inferred from arbitrary discussion.
-  const reviewedPairApproved = (): boolean => {
-    if (comments.length !== 1 || comments[0]!.author !== "sinh") return false;
-    const content = comments[0]!.content;
-    const revision = header("Review Revision");
-    if (!/^r\d{3,}$/.test(revision) || /\b(?:revoke|revoked|reject|rejected|withdraw|withdrawn|cancel|cancelled)\b/i.test(content)) return false;
-    const prefix = new RegExp(`^Explicit(?: standalone)? foreground PA sign-off in d-[0-9a-f]{6}: I selected (?:"Approve this exact pair" for owner-directed|Approve exact pair and matrix for) ${options.ticketId} ${revision}\\.`);
-    const matches = [...content.matchAll(/Reviewed requirements(?: source)?: ([A-Za-z0-9_./-]+)[;,] raw SHA-256 ([0-9a-f]{64})(?=[;.,\s])/g)];
-    if (!prefix.test(content) || matches.length !== 1 || !content.includes(`Matrix Source: ${ref}.`)) return false;
-    const previewPath = `agent-teams/requirements/artifacts/reviews/${options.ticketId}/${revision}/requirements.md`;
-    if (matches[0]![1] !== previewPath) return false;
-    let preview: Uint8Array;
-    try { preview = readReviewEvidenceFile(join(getAiUsageDir(), previewPath), 1_048_576, "ordinary reviewed task preview"); } catch { return false; }
-    if (createHash("sha256").update(preview).digest("hex") !== matches[0]![2]) return false;
-    let previewText: string;
-    try { previewText = new TextDecoder("utf-8", { fatal: true }).decode(preview).split(/^##[ \t]/m)[0]!; } catch { return false; }
-    return ["Ticket", "Repository Key", "Repository Root", "Handoff Type", "Feature Branch", baseLabel].every((label) => header(label, previewText) === header(label));
-  };
-  if (comments.length !== 1 || comments[0]!.author !== "sinh" || (!approved && !reviewedPairApproved())) fail("APPROVAL_REJECTED");
+  if (comments.length !== 1 || comments[0]!.author !== "sinh") fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+  if (!approved) validateOrdinaryPairApproval(comments[0]!.content, { ticket: options.ticketId, ref, preamble, header, fail });
+  // Array order is retained history; timestamps also catch reordered later
+  // withdrawals. An uncertain date on an applicable withdrawal fails closed.
+  const selected = ticket.comments.indexOf(comments[0]!);
+  for (const [index, comment] of ticket.comments.entries()) {
+    if (index === selected || comment.author !== "sinh") continue;
+    const withdrawal = /(?:^|[.!]\s+)(?:I (?:(?:hereby|have) )?)?(?:revoke[ds]?|withdraw(?:n)?|cancel(?:led|ed)?|reject(?:ed)?)\b|(?:^|[.!]\s+)(?:This |The )?(?:approval|sign-off)\b.*\b(?:revoked|withdrawn|cancelled|canceled|rejected)\b/i.test(comment.content);
+    const bound = comment.content.includes(ids[0]!) || comment.content.includes(ref)
+      || /\b(?:this|the|my) (?:approval|sign-off|pair)\b/i.test(comment.content)
+      || (comment.content.includes(options.ticketId) && /\br\d{3,}\b/.test(comment.content));
+    if (!withdrawal || !bound) continue;
+    const before = Date.parse(comments[0]!.timestamp), after = Date.parse(comment.timestamp);
+    if (index > selected || !Number.isFinite(before) || !Number.isFinite(after) || after >= before) fail("APPROVAL_REJECTED_WITHDRAWN");
+  }
   const git = options.runGit ?? defaultGit;
   if (fullCommit(git, root, `${baseSha}^{commit}`, "intended task base") !== baseSha) fail("CONTRACT_INVALID");
   if (linked.state === "materialized") {
@@ -132,8 +125,129 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
     branch: linked.branch, baseSha, requirements: Object.freeze({ ref, sha256: digest(bytes) }),
     approval: Object.freeze({ commentId: ids[0]!, sha256: digest(JSON.stringify({ id: comments[0]!.id, author: comments[0]!.author, content: comments[0]!.content })) }) });
 }
+/** Finite retained producer adapters. Extraction converges here before any Git
+ * observation; no adapter gets its own weaker tuple/hash or safe-reader path. */
+function validateOrdinaryPairApproval(content: string, context: {
+  ticket: string; ref: string; preamble: string; header: (label: string, from?: string) => string; fail: (code: string) => never;
+}): void {
+  const { ticket, ref, header, fail } = context;
+  const invalid = (): never => fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+  const families = [
+    { kind: "standard", pattern: /^Explicit(?: standalone)? foreground PA sign-off in d-[0-9a-f]{6}: I selected (?:"Approve this exact pair" for owner-directed|Approve exact pair and matrix for) ([A-Z][A-Z0-9]*-\d+) (r\d{3,})\./ },
+    { kind: "waw", pattern: /^Explicit PA sign-off from interactive deployment d-[0-9a-f]{6}: Approve (r\d{3,}) pair and exact matrix\./ },
+    { kind: "ttl012", pattern: /^APPROVED in standalone PA sign-off, deployment d-[0-9a-f]{6}: complete requirements\/UAT pair (r\d{3,})\./ },
+    { kind: "ttl014", pattern: /^Final standalone PA sign-off in d-[0-9a-f]{6}\. Sinh selected Approve exact (r\d{3,}) pair and matrix after complete whole-document Markdown requirements and [A-Za-z0-9-]+-scenario UAT review was offered\./ },
+  ];
+  const family = families.find(({ pattern }) => pattern.test(content));
+  if (!family) return fail("APPROVAL_REJECTED_UNSUPPORTED_PRODUCER");
+  const opening = family.pattern.exec(content)!;
+  const revision = header("Review Revision");
+  if (!/^r\d{3,}$/.test(revision) || opening.at(-1) !== revision || (family.kind === "standard" && opening[1] !== ticket)) invalid();
+  let rest = content.slice(opening[0].length);
+  // Every authoritative clause must occur once and have the expected value.
+  // Count labels independently of valid matches so malformed duplicates cannot
+  // disappear during extraction. Do not normalize any path or signed bytes.
+  const take = (label: RegExp, clause: RegExp): RegExpExecArray => {
+    if ([...rest.matchAll(label)].length !== 1) return invalid();
+    const match = clause.exec(rest); if (!match) return invalid();
+    rest = rest.slice(0, match.index) + rest.slice(match.index + match[0].length);
+    return match;
+  };
+  const canonical = `agent-teams/requirements/artifacts/reviews/${ticket}/${revision}/requirements.md`;
+  let locator: string, hash: string;
+  if (family.kind === "ttl012") {
+    const match = take(/Requirements source/gi, /Requirements source (requirements:[A-Za-z0-9_./-]+) reviewed as ([A-Za-z0-9_./-]+) raw SHA-256 ([0-9a-f]{64})(?=[;.,\s]|$)/);
+    if (match[1] !== ref || match[2] !== `reviews/${ticket}/${revision}/requirements.md`) invalid();
+    locator = `agent-teams/requirements/artifacts/${match[2]}`; hash = match[3]!;
+  } else if (family.kind === "ttl014") {
+    const match = take(/Reviewed revision/gi, /Reviewed revision (r\d{3,}) requirements raw SHA-256 ([0-9a-f]{64})(?=[;.,\s]|$)/);
+    if (match[1] !== revision) invalid();
+    locator = canonical; hash = match[2]!;
+  } else {
+    const match = take(/Reviewed requirements/gi, /Reviewed requirements(?: source)?: ([A-Za-z0-9_./-]+)[;,] raw SHA-256 ([0-9a-f]{64})(?=[;.,\s]|$)/);
+    locator = match[1]!; hash = match[2]!;
+  }
+  if (locator !== canonical) invalid();
+  const matrix = take(/Matrix Source/gi, /(?:Requirements Source and )?Matrix Source(?:: | )(requirements:[A-Za-z0-9_./-]+)\.(?=\s|$)/);
+  if (matrix[1] !== ref) invalid();
+  if (family.kind === "waw") {
+    const grant = take(/I approve the complete/gi, /I approve the complete ([A-Z][A-Z0-9]*-\d+) requirements revision (r\d{3,}) and companion UAT,/);
+    if (grant[1] !== ticket || grant[2] !== revision) invalid();
+  }
+  const handoff = header("Handoff Type"), baseLabel = handoff === "fresh" ? "Approved Base SHA" : "Retained Base SHA";
+  const labels = ["Repository Key", "Repository Root", "Handoff Type", "Feature Branch", baseLabel, "Ticket"];
+  for (const label of labels) {
+    // Legacy rich producers may bind their tuple solely through the preview.
+    const marker = label === "Ticket" ? "\\bTicket(?::[ \\t]*|[ \\t]+(?=[A-Z][A-Z0-9]*-\\d))" : `\\b${label}(?::[ \\t]*|[ \\t]+)`;
+    const count = [...rest.matchAll(new RegExp(marker, "gi"))].length;
+    if ((family.kind === "standard" || (label === "Ticket" && family.kind !== "ttl014")) && count === 0) continue;
+    if (family.kind === "ttl012" && count === 0) continue; // compact tuple below
+    const clause = take(new RegExp(marker, "gi"), new RegExp(`${marker}([^\\s]+)`));
+    if (clause[1]!.replace(/\.$/, "") !== header(label)) invalid();
+  }
+  // The retained PAPC-068 standard producer names its tuple in a compact
+  // Handoff clause. Validate it too; a preview cannot excuse conflicting prose.
+  if (/\bHandoff:/i.test(rest)) {
+    const compact = take(/\bHandoff:/gi, /Handoff: builder\/orchestrator; canonical ([A-Za-z0-9_-]+) at ([^;\s]+); (fresh|amendment) (planned\/create|materialized\/reuse); ([^;\s]+) from exact base ([0-9a-f]{40});/);
+    if (family.kind !== "standard" || compact[1] !== header("Repository Key") || compact[2] !== header("Repository Root")
+      || compact[3] !== handoff || compact[4] !== (handoff === "fresh" ? "planned/create" : "materialized/reuse")
+      || compact[5] !== header("Feature Branch") || compact[6] !== header(baseLabel)) invalid();
+  }
+  // Reject the other base kind even if a valid base clause was also supplied.
+  if (/\b(?:Approved|Retained) Base SHA\b/i.test(rest)) invalid();
+  if (family.kind === "ttl012") {
+    const compact = take(/\bHandoff fresh, canonical|\bHandoff amendment, canonical/gi,
+      /Handoff (fresh|amendment), canonical ([A-Za-z0-9_-]+) root (\S+), (approved|retained) base ([0-9a-f]{40}), exact branch (\S+), (planned\/create|materialized\/reuse)\./);
+    if (compact[1] !== handoff || compact[2] !== header("Repository Key") || compact[3] !== header("Repository Root")
+      || compact[4] !== (handoff === "fresh" ? "approved" : "retained") || compact[5] !== header(baseLabel)
+      || compact[6] !== header("Feature Branch") || compact[7] !== (handoff === "fresh" ? "planned/create" : "materialized/reuse")) invalid();
+  }
+  // Only these documented repeated plan-grant clauses are allowed. Remaining
+  // prose is descriptive scope/boundaries, never another decision or condition.
+  const planRestatements: Record<string, RegExp> = {
+    standard: /(?:I approve all [a-z0-9-]+ exact ordered commands, prerequisites, environment, outputs and pass criteria(?: and all [a-z0-9-]+ paired UAT scenarios as plans)?|Approve the exact [a-z0-9-]+-command matrix and all [a-z0-9-]+ paired UAT scenarios as plans, not results)\./,
+    waw: /I approve that exact \d+-command matrix and requirements\/UAT pair for promotion after final Shape-Conformance 13\/13\./,
+    ttl012: /Approve this exact four-command matrix and pair, permitting only administrative approval\/status\/link metadata changes for final promotion\./,
+    ttl014: /\ball [a-z0-9-]+ exact ordered commands, prerequisites, environment, outputs and pass criteria approved\./,
+  };
+  rest = rest.replace(planRestatements[family.kind]!, "").replace(/\bApproved intent:/, "");
+  // These exact safety boundaries qualify execution, not the plan decision.
+  rest = rest.replace(/administrative approval\/status\/(?:hash\/)?link metadata/g, "")
+    .replace(/administrative approval metadata/g, "")
+    .replace(/approval-bound final (?:13-check )?review/g, "")
+    .replace(/Plan approval is not executed UAT or application acceptance\./, "")
+    .replace(/This does not launch implementation\/review, authenticate custody, approve UAT success, install or activate policy\./, "");
+  if (/\b(?:approv(?:e[ds]?|al)|revo(?:ke[ds]?|cation)|reject(?:ed|ion)?|withdraw(?:n|al)?|cancel(?:led|ed|lation)?|conditional(?:ly)?|unless)\b|\bonly if\b/i.test(rest)) invalid();
+  // No second locator/revision/source grammar may hide in descriptive prose.
+  if (/\b(?:Reviewed requirements|Reviewed revision|Requirements source|Matrix Source|Review Revision|Repository Key|Repository Root|Handoff Type|Feature Branch)\b/i.test(rest)) invalid();
+  if (/\b(?:discussion only|not granting|not permission|subject to|provided that|partially|do not proceed|do not use|no permission)\b/i.test(rest)) invalid();
+  let preview: Uint8Array;
+  try { preview = readReviewEvidenceFile(join(getAiUsageDir(), canonical), 1_048_576, "ordinary reviewed task preview"); } catch { return invalid(); }
+  if (createHash("sha256").update(preview).digest("hex") !== hash) invalid();
+  if (/^>[ \t]+(?:\*\*)?Review Source SHA-256:/m.test(context.preamble)) {
+    const retainedHash = header("Review Source SHA-256");
+    if (/^[0-9a-f]{64}(?:$| )/.test(retainedHash)) {
+      if (retainedHash.slice(0, 64) !== hash) invalid();
+    } else if (!/^external(?:ly)?\b/i.test(retainedHash)) invalid();
+  }
+  let previewPreamble: string;
+  try { previewPreamble = new TextDecoder("utf-8", { fatal: true }).decode(preview).split(/^##[ \t]/m)[0]!; } catch { return invalid(); }
+  for (const label of ["Ticket", "Repository Key", "Repository Root", "Handoff Type", "Feature Branch", baseLabel, "Review Revision"]) {
+    if (header(label, previewPreamble) !== header(label)) invalid();
+  }
+  if (new RegExp(`^>[ \\t]+(?:\\*\\*)?${handoff === "fresh" ? "Retained" : "Approved"} Base SHA:`, "m").test(previewPreamble)) invalid();
+}
+
 function ordinaryBaselineError(code: string): Error {
-  return new Error(`Condition: ORDINARY_BASELINE_${code}; ordinary branch materialization blocked. Source: primary approved task source and own-ticket operator sign-off. Reason: intended baseline is missing, changed, insecure or incompatible with current repository evidence. Correction: requirements/configuration owner must reconcile the exact repository, ticket, branch, full base and source-bound sign-off; preserve all existing work. Resume Action: retry ordinary launch after the owning evidence agrees; do not approve a substituted base, reset work or supply a SHA override.`);
+  const reason = code === "APPROVAL_REJECTED_UNSUPPORTED_PRODUCER"
+    ? "selected sign-off does not match a supported finite producer contract; this does not establish approval validity"
+    : code === "CONFIG_MISMATCH" ? "configured integration base differs from the exact approved planned base"
+    : code.startsWith("APPROVAL_REJECTED") ? "selected approval evidence is invalid, conflicting, ambiguous or withdrawn"
+    : "intended baseline is missing, changed, insecure or incompatible with current repository evidence";
+  const correction = code === "APPROVAL_REJECTED_UNSUPPORTED_PRODUCER"
+    ? "pa-platform consumer owner (PAP-269) and requirements producer owner (PAPC-068) must reconcile the finite contract against retained signed evidence without rewriting history or requesting unchanged-facts approval"
+    : "requirements/configuration owner must reconcile exact evidence without substituting the approved base; preserve all existing work";
+  return new Error(`Condition: ORDINARY_BASELINE_${code}; ordinary branch materialization blocked. Source: primary approved task source and own-ticket operator sign-off. Reason: ${reason}. Correction: ${correction}. Resume Action: first unproven action is ordinary baseline authentication; operator may separately retry only after correction and fresh evidence reconciliation, never unchanged retry, reset or SHA override.`);
 }
 
 export interface MaterializedTicketBranch {
