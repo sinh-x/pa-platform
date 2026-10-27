@@ -8,7 +8,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The v1 project-check profile needs unprivileged user/network namespaces.
+    # Keep a compatible hosted image instead of disabling runner security policy
+    # or weakening the native confinement probe when ubuntu-latest changes.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +51,11 @@ jobs:
 
       - name: Install Nix for immutable runtime test prerequisites
         uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Verify isolated project-command prerequisites
+        run: >-
+          nix develop '.?submodules=1' --no-write-lock-file --command
+          pnpm exec tsx --test packages/pi-pa/src/__tests__/project-command-contract.test.ts
 
       - name: Test
         run: nix develop '.?submodules=1' --no-write-lock-file --command pnpm run test
