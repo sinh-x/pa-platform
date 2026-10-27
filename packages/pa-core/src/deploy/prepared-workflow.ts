@@ -146,6 +146,18 @@ const EXECUTION_DIAGNOSTICS = Object.freeze({
     correction: "project command/configuration owner: revalidate the pinned manifest and script provenance; preserve source and do not use arbitrary shell",
     resumeAction: "retry the named check only after its supported contract, physical CWD and current prerequisites agree",
   }),
+  EXECUTION_GIT_EFFECTS_UNSUPPORTED: Object.freeze({
+    stage: "local-git-effect-admission",
+    reason: "the dependent Git observation/mutation lacks a supported, authenticated hook/filter/signing/extension effect profile",
+    correction: "repository/runtime owner: qualify the actual Git effect profile; preserve configured quality hooks and work, do not silently disable them or grant arbitrary host execution",
+    resumeAction: "resume the scoped Git step only after its supported effects are established; ordinary reporting remains separate",
+  }),
+  EXECUTION_CHECKED_CONTENT_UNPROVEN: Object.freeze({
+    stage: "checked-content-to-commit",
+    reason: "the staged or committed tree is not proven to be the content examined by all named checks; commit or phase authority was denied",
+    correction: "project developer/runtime owner: preserve the index, commit and original check evidence; reconcile content and rerun affected checks without resetting history",
+    resumeAction: "continue only with native current-content/index/tree proof; never relabel pre-change results as a passing new candidate",
+  }),
   EXECUTION_PROJECT_CONTRACT_REQUIRED: Object.freeze({
     stage: "project-command-admission",
     reason: "ordinary source work requires a configuration-pinned project command/effect contract; missing registration is not legacy host-shell permission",

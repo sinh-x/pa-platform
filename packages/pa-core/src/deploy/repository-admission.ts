@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead } from "./local-git-effects.js";
 import {
   chmodSync,
   closeSync,
@@ -3061,10 +3062,11 @@ function processIsAlive(pid: number): boolean {
 }
 
 function defaultGitRunner(args: readonly string[], cwd: string, options?: GitCommandOptions): Buffer {
+  if (args[0] === "status") assertSupportedGitMetadataRead(cwd, (read, root) => defaultGitRunner(read, root, options));
   const env = options?.repositoryGitDir && options.repositoryGitCommonDir
     ? { ...process.env, GIT_DIR: options.repositoryGitDir, GIT_COMMON_DIR: options.repositoryGitCommonDir, GIT_WORK_TREE: cwd }
     : process.env;
-  return execFileSync("git", [...args], { cwd, env, maxBuffer: 16 * 1024 * 1024 });
+  return execFileSync("git", [...LOCAL_GIT_CONTROL_FLAGS, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
 }
 
 function gitText(output: string | Buffer): string {

@@ -81,7 +81,14 @@ export async function isolatedDriver(root, share) {
         && args[0] === "--noprofile" && args[1] === "--norc" && args[2] === "-c"
         && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"' && args[4] === "pa-native-execution"
         && basename(args[5]) === "bwrap" && isolated(args.slice(6)) && args.at(-1) === "fixture-check.cjs";
-      if (!allowedGit && !allowedMutex && !framedBash && !probe && !framedProject) { counts.forbiddenProcesses++; throw new Error("unapproved fixture process"); }
+      const framedGit = executable === "bash" && name === "spawn" && inside(root, physical(cwd))
+        && args[0] === "--noprofile" && args[1] === "--norc" && args[2] === "-c"
+        && args[3] === 'IFS= read -r pa_native_start <&3 || exit 125; exec 3<&-; exec "$@"' && args[4] === "pa-native-execution"
+        && basename(args[5]) === "git" && [
+          ["--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "add", "--", "fixture.txt"],
+          ["--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-m", "packaged SDK fixture"],
+        ].some((expected) => JSON.stringify(args.slice(6)) === JSON.stringify(expected));
+      if (!allowedGit && !allowedMutex && !framedBash && !probe && !framedProject && !framedGit) { counts.forbiddenProcesses++; throw new Error("unapproved fixture process"); }
       counts[allowedGit ? "gitProcesses" : allowedMutex ? "mutexProcesses" : "nativeBashProcesses"]++;
       try { return original(command, args, options); }
       catch (error) { fs.writeFileSync(join(root, "process-error.txt"), String(error.stack), { mode: 0o600 }); throw error; }

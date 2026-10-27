@@ -105,6 +105,31 @@ startup/partial reporting stays available. This does not rewrite historical
 records or upgrade already-running processes; separately admitted optional/
 prepared compatibility retains its own contract.
 
+## Bounded Git controls and checked-content commits
+
+Ordinary Git controls use the trusted Git executable and literal argv, without
+ambient credential/authority variables. The metadata-only fsmonitor optimization
+is disabled; executable relevant hooks, affected clean/process/smudge filters,
+commit signing and custom maintenance hooks are not covered by this v1 profile.
+`EXECUTION_GIT_EFFECTS_UNSUPPORTED` stops the dependent Git step without deleting,
+rewriting or silently disabling configured quality hooks. Qualifying those actual
+effects belongs to the repository/runtime owner, not a repeated source approval.
+Branch/ref/checkout extension checks precede ordinary materialization mutations.
+Even read-only Git status can invoke filters: affected opaque drivers deny that
+observation rather than inheriting a read grant. Own partial reporting still works
+and labels unavailable Git/check scope unknown, never empty or unchanged.
+
+Native check intents bind the content and modes of every declared input and
+pinned prerequisite, including inputs not represented by a dirty-file inventory.
+Before commit, all named results must match the current inputs; affected staged
+paths must equal the actual checked working bytes and modes. Filter/line-ending
+normalization or index substitution cannot inherit passes for different bytes.
+The native intent retains a NUL-safe index fingerprint; actual commit results,
+local completion and phase evidence compare it to the real committed tree.
+Missing historical attestation is not upgraded into new phase authority. A
+mismatch preserves the actual work/commit and barriers for owning reconciliation;
+there is no reset, hook bypass, rewritten history or invented passing receipt.
+
 ## Same-holder phases, repair and Markdown
 
 `pa_execution` now supports explicit `advance` with a next plan and an evidence

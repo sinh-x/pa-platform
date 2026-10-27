@@ -34,6 +34,16 @@ test("PAP-268 versioned project contract resolves exact argv/environment and man
   writeFileSync(join(f.checkout, "test.cjs"), "changed script\n"); assert.throws(() => contract.program(check), /EXECUTION_PROJECT_CONTRACT_INVALID/);
 }));
 
+test("PAP-268 native check identity binds every declared input byte and mode, not only tracked dirty paths", () => fixture((f) => {
+  writeFileSync(join(f.checkout, "data.txt"), "first\n"); f.manifest.checks[0]!.readPaths.push("data.txt"); f.save();
+  const contract = f.resolve(), check = contract.check("test")!;
+  const first = contract.inputIdentity(check);
+  writeFileSync(join(f.checkout, "data.txt"), "second\n");
+  assert.notEqual(contract.inputIdentity(check), first);
+  writeFileSync(join(f.checkout, "data.txt"), "first\n"); assert.equal(contract.inputIdentity(check), first);
+  chmodSync(join(f.checkout, "data.txt"), 0o744); assert.notEqual(contract.inputIdentity(check), first);
+}));
+
 for (const variant of ["environment", "effect", "missing-field", "extra-field", "bad-digest", "malformed-json", "path", "duplicate", "timeout", "output", "script-alias", "script-hardlink", "script-permissions", "sensitive-read", "read-escape", "manifest-drift", "canonical-root", "unavailable-containment"] as const) {
   test(`PAP-268 project command ${variant} is rejected before project dispatch`, () => fixture((f) => {
     if (variant === "environment") Object.assign(f.manifest.checks[0]!.environment, { NODE_OPTIONS: "--require /outside" });

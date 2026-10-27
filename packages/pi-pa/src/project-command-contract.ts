@@ -120,6 +120,16 @@ export class ProjectCommandContract {
     }
   }
   check(name: string): ProjectCheck | undefined { return this.checks.find((check) => check.id === name || check.command === name); }
+  inputIdentity(check: ProjectCheck): string {
+    if (!this.checks.includes(check)) throw invalid();
+    const paths = [...new Set([...check.readPaths, ...check.prerequisites.map((source) => source.path)])].sort();
+    return workflowDigest(JSON.stringify(paths.map((path) => {
+      const content = read(this.worktreeRoot, path), sha256 = workflowDigest(content);
+      const prerequisite = check.prerequisites.find((source) => source.path === path);
+      if (prerequisite && prerequisite.sha256 !== sha256) throw invalid();
+      return { path, sha256, mode: lstatSync(join(this.worktreeRoot, path)).mode };
+    })));
+  }
   #sandbox(check?: ProjectCheck): string[] {
     return ["--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--ro-bind", "/nix/store", "/nix/store",
       "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/pa-check-home", "--tmpfs", this.worktreeRoot,

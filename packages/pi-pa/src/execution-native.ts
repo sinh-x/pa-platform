@@ -6,6 +6,7 @@ import {
   captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
   parseExecutionBinding, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
+  LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects, assertLocalGitIndexMatchesWorking, localGitIndexFingerprint, localGitTreeFingerprint,
   executionFailure, executionWorkflowError, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
   type PreparedLockOwners, type PreparedTicketCapacityTransaction, type ExecutionWorktreeTransaction, type RegistryEvent, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
@@ -13,7 +14,7 @@ import {
 import { createPiReadonlyHelperCapability, type PiReadonlyHelperDependencies } from "./deploy.js";
 import { readPiProcessIdentity } from "./process-identity.js";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
-import { NativeExecutionEvidence, NativeProcessEvidenceError, nativePublicText, runNativeExecutionProcess, type NativeBlob, type NativeProcessResult } from "./native-execution-evidence.js";
+import { NativeExecutionEvidence, NativeProcessEvidenceError, nativePublicText, runNativeExecutionProcess, trustedNativeExecutable, type NativeBlob, type NativeProcessResult } from "./native-execution-evidence.js";
 import type { PiExecutionBinding, PiExecutionEndEvent } from "./pi-extension/prepared-workflow.js";
 import type { PiToolCall } from "./pi-extension/index.js";
 import { interceptToolCall } from "./pi-extension/safety.js";
@@ -42,8 +43,20 @@ function ordinaryStart(id: string): RegistryEvent | null {
   return starts[0]!;
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+function gitEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME"]) if (process.env[key] !== undefined) env[key] = process.env[key]!;
+  return env;
+}
 function git(args: readonly string[], cwd: string): Buffer {
-  return execFileSync("git", ["--no-optional-locks", ...args], { cwd, timeout: 15_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  if (args[0] === "status" || args[0] === "diff") assertSupportedGitMetadataRead(cwd, git);
+  return execFileSync(trustedNativeExecutable("git"), ["--no-optional-locks", ...LOCAL_GIT_CONTROL_FLAGS, ...args], { cwd, env: gitEnvironment(), timeout: 15_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+}
+function gitArguments(command: string): string[] {
+  const commit = /^git commit -m (?:"([^"\n]+)"|'([^'\n]+)')$/.exec(command);
+  if (commit) return ["commit", "-m", commit[1] ?? commit[2]!];
+  const args = command.slice(4).split(" ");
+  return args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args;
 }
 function marker(directory: string, executionDiagnostic = false): Record<string, unknown> | null {
   const rejected = () => executionDiagnostic ? executionFailure("EXECUTION_STORAGE_REJECTED") : workflowError();
@@ -117,6 +130,8 @@ export function captureNativeScope(root: string): NativeScopeSnapshot {
 }
 interface NativeIntent {
   executionId: string; actor: ExecutionHolder; operationId: string; toolName: string; inputSha256: string; command: string; before: NativeScopeSnapshot;
+  /** Native observations only. Missing historical proof is never upgraded. */
+  checkedInputsSha256?: string; commitIndexSha256?: string;
 }
 export interface NativeToolResult {
   intent: SourceVersion; after: NativeScopeSnapshot; process: NativeProcessResult | null; exitCode: number; scopeValid: boolean;
@@ -489,6 +504,7 @@ export class NativeExecutionSession {
   #ordinaryPassedChecks(state: ExecutionState): readonly string[] {
     let passed: string[] = [];
     if (!state.plan) return passed;
+    const identities = new Map<string, string>();
     for (let sequence = 1; sequence <= state.sequence; sequence += 1) {
       const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
       const command = event.command;
@@ -498,7 +514,14 @@ export class NativeExecutionSession {
       const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
       if (!result.scopeValid || result.exitCode !== 0 || intent.toolName !== "bash" || !equal(intent.before.files, result.after.files) || intent.before.git.head !== result.after.git.head) { passed = []; continue; }
       const next = state.plan.checks[passed.length];
-      if (next && this.#checkText(next) === intent.command && result.process?.groupSettled === true) passed.push(next);
+      if (next && this.#checkText(next) === intent.command && result.process?.groupSettled === true) {
+        const check = this.#commands?.check(next);
+        if (this.#ordinary && check) {
+          if (!identities.has(next)) identities.set(next, this.#commands!.inputIdentity(check));
+          if (intent.checkedInputsSha256 !== identities.get(next)) { passed = []; continue; }
+        }
+        passed.push(next);
+      }
     }
     return passed;
   }
@@ -523,17 +546,29 @@ export class NativeExecutionSession {
     if (/[\n\r$`;&|<>\\]/.test(command)) throw workflowError();
     if (["git status", "git status --short", "git diff --check", "git log -n 5 --oneline", "git rev-parse HEAD"].includes(command)) return;
     if (/^git commit -m (?:"[^"\n]+"|'[^'\n]+')$/.test(command)) {
-      if (this.#ordinary && (state.originalFailure || this.#ordinaryPassedChecks(state).length !== state.plan.checks.length)) throw workflowError();
+      if (this.#ordinary) {
+        this.#commands!.assertCurrent();
+        if (state.originalFailure || this.#ordinaryPassedChecks(state).length !== state.plan.checks.length) throw workflowError();
+        assertSupportedLocalGitEffects(this.#physical.worktreeRoot, git, { action: "commit", paths: state.plan.paths });
+        assertLocalGitIndexMatchesWorking(this.#physical.worktreeRoot, git, state.plan.paths);
+      }
       return;
     }
-    if (command.startsWith("git add -- ")) { const paths = command.slice(11).split(" "); if (!paths.length || paths.some((path) => !state.plan!.paths.includes(path))) throw workflowError(); for (const path of paths) scopedPath(this.#physical.worktreeRoot, path); return; }
+    if (command.startsWith("git add -- ")) { const paths = command.slice(11).split(" "); if (!paths.length || paths.some((path) => !state.plan!.paths.includes(path))) throw workflowError(); for (const path of paths) scopedPath(this.#physical.worktreeRoot, path);
+      if (this.#ordinary) assertSupportedLocalGitEffects(this.#physical.worktreeRoot, git, { action: "stage", paths });
+      return; }
     throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
   }
   prepare(call: PiToolCall, state: ExecutionState, operationId: string): SourceVersion {
     this.#assertCall(call, state);
     const name = workflowText(call.toolName ?? call.name);
+    const command = name === "bash" ? parseExecutionCommandText(call.input.command) : "";
+    const check = this.#commands?.checks.find((check) => check.command === command);
     return this.evidence.publish("tool-intent", { executionId: this.service.executionId, actor: this.actor, operationId, toolName: name, inputSha256: workflowDigest(JSON.stringify(call.input)),
-      command: name === "bash" ? parseExecutionCommandText(call.input.command) : `${name} ${isAbsolute(String(call.input.path)) ? relative(this.#physical.worktreeRoot, String(call.input.path)) : String(call.input.path)}`, before: this.#assertKnown(state) } satisfies NativeIntent);
+      command: name === "bash" ? parseExecutionCommandText(call.input.command) : `${name} ${isAbsolute(String(call.input.path)) ? relative(this.#physical.worktreeRoot, String(call.input.path)) : String(call.input.path)}`, before: this.#assertKnown(state),
+      ...(check ? { checkedInputsSha256: this.#commands!.inputIdentity(check) } : {}),
+      ...(this.#ordinary && command.startsWith("git commit -m ") ? { commitIndexSha256: localGitIndexFingerprint(this.#physical.worktreeRoot, git) } : {}),
+    } satisfies NativeIntent);
   }
   #intent(operationId: string, input: unknown): { source: SourceVersion; intent: NativeIntent; state: ExecutionState } {
     const state = this.service.status(this.actor); const source = state.operation?.intent;
@@ -554,6 +589,8 @@ export class NativeExecutionSession {
     let scopeValid = after.git.branch === this.contract.branch && names(after.git).every((path) => plan.paths.includes(path));
     if (after.git.head !== start.intent.before.git.head) {
       try {
+        if (this.#ordinary && start.intent.command.startsWith("git commit -m ")
+          && (!start.intent.commitIndexSha256 || localGitTreeFingerprint(this.#physical.worktreeRoot, git, after.git.head) !== start.intent.commitIndexSha256)) throw executionFailure("EXECUTION_CHECKED_CONTENT_UNPROVEN");
         const commits = git(["rev-list", `${start.intent.before.git.head}..${after.git.head}`], this.#physical.worktreeRoot).toString("utf8").trim().split("\n");
         if (!commits.length || commits.length > 256 || commits.some((sha) => !/^[0-9a-f]{40}$/.test(sha))) throw workflowError();
         for (const sha of commits) {
@@ -592,10 +629,21 @@ export class NativeExecutionSession {
     const remaining = (Date.parse(start.state.bounds.deadlineAt) - Date.now()) / 1000;
     try {
       const check = this.#commands?.checks.find((check) => check.command === command);
-      const program = check ? this.#commands!.program(check) : undefined;
+      let program = check ? this.#commands!.program(check) : undefined;
+      if (check && start.intent.checkedInputsSha256 !== this.#commands!.inputIdentity(check)) throw executionFailure("EXECUTION_CHECKED_CONTENT_UNPROVEN");
+      if (this.#ordinary && !check && command.startsWith("git ")) {
+        if (command.startsWith("git status ") || command.startsWith("git diff ")) assertSupportedGitMetadataRead(cwd, git);
+        const action = command.startsWith("git commit -m ") ? "commit" : command.startsWith("git add -- ") ? "stage" : null;
+        if (action) assertSupportedLocalGitEffects(cwd, git, { action, paths: start.state.plan!.paths });
+        if (action === "commit") {
+          assertLocalGitIndexMatchesWorking(cwd, git, start.state.plan!.paths);
+          if (!start.intent.commitIndexSha256 || localGitIndexFingerprint(cwd, git) !== start.intent.commitIndexSha256) throw executionFailure("EXECUTION_CHECKED_CONTENT_UNPROVEN");
+        }
+        program = { executable: trustedNativeExecutable("git"), argv: ["--no-pager", ...LOCAL_GIT_CONTROL_FLAGS, ...gitArguments(command)], environment: gitEnvironment() };
+      }
       const result = await runNativeExecutionProcess({ evidence: this.evidence, intent: start.source, command, cwd,
         timeoutSeconds: Math.min(timeout, remaining, check?.timeoutSeconds ?? 14_400), signal,
-        ...(check ? { maximumOutputBytes: check.maximumOutputBytes, program, env: {} } : {}) });
+        ...(program ? { program, env: program.environment } : {}), ...(check ? { maximumOutputBytes: check.maximumOutputBytes } : {}) });
       this.#activeProcess = result; return result;
     } catch (error) { if (error instanceof NativeProcessEvidenceError) this.#unprovenProcess = error.evidence; throw executionWorkflowError(error); }
   }
@@ -696,7 +744,19 @@ export class NativeExecutionSession {
     return Object.freeze({ state, snapshot, checks: Object.freeze(checks), operations: Object.freeze(operations), scopeProven, diff, omissions: Object.freeze(omissions), pendingResult });
   }
   localReport(): Readonly<Record<string, unknown>> {
-    const facts = this.reportFacts(false);
+    let facts: NativeExecutionReportFacts;
+    try { facts = this.reportFacts(false); }
+    catch (error) {
+      // Reauthenticate independently: an unavailable Git/check view must not
+      // suppress own factual reporting or become an empty/clean inventory.
+      this.assertCaller({ cwd: process.cwd() });
+      const state = this.service.status(this.actor), staged = readPiForegroundCompletion(getDeployPaths(this.actor.deploymentId).deployDir);
+      const markdown = this.publicText(`# Local phase ${state.plan?.phaseId ?? "unplanned"}\nWork: blocked/unproven; current Git scope, checks and commit are unknown, not unchanged.\nProcess: live. Completion: ${staged?.status ?? "not staged"}. Terminal settlement: pending normal process exit.\nNo-progress: ${state.bounds.consecutiveNoProgress}/3. Deadline: ${state.bounds.deadlineAt}.\nCurrent source/check view omitted: ${executionWorkflowError(error).message}\nHistorical native evidence remains retained; no result or passing candidate is inferred. Preserve work and reconcile through its owner. Independent review, CI and UAT remain separate.`);
+      const source = this.evidence.publish("local-report", { executionId: this.service.executionId, phaseId: state.plan?.phaseId ?? null,
+        candidateSha: null, checks: null, operations: null, scopeProven: false, markdown,
+        processState: "live", completionState: staged?.status ?? "not-staged", terminalSettlement: false });
+      return Object.freeze({ source, markdown, processState: "live", completionState: staged?.status ?? "not-staged", terminalSettlement: false });
+    }
     const staged = readPiForegroundCompletion(getDeployPaths(this.actor.deploymentId).deployDir);
     const failed = facts.checks.filter((check) => check.exitCode !== 0);
     const stopped = facts.state.bounds.consecutiveNoProgress >= 3 || Date.now() >= Date.parse(facts.state.bounds.deadlineAt);
@@ -709,7 +769,7 @@ export class NativeExecutionSession {
         const row = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
         const intent = this.evidence.read(row.intent, "tool-intent") as NativeIntent;
         if (!intent.command.startsWith("git commit -m ")) continue;
-        committed = row.exitCode === 0 && row.process?.groupSettled === true && row.scopeValid
+        committed = row.exitCode === 0 && row.process?.groupSettled === true && row.scopeValid && this.#commitContentProven(intent, row)
           && row.after.git.head !== intent.before.git.head && row.after.git.digestSha256 === facts.snapshot.digestSha256;
         break;
       }
@@ -750,6 +810,10 @@ export class NativeExecutionSession {
     const slot = observeReadonlyRepositoryTicketSlot(this.contract.repoRoot, this.contract.ticket).slot;
     return nativePublicText(value, environmentSecrets(process.env, [owner?.ownershipToken ?? "", slot.slotToken]));
   }
+  #commitContentProven(intent: NativeIntent, result: NativeToolResult): boolean {
+    try { return Boolean(intent.commitIndexSha256 && localGitTreeFingerprint(this.#physical.worktreeRoot, git, result.after.git.head) === intent.commitIndexSha256); }
+    catch { return false; }
+  }
   #phaseFacts(state: ExecutionState) {
     if (!this.#ordinary || !state.plan || state.custody.state !== "idle" || state.operation || state.originalFailure || state.recoveryPending) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
     const snapshot = this.#assertKnown(state);
@@ -761,7 +825,7 @@ export class NativeExecutionSession {
       const result = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
       const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
       if (!intent.command.startsWith("git commit -m ")) continue;
-      if (result.exitCode !== 0 || !result.scopeValid || !result.process?.groupSettled || result.after.git.head === intent.before.git.head || !equal(result.after, snapshot)
+      if (result.exitCode !== 0 || !result.scopeValid || !result.process?.groupSettled || !this.#commitContentProven(intent, result) || result.after.git.head === intent.before.git.head || !equal(result.after, snapshot)
         || this.#ordinaryPassedChecks({ ...state, sequence: sequence - 1 }).length !== state.plan.checks.length) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
       return { executionId: this.service.executionId, sequence: state.sequence, phaseId: state.plan.phaseId, candidateSha: state.candidateSha,
         commit: event.command.evidence, snapshot: snapshot.git };

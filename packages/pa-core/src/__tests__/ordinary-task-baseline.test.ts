@@ -55,6 +55,14 @@ test("PAP-268 ordinary baseline authenticates a durable task tuple, creates once
   assert.equal(f.store.get("PAP-1")!.linkedBranches[0]!.baseSha, f.base);
 }));
 
+for (const hook of ["reference-transaction", "post-checkout"]) test(`PAP-268 unsupported ${hook} stops before materialization effects`, () => fixture((f) => {
+  const hooks = join(f.root, "hooks"); mkdirSync(hooks);
+  writeFileSync(join(hooks, hook), `#!/bin/sh\nprintf 'forbidden' > ${join(f.root, "hook-effect.txt")}\n`, { mode: 0o700 });
+  f.git(["config", "core.hooksPath", hooks]); const before = f.inventory();
+  assert.throws(f.materialize, /EXECUTION_GIT_EFFECTS_UNSUPPORTED/); assert.deepEqual(f.inventory(), before);
+  assert.throws(() => readFileSync(join(f.root, "hook-effect.txt")), /ENOENT/);
+}));
+
 test("PAP-268 stale configured integration base is rejected before any branch creation", () => fixture((f) => {
   writeFileSync(join(f.repo, "README.md"), "B\n"); f.git(["commit", "-am", "base B"]);
   assert.notEqual(f.git(["rev-parse", "HEAD"]), f.base); const before = f.inventory();

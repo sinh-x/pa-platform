@@ -6,6 +6,7 @@ import { getAiUsageDir } from "../paths.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction, type RepositoryTicketSlotHandoff, type RepositoryTicketTransaction } from "../deploy/ticket-concurrency.js";
 import { observeReadonlyRepositoryAuthority } from "../deploy/repository-admission.js";
+import { LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects } from "../deploy/local-git-effects.js";
 import { loadRepoEntry, MAX_REPOSITORY_DIAGNOSTIC_CHARS, resolveRepoExecutionPath } from "../repos.js";
 import { requireTicketLinkedBranch } from "./git-validation.js";
 import { TicketStore } from "./store.js";
@@ -232,6 +233,11 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
       throw diagnostic(`ticket branch ${linked.branch} is already checked out at ${occupiedAt}`, "stop the other checkout or reconcile it under operator control; do not replace the branch");
     }
 
+    if (ordinary) {
+      // Branch/ref and checkout extensions are effects too. Authenticate both
+      // execution CWDs before the first mutation or durable result intent.
+      for (const root of [canonicalRoot, worktreeRoot]) assertSupportedLocalGitEffects(root, runGit, { action: "materialize", source: existingHead ?? selectedBase });
+    }
     let intent;
     if (ordinary && options.ordinaryOwner && linked.state === "planned") {
       if (!capacity) throw ordinaryBaselineError("HOLDER_CONFLICT");
@@ -358,10 +364,11 @@ function lengthPrefix(value: Buffer): Buffer { const result = Buffer.alloc(8); r
 function gitText(value: string | Buffer): string { return typeof value === "string" ? value : value.toString("utf8"); }
 function gitBytes(value: string | Buffer): Buffer { return typeof value === "string" ? Buffer.from(value, "utf8") : Buffer.from(value); }
 function defaultGit(args: readonly string[], cwd: string): Buffer {
+  if (args[0] === "status") assertSupportedGitMetadataRead(cwd, defaultGit);
   // Capture only the optional existence operation. Other Git diagnostics keep
   // their existing presentation; no checkout/required-ref stderr is discarded.
   const optionalProbe = args[0] === "show-ref" && args[1] === "--exists";
-  return execFileSync("git", [...args], { cwd, ...(optionalProbe ? { stdio: ["ignore", "pipe", "pipe"] as const } : {}), maxBuffer: 16 * 1024 * 1024 });
+  return execFileSync("git", [...LOCAL_GIT_CONTROL_FLAGS, ...args], { cwd, ...(optionalProbe ? { stdio: ["ignore", "pipe", "pipe"] as const } : {}), maxBuffer: 16 * 1024 * 1024 });
 }
 function diagnostic(reason: string, resume: string): Error {
   const message = `Condition: ticket branch materialization. Source: authenticated registered Treehouse checkout and ticket linked-branch evidence. Reason: ${reason}. Correction: preserve canonical and Treehouse checkouts without reset, cleanup, or branch replacement. Resume Action: ${resume}.`;

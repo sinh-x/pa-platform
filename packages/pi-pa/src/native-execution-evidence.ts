@@ -84,15 +84,15 @@ export class NativeExecutionEvidence {
   }
 }
 
-/** Resolve only a root-owned installed shell; never accept a model/env pathname
- * as the interpreter for the custody handshake. */
-function trustedBash(): string {
+/** Resolve only a root-owned installed executable; never accept a model/env
+ * pathname as the interpreter or Git control program for native custody. */
+export function trustedNativeExecutable(name: "bash" | "git"): string {
   for (const directory of (process.env.PATH ?? "").split(":")) {
     try {
-      const path = realpathSync(join(directory, "bash")); const stat = lstatSync(path);
+      const path = realpathSync(join(directory, name)); const stat = lstatSync(path);
       if ((path.startsWith("/nix/store/") || path.startsWith("/usr/bin/") || path.startsWith("/bin/"))
         && stat.isFile() && stat.uid === 0 && !(stat.mode & 0o022) && (stat.mode & 0o111)) return path;
-    } catch { /* not an eligible installed interpreter */ }
+    } catch { /* not an eligible installed executable */ }
   }
   throw workflowError();
 }
@@ -149,7 +149,7 @@ export async function runNativeExecutionProcess(input: {
   };
   const abort = () => { aborted = true; stop(); };
   try {
-    const bash = trustedBash();
+    const bash = trustedNativeExecutable("bash");
     const env = { ...(input.env ?? process.env) };
     for (const name of Object.keys(env)) if (name.startsWith("GIT_") || name.startsWith("BASH") || ["ENV", "SHELLOPTS", "LD_PRELOAD", "LD_LIBRARY_PATH"].includes(name)) delete env[name];
     const program = input.program ? [input.program.executable, ...input.program.argv] : [bash, "--noprofile", "--norc", "-c", input.command];

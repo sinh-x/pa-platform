@@ -17,7 +17,7 @@ import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 /** Actual source-built deploy/native adapter, real Git and native owner storage.
  * Provider spawn and Treehouse status are simulated; no installed-runtime,
  * real-service, independent-review, or full AC1–AC8 acceptance is claimed. */
-async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "project-blocked-reporting" | "project-output-limit" | "project-unregistered" | "project-script-drift" | "publication-interruption") {
+async function fixture(variant: "matching" | "stale" | "missing" | "source-drift" | "dirty" | "project-commands" | "project-no-progress" | "project-blocked-reporting" | "project-output-limit" | "project-unregistered" | "project-script-drift" | "project-hook" | "project-index-mismatch" | "publication-interruption") {
   const root = mkdtempSync(join(tmpdir(), "pap268-launch-")); const env = process.env, cwd = process.cwd();
   process.env = { ...env }; for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   const repo = join(root, "repo"), checkout = join(root, "checkout"), branch = "feature/PAP-268-disposable";
@@ -43,6 +43,11 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
       ] });
       writeFileSync(join(repo, "checks.json"), manifest); commandPin = `    projectCommands:\n      manifest: checks.json\n      sha256: ${workflowDigest(manifest)}\n`;
       git(["add", "checks.json", "scripts/test.cjs", "scripts/build.cjs", "unlisted.txt"]);
+    }
+    if (variant === "project-hook") {
+      const hooks = join(root, "audit-hooks"); mkdirSync(hooks);
+      writeFileSync(join(hooks, "pre-commit"), `#!/bin/sh\nif [ "$(git branch --show-current)" != develop ]; then printf 'BROKEN\\n' > README.md; git add -- README.md; printf 'RAN' > ${join(root, "hook-effect.txt")}; fi\n`, { mode: 0o700 });
+      git(["config", "core.hooksPath", hooks]);
     }
     if (variant === "project-unregistered") {
       commandPin = "";
@@ -81,11 +86,12 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
         const previous = process.env; process.env = { ...previous, ...opts.env }; process.chdir(checkout);
         try {
           const directory = join(root, "deployments", opts.deployId); recordPiProcessIdentity(opts.deployId, directory, process.pid); opts.onPid?.(process.pid);
+          if (variant === "project-index-mismatch") git(["config", "core.autocrlf", "true"]);
           const native = new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } });
           const session = native.resolve({ cwd: checkout })!;
           assert.ok(session); assert.equal(session.contract.initialHeadSha, base);
           const plan = { phaseId: "A", scope: "Characterization only", paths: ["README.md"], requirements: ["AC3"], prerequisites: [], checks: ["diff-check"], size: "S", complexity: "bounded", rationale: "No source effects in this baseline slice." };
-          if (variant.startsWith("project-")) await exerciseProjectCommands(native, checkout, () => new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } }), variant === "project-no-progress", variant === "project-blocked-reporting", variant === "project-output-limit", variant === "project-unregistered", variant === "project-script-drift");
+          if (variant.startsWith("project-")) await exerciseProjectCommands(native, checkout, () => new PiNativeExecutionAdapter({ authority, helperDependencies: { treehouse } }), variant === "project-no-progress", variant === "project-blocked-reporting", variant === "project-output-limit", variant === "project-unregistered", variant === "project-script-drift", variant === "project-hook", variant === "project-index-mismatch");
           else {
             assert.throws(() => session.service.apply(session.actor, { action: "plan", plan }), /EXECUTION_PROJECT_CONTRACT_REQUIRED/);
             assert.equal(session.service.status(session.actor).plan, null, "baseline authentication is not an implicit legacy script grant");
@@ -95,7 +101,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
           assert.equal(getDeploymentEvents(opts.deployId).filter((event) => event.event === "started").length, 1);
         } catch (error) { bodyFailure = error; throw error; }
         finally { process.chdir(repo); process.env = previous; }
-        return { sessionId: opts.sessionId!, exitCode: ["project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift"].includes(variant) ? 1 : 0, metadata: { sessionId: opts.sessionId! } };
+        return { sessionId: opts.sessionId!, exitCode: ["project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "project-hook", "project-index-mismatch"].includes(variant) ? 1 : 0, metadata: { sessionId: opts.sessionId! } };
       } };
     process.chdir(repo);
     const originalUpdate = TicketStore.prototype.update;
@@ -111,7 +117,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
     assert.equal(forbidden, 0);
     assert.deepEqual({ head: git(["rev-parse", "HEAD"]), status: git(["status", "--porcelain=v2", "--untracked-files=all"]) }, canonical);
     if (variant === "matching" || variant.startsWith("project-")) {
-      assert.equal(result.status, ["project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift"].includes(variant) ? "failed" : "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
+      assert.equal(result.status, ["project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "project-hook", "project-index-mismatch"].includes(variant) ? "failed" : "success", result.reason); assert.equal(spawns, 1); assert.equal(branchEffects, 1);
       assert.equal(JSON.parse(readFileSync(ticketPath, "utf8")).linkedBranches[0].baseSha, base);
       assert.equal(existsSync(repositoryMutationLeasePath(checkout)), false);
     } else if (variant === "publication-interruption") {
@@ -131,7 +137,7 @@ async function fixture(variant: "matching" | "stale" | "missing" | "source-drift
   } finally { process.chdir(cwd); closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); }
 }
 
-async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checkout: string, fresh: () => PiNativeExecutionAdapter, stopAtNoProgress = false, blockedReporting = false, outputLimited = false, unregistered = false, scriptDrift = false) {
+async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checkout: string, fresh: () => PiNativeExecutionAdapter, stopAtNoProgress = false, blockedReporting = false, outputLimited = false, unregistered = false, scriptDrift = false, hookBlocked = false, indexMismatch = false) {
   const tools = new Map<string, PiToolDefinition>(); const handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
   const context = { cwd: checkout };
   const pi = { registerTool(tool: PiToolDefinition) { tools.set(tool.name, tool); }, on(name: string, handler: (event: unknown, context: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } } as PiRuntime;
@@ -189,6 +195,20 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
     assert.equal((await control({ action: "report" })).details.terminalSettlement, false);
     await assert.rejects(control({ action: "plan", plan }), /EXECUTION_PROJECT_CONTRACT_INVALID/);
     assert.deepEqual(session.service.status(session.actor), before);
+    // Controlled prerequisite/config-owner fixture: even Git status would run
+    // this filter. Own reporting must omit that view, not execute the driver or
+    // fabricate a clean inventory. No protected state is edited.
+    const attributes = join(process.env.PA_AI_USAGE_HOME!, "blocked-attributes");
+    const sentinel = join(process.env.PA_AI_USAGE_HOME!, "filter-must-not-run");
+    writeFileSync(attributes, "README.md filter=fixture\n");
+    const gitConfig = (...args: string[]) => execFileSync("git", ["config", ...args], { cwd: checkout, stdio: "pipe" });
+    gitConfig("core.attributesfile", attributes); gitConfig("filter.fixture.clean", `touch ${sentinel}; cat`);
+    try {
+      const partial = await control({ action: "report" });
+      assert.match(String(partial.details.markdown), /blocked\/unproven.*unknown, not unchanged/);
+      assert.match(String(partial.details.markdown), /EXECUTION_GIT_EFFECTS_UNSUPPORTED/);
+      assert.equal(existsSync(sentinel), false); assert.deepEqual(session.service.status(session.actor), before);
+    } finally { gitConfig("--unset", "core.attributesfile"); gitConfig("--unset", "filter.fixture.clean"); }
     return;
   }
   if (scriptDrift) plan.paths.push("scripts/test.cjs");
@@ -251,13 +271,24 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
     return;
   }
   await select();
-  await execute("write", { path: "README.md", content: "repaired\n" });
+  const repaired = indexMismatch ? "repaired\r\n" : "repaired\n";
+  await execute("write", { path: "README.md", content: repaired });
   assert.equal((await execute("bash", { command: "node 'scripts/test.cjs'", timeout: 20 })).failed, false);
   assert.equal((await execute("bash", { command: "node 'scripts/build.cjs'", timeout: 20 })).failed, false);
   await settle();
   const facts = session.reportFacts(); assert.deepEqual(facts.checks.map((check) => check.exitCode), [2, 0, 0]);
   const passed = facts.checks[1]!.output!; await control({ action: "resolve", evidence: passed }); await select();
   await execute("bash", { command: "git add -- README.md" });
+  if (hookBlocked || indexMismatch) {
+    const before = session.service.status(session.actor), records = session.evidence.store.records();
+    const response = await dispatch("tool_call", { toolName: "bash", toolCallId: "hook-commit", input: { command: "git commit -m 'feat: hook must not run'" } }) as { block: boolean; reason: string };
+    assert.equal(response.block, true); assert.match(response.reason, indexMismatch ? /EXECUTION_CHECKED_CONTENT_UNPROVEN/ : /EXECUTION_GIT_EFFECTS_UNSUPPORTED/);
+    assert.deepEqual(session.service.status(session.actor), before); assert.deepEqual(session.evidence.store.records(), records);
+    assert.equal(readFileSync(join(checkout, "README.md"), "utf8"), repaired);
+    assert.equal(existsSync(join(process.env.PA_AI_USAGE_HOME!, "hook-effect.txt")), false);
+    await settle(); await assert.rejects(observe("phase"), /EXECUTION_PHASE_PREREQUISITE/);
+    return;
+  }
   assert.equal((await execute("bash", { command: "git commit -m 'feat: non-PA project repair'" })).failed, false);
   await settle(); await reload();
   const phaseA = session.service.status(session.actor), bounds = phaseA.bounds;
@@ -292,6 +323,6 @@ async function exerciseProjectCommands(adapter: PiNativeExecutionAdapter, checko
   assert.equal(frame.cwd, checkout); assert.equal(frame.program.environment.HOME, "/tmp/pa-check-home"); assert.ok(frame.program.argv.includes("--unshare-all"));
 }
 
-for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "publication-interruption"] as const) {
+for (const variant of ["matching", "stale", "missing", "source-drift", "dirty", "project-commands", "project-no-progress", "project-blocked-reporting", "project-output-limit", "project-unregistered", "project-script-drift", "project-hook", "project-index-mismatch", "publication-interruption"] as const) {
   test(`PAP-268 actual ordinary launch: ${variant} intended baseline (simulated provider/Treehouse)`, () => fixture(variant));
 }
