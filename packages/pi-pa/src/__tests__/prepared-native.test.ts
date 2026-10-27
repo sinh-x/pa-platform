@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readPiForegroundCompletion, closeDb, appendRegistryEvent, getDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
-import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
+import { seedOrdinaryTaskBaseline, seedOrdinaryCommandFixture } from "./ordinary-task-fixture.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
 import { PiNativeExecutionAdapter, ORDINARY_NATIVE_EXECUTION_START } from "../execution-native.js";
@@ -545,7 +545,10 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
     const git = (args: string[], cwd = f.repo) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: ["ignore", "pipe", "pipe"] }).trim();
     git(["symbolic-ref", "HEAD", "refs/heads/develop"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
     git(["config", "commit.gpgsign", "false"]); mkdirSync(join(f.root, "empty-hooks")); git(["config", "core.hooksPath", join(f.root, "empty-hooks")]);
-    writeFileSync(join(f.repo, "README.md"), "ordinary fixture\n"); git(["add", "README.md"]); git(["commit", "-m", "ordinary base"]);
+    writeFileSync(join(f.repo, "README.md"), "ordinary fixture\n");
+    const registration = seedOrdinaryCommandFixture(f.repo);
+    writeFileSync(join(f.root, "config/config.yaml"), readFileSync(join(f.root, "config/config.yaml"), "utf8") + registration);
+    git(["add", "README.md", "package.json", "ordinary-check.cjs", "ordinary-checks.json"]); git(["commit", "-m", "ordinary base"]);
     const base = git(["rev-parse", "HEAD"]); const checkout = join(f.root, "checkout");
     git(["worktree", "add", "-b", "feature/PAP-256-fixture", checkout, base]);
     writeFileSync(f.ticketPath, JSON.stringify({ ...f.ticket, status: "implementing", title: "Ordinary fixture", linkedBranches: [{ repo: f.caller.repoKey, branch: "feature/PAP-256-fixture", state: "materialized", baseSha: base, headSha: base, sha: base }] }));
@@ -656,7 +659,7 @@ test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and
     assert.equal(getDeploymentEvents(f.opts.deployId).some((event) => event.event === "completed"), false, "staging cannot release live custody");
   } finally { if (previous === undefined) delete process.env.PA_PI_EXECUTION_MODE; else process.env.PA_PI_EXECUTION_MODE = previous; }
   const holder = session.observe("holder");
-  session.service.apply(session.actor, { action: "plan", plan: { phaseId: "phase-startup", scope: "barrier fixture", paths: ["src/file.ts"], requirements: ["AC3"], prerequisites: [], checks: ["typecheck"], size: "M", complexity: "high", rationale: "Startup ports cannot clear source barriers." } });
+  session.service.apply(session.actor, { action: "plan", plan: { phaseId: "phase-startup", scope: "barrier fixture", paths: ["src/file.ts"], requirements: ["AC3"], prerequisites: [], checks: ["typecheck", "diff-check"], size: "M", complexity: "high", rationale: "Startup ports cannot clear source barriers." } });
   session.service.apply(session.actor, { action: "select", executor: "orchestrator-direct", holder: session.actor, handover: holder });
   let release!: () => void;
   const administrative = session.executeAdministration("administrative-overlap", { toolName: "bash", input: { command: "ppa bulletin list" } }, context, () => new Promise<void>((resolve) => { release = resolve; }));
@@ -708,7 +711,7 @@ test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact o
     assert.doesNotMatch(response.reason, /ordinary-private-token|bootId|startTimeTicks/);
     assert.deepEqual(session.evidence.store.records(), before); assert.equal(f.git(["rev-parse", "HEAD"], f.checkout), head);
   };
-  const plan = { phaseId: "phase-2", scope: "ordinary source/check fixture", paths: ["src/file.ts", "package.json"], requirements: ["FR2", "FR3", "FR4", "FR6", "FR10", "AC1", "AC3", "AC5"], prerequisites: [], checks: ["corepack pnpm typecheck", "git diff --check"], size: "L", complexity: "high", rationale: "Actual isolated SDK evidence, not packaged/loaded/human acceptance." };
+  const plan = { phaseId: "phase-2", scope: "ordinary source/check fixture", paths: ["src/file.ts", "package.json"], requirements: ["FR2", "FR3", "FR4", "FR6", "FR10", "AC1", "AC3", "AC5"], prerequisites: [], checks: ["node 'ordinary-check.cjs' 'typecheck'", "node 'ordinary-check.cjs' 'diff-check'"], size: "L", complexity: "high", rationale: "Actual isolated SDK evidence under a pinned project contract, not packaged/loaded/human acceptance." };
   await control({ action: "plan", plan }); await select();
   assert.equal(session.contract.bounds.runtimeMinutes, 30);
   const coldRuntime = executionRuntime(); createPiExecutionModule({ nativeAdapter: adapter })(coldRuntime.pi);
@@ -716,14 +719,13 @@ test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact o
   assert.equal((await coldRuntime.dispatch("tool_call", { toolName: "write", toolCallId: "unguarded-startup", input: { path: "src/file.ts", content: "forbidden" } }, context) as { block: boolean }).block, true);
   assert.deepEqual(session.evidence.store.records(), beforeColdDispatch);
   await deny("bash", { command: "git commit -m 'premature'" });
-  await deny("bash", { command: "git diff --check" }); // wrong named order
-  await deny("bash", { command: "corepack pnpm typecheck; true" });
+  await deny("bash", { command: "node 'ordinary-check.cjs' 'diff-check'" }); // wrong named order
+  await deny("bash", { command: "node 'ordinary-check.cjs' 'typecheck'; true" });
   await deny("write", { path: join(f.repo, "README.md"), content: "forbidden" });
   await execute("write", { path: "src/file.ts", content: "export const value = 1;\n" });
   await execute("edit", { path: "src/file.ts", edits: [{ oldText: "value = 1", newText: "value = 2" }] });
   assert.match(readFileSync(join(f.checkout, "src/file.ts"), "utf8"), /value = 2/);
-  const manager = JSON.parse(readFileSync(new URL("../../../../package.json", import.meta.url), "utf8")).packageManager;
-  const packageJson = (exit: number) => JSON.stringify({ name: "ordinary-fixture", packageManager: manager, scripts: { typecheck: `node -e \"console.log(process.env.TEST_PRIVATE_TOKEN);console.error('actual ordinary stderr');process.exit(${exit})\"` } });
+  const packageJson = (exit: number) => JSON.stringify({ name: "ordinary-fixture", fixtureExit: exit });
   await execute("write", { path: "package.json", content: packageJson(2) });
   assert.equal((await execute("bash", { command: plan.checks[0], timeout: 30 }, true)).failed, true);
   const original = session.service.status(session.actor).originalFailure!;
@@ -775,7 +777,7 @@ test("PAP-264 ordinary drift, adopted correlation loss/reload and started operat
   } finally { getDb().prepare("UPDATE registry_events SET note = ? WHERE deployment_id = ? AND event = 'started'").run(ORDINARY_NATIVE_EXECUTION_START, f.opts.deployId); }
   const adapter = fresh(); const runtime = executionRuntime(); createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi); await runtime.dispatch("session_start", {}, context);
   const session = adapter.resolve(context)!; const control = (input: Record<string, unknown>) => runtime.tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
-  await control({ action: "plan", plan: { phaseId: "phase-2", scope: "ordinary denial fixture", paths: ["src/file.ts"], requirements: ["AC3", "AC5"], prerequisites: [], checks: ["typecheck"], size: "L", complexity: "high", rationale: "Zero forbidden effects before actual SDK dispatch." } });
+  await control({ action: "plan", plan: { phaseId: "phase-2", scope: "ordinary denial fixture", paths: ["src/file.ts"], requirements: ["AC3", "AC5"], prerequisites: [], checks: ["typecheck", "diff-check"], size: "L", complexity: "high", rationale: "Zero forbidden effects before actual SDK dispatch." } });
   const holder = (await control({ action: "observe", kind: "holder" })).details.evidence;
   await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder });
   const write = { path: "src/file.ts", content: "forbidden drift write" };

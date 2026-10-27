@@ -146,6 +146,12 @@ const EXECUTION_DIAGNOSTICS = Object.freeze({
     correction: "project command/configuration owner: revalidate the pinned manifest and script provenance; preserve source and do not use arbitrary shell",
     resumeAction: "retry the named check only after its supported contract, physical CWD and current prerequisites agree",
   }),
+  EXECUTION_PROJECT_CONTRACT_REQUIRED: Object.freeze({
+    stage: "project-command-admission",
+    reason: "ordinary source work requires a configuration-pinned project command/effect contract; missing registration is not legacy host-shell permission",
+    correction: "project command/configuration owner: provide the supported scoped command profile and prerequisites; retain existing work and do not manufacture readiness or disable safety checks",
+    resumeAction: "continue source work only with the admitted validated contract; authenticated startup and own partial reporting remain available",
+  }),
   EXECUTION_PROJECT_PREREQUISITE: Object.freeze({
     stage: "project-command-prerequisite",
     reason: "the required trusted executable or isolated local-check containment is unavailable; no project check was run",

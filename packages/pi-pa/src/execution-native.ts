@@ -283,6 +283,10 @@ export class NativeExecutionSession {
         this.assertCaller({ cwd: process.cwd() }); if (!equal(actor, this.actor)) throw workflowError();
         if (command !== "status" && !(command === "initialize" && exists) && (typeof command === "string" || !["finish", "settle"].includes(command.action))) this.#newWork();
         if (typeof command !== "string" && ["finish", "settle"].includes(command.action)) this.#authenticateSourceCustody();
+        // Historical journals remain readable, but a fresh/adopted ordinary
+        // source action cannot turn missing project registration into legacy
+        // host-shell permission. Administration/finish/settlement stay separate.
+        if (this.#ordinary && typeof command !== "string" && ["plan", "advance", "select", "begin", "candidate"].includes(command.action)) this.#projectCommands();
         if (typeof command !== "string" && (command.action === "plan" || command.action === "advance")) {
           if (command.plan.checks.some((name) => !this.#checkText(name)) || new Set(command.plan.checks.map((name) => this.#checkText(name))).size !== command.plan.checks.length)
             throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
@@ -362,7 +366,10 @@ export class NativeExecutionSession {
     // the admitted registration identity across reload, but resolve/validate the
     // actual manifest, scripts and containment only at source/check boundaries.
     if (this.#currentCommandRegistration() !== this.#commandRegistration) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
-    if (this.#commandRegistration === null) return null;
+    if (this.#commandRegistration === null) {
+      if (this.#ordinary) throw executionFailure("EXECUTION_PROJECT_CONTRACT_REQUIRED");
+      return null; // separately admitted optional/prepared compatibility only
+    }
     this.#commands ??= ProjectCommandContract.resolve(this.contract.repoKey, this.contract.repoRoot, this.contract.worktreeRoot);
     if (!this.#commands) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
     return this.#commands;
@@ -496,7 +503,8 @@ export class NativeExecutionSession {
     return passed;
   }
   #assertCall(call: PiToolCall, state: ExecutionState): void {
-    this.#newWork(); if (this.#administrationRunning || !state.plan || !interceptToolCall(call).allowed) throw workflowError(); this.#assertKnown(state);
+    this.#newWork(); if (this.#ordinary) this.#projectCommands();
+    if (this.#administrationRunning || !state.plan || !interceptToolCall(call).allowed) throw workflowError(); this.#assertKnown(state);
     const name = call.toolName ?? call.name;
     if (name === "write" || name === "edit") { const path = workflowText(call.input.path); const rel = isAbsolute(path) ? relative(this.#physical.worktreeRoot, path) : path;
       if (!state.plan.paths.includes(rel)) throw workflowError(); scopedPath(this.#physical.worktreeRoot, rel); return; }

@@ -62,8 +62,8 @@ proof that resources are absent or safe to release.
 
 ## Validated project commands (source capability)
 
-A registered repository can select `projectCommands: { manifest: checks.json,
-sha256: <exact digest> }` in its operator-managed configuration. The manifest is
+Ordinary source phases require a registered `projectCommands: { manifest: checks.json,
+sha256: <exact digest> }` in the repository's operator-managed configuration. The manifest is
 `project-command-contract/v1`, with exactly `effects: [project-read,
 isolated-temp-write]` and an ordered `checks` array. Each check names `id`, an
 exact root-owned executable, literal `argv`, literal application `environment`,
@@ -98,7 +98,12 @@ project-tree build outputs, external services, other host layouts and unrestrict
 checks are unsupported by v1, not silently run outside confinement. Missing
 containment is a toolchain-owner prerequisite denial, never an install/host-change
 or unconfined fallback. The runner retains process-group/timeout/output evidence.
-Existing unregistered legacy PA check contracts are not retroactively upgraded.
+Missing registration produces `EXECUTION_PROJECT_CONTRACT_REQUIRED` before a
+source plan, writer selection or source dispatch; the fixed legacy PA vocabulary
+is not an ordinary task fallback. Existing journals remain readable and own
+startup/partial reporting stays available. This does not rewrite historical
+records or upgrade already-running processes; separately admitted optional/
+prepared compatibility retains its own contract.
 
 ## Same-holder phases, repair and Markdown
 

@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { workflowDigest } from "@pa-platform/pa-core";
 
 /** Synthetic operator/task producer for disposable tests only. It is not a live
  * approval API, and is never used to modify a product or protected owner. */
@@ -15,4 +16,18 @@ export function seedOrdinaryTaskBaseline(input: { ai: string; repo: string; repo
   ticket.comments = [...(ticket.comments ?? []), { id, author: "sinh", timestamp: "2026-10-26T00:00:00.000Z", content: `Approve ${input.ticket} ${input.repoKey} ${input.repo} ${input.branch} exact base ${input.base}; source requirements:${path}.` }];
   writeFileSync(ticketPath, JSON.stringify(ticket));
   return join(input.ai, path);
+}
+
+/** A pinned harness with mutable fixture data, never a mutable package-script
+ * command grant. The real Node processes run through the v1 namespace profile. */
+export function seedOrdinaryCommandFixture(repo: string): string {
+  const script = `const fs=require('node:fs');\nconst data=JSON.parse(fs.readFileSync('package.json','utf8'));\nif(process.argv[2]==='typecheck'){console.log('ordinary-private-token');console.error('actual ordinary stderr');process.exit(data.fixtureExit??0);}\nconst text=fs.readFileSync('README.md','utf8');console.log('fixture whitespace check');process.exit(/[ \\t]+$/m.test(text)?2:0);\n`;
+  writeFileSync(join(repo, "ordinary-check.cjs"), script);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "ordinary-fixture", fixtureExit: 0 }));
+  const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: ["typecheck", "diff-check"].map((id) => ({
+    id, executable: realpathSync(process.execPath), argv: ["ordinary-check.cjs", id], environment: {}, readPaths: ["README.md", "package.json"],
+    prerequisites: [{ path: "ordinary-check.cjs", sha256: workflowDigest(script) }], timeoutSeconds: 30, maximumOutputBytes: 1048576,
+  })) });
+  writeFileSync(join(repo, "ordinary-checks.json"), manifest);
+  return `    projectCommands:\n      manifest: ordinary-checks.json\n      sha256: ${workflowDigest(manifest)}\n`;
 }
