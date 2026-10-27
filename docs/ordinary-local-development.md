@@ -7,7 +7,9 @@ starting at `2acdc1fd59a799dd5ce611727c3949144b475e63` (package 0.1.149).
 ## Code-only CI and manual integration
 
 Per the operator's explicit CI scope decision, PR CI runs `corepack pnpm test:code`
-without installing Nix, entering a Nix shell or building a Nix package. Typecheck,
+without installing Nix, entering a Nix shell or building a Nix package. The
+separate Nix packaging workflow is triggered only manually or on release `main`
+pushes, never by PRs or integration `develop` pushes. Typecheck,
 TypeScript build, code tests, paired source validation and completion checks remain
 in CI. Core tests run serially so the existing 500 ms dashboard p95 assertion is
 not measured against other concurrent test files; its threshold is unchanged.

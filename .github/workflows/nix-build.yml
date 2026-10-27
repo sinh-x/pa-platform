@@ -1,24 +1,10 @@
 name: Nix Build
 
+# Packaging is release/manual work, not part of ordinary code PR CI.
 on:
+  workflow_dispatch:
   push:
-    branches: [main, develop]
-    paths:
-      - '.gitmodules'
-      - 'package.json'
-      - 'packages/**/package.json'
-      - 'packages/pi-pa/extension-sources.lock.json'
-      - 'packages/pi-pa/scripts/**'
-      - 'packages/pi-pa/vendor/**'
-      - 'pnpm-lock.yaml'
-      - 'flake.nix'
-      - 'flake.lock'
-      - 'nix/treehouse.nix'
-      - 'scripts/pap-252-*-smoke.*'
-      - 'completions/**'
-      - '.github/workflows/nix-build.yml'
-  pull_request:
-    branches: [main, develop]
+    branches: [main]
     paths:
       - '.gitmodules'
       - 'package.json'
