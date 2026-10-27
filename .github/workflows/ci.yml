@@ -8,10 +8,9 @@ on:
 
 jobs:
   test:
-    # The v1 project-check profile needs unprivileged user/network namespaces.
-    # Keep a compatible hosted image instead of disabling runner security policy
-    # or weakening the native confinement probe when ubuntu-latest changes.
-    runs-on: ubuntu-22.04
+    # Code-only CI. Immutable/sandbox and installed runtime integration are an
+    # explicit manual gate, not silently skipped or certified by this job.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,26 +48,24 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Install Nix for immutable runtime test prerequisites
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Verify isolated project-command prerequisites
-        run: >-
-          nix develop '.?submodules=1' --no-write-lock-file --command
-          pnpm exec tsx --test packages/pi-pa/src/__tests__/project-command-contract.test.ts
-
-      - name: Test
-        run: nix develop '.?submodules=1' --no-write-lock-file --command pnpm run test
+      - name: Code tests (manual integration is separate)
+        run: pnpm run test:code
 
       - name: Enforce config-first compatibility
-        shell: nix develop .?submodules=1 --no-write-lock-file --command bash -e {0}
+        shell: bash
         env:
           PA_PHASE5_CONFIG_ROOT: ${{ github.workspace }}/paired-config
         run: |
           set -o pipefail
           git -C "$PA_PHASE5_CONFIG_ROOT" fetch origin develop
           pnpm run verify:paired-config -- --require-origin-develop | tee -a "$GITHUB_STEP_SUMMARY"
-          pnpm run test:paired
+          pnpm run test:paired-gate
+
+      - name: Record manual integration boundary
+        shell: bash
+        run: |
+          printf '%s\n' 'Code-only checks do not certify sandbox/installed runtime integration.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Manual gate: corepack pnpm test in the supported immutable sandbox toolchain; see docs/ordinary-local-development.md.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check generated completions
         run: |

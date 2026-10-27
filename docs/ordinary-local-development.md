@@ -4,6 +4,25 @@ This is a source capability record, **not installed policy or ticket completion*
 The canonical implementation branch is `feature/PAP-268-scoped-local-development`,
 starting at `2acdc1fd59a799dd5ce611727c3949144b475e63` (package 0.1.149).
 
+## Code-only CI and manual integration
+
+Per the operator's explicit CI scope decision, PR CI runs `corepack pnpm test:code`
+without installing Nix, entering a Nix shell or building a Nix package. Typecheck,
+TypeScript build, code tests, paired source validation and completion checks remain
+in CI. Core tests run serially so the existing 500 ms dashboard p95 assertion is
+not measured against other concurrent test files; its threshold is unchanged.
+
+The Pi code runner prints an explicit inventory of deferred manual integration
+files: ordinary local-development, project-command-contract, prepared-native and
+pi-deploy suites. These mixed native/deployment suites need the qualified
+immutable/sandbox environment; they are neither passing tests nor hidden skips in
+the code-only lane. All other source test files are included by discovery, and a
+stale manual inventory fails. `corepack pnpm test` still runs the complete suite
+in the supported environment as a **separate manual integration gate**. Installed
+smoke and independent review/UAT also remain separate. Green code-only CI does
+not replace any of these results or certify runtime acceptance. Existing optional
+external/installed skips remain explicitly reported by their owning suites.
+
 ## Baseline transport slice
 
 The ordinary direct Pi launcher now resolves `ordinary-task-baseline/v1` from
