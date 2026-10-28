@@ -2,9 +2,14 @@ import { resolve } from "node:path";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { parseReviewMatrix, parseReviewObjective } from "../validation/review-contract.js";
 import { loadTemplateRegistry, type TemplateSelection } from "./registry.js";
-import { MAX_TEMPLATE_BYTES, MAX_TEMPLATE_REQUEST_BYTES, object, reject, relativePath, strictJson, string, TemplateError, utf8, type Row, type TemplateBinding, type TemplateEntry } from "./schema.js";
+import { digest, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_REQUEST_BYTES, object, reject, relativePath, strictJson, string, TemplateError, utf8, type Row, type TemplateBinding, type TemplateEntry } from "./schema.js";
 
-export interface TemplateHost { selection?: TemplateSelection; team?: string; mode?: string }
+export interface TemplateConsumerPort {
+  /** Runtime-owned actual consumer, never a field supplied by CLI/tool JSON. */
+  schemaVersion: "pa-review-bundle/v1";
+  validate: (raw: Uint8Array) => unknown;
+}
+export interface TemplateHost { selection?: TemplateSelection; team?: string; mode?: string; reviewBundleConsumer?: TemplateConsumerPort }
 export type TemplateResult = { schemaVersion: "pa-template-result/v1"; unsigned: true; ok: boolean; operation: string; [key: string]: unknown };
 export const TEMPLATE_LIMITATIONS = "Structural drafts only: no human decision, authenticated native facts, readiness, custody, publication or executed UAT is certified.";
 export const MAX_TEMPLATE_RESULT_BYTES = 50 * 1024;
@@ -52,16 +57,20 @@ export function templateService(input: Uint8Array | Row, host: TemplateHost = {}
           return encoded[name]!;
         });
         if (Object.keys(encoded).some((name) => !used.has(name))) reject("TEMPLATE_UNUSED_BINDING", "bindings", "binding has no declared source placeholder");
-        if (/\{\{|\}\}/.test(candidate)) reject("TEMPLATE_UNRESOLVED", "candidate", "unresolved or malformed placeholder");
+        if (/\{\{/.test(candidate) || (entry.validation.kind === "sections" && /\}\}/.test(candidate))) reject("TEMPLATE_UNRESOLVED", "candidate", "unresolved or malformed placeholder");
         if (Buffer.byteLength(candidate) > MAX_TEMPLATE_BYTES) reject("TEMPLATE_SIZE", "candidate", "rendered document exceeds byte limit");
         sensitive(candidate);
-        validateShape(candidate, entry);
+        validateShape(candidate, entry, host);
         if (action === "validate") {
           if (typeof request.candidate !== "string") reject("TEMPLATE_FIELD", "candidate", "exact candidate string required");
           const supplied = utf8(Buffer.from(request.candidate));
           if (supplied !== request.candidate || supplied !== candidate) reject("TEMPLATE_CANDIDATE", "candidate", "candidate must equal the complete deterministic rendering without normalization");
         }
-        result = { ...base, entry, candidate, validation: { structural: true, consumer: entry.validation.kind !== "sections", authority: false } };
+        result = { ...base, entry, candidate,
+          producer: { schemaVersion: "pa-template-producer/v1", templateId: entry.id, templateRevision: entry.revision, sourceSha256: entry.source.sha256,
+            configRevision: loaded.identity.configRevision, registrySha256: loaded.identity.registrySha256, bindingsSha256: digest(JSON.stringify(bindings)), candidateSha256: digest(candidate),
+            consumerContract: entry.validation.kind === "review-bundle" ? "pa-review-bundle/v1" : entry.validation.kind === "review-matrix" ? "pa-review-matrix/v1" : entry.validation.kind === "review-objective" ? "pa-review-objective/v1" : null },
+          validation: { structural: true, consumer: entry.validation.kind !== "sections", authority: false } };
       }
     }
     // Same envelope bound for both adapters. Never truncate signed/source bytes.
@@ -100,7 +109,11 @@ function binding(value: unknown, schema: TemplateBinding): string {
   if (schema.type === "text" && /\b(?:approv\w*|reject\w*|withdraw\w*|revoke\w*)\b/i.test(s)) reject("TEMPLATE_BINDING", "bindings", "narrative cannot supply decision clauses");
   return s;
 }
-function validateShape(candidate: string, entry: TemplateEntry): void {
+function validateShape(candidate: string, entry: TemplateEntry, host: TemplateHost): void {
+  if (entry.validation.kind === "review-bundle") {
+    if (!host.reviewBundleConsumer || host.reviewBundleConsumer.schemaVersion !== "pa-review-bundle/v1") reject("TEMPLATE_CONSUMER_REQUIRED", "workflow", "PAP-271 must register its actual pa-review-bundle/v1 parser; no template-side authority or fallback exists");
+    host.reviewBundleConsumer.validate(Buffer.from(candidate)); return;
+  }
   if (entry.validation.kind === "review-matrix") { parseReviewMatrix(candidate); return; }
   if (entry.validation.kind === "review-objective") { parseReviewObjective(candidate); return; }
   const lines = candidate.split(/\r?\n/); let previous = -1;

@@ -6,7 +6,9 @@ export const TEMPLATE_RUNTIME = "pa-template-runtime/v1" as const;
 export const MAX_TEMPLATE_BYTES = 1_048_576;
 export const MAX_TEMPLATE_REQUEST_BYTES = 65_536;
 export const TEMPLATE_IDS = ["requirements", "uat-review", "builder-objective", "implementation-phase-report", "orchestration-report", "project-agent-guide", "spike-full-requirements", "spike-learning-note", "spike-light-report", "spike-research-report", "uat-plan", "handoff-fresh", "handoff-amendment", "pair-signoff", "review-matrix", "review-objective"] as const;
-export type TemplateId = typeof TEMPLATE_IDS[number];
+/** Explicit PAP-271 extension; definitions/enablement/decisions remain workflow-owned. */
+export const TEMPLATE_EXTENSION_IDS = ["review-bundle"] as const;
+export type TemplateId = typeof TEMPLATE_IDS[number] | typeof TEMPLATE_EXTENSION_IDS[number];
 export type Row = Record<string, unknown>;
 export type BindingType = "text" | "multiline" | "ticket" | "repository" | "root" | "path" | "branch" | "sha" | "digest" | "revision" | "handoff" | "json";
 export interface TemplateBinding { type: BindingType; required: boolean }
@@ -15,7 +17,7 @@ export interface TemplateEntry {
   contexts: Array<{ runtime: "pi"; team: string; mode: string }>;
   source: { path: string; sha256: string; selector: null | { start: string; end: string } };
   bindings: Record<string, TemplateBinding>;
-  validation: { kind: "sections" | "review-matrix" | "review-objective"; sections: string[] };
+  validation: { kind: "sections" | "review-matrix" | "review-objective" | "review-bundle"; sections: string[] };
   capabilities: { render: boolean; validate: boolean; reason: string; authorityGate: string };
 }
 export interface TemplateRegistry { schemaVersion: typeof TEMPLATE_CONTRACT; configRevision: string; runtimeContract: typeof TEMPLATE_RUNTIME; entries: TemplateEntry[] }
@@ -64,12 +66,13 @@ function boolean(value: unknown): boolean { if (typeof value !== "boolean") reje
 export function parseTemplateRegistry(bytes: Uint8Array): TemplateRegistry {
   const r = object(strictJson(bytes, MAX_TEMPLATE_BYTES), ["schemaVersion", "configRevision", "runtimeContract", "entries"]);
   if (r.schemaVersion !== TEMPLATE_CONTRACT || r.runtimeContract !== TEMPLATE_RUNTIME) reject("TEMPLATE_VERSION", "registry", "unsupported registry/runtime contract pair");
-  const entries = list(r.entries, TEMPLATE_IDS.length, TEMPLATE_IDS.length).map((value): TemplateEntry => {
+  const entries = list(r.entries, TEMPLATE_IDS.length, TEMPLATE_IDS.length + TEMPLATE_EXTENSION_IDS.length).map((value): TemplateEntry => {
     const e = object(value, ["id", "revision", "purpose", "owner", "contexts", "source", "bindings", "validation", "capabilities"]);
-    if (!TEMPLATE_IDS.includes(e.id as TemplateId)) reject("TEMPLATE_ID", "registry", "unknown inventory ID");
+    if (![...TEMPLATE_IDS, ...TEMPLATE_EXTENSION_IDS].includes(e.id as TemplateId)) reject("TEMPLATE_ID", "registry", "unknown inventory ID");
     const source = object(e.source, ["path", "sha256", "selector"]);
     const path = relativePath(source.path);
     if (!/^skills\/templates\/[a-z0-9-]+\.md$/.test(path)) reject("TEMPLATE_PATH", "registry", "resource must belong to the canonical template family");
+    if ((TEMPLATE_IDS.slice(0, 10) as readonly string[]).includes(e.id as string) && path !== `skills/templates/${e.id as string}.md`) reject("TEMPLATE_INVENTORY", "registry", "initial canonical document IDs must retain their owned source paths");
     let selector: TemplateEntry["source"]["selector"] = null;
     if (source.selector !== null) { const s = object(source.selector, ["start", "end"]); selector = { start: string(s.start), end: string(s.end) }; if (selector.start === selector.end) reject("TEMPLATE_SELECTOR", "registry", "distinct selector delimiters required"); }
     const bindings = object(e.bindings, [], Object.keys((e.bindings ?? {}) as Row));
@@ -82,16 +85,16 @@ export function parseTemplateRegistry(bytes: Uint8Array): TemplateRegistry {
       parsedBindings[key] = { type: b.type as BindingType, required: boolean(b.required) };
     }
     const v = object(e.validation, ["kind", "sections"]);
-    if (!["sections", "review-matrix", "review-objective"].includes(String(v.kind))) reject("TEMPLATE_CAPABILITY", "registry", "unsupported structural validator");
+    if (!["sections", "review-matrix", "review-objective", "review-bundle"].includes(String(v.kind))) reject("TEMPLATE_CAPABILITY", "registry", "unsupported structural validator");
     const sections = list(v.sections).map((s) => string(s, /^#{1,6} [^#].*$/));
     if (new Set(sections).size !== sections.length || (v.kind === "sections" && !sections.length) || (v.kind !== "sections" && sections.length)) reject("TEMPLATE_FIELD", "registry", "unique section contracts required for Markdown only");
-    if ((e.id === "review-matrix" && v.kind !== "review-matrix") || (e.id === "review-objective" && v.kind !== "review-objective")) reject("TEMPLATE_CAPABILITY", "registry", "review producers require their actual runtime consumer");
+    if ((e.id === "review-matrix" && v.kind !== "review-matrix") || (e.id === "review-objective" && v.kind !== "review-objective") || (e.id === "review-bundle" && v.kind !== "review-bundle")) reject("TEMPLATE_CAPABILITY", "registry", "review producers require their actual runtime consumer");
     const c = object(e.capabilities, ["render", "validate", "reason", "authorityGate"]);
     const contexts = list(e.contexts, 1).map((value): TemplateEntry["contexts"][number] => { const c = object(value, ["runtime", "team", "mode"]); if (c.runtime !== "pi") reject("TEMPLATE_CONTEXT", "registry", "only Pi/PPA is supported"); return { runtime: "pi", team: string(c.team, /^(?:\*|[a-z0-9-]+)$/), mode: string(c.mode, /^(?:\*|[a-z0-9-]+)$/) }; });
     return { id: e.id as TemplateId, revision: string(e.revision, /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/), purpose: string(e.purpose), owner: string(e.owner), contexts,
       source: { path, sha256: string(source.sha256, /^[0-9a-f]{64}$/), selector }, bindings: parsedBindings,
       validation: { kind: v.kind as TemplateEntry["validation"]["kind"], sections }, capabilities: { render: boolean(c.render), validate: boolean(c.validate), reason: string(c.reason), authorityGate: string(c.authorityGate) } };
   });
-  if (new Set(entries.map((e) => e.id)).size !== TEMPLATE_IDS.length) reject("TEMPLATE_INVENTORY", "registry", "every initial standard must have exactly one disposition");
+  if (new Set(entries.map((e) => e.id)).size !== entries.length || TEMPLATE_IDS.some((id) => !entries.some((e) => e.id === id))) reject("TEMPLATE_INVENTORY", "registry", "every initial standard must have exactly one disposition");
   return { schemaVersion: TEMPLATE_CONTRACT, runtimeContract: TEMPLATE_RUNTIME, configRevision: string(r.configRevision, /^[0-9a-f]{40}$/), entries: entries.sort((a, b) => a.id < b.id ? -1 : 1) };
 }
