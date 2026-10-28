@@ -173,7 +173,7 @@ function retainedPair(f: ReturnType<typeof setup>, style: PairStyle) {
   mkdirSync(join(f.ai, "agent-teams/requirements/artifacts/reviews/PAP-1", revision), { recursive: true });
   writeFileSync(previewAbsolute, preview); writeFileSync(f.sourcePath, current);
   const hash = createHash("sha256").update(preview).digest("hex");
-  const uat = `# Synthetic UAT preview\n\n> Ticket: PAP-1\n> Revision: ${revision}\n\n## Scenarios\nDisposable fixture only.\n`;
+  const uat = `# Synthetic UAT preview\n\n> Ticket: PAP-1\n> Review Revision: ${revision}\n> Final Requirements: ${source}\n\n## Scenarios\nDisposable fixture only.\n`;
   const uatPath = `agent-teams/requirements/artifacts/reviews/PAP-1/${revision}/uat-preview.md`;
   writeFileSync(join(f.ai, uatPath), uat);
   const tuple = `Handoff Type: fresh. Repository Key: fixture. Repository Root: ${f.repo}. Feature Branch: ${f.branch}. Approved Base SHA: ${f.base}.`;

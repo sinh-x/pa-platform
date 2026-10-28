@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { templateService } from "../templates/service.js";
 import { digest } from "../templates/schema.js";
 import { parseReviewMatrix, parseReviewMatrixArtifact, parseReviewObjective } from "../validation/review-contract.js";
 import { templateFixture } from "./template-fixture.js";
-import { producerFixture } from "./template-producer-fixture.js";
+import { pairTemplate, producerFixture } from "./template-producer-fixture.js";
+import { completeTemplateFixture } from "./template-complete-fixture.js";
 import { parsePairSignoff, parseTaskHandoff } from "../tickets/producer-contract.js";
 
 for (const kind of ["fresh", "amendment"] as const) {
@@ -25,7 +26,7 @@ for (const kind of ["fresh", "amendment"] as const) {
       assert.throws(f.resolveBaseline, /ORDINARY_BASELINE_/);
     } finally { f.dispose(); }
   });
-  for (const variant of ["author", "ticket", "repository", "root", "branch", "base", "revision", "preview-path", "preview-hash", "uat-path", "uat-hash", "matrix-source", "matrix-hash", "duplicate", "negated", "conditional", "withdrawn", "changed-integration", "malformed-preview", "opposite-preview-base"] as const) test(`versioned ${kind} consumer rejects ${variant} before dependent effects`, () => {
+  for (const variant of ["author", "ticket", "repository", "root", "branch", "base", "revision", "preview-path", "preview-hash", "uat-path", "uat-hash", "matrix-source", "matrix-hash", "duplicate", "negated", "conditional", "withdrawn", "changed-integration", "malformed-preview", "opposite-preview-base", "amendment-source", "tuple-evidence", "immediate-reread", "final-reread", "source-hardlink", "preview-hardlink", "uat-hardlink", "uat-bom", "changed-published-scope", "foreign-published-header"] as const) test(`versioned ${kind} consumer rejects ${variant} before dependent effects`, () => {
     const f = producerFixture(kind); try {
       let content = f.record.comments[0]!.content;
       const change = (field: string, value: string) => { content = content.replace(new RegExp(`^${field}: .+$`, "m"), `${field}: ${value}`); };
@@ -42,6 +43,18 @@ for (const kind of ["fresh", "amendment"] as const) {
       if (variant === "uat-hash") change("UAT Raw SHA-256", "f".repeat(64));
       if (variant === "matrix-source") change("Matrix Source", "requirements:agent-teams/requirements/artifacts/foreign.md");
       if (variant === "matrix-hash") change("Matrix Authority SHA-256", "f".repeat(64));
+      if (["amendment-source", "tuple-evidence", "immediate-reread", "final-reread"].includes(variant)) {
+        if (kind === "fresh") content += "\nAmendment Source Requirements Ref: requirements:agent-teams/requirements/artifacts/foreign.md";
+        else if (variant === "amendment-source") change("Amendment Source Requirements Ref", "requirements:agent-teams/requirements/artifacts/foreign.md");
+        else if (variant === "tuple-evidence") change("Amendment Tuple Approval Evidence", "FIX-238#c-19990101000000000");
+        else change(variant === "immediate-reread" ? "Amendment Immediate Reread SHA-256" : "Amendment Final Reread SHA-256", "f".repeat(64));
+      }
+      if (variant === "changed-published-scope") writeFileSync(f.requirementPath, readFileSync(f.requirementPath, "utf8").replace("Synthetic scoped fixture, not execution permission.", "Substituted scope outside the reviewed preview."));
+      if (variant === "foreign-published-header") writeFileSync(f.requirementPath, readFileSync(f.requirementPath, "utf8").replace("\n## Handoff", "\n> Scope: arbitrary changed work\n\n## Handoff"));
+      if (variant === "source-hardlink") linkSync(f.requirementPath, join(f.root, "source-alias.md"));
+      if (variant === "preview-hardlink") linkSync(join(f.ai, f.bindings.requirementsPreviewPath), join(f.root, "preview-alias.md"));
+      if (variant === "uat-hardlink") linkSync(join(f.ai, f.bindings.uatPreviewPath), join(f.root, "uat-alias.md"));
+      if (variant === "uat-bom") { const raw = Buffer.concat([Buffer.from([239, 187, 191]), Buffer.from(f.uat)]); writeFileSync(join(f.ai, f.bindings.uatPreviewPath), raw); change("UAT Raw SHA-256", digest(raw)); }
       if (variant === "duplicate") content += `\nBase SHA: ${f.bindings.baseSha}`;
       if (variant === "negated") content += "\nI do not approve this pair.";
       if (variant === "conditional") content += "\nOnly if later review passes.";
@@ -61,6 +74,20 @@ for (const kind of ["fresh", "amendment"] as const) {
     } finally { f.dispose(); }
   });
 }
+
+test("binding key order is not an ambient input and inactive optional branches cannot hide unknown fields", () => {
+  const f = completeTemplateFixture(); try {
+    const reverse = (v: unknown): unknown => Array.isArray(v) ? v.map(reverse) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).reverse().map(([key, value]) => [key, reverse(value)])) : v;
+    for (const id of ["pair-signoff", "review-matrix", "review-objective"]) {
+      const input = { action: "render", id, version: "1", bindings: f.allBindings[id] };
+      assert.deepEqual(templateService({ ...input, bindings: reverse(input.bindings) }, { selection: f.selection }), templateService(input, { selection: f.selection }));
+    }
+    const source = pairTemplate.replace("Current Feature SHA:", "Hidden: {{foreignSecretField}}\nCurrent Feature SHA:");
+    const selection = f.put("pair-signoff", source);
+    const result = templateService({ action: "render", id: "pair-signoff", version: "1", bindings: f.bindings }, { selection });
+    assert.equal(result.code, "TEMPLATE_UNRESOLVED"); assert.ok(!JSON.stringify(result).includes("foreignSecretField"));
+  } finally { f.dispose(); }
+});
 
 test("JSON matrix/objective producers round-trip the actual protected-review consumers", () => {
   const f = templateFixture(); try {

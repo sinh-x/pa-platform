@@ -5,7 +5,7 @@ import type { CliIo } from "../utils.js";
 export interface TemplateCliHost extends TemplateHost { input?: AsyncIterable<Uint8Array | string> }
 export async function runTemplateCommand(argv: string[], io: Required<CliIo>, host: TemplateCliHost = {}): Promise<number> {
   if (argv.length === 1 && ["--help", "-h"].includes(argv[0]!)) {
-    io.stdout("Usage: ppa template list|show|render|validate [ID --version REVISION] [--format json|markdown]\nrender: stdin {bindings}; validate: stdin {bindings,candidate}. Unsigned structural drafts only; no writes. Pi/PPA only."); return 0;
+    io.stdout("Usage: ppa template list|show|render|validate [ID --version REVISION] [--format json|markdown]\nrender: stdin {bindings}; validate: stdin {bindings,candidate}. Unsigned structural drafts only; no writes. Pi/PPA only.\nNative pa_template takes {request: RAW_JSON_DOCUMENT}; the document uses action/id/version/bindings/candidate and is capped at 65,536 UTF-8 bytes."); return 0;
   }
   let format = "json";
   try {

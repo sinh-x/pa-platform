@@ -475,7 +475,7 @@ test("failure fixtures preserve causal categories and original content within ex
   }
 });
 
-test("managed Pi fixture covers built-ins and every registered PA tool", () => {
+test("frozen managed Pi fixture retains its legacy loadout alongside separately qualified templates", () => {
   const fixture = loadFixture();
   const registered: string[] = [];
   // This frozen characterization fixture is the legacy loadout, not the
@@ -484,7 +484,9 @@ test("managed Pi fixture covers built-ins and every registered PA tool", () => {
   process.env = { ...originalEnvironment, PA_TEAM: "fixture", PA_MODE: "fixture" };
   try { registerPiPaExtension({ registerTool: (tool) => registered.push(tool.name) }); }
   finally { process.env = originalEnvironment; }
-  assert.deepEqual(["read", "bash", ...registered].sort(), [...fixture.managedTools].sort());
+  // Preserve historical fixture bytes; PAP-270 has its own full registered-tool
+  // and public-entrypoint fixtures rather than fabricating historical events.
+  assert.deepEqual(["read", "bash", ...registered].sort(), [...fixture.managedTools, "pa_template"].sort());
 });
 
 test("installed native characterization only skips without an explicit candidate output", () => {

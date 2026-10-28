@@ -86,7 +86,7 @@ try {
         let cli;
         if (installed) cli = execFileSync(installed.binary, argv, { env: { ...env, PA_PLATFORM_HOME: selection.root, PA_PLATFORM_TEAMS: join(selection.root, "teams"), PA_TEAM: fixtureHost.team, PA_MODE: fixtureHost.mode }, input: body ? JSON.stringify(body) : undefined, encoding: "utf8", timeout: 15000, maxBuffer: 65536, stdio: ["pipe", "pipe", "pipe"] });
         else { const output = []; assert.equal(await runCoreCommand(argv, { binaryName: "ppa", templateHost: { ...fixtureHost, input: (async function* () { if (body) yield JSON.stringify(body); })() }, io: { stdout: s => output.push(s), stderr: () => blocked("TEMPLATE_CLI") } }), 0); cli = output.join(""); }
-        const result = await native.execute("disposable-qualification", input, undefined, undefined, undefined); assert.equal(result.isError, false);
+        const result = await native.execute("disposable-qualification", { request: JSON.stringify(input) }, undefined, undefined, undefined); assert.equal(result.isError, false);
         assert.deepEqual(JSON.parse(cli), canonical); assert.deepEqual(JSON.parse(result.content[0].text), canonical); comparisons++;
       }
     }

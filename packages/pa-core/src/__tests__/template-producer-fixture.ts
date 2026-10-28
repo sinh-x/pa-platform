@@ -10,9 +10,9 @@ import { resolveOrdinaryTaskBaseline } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
 import { templateFixture } from "./template-fixture.js";
 
-export const pairTemplate = "PA pair-signoff/v1\nDecision: approve-pair-and-matrix\nTicket: {{ticket}}\nRepository Key: {{repositoryKey}}\nRepository Root: {{repositoryRoot}}\nHandoff Type: {{handoffType}}\nFeature Branch: {{branch}}\nBase SHA: {{baseSha}}\nBranch Action: ACTION\nLinked Branch State: STATE\nReview Revision: {{reviewRevision}}\nRequirements Source: {{requirementsSource}}\nRequirements Preview: {{requirementsPreviewPath}}\nRequirements Raw SHA-256: {{requirementsPreviewSha256}}\nUAT Preview: {{uatPreviewPath}}\nUAT Raw SHA-256: {{uatPreviewSha256}}\nMatrix Source: {{matrixSource}}\nMatrix Authority SHA-256: {{matrixSha256}}{{#featureSha}}\nCurrent Feature SHA: {{featureSha}}{{/featureSha}}";
+export const pairTemplate = "PA pair-signoff/v1\nDecision: approve-pair-and-matrix\nTicket: {{ticket}}\nRepository Key: {{repositoryKey}}\nRepository Root: {{repositoryRoot}}\nHandoff Type: {{handoffType}}\nFeature Branch: {{branch}}\nBase SHA: {{baseSha}}\nBranch Action: {{#featureSha}}select{{/featureSha}}{{^featureSha}}create{{/featureSha}}\nLinked Branch State: {{#featureSha}}materialized{{/featureSha}}{{^featureSha}}planned{{/featureSha}}\nReview Revision: {{reviewRevision}}\nRequirements Source: {{requirementsSource}}\nRequirements Preview: {{requirementsPreviewPath}}\nRequirements Raw SHA-256: {{requirementsPreviewSha256}}\nUAT Preview: {{uatPreviewPath}}\nUAT Raw SHA-256: {{uatPreviewSha256}}\nMatrix Source: {{matrixSource}}\nMatrix Authority SHA-256: {{matrixSha256}}{{#featureSha}}\nCurrent Feature SHA: {{featureSha}}\nAmendment Source Requirements Ref: {{amendmentSource}}\nAmendment Tuple Approval Evidence: {{tupleApprovalEvidence}}\nAmendment Immediate Reread SHA-256: {{immediateRereadSha256}}\nAmendment Final Reread SHA-256: {{finalRereadSha256}}{{/featureSha}}";
 export function handoffTemplate(kind: "fresh" | "amendment"): string {
-  return `# Synthetic handoff fixture\n\n> Handoff Contract: pa-task-handoff/v1\n> Status: Draft\n> Route: builder/orchestrator\n> Ticket: {{ticket}}\n> Repository Key: {{repositoryKey}}\n> Repository Root: {{repositoryRoot}}\n> Handoff Type: {{handoffType}}\n> Feature Branch: {{branch}}\n> ${kind === "fresh" ? "Approved" : "Retained"} Base SHA: {{baseSha}}\n> Branch Action: ${kind === "fresh" ? "create" : "reuse"}\n> Linked Branch State: ${kind === "fresh" ? "planned" : "materialized"}${kind === "amendment" ? "\n> Current Feature SHA: {{featureSha}}" : ""}\n\n## Handoff\nSynthetic scoped fixture, not execution permission.\n`;
+  return `# Synthetic handoff fixture\n\n> Handoff Contract: pa-task-handoff/v1\n> Status: Draft\n> Route: builder/orchestrator\n> Ticket: {{ticket}}\n> Repository Key: {{repositoryKey}}\n> Repository Root: {{repositoryRoot}}\n> Handoff Type: {{handoffType}}\n> Feature Branch: {{branch}}\n> ${kind === "fresh" ? "Approved" : "Retained"} Base SHA: {{baseSha}}\n> Branch Action: ${kind === "fresh" ? "create" : "select"}\n> Linked Branch State: ${kind === "fresh" ? "planned" : "materialized"}${kind === "amendment" ? "\n> Current Feature SHA: {{featureSha}}\n> Amendment Source Requirements Ref: {{amendmentSource}}\n> Amendment Tuple Approval Evidence: {{tupleApprovalEvidence}}\n> Amendment Immediate Reread SHA-256: {{immediateRereadSha256}}\n> Amendment Final Reread SHA-256: {{finalRereadSha256}}" : ""}\n\n## Handoff\nSynthetic scoped fixture, not execution permission.\n`;
 }
 export function producerFixture(kind: "fresh" | "amendment" = "fresh") {
   const f = templateFixture(), originalEnvironment = process.env;
@@ -30,7 +30,7 @@ export function producerFixture(kind: "fresh" | "amendment" = "fresh") {
   const featureSha = git(["rev-parse", "HEAD"]);
   const branch = "feature/FIX-237-templates", ticket = "FIX-237", commentId = "c-20000101000000000", reviewRevision = "r001";
   writeFileSync(join(userConfig, "config.yaml"), `repos:\n  fixture-repo:\n    path: ${repo}\n    prefix: FIX\n    develop_branch: develop\n`);
-  const handoffBindings = { ticket, repositoryKey: "fixture-repo", repositoryRoot: repo, handoffType: kind, branch, baseSha, ...(kind === "amendment" ? { featureSha } : {}) };
+  const handoffBindings = { ticket, repositoryKey: "fixture-repo", repositoryRoot: repo, handoffType: kind, branch, baseSha, ...(kind === "amendment" ? { featureSha, amendmentSource: "requirements:agent-teams/requirements/artifacts/synthetic-previous.md", tupleApprovalEvidence: `${ticket}#c-19990101000000000`, immediateRereadSha256: "d".repeat(64), finalRereadSha256: "e".repeat(64) } : {}) };
   const put = (id: string, source: string) => {
     const e = f.registry.entries.find(e => e.id === id)!; writeFileSync(join(f.root, e.source.path), source); e.source.sha256 = digest(source); e.capabilities.render = true; e.capabilities.validate = true; e.bindings = workflowProducerBindings(id)!;
     return f.save();
@@ -48,12 +48,12 @@ export function producerFixture(kind: "fresh" | "amendment" = "fresh") {
   const preview = (handoff.candidate as string).replace("\n\n## Handoff", `\n${metadata}\n## Handoff`) + `\n${matrixAuthority}## After Matrix\nSynthetic fixture only.\n`;
   const requirementsPreviewPath = `agent-teams/requirements/artifacts/reviews/${ticket}/${reviewRevision}/requirements.md`;
   const uatPreviewPath = `agent-teams/requirements/artifacts/reviews/${ticket}/${reviewRevision}/uat-preview.md`;
-  const uat = `# Synthetic UAT\n\n> Ticket: ${ticket}\n> Revision: ${reviewRevision}\n\n## Scenarios\nNot executed.\n`;
+  const uat = `# Synthetic UAT\n\n> Ticket: ${ticket}\n> Revision: ${reviewRevision}\n> Requirements: ${requirementsSource}\n\n## Scenarios\nNot executed.\n`;
   mkdirSync(dirname(join(ai, requirementsPreviewPath)), { recursive: true });
   writeFileSync(join(ai, requirementsPreviewPath), preview); writeFileSync(join(ai, uatPreviewPath), uat);
   writeFileSync(requirementPath, preview.replace("> Status: Draft", "> Status: Approved — synthetic fixture only"));
   const bindings = { ...handoffBindings, reviewRevision, requirementsSource, requirementsPreviewPath, requirementsPreviewSha256: digest(preview), uatPreviewPath, uatPreviewSha256: digest(uat), matrixSource: requirementsSource, matrixSha256 };
-  selection = put("pair-signoff", pairTemplate.replace("ACTION", kind === "fresh" ? "create" : "reuse").replace("STATE", kind === "fresh" ? "planned" : "materialized"));
+  selection = put("pair-signoff", pairTemplate);
   const request = { action: "render", id: "pair-signoff", version: "1", bindings };
   const pair = templateService(request, { selection }); if (!pair.ok) throw new Error(JSON.stringify(pair));
   const record = { id: ticket, project: "fixture-repo", title: "Synthetic fixture only", linkedBranches: [{ repo: "fixture-repo", branch, state: kind === "fresh" ? "planned" : "materialized", ...(kind === "amendment" ? { baseSha, headSha: featureSha } : {}), linkedAt: "2000-01-01T00:00:00.000Z", linkedBy: "synthetic" }],

@@ -11,7 +11,11 @@ import { probePiNativeRegistryAddon, runPiManagedToolSmoke } from "./native-host
 import { runReviewPreflightCommand } from "./review-preflight.js";
 import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./child-reconciliation.js";
 
-if (process.argv[2] === "pi" && process.argv[3] === "reconcile-child") {
+if (process.argv[2] === "template") {
+  // Template --version selects a resource revision, not the global PPA version.
+  // This read-only route must not construct deployment hooks or workflow stores.
+  process.exitCode = await runCoreCommand(process.argv.slice(2), { binaryName: "ppa" });
+} else if (process.argv[2] === "pi" && process.argv[3] === "reconcile-child") {
   process.exitCode = runChildReconciliationCommand(process.argv.slice(4));
 } else if (process.argv.includes("--version") || process.argv.includes("-V")) {
   const pkg = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8")) as { version: string };

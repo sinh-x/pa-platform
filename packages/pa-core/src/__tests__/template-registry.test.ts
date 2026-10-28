@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { linkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +29,18 @@ for (const variant of ["missing", "extra-standard", "symlink", "hardlink", "dige
     assert.throws(() => loadTemplateRegistry(selection), (e: unknown) => e instanceof TemplateError && e.message.length < 2000 && !e.message.includes("SENTINEL"));
   } finally { f.dispose(); }
 });
+test("a previously read source changing while another entry loads invalidates the whole selected snapshot", (t) => {
+  const f = templateFixture(); const original = fs.lstatSync; let changed = false;
+  try {
+    t.mock.method(fs, "lstatSync", ((path: fs.PathLike, options?: unknown) => {
+      if (!changed && String(path).endsWith("/skills/templates/spike-full-requirements.md")) { changed = true; fs.appendFileSync(join(f.root, "skills/templates/requirements.md"), "CHANGED-SECRET-SENTINEL"); }
+      return original(path, options as never);
+    }) as typeof fs.lstatSync); syncBuiltinESMExports();
+    assert.throws(() => loadTemplateRegistry(f.selection), (e: unknown) => e instanceof TemplateError && e.code === "TEMPLATE_IO" && !e.message.includes("SECRET-SENTINEL"));
+    assert.equal(changed, true);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); f.dispose(); }
+});
+
 test("strict shared JSON rejects escaped duplicate, depth, BOM, invalid Unicode and oversized requests", () => {
   for (const input of ['{"x":1,"\\u0078":2}', '{"x":' + '['.repeat(65) + '0' + ']'.repeat(65) + '}', '{"x":"\\ud800"}', ' '.repeat(65537), '\ufeff{}']) assert.throws(() => strictJson(Buffer.from(input)), TemplateError);
   const f = templateFixture(); try { assert.throws(() => parseTemplateRegistry(Buffer.from(JSON.stringify({ ...f.registry, secretUnknownField: "SENTINEL" }))), TemplateError); } finally { f.dispose(); }

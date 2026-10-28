@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DOCUMENT_PROFILES } from "./document-profiles.js";
 import { workflowProducerBindings } from "./binding-contracts.js";
 import { parseReviewEvidenceJson, ReviewContractError } from "../validation/review-contract.js";
 
@@ -11,7 +12,7 @@ export const TEMPLATE_IDS = ["requirements", "uat-review", "builder-objective", 
 export const TEMPLATE_EXTENSION_IDS = ["review-bundle"] as const;
 export type TemplateId = typeof TEMPLATE_IDS[number] | typeof TEMPLATE_EXTENSION_IDS[number];
 export type Row = Record<string, unknown>;
-export type BindingType = "text" | "multiline" | "ticket" | "repository" | "root" | "path" | "branch" | "sha" | "digest" | "revision" | "handoff" | "matrix-source" | "json";
+export type BindingType = "text" | "multiline" | "ticket" | "repository" | "root" | "path" | "branch" | "sha" | "digest" | "revision" | "handoff" | "matrix-source" | "comment-ref" | "json";
 export interface TemplateBinding { type: BindingType; required: boolean }
 export interface TemplateEntry {
   id: TemplateId; revision: string; purpose: string; owner: string;
@@ -82,23 +83,25 @@ export function parseTemplateRegistry(bytes: Uint8Array): TemplateRegistry {
     for (const [key, value] of Object.entries(bindings)) {
       string(key, /^[a-z][A-Za-z0-9]{0,63}$/);
       const b = object(value, ["type", "required"]);
-      if (!["text", "multiline", "ticket", "repository", "root", "path", "branch", "sha", "digest", "revision", "handoff", "matrix-source", "json"].includes(String(b.type))) reject("TEMPLATE_BINDING", "registry", "unknown binding type");
+      if (typeof b.type !== "string" || !["text", "multiline", "ticket", "repository", "root", "path", "branch", "sha", "digest", "revision", "handoff", "matrix-source", "comment-ref", "json"].includes(b.type)) reject("TEMPLATE_BINDING", "registry", "unknown binding type");
       parsedBindings[key] = { type: b.type as BindingType, required: boolean(b.required) };
     }
     const bindingContract = workflowProducerBindings(e.id as string);
     if (bindingContract && (Object.keys(parsedBindings).length !== Object.keys(bindingContract).length || Object.entries(bindingContract).some(([key, value]) => parsedBindings[key]?.type !== value.type || parsedBindings[key]?.required !== value.required))) reject("TEMPLATE_BINDING", "registry", "workflow producer requires its exact runtime-owned typed binding schema");
     const v = object(e.validation, ["kind", "sections"]);
-    if (!["sections", "review-matrix", "review-objective", "review-bundle", "task-handoff", "pair-signoff"].includes(String(v.kind))) reject("TEMPLATE_CAPABILITY", "registry", "unsupported structural validator");
+    if (typeof v.kind !== "string" || !["sections", "review-matrix", "review-objective", "review-bundle", "task-handoff", "pair-signoff"].includes(v.kind)) reject("TEMPLATE_CAPABILITY", "registry", "unsupported structural validator");
     const sections = list(v.sections).map((s) => string(s, /^#{1,6} [^#].*$/));
     if (new Set(sections).size !== sections.length || (v.kind === "sections" && !sections.length) || (v.kind !== "sections" && sections.length)) reject("TEMPLATE_FIELD", "registry", "unique section contracts required for Markdown only");
     const requiredKind = e.id === "handoff-fresh" || e.id === "handoff-amendment" ? "task-handoff" : ["review-matrix", "review-objective", "review-bundle", "pair-signoff"].includes(e.id as string) ? e.id : "sections";
     if (v.kind !== requiredKind) reject("TEMPLATE_CAPABILITY", "registry", "each producer requires its actual runtime-owned structural consumer");
+    if (v.kind === "sections" && sections.length < (DOCUMENT_PROFILES[e.id as TemplateId]?.minimumSections ?? Infinity)) reject("TEMPLATE_STRUCTURE", "registry", "standard document must declare its complete minimum section contract");
     const c = object(e.capabilities, ["render", "validate", "reason", "authorityGate"]);
+    if (c.validate === true && c.render !== true) reject("TEMPLATE_CAPABILITY", "registry", "standalone validation cannot bypass an explicitly disabled renderer");
     const contexts = list(e.contexts, 1).map((value): TemplateEntry["contexts"][number] => { const c = object(value, ["runtime", "team", "mode"]); if (c.runtime !== "pi") reject("TEMPLATE_CONTEXT", "registry", "only Pi/PPA is supported"); return { runtime: "pi", team: string(c.team, /^(?:\*|[a-z0-9-]+)$/), mode: string(c.mode, /^(?:\*|[a-z0-9-]+)$/) }; });
-    return { id: e.id as TemplateId, revision: string(e.revision, /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/), purpose: string(e.purpose), owner: string(e.owner), contexts,
+    return { id: e.id as TemplateId, revision: string(e.revision, /^(?:v?(?:0|[1-9][0-9]*)(?:\.[0-9]+){0,2}|r[0-9]{3,})$/), purpose: string(e.purpose), owner: string(e.owner), contexts,
       source: { path, sha256: string(source.sha256, /^[0-9a-f]{64}$/), selector }, bindings: parsedBindings,
       validation: { kind: v.kind as TemplateEntry["validation"]["kind"], sections }, capabilities: { render: boolean(c.render), validate: boolean(c.validate), reason: string(c.reason), authorityGate: string(c.authorityGate) } };
   });
   if (new Set(entries.map((e) => e.id)).size !== entries.length || TEMPLATE_IDS.some((id) => !entries.some((e) => e.id === id))) reject("TEMPLATE_INVENTORY", "registry", "every initial standard must have exactly one disposition");
-  return { schemaVersion: TEMPLATE_CONTRACT, runtimeContract: TEMPLATE_RUNTIME, configRevision: string(r.configRevision, /^[0-9a-f]{40}$/), entries: entries.sort((a, b) => a.id < b.id ? -1 : 1) };
+  return { schemaVersion: TEMPLATE_CONTRACT, runtimeContract: TEMPLATE_RUNTIME, configRevision: string(r.configRevision, /^(?:selected|[0-9a-f]{40})$/), entries: entries.sort((a, b) => a.id < b.id ? -1 : 1) };
 }

@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { getAiUsageDir } from "../paths.js";
 import { parseReviewMatrixArtifact, parseReviewMatrixPlan, readReviewEvidenceFile } from "../validation/review-contract.js";
-import { assertProducerTuple, parsePairSignoff, parseTaskHandoff, producerHeader, producerPreamble, producerText, type TaskHandoff } from "./producer-contract.js";
+import { amendmentHandoffFields, assertProducerTuple, parsePairSignoff, parseTaskHandoff, producerHeader, producerPreamble, producerSourceAgrees, producerText, type TaskHandoff } from "./producer-contract.js";
 import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction, type RepositoryTicketSlotHandoff, type RepositoryTicketTransaction } from "../deploy/ticket-concurrency.js";
 import { observeReadonlyRepositoryAuthority } from "../deploy/repository-admission.js";
 import { LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects } from "../deploy/local-git-effects.js";
@@ -106,30 +106,35 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
     try {
       const parsed = parseTaskHandoff(markdown);
       assertProducerTuple(parsed, { ticket: options.ticketId, repositoryKey: options.canonicalRepoKey, repositoryRoot: root, branch: linked.branch, baseSha,
-        handoffType: handoff as TaskHandoff["handoffType"], branchAction: handoff === "fresh" ? "create" : "reuse", linkedBranchState: handoff === "fresh" ? "planned" : "materialized",
-        ...(handoff === "amendment" ? { featureSha: linked.headSha } : {}) });
+        handoffType: handoff as TaskHandoff["handoffType"], branchAction: handoff === "fresh" ? "create" : "select", linkedBranchState: handoff === "fresh" ? "planned" : "materialized",
+        ...(handoff === "amendment" ? { ...amendmentHandoffFields(header), featureSha: linked.headSha } : {}) });
     } catch { fail("CONTRACT_INVALID"); }
   }
   if (!approved) {
     if (comments[0]!.content.startsWith("PA pair-signoff/v1")) {
       try {
+        const currentSource = readUniqueProducerEvidence(join(getAiUsageDir(), path));
+        if (!Buffer.from(currentSource).equals(Buffer.from(bytes))) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
         const parsed = parsePairSignoff(comments[0]!.content);
         assertProducerTuple(parsed, { ticket: options.ticketId, repositoryKey: options.canonicalRepoKey, repositoryRoot: root, branch: linked.branch, baseSha,
-          handoffType: handoff as TaskHandoff["handoffType"], branchAction: handoff === "fresh" ? "create" : "reuse", linkedBranchState: handoff === "fresh" ? "planned" : "materialized",
-          ...(handoff === "amendment" ? { featureSha: linked.headSha } : {}) });
+          handoffType: handoff as TaskHandoff["handoffType"], branchAction: handoff === "fresh" ? "create" : "select", linkedBranchState: handoff === "fresh" ? "planned" : "materialized",
+          ...(handoff === "amendment" ? { ...amendmentHandoffFields(header), featureSha: linked.headSha } : {}) });
         if (parsed.requirementsSource !== ref || parsed.reviewRevision !== header("Review Revision") || parsed.matrixSha256 !== header("Matrix Authority SHA-256")) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
-        const preview = readReviewEvidenceFile(join(getAiUsageDir(), parsed.requirementsPreviewPath), 1_048_576, "ordinary requirements preview");
-        const uat = readReviewEvidenceFile(join(getAiUsageDir(), parsed.uatPreviewPath), 1_048_576, "ordinary UAT preview");
+        const preview = readUniqueProducerEvidence(join(getAiUsageDir(), parsed.requirementsPreviewPath));
+        const uat = readUniqueProducerEvidence(join(getAiUsageDir(), parsed.uatPreviewPath));
         const hash = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex");
-        if (hash(preview) !== parsed.requirementsPreviewSha256 || hash(uat) !== parsed.uatPreviewSha256) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        if (hash(preview) !== parsed.requirementsPreviewSha256 || hash(uat) !== parsed.uatPreviewSha256 || !producerSourceAgrees(bytes, preview)) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
         const reviewed = producerPreamble(producerText(preview));
         if (parseReviewMatrixPlan(preview, ref).digest !== parsed.matrixSha256 || producerHeader(reviewed, "Matrix Authority SHA-256") !== parsed.matrixSha256) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
         for (const label of ["Ticket", "Repository Key", "Repository Root", "Handoff Type", "Feature Branch", baseLabel, "Review Revision"]) {
           if (producerHeader(reviewed, label) !== header(label)) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
         }
-        if (handoff === "amendment" && producerHeader(reviewed, "Current Feature SHA") !== parsed.featureSha) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        if (handoff === "amendment") {
+          const reviewedFields = amendmentHandoffFields((label) => producerHeader(reviewed, label));
+          for (const key of ["featureSha", "amendmentSource", "tupleApprovalEvidence", "immediateRereadSha256", "finalRereadSha256"] as const) if (reviewedFields[key] !== parsed[key]) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        }
         const uatHeader = producerPreamble(producerText(uat));
-        if (producerHeader(uatHeader, "Ticket") !== parsed.ticket || producerHeader(uatHeader, "Revision") !== parsed.reviewRevision) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        if (producerHeader(uatHeader, "Ticket") !== parsed.ticket || producerHeader(uatHeader, "Revision") !== parsed.reviewRevision || producerHeader(uatHeader, "Requirements") !== ref) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
         if (new RegExp(`^>[ \\t]+(?:\\*\\*)?${handoff === "fresh" ? "Retained" : "Approved"} Base SHA:`, "m").test(reviewed)) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
         const matrix = parseReviewMatrixArtifact(bytes, ref);
         if (matrix.digest !== parsed.matrixSha256 || matrix.header.matrixApprovalEvidence !== ids[0]
@@ -162,6 +167,14 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
   return Object.freeze({ schemaVersion: "ordinary-task-baseline/v1", repoKey: options.canonicalRepoKey, repoRoot: root, ticket: options.ticketId,
     branch: linked.branch, baseSha, requirements: Object.freeze({ ref, sha256: digest(bytes) }),
     approval: Object.freeze({ commentId: ids[0]!, sha256: digest(JSON.stringify({ id: comments[0]!.id, author: comments[0]!.author, content: comments[0]!.content })) }) });
+}
+/** New versioned/NX producers require unaliased evidence, without changing
+ * historical families' original byte grammar or manufacturing an attestation. */
+function readUniqueProducerEvidence(path: string): Uint8Array {
+  if (lstatSync(path).nlink !== 1) throw new Error("Unsafe producer evidence");
+  const bytes = readReviewEvidenceFile(path, 1_048_576, "ordinary producer evidence");
+  if (lstatSync(path).nlink !== 1) throw new Error("Producer evidence identity changed");
+  return bytes;
 }
 /** Finite retained producer adapters. Extraction converges here before any Git
  * observation; no adapter gets its own weaker tuple/hash or safe-reader path. */
@@ -200,9 +213,10 @@ function validateOrdinaryPairApproval(content: string, context: {
     const uat = take(/Companion UAT/gi, /Companion UAT (r\d{3,}) source ([A-Za-z0-9_./-]+) raw SHA-256 ([0-9a-f]{64})\.(?=\s|$)/);
     if (uat[1] !== revision || uat[2] !== `agent-teams/requirements/artifacts/reviews/${ticket}/${revision}/uat-preview.md`) invalid();
     try {
-      const bytes = readReviewEvidenceFile(join(getAiUsageDir(), uat[2]!), 1_048_576, "ordinary reviewed UAT preview");
+      const bytes = readUniqueProducerEvidence(join(getAiUsageDir(), uat[2]!));
       if (createHash("sha256").update(bytes).digest("hex") !== uat[3]) invalid();
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const preamble = producerPreamble(producerText(bytes));
+      if (producerHeader(preamble, "Ticket") !== ticket || producerHeader(preamble, "Review Revision") !== revision || producerHeader(preamble, "Final Requirements") !== ref) invalid();
     } catch { invalid(); }
   } else if (family.kind === "ttl012") {
     const match = take(/Requirements source/gi, /Requirements source (requirements:[A-Za-z0-9_./-]+) reviewed as ([A-Za-z0-9_./-]+) raw SHA-256 ([0-9a-f]{64})(?=[;.,\s]|$)/);
