@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { isCanonicalTicketId } from "../tickets/validate.js";
 
-// Pure contract ported from PAP-271 94b705b for PAP-270 template validation.
-// No selector, store, authority capture, workflow CLI or effect owner is loaded.
+// Shared pure contract for template validation and workflow consumers.
+// No selector, store, authority capture or effect owner is loaded here.
 
 export const WORKFLOW_CONTRACT = "pa-workflow-definition/v1" as const;
 export const MAX_WORKFLOW_BYTES = 1_048_576;
