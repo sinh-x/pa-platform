@@ -24,12 +24,22 @@ test("actual built PPA entry handles template revisions and all sixteen producer
   const f = completeTemplateFixture(), stage = mkdtempSync(join(tmpdir(), "pap270-public-ppa-"));
   try {
     // Disposable config commit binds its registry externally, avoiding self-hash.
-    f.registry.configRevision = "selected"; const unpinned = f.save(); mkdirSync(join(f.root, "teams"));
+    f.registry.configRevision = "selected"; const unpinned = f.save();
+    const ids = f.registry.entries.map(e => e.id);
+    const consumers = [{ team: "requirements", mode: "analyze", templates: ids }, { team: "requirements", mode: "review-auto", templates: ids }, { team: "builder", mode: "orchestrator", templates: ids }];
+    for (const row of consumers) { const path = join(f.root, "teams", row.team, "modes", `${row.mode}.md`); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, `# Synthetic selected template adoption\nUse ppa template list --format json and pa_template with a raw request document. All outputs remain unsigned; no human authority or native facts.\nSelected IDs: ${ids.join(", ")}.\n`); }
+    writeFileSync(join(f.root, "teams/requirements.yaml"), "name: requirements\ndescription: Synthetic fixture only\nobjective: Compile selected instructions only\nagents:\n  - name: analyst\n    role: Synthetic analyst\n    instruction: teams/requirements/modes/analyze.md\n  - name: reviewer\n    role: Synthetic reviewer\n    instruction: teams/requirements/modes/review-auto.md\ndeploy_modes:\n  - id: analyze\n    label: Synthetic analyze\n    agents: [analyst]\n  - id: review-auto\n    label: Synthetic review\n    agents: [reviewer]\n");
+    writeFileSync(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Synthetic fixture only\nobjective: Compile selected instructions only\nagents:\n  - name: orchestrator\n    role: Synthetic direct phase owner\n    instruction: teams/builder/modes/orchestrator.md\ndeploy_modes:\n  - id: orchestrator\n    label: Synthetic direct owner\n    agents: [orchestrator]\n");
+    writeFileSync(join(f.root, ".gitignore"), "/repository/\n/ai/\n/user-config/\n");
+    writeFileSync(join(f.root, "contracts/templates-adoption-v1.json"), JSON.stringify({ schemaVersion: "pa-template-adoption/v1", registrySha256: unpinned.registrySha256, consumers }));
+    const provisional = { ...unpinned, configRevision: f.selection.configRevision };
+    writeFileSync(join(f.root, "contracts/templates-fixtures-v1.json"), JSON.stringify({ schemaVersion: "pa-template-fixtures/v1", fixtures: f.registry.entries.map(e => { const r = templateService({ action: "render", id: e.id, version: e.revision, bindings: f.allBindings[e.id] }, { selection: provisional }); assert.equal(r.ok, true); return { id: e.id, version: e.revision, bindings: f.allBindings[e.id], candidateSha256: createHash("sha256").update(r.candidate as string).digest("hex"), context: { team: "requirements", mode: "analyze" } }; }) }));
     const env = { PATH: process.env.PATH, HOME: join(stage, "home"), LANG: "C.UTF-8", TZ: "UTC", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
-    const git = (...args: string[]) => execFileSync("git", ["-C", f.root, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", f.root, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     git("init", "-q", "-b", "develop"); git("config", "user.name", "Synthetic template fixture"); git("config", "user.email", "fixture@example.invalid"); git("config", "commit.gpgsign", "false"); git("config", "core.hooksPath", "/dev/null");
-    git("add", "contracts", "skills"); git("commit", "-qm", "synthetic config resources");
+    git("add", ".gitignore", "contracts", "skills", "teams"); git("commit", "-qm", "synthetic config resources");
     const selection = { ...unpinned, configRevision: git("rev-parse", "HEAD") };
+    git("update-ref", "refs/remotes/origin/develop", selection.configRevision); // synthetic cache only, never a real merge
     for (const pkg of ["pa-core", "pi-pa"]) {
       const target = join(stage, "packages", pkg); mkdirSync(target, { recursive: true });
       cpSync(join(workspace, "packages", pkg, "dist"), join(target, "dist"), { recursive: true });
@@ -71,5 +81,15 @@ test("actual built PPA entry handles template revisions and all sixteen producer
     assert.ok(!result.stdout.includes("SECRET-SENTINEL"));
     assert.deepEqual({ config: snapshot(f.root), candidate: snapshot(stage) }, before, "success/rejection created no persistent artifacts, approvals or workflow state");
     assert.equal(readFileSync(join(stage, ".pa-template-registry.sha"), "utf8"), selection.registrySha256 + "\n");
+    // Exercise the actual qualification driver in a disposable candidate layout.
+    const driver = join(stage, "scripts/dev/verify_template_contracts.mjs"); mkdirSync(dirname(driver), { recursive: true }); cpSync(join(workspace, "scripts/dev/verify_template_contracts.mjs"), driver);
+    const marker = join(stage, "forbidden-fsmonitor-effect"), monitor = join(stage, "unsafe-monitor.sh"); writeFileSync(monitor, `#!/bin/sh\nprintf forbidden > '${marker}'\n`, { mode: 0o700 }); git("config", "core.fsmonitor", monitor);
+    const qualify = (args: string[]) => spawnSync(process.execPath, [driver, ...args], { env: { ...env, PA_PLATFORM_HOME: f.root, PA_PLATFORM_TEAMS: join(f.root, "teams"), PA_PLATFORM_CONFIG: join(stage, "empty-config") }, encoding: "utf8", timeout: 90000, maxBuffer: 1_048_576 });
+    const paired = qualify(["--mode", "paired-config"]); assert.equal(paired.status, 0, paired.stdout + paired.stderr); const qualified = JSON.parse(paired.stdout);
+    assert.equal(qualified.status, "passed"); assert.equal(qualified.consumers, 3); assert.equal(qualified.comparisons, 16 * 4 * 20); assert.equal(qualified.negativeCases, 16 * 5); assert.ok(qualified.runtime.moduleSha256["packages/pi-pa/dist/cli.js"]); assert.equal(existsSync(marker), false, "qualification never runs config-provided Git hooks/monitors");
+    // An adopted instruction disappearing at a newly pinned clean revision is a
+    // blocked required case, not a skipped consumer or a fallback formatter.
+    writeFileSync(join(f.root, "teams/builder/modes/orchestrator.md"), "# Missing template adoption\nNo source/approval effects.\n"); git("add", "teams"); git("commit", "-qm", "synthetic missing adoption"); git("update-ref", "refs/remotes/origin/develop", git("rev-parse", "HEAD")); writeFileSync(join(stage, ".pa-platform-config.sha"), git("rev-parse", "HEAD") + "\n");
+    const rejected = qualify(["--mode", "paired-config"]); assert.equal(rejected.status, 1); assert.equal(JSON.parse(rejected.stdout).status, "blocked"); assert.equal(existsSync(marker), false);
   } finally { f.dispose(); rmSync(stage, { recursive: true, force: true }); }
 });

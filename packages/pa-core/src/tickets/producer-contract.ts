@@ -44,7 +44,7 @@ export function producerSourceAgrees(finalRaw: Uint8Array, previewRaw: Uint8Arra
 /** Shared by existing baseline admission and the producer. No body/fenced example
  * can supply a canonical preamble field; malformed aliases count as duplicates. */
 export function producerHeader(preamble: string, label: string): string {
-  if (!/^[A-Za-z0-9 -]+$/.test(label)) return invalid();
+  if (!/^[A-Za-z0-9 -]+$/.test(label) || preamble.split(/\r?\n/).some(line => /^ {0,3}(?:`{3,}|~{3,})/.test(line))) return invalid();
   const matches = preamble.split(/\r?\n/).filter(line => new RegExp(`^>[ \\t]+(?:\\*\\*)?${label}:`).test(line));
   const prefix = `> ${label}: `;
   if (matches.length !== 1 || !matches[0]!.startsWith(prefix) || !matches[0]!.slice(prefix.length)) return invalid();

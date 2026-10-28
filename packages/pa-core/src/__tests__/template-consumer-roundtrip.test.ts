@@ -75,6 +75,14 @@ for (const kind of ["fresh", "amendment"] as const) {
   });
 }
 
+test("versioned handoff metadata cannot be supplied by fenced examples", () => {
+  const f = producerFixture(); try {
+    const source = readFileSync(join(f.root, "skills/templates/handoff-fresh.md"), "utf8").replace("> Handoff Contract:", "```markdown\n> Handoff Contract:").replace("\n\n## Handoff", "\n```\n\n## Handoff");
+    const result = templateService({ action: "render", id: "handoff-fresh", version: "1", bindings: f.handoffBindings }, { selection: f.put("handoff-fresh", source) });
+    assert.equal(result.code, "TEMPLATE_PRODUCER");
+  } finally { f.dispose(); }
+});
+
 test("binding key order is not an ambient input and inactive optional branches cannot hide unknown fields", () => {
   const f = completeTemplateFixture(); try {
     const reverse = (v: unknown): unknown => Array.isArray(v) ? v.map(reverse) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).reverse().map(([key, value]) => [key, reverse(value)])) : v;

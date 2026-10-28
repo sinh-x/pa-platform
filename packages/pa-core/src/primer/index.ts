@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
@@ -702,6 +703,7 @@ function defaultToolReference(runtime: RuntimeName): string {
       "Use `ppa` for PA platform deployment and workflow commands; it invokes the shared pa-core command set with the canonical `pi` runtime.",
       "Use `pa-core serve` for Agent API server lifecycle; `ppa` is a deployment adapter, not the server owner.",
       "Pi deployments use the Pi CLI and retain OpenCode as the default API runtime when no runtime is selected.",
+      TEMPLATE_TOOL_REFERENCE,
     ].join("\n");
   }
 

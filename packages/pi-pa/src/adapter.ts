@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { StringDecoder } from "node:string_decoder";
 import { PiStartupPresentation, validPiStartupContext, type PiStartupContext } from "./startup-diagnostics.js";
 import { spawn as spawnPty, type IPty } from "node-pty";
-import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { TEMPLATE_TOOL_REFERENCE, appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { axiRuntimeEnvironment } from "./axi-policy.js";
@@ -207,7 +207,7 @@ export class PiAdapter implements RuntimeAdapter {
     return readFileSync(path, "utf8").split("\n").filter(Boolean).flatMap((line) => projector.observeLine(line));
   }
   installHooks(_targetDir: string, _config: HookConfig): void {}
-  describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.84.4 or later must be installed as `pi`." }; }
+  describeTools(): ToolReference { return { runtime: "pi", markdown: `Runtime: Pi via \`ppa\`. Use \`ppa\` for PA deployments; Pi 0.84.4 or later must be installed as \`pi\`.\n${TEMPLATE_TOOL_REFERENCE}` }; }
 
   async preflight(): Promise<void> {
     if (!this.preflightPromise) {

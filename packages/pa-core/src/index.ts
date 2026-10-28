@@ -1,3 +1,4 @@
+export { TEMPLATE_TOOL_REFERENCE } from "./templates/reference.js";
 export { parseTaskHandoff, parsePairSignoff, ProducerContractError, type TaskHandoff, type PairSignoff } from "./tickets/producer-contract.js";
 export { workflowProducerBindings } from "./templates/binding-contracts.js";
 export { templateService, templateFailure, TEMPLATE_LIMITATIONS, MAX_TEMPLATE_RESULT_BYTES, type TemplateHost, type TemplateConsumerPort, type TemplateResult } from "./templates/service.js";
