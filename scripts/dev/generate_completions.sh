@@ -74,4 +74,12 @@ printf '%s\n' \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l apply -d 'Native foreground confirmation required; no shell apply'" \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l json -d 'Versioned redacted result'" \
   >> "$PPA"
+printf '%s\n' \
+  '' \
+  '# Pi/PPA-only canonical template drafts; no output writer' \
+  "complete -c ppa -n __fish_use_subcommand -a template -d 'Selected canonical template drafts'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from template; and not __fish_seen_subcommand_from list show render validate' -a 'list show render validate'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from template' -l version -r -d 'Exact selected template revision'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from template' -l format -r -a 'json markdown'" \
+  >> "$PPA"
 echo "Generated completions/ppa.fish from completions/pa-core.fish"

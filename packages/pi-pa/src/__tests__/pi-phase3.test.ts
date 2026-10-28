@@ -79,13 +79,13 @@ test("trusted entrypoint registers only selected editors while preserving attrib
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 6);
+  assert.equal(PI_PA_MODULES.length, 7);
   const expectedEditorCommands = BUNDLED_EDITOR_FACTORIES.flatMap((factory) => {
     if (factory.startsWith("pi-vimmode@")) return ["vimmode"];
     if (factory.startsWith("proper-base@")) return ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"];
     return [];
   });
-  assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"]);
+  assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"]);
   assert.deepEqual(commands, [...expectedEditorCommands, "pa-context", "pa-git-context"]);
   assert.deepEqual(shortcuts, ["alt+i", "alt+g"]);
 });

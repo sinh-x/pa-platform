@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import type { CoreExecutionHooks } from "../deploy/index.js";
+import { runTemplateCommand, type TemplateCliHost } from "./commands/template.js";
 import { runBranchCommand } from "./commands/branch.js";
 import { runArtifactCommand } from "./commands/artifact.js";
 import { runCodeCtxCommand } from "./commands/codectx.js";
@@ -40,6 +41,8 @@ export interface RunCoreCommandOptions {
   sendProcessSignal?: (pid: number, signal: NodeJS.Signals) => void;
   beforePiSupervisorLivenessCheck?: (evidence: { supervisorPid: number }) => void | Promise<void>;
   binaryName?: string;
+  /** Trusted embedding/test seam; never populated from argv. */
+  templateHost?: TemplateCliHost;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -54,6 +57,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       printHelp(io, opts.binaryName ?? defaultBinaryName());
       return 0;
     }
+    if (command === "template" && opts.binaryName === "ppa") return runTemplateCommand(rest, io, opts.templateHost);
     if (command === "artifact") return runArtifactCommand(rest, io);
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "repository") return runRepositoryCommand(rest, io, opts.hooks?.readOnlyHelperContext);
@@ -97,6 +101,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("");
   io.stdout("Commands:");
+  if (binaryName === "ppa") io.stdout("  template            Selected canonical templates (unsigned, read-only)");
   io.stdout("  artifact            Render companions; owned review requires selected managed runtime");
   io.stdout("  status              Show deployment status and activity");
   io.stdout("  deploy              Deploy a team configuration");

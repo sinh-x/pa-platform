@@ -585,7 +585,7 @@ function executionToolName(call: PiToolCall): string {
   return name.startsWith("functions.") ? name.slice("functions.".length) : name;
 }
 function readOnlyExecutionCall(name: string, input: Record<string, unknown>): boolean {
-  if (["read", "grep", "glob", "find", "ls", "pa_registry", "pa_status", "pa_bulletin", "todo", "question"].includes(name)) return true;
+  if (["read", "grep", "glob", "find", "ls", "pa_registry", "pa_status", "pa_bulletin", "pa_template", "todo", "question"].includes(name)) return true;
   return name === "pa_ticket" && ["read", "show", "list"].includes(String(input.action));
 }
 function operationKind(name: string): ExecutionOperationKind {
