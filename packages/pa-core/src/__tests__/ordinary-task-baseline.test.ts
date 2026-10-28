@@ -162,20 +162,25 @@ for (const style of ["standard-pair", "owner-directed-pair", "bad-hash", "change
   }));
 }
 
-type PairStyle = "waw" | "ttl012" | "ttl014";
+type PairStyle = "waw" | "ttl012" | "ttl014" | "nx066";
 /** Sanitized retained producer grammar; no live artifact is read or written. */
 function retainedPair(f: ReturnType<typeof setup>, style: PairStyle) {
   const revision = "r001", source = "requirements:agent-teams/requirements/artifacts/task.md";
-  const current = f.markdown.replace("> Status:", `> Review Revision: ${revision}\n> Status:`);
+  const current = f.markdown.replace("> Status:", `> Review Revision: ${revision}\n> Matrix Authority SHA-256: ${"c".repeat(64)}\n> Status:`);
   const previewPath = `agent-teams/requirements/artifacts/reviews/PAP-1/${revision}/requirements.md`;
   const preview = current.replace("Approved — plan only", "Draft — UNAPPROVED");
   const previewAbsolute = join(f.ai, previewPath);
   mkdirSync(join(f.ai, "agent-teams/requirements/artifacts/reviews/PAP-1", revision), { recursive: true });
   writeFileSync(previewAbsolute, preview); writeFileSync(f.sourcePath, current);
   const hash = createHash("sha256").update(preview).digest("hex");
+  const uat = `# Synthetic UAT preview\n\n> Ticket: PAP-1\n> Revision: ${revision}\n\n## Scenarios\nDisposable fixture only.\n`;
+  const uatPath = `agent-teams/requirements/artifacts/reviews/PAP-1/${revision}/uat-preview.md`;
+  writeFileSync(join(f.ai, uatPath), uat);
   const tuple = `Handoff Type: fresh. Repository Key: fixture. Repository Root: ${f.repo}. Feature Branch: ${f.branch}. Approved Base SHA: ${f.base}.`;
   const content = style === "waw"
     ? `Explicit PA sign-off from interactive deployment d-123abc: Approve ${revision} pair and exact matrix. I approve the complete PAP-1 requirements revision ${revision} and companion UAT, local scope. Reviewed requirements: ${previewPath}, raw SHA-256 ${hash}. Reviewed UAT: separate. ${tuple} Matrix Source: ${source}. I approve that exact 10-command matrix and requirements/UAT pair for promotion after final Shape-Conformance 13/13. This is not implementation authorization, AWS access/apply/rollout/backfill/Billing authorization, paired-runtime readiness, or successful UAT.`
+    : style === "nx066"
+      ? `APPROVED in standalone PA decision during d-123abc. Approve paired plan and matrix. Requirements review ${revision} source ${previewPath} raw SHA-256 ${hash}. Companion UAT ${revision} source ${uatPath} raw SHA-256 ${createHash("sha256").update(uat).digest("hex")}. Approved intent native configuration only and unsupported behavior stops before product edits. Route builder/orchestrator. Repository Key fixture Repository Root ${f.repo} Ticket PAP-1 Handoff Type fresh Branch Action create Linked Branch State planned exact link fixture|${f.branch} [planned] Approved Base SHA ${f.base} Feature Branch ${f.branch}. Matrix Source ${source} Matrix Authority SHA-256 ${"c".repeat(64)}. Approve all six exact commands, prerequisites, environment and pass criteria. Authorize administrative approval metadata and final links only, final approval-bound 13 checks and paired promotion to requirements and UAT dated artifacts, followed by supported preparation assessment. No product-source implementation or builder spawn authorized. Actual matrix execution, native runtime UAT and paired-runtime readiness are not claimed.`
     : style === "ttl012"
       ? `APPROVED in standalone PA sign-off, deployment d-123abc: complete requirements/UAT pair ${revision}. Requirements source ${source} reviewed as reviews/PAP-1/${revision}/requirements.md raw SHA-256 ${hash}. Companion UAT source separate. Intent: local scope. Route builder/orchestrator. Handoff fresh, canonical fixture root ${f.repo}, approved base ${f.base}, exact branch ${f.branch}, planned/create. Matrix Source: ${source}. Approve this exact four-command matrix and pair, permitting only administrative approval/status/link metadata changes for final promotion. Device tests, candidate CI, human UAT and authenticated runtime/preparation readiness remain separate gates no implementation spawn authorized.`
       : `Final standalone PA sign-off in d-123abc. Sinh selected Approve exact ${revision} pair and matrix after complete whole-document Markdown requirements and sixteen-scenario UAT review was offered. Approved intent: local scope. Requirements Source and Matrix Source ${source}. Reviewed revision ${revision} requirements raw SHA-256 ${hash}. Companion UAT Source separate. Repository Key fixture Repository Root ${f.repo} Ticket PAP-1 Route builder/orchestrator Handoff Type fresh Feature Branch ${f.branch} Approved Base SHA ${f.base} Linked Branch State planned Branch Action create exact ticket value fixture|${f.branch} [planned]. No source implementation, live service/network/certificate/phone effect, matrix execution, review/builder spawn, merge or checkout return is authorized. Plan approval is not executed UAT or application acceptance.`;
@@ -184,7 +189,7 @@ function retainedPair(f: ReturnType<typeof setup>, style: PairStyle) {
   return { ticket, current, preview, previewAbsolute, previewPath, hash, source };
 }
 
-for (const style of ["waw", "ttl012", "ttl014"] as const) {
+for (const style of ["waw", "ttl012", "ttl014", "nx066"] as const) {
   test(`PAP-269 retained ${style} producer resolves exact source and decision without replacement`, () => fixture((f) => {
     const p = retainedPair(f, style), before = f.inventory();
     const baseline = f.resolve();
@@ -225,7 +230,7 @@ for (const variant of ["repo", "root", "handoff", "branch", "base", "duplicate-h
 }
 
 const invalidPairs = ["author", "ticket", "source", "revision", "hash", "repo", "root", "handoff", "branch", "base", "duplicate-comment", "duplicate-source", "duplicate-matrix", "duplicate-tuple", "malformed-tuple", "duplicate-preview", "wrong-preview-revision", "wrong-preview-tuple", "preview-alias", "directory-alias", "oversized", "malformed-utf8", "unknown", "negated", "rejected", "revoked", "conditional", "partial", "ambiguous", "withdrawal-id", "withdrawal-source", "uncertain-withdrawal", "conflicting-header", "opposite-preview-base", "malformed-tab-clause", "negative-permission", "discussion-only", "bad-header-hash", "malformed-header-hash", "malformed-source-utf8", "oversized-source"] as const;
-for (const style of ["waw", "ttl012", "ttl014"] as const) for (const variant of invalidPairs) {
+for (const style of ["waw", "ttl012", "ttl014", "nx066"] as const) for (const variant of invalidPairs) {
   test(`PAP-269 ${style} rejects ${variant} before Git and preserves evidence`, () => fixture((f) => {
     const p = retainedPair(f, style), comment = p.ticket.comments[0]!;
     if (variant === "author") comment.author = "requirements/analyst";

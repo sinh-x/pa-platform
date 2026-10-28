@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { workflowProducerBindings } from "./binding-contracts.js";
 import { parseReviewEvidenceJson, ReviewContractError } from "../validation/review-contract.js";
 
 export const TEMPLATE_CONTRACT = "pa-template-registry/v1" as const;
@@ -10,14 +11,14 @@ export const TEMPLATE_IDS = ["requirements", "uat-review", "builder-objective", 
 export const TEMPLATE_EXTENSION_IDS = ["review-bundle"] as const;
 export type TemplateId = typeof TEMPLATE_IDS[number] | typeof TEMPLATE_EXTENSION_IDS[number];
 export type Row = Record<string, unknown>;
-export type BindingType = "text" | "multiline" | "ticket" | "repository" | "root" | "path" | "branch" | "sha" | "digest" | "revision" | "handoff" | "json";
+export type BindingType = "text" | "multiline" | "ticket" | "repository" | "root" | "path" | "branch" | "sha" | "digest" | "revision" | "handoff" | "matrix-source" | "json";
 export interface TemplateBinding { type: BindingType; required: boolean }
 export interface TemplateEntry {
   id: TemplateId; revision: string; purpose: string; owner: string;
   contexts: Array<{ runtime: "pi"; team: string; mode: string }>;
   source: { path: string; sha256: string; selector: null | { start: string; end: string } };
   bindings: Record<string, TemplateBinding>;
-  validation: { kind: "sections" | "review-matrix" | "review-objective" | "review-bundle"; sections: string[] };
+  validation: { kind: "sections" | "review-matrix" | "review-objective" | "review-bundle" | "task-handoff" | "pair-signoff"; sections: string[] };
   capabilities: { render: boolean; validate: boolean; reason: string; authorityGate: string };
 }
 export interface TemplateRegistry { schemaVersion: typeof TEMPLATE_CONTRACT; configRevision: string; runtimeContract: typeof TEMPLATE_RUNTIME; entries: TemplateEntry[] }
@@ -81,14 +82,17 @@ export function parseTemplateRegistry(bytes: Uint8Array): TemplateRegistry {
     for (const [key, value] of Object.entries(bindings)) {
       string(key, /^[a-z][A-Za-z0-9]{0,63}$/);
       const b = object(value, ["type", "required"]);
-      if (!["text", "multiline", "ticket", "repository", "root", "path", "branch", "sha", "digest", "revision", "handoff", "json"].includes(String(b.type))) reject("TEMPLATE_BINDING", "registry", "unknown binding type");
+      if (!["text", "multiline", "ticket", "repository", "root", "path", "branch", "sha", "digest", "revision", "handoff", "matrix-source", "json"].includes(String(b.type))) reject("TEMPLATE_BINDING", "registry", "unknown binding type");
       parsedBindings[key] = { type: b.type as BindingType, required: boolean(b.required) };
     }
+    const bindingContract = workflowProducerBindings(e.id as string);
+    if (bindingContract && (Object.keys(parsedBindings).length !== Object.keys(bindingContract).length || Object.entries(bindingContract).some(([key, value]) => parsedBindings[key]?.type !== value.type || parsedBindings[key]?.required !== value.required))) reject("TEMPLATE_BINDING", "registry", "workflow producer requires its exact runtime-owned typed binding schema");
     const v = object(e.validation, ["kind", "sections"]);
-    if (!["sections", "review-matrix", "review-objective", "review-bundle"].includes(String(v.kind))) reject("TEMPLATE_CAPABILITY", "registry", "unsupported structural validator");
+    if (!["sections", "review-matrix", "review-objective", "review-bundle", "task-handoff", "pair-signoff"].includes(String(v.kind))) reject("TEMPLATE_CAPABILITY", "registry", "unsupported structural validator");
     const sections = list(v.sections).map((s) => string(s, /^#{1,6} [^#].*$/));
     if (new Set(sections).size !== sections.length || (v.kind === "sections" && !sections.length) || (v.kind !== "sections" && sections.length)) reject("TEMPLATE_FIELD", "registry", "unique section contracts required for Markdown only");
-    if ((e.id === "review-matrix" && v.kind !== "review-matrix") || (e.id === "review-objective" && v.kind !== "review-objective") || (e.id === "review-bundle" && v.kind !== "review-bundle")) reject("TEMPLATE_CAPABILITY", "registry", "review producers require their actual runtime consumer");
+    const requiredKind = e.id === "handoff-fresh" || e.id === "handoff-amendment" ? "task-handoff" : ["review-matrix", "review-objective", "review-bundle", "pair-signoff"].includes(e.id as string) ? e.id : "sections";
+    if (v.kind !== requiredKind) reject("TEMPLATE_CAPABILITY", "registry", "each producer requires its actual runtime-owned structural consumer");
     const c = object(e.capabilities, ["render", "validate", "reason", "authorityGate"]);
     const contexts = list(e.contexts, 1).map((value): TemplateEntry["contexts"][number] => { const c = object(value, ["runtime", "team", "mode"]); if (c.runtime !== "pi") reject("TEMPLATE_CONTEXT", "registry", "only Pi/PPA is supported"); return { runtime: "pi", team: string(c.team, /^(?:\*|[a-z0-9-]+)$/), mode: string(c.mode, /^(?:\*|[a-z0-9-]+)$/) }; });
     return { id: e.id as TemplateId, revision: string(e.revision, /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/), purpose: string(e.purpose), owner: string(e.owner), contexts,

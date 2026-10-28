@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
+import { ProducerContractError } from "../tickets/producer-contract.js";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
-import { parseReviewMatrix, parseReviewObjective } from "../validation/review-contract.js";
+import { parseReviewMatrix, parseReviewMatrixSource, parseReviewObjective } from "../validation/review-contract.js";
+import { validateWorkflowProducer } from "./workflow-producers.js";
 import { loadTemplateRegistry, type TemplateSelection } from "./registry.js";
 import { digest, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_REQUEST_BYTES, object, reject, relativePath, strictJson, string, TemplateError, utf8, type Row, type TemplateBinding, type TemplateEntry } from "./schema.js";
 
@@ -14,7 +16,9 @@ export type TemplateResult = { schemaVersion: "pa-template-result/v1"; unsigned:
 export const TEMPLATE_LIMITATIONS = "Structural drafts only: no human decision, authenticated native facts, readiness, custody, publication or executed UAT is certified.";
 export const MAX_TEMPLATE_RESULT_BYTES = 50 * 1024;
 export function templateFailure(error: unknown): TemplateResult {
-  const e = error instanceof TemplateError ? error : new TemplateError("TEMPLATE_REJECTED", "service", "input or selected configuration could not be safely processed");
+  const e = error instanceof TemplateError ? error : error instanceof ProducerContractError
+    ? new TemplateError("TEMPLATE_PRODUCER", "workflow-producer", "complete typed producer contract is missing, conflicting or malformed")
+    : new TemplateError("TEMPLATE_REJECTED", "service", "input or selected configuration could not be safely processed");
   return { schemaVersion: "pa-template-result/v1", unsigned: true, ok: false, operation: "rejected", code: e.code, diagnostic: e.message, limitations: TEMPLATE_LIMITATIONS };
 }
 /** Pure read-only service. No stores, writers, subprocesses, imports or template evaluation. */
@@ -40,9 +44,6 @@ export function templateService(input: Uint8Array | Row, host: TemplateHost = {}
       if (action === "show") result = { ...base, entry, source: source.raw };
       else {
         if (!entry.capabilities.render || (action === "validate" && !entry.capabilities.validate)) reject("TEMPLATE_CAPABILITY", "entry", "requested capability is explicitly gated by the selected registry");
-        // Finite decision/handoff consumers are not interchangeable with generic
-        // section checks. Never let config self-assert authority compatibility.
-        if (["pair-signoff", "handoff-fresh", "handoff-amendment"].includes(id)) reject("TEMPLATE_CONSUMER_REQUIRED", "entry", "finite producer/consumer qualification is not delivered for this contract");
         if (!entry.contexts.some((c) => (c.team === "*" || c.team === host.team) && (c.mode === "*" || c.mode === host.mode))) reject("TEMPLATE_CONTEXT", "context", "actual host team/mode does not match allowed context");
         const bindings = object(request.bindings, [], Object.keys(entry.bindings));
         const encoded: Record<string, string> = Object.create(null) as Record<string, string>;
@@ -51,7 +52,14 @@ export function templateService(input: Uint8Array | Row, host: TemplateHost = {}
           encoded[name] = binding(bindings[name], schema);
         }
         const used = new Set<string>();
-        const candidate = source.body.replace(/\{\{([a-z][A-Za-z0-9]{0,63})\}\}/g, (_match, name: string) => {
+        // Optional blocks are a finite declarative selector, not an evaluator.
+        // Nesting, undeclared fields and conditions on required fields reject.
+        const selectedBody = source.body.replace(/\{\{#([a-z][A-Za-z0-9]{0,63})\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_match, name: string, body: string) => {
+          if (!entry.bindings[name] || entry.bindings[name]!.required || /\{\{[#/]/.test(body)) reject("TEMPLATE_UNRESOLVED", "source", "optional blocks require one declared optional binding without nesting");
+          if (Object.hasOwn(encoded, name)) { used.add(name); return body; }
+          return "";
+        });
+        const candidate = selectedBody.replace(/\{\{([a-z][A-Za-z0-9]{0,63})\}\}/g, (_match, name: string) => {
           used.add(name);
           if (!Object.hasOwn(encoded, name)) reject("TEMPLATE_UNRESOLVED", "source", "placeholder lacks an explicit binding");
           return encoded[name]!;
@@ -60,7 +68,7 @@ export function templateService(input: Uint8Array | Row, host: TemplateHost = {}
         if (/\{\{/.test(candidate) || (entry.validation.kind === "sections" && /\}\}/.test(candidate))) reject("TEMPLATE_UNRESOLVED", "candidate", "unresolved or malformed placeholder");
         if (Buffer.byteLength(candidate) > MAX_TEMPLATE_BYTES) reject("TEMPLATE_SIZE", "candidate", "rendered document exceeds byte limit");
         sensitive(candidate);
-        validateShape(candidate, entry, host);
+        validateShape(candidate, entry, host, bindings);
         if (action === "validate") {
           if (typeof request.candidate !== "string") reject("TEMPLATE_FIELD", "candidate", "exact candidate string required");
           const supplied = utf8(Buffer.from(request.candidate));
@@ -69,7 +77,7 @@ export function templateService(input: Uint8Array | Row, host: TemplateHost = {}
         result = { ...base, entry, candidate,
           producer: { schemaVersion: "pa-template-producer/v1", templateId: entry.id, templateRevision: entry.revision, sourceSha256: entry.source.sha256,
             configRevision: loaded.identity.configRevision, registrySha256: loaded.identity.registrySha256, bindingsSha256: digest(JSON.stringify(bindings)), candidateSha256: digest(candidate),
-            consumerContract: entry.validation.kind === "review-bundle" ? "pa-review-bundle/v1" : entry.validation.kind === "review-matrix" ? "pa-review-matrix/v1" : entry.validation.kind === "review-objective" ? "pa-review-objective/v1" : null },
+            consumerContract: entry.validation.kind === "review-bundle" ? "pa-review-bundle/v1" : entry.validation.kind === "review-matrix" ? "pa-review-matrix/v1" : entry.validation.kind === "review-objective" ? "pa-review-objective/v1" : entry.validation.kind === "task-handoff" ? "pa-task-handoff/v1" : entry.validation.kind === "pair-signoff" ? "pa-pair-signoff/v1" : null },
           validation: { structural: true, consumer: entry.validation.kind !== "sections", authority: false } };
       }
     }
@@ -104,12 +112,14 @@ function binding(value: unknown, schema: TemplateBinding): string {
   };
   if (patterns[schema.type] && !patterns[schema.type]!.test(s)) reject("TEMPLATE_BINDING", "bindings", "typed binding grammar mismatch");
   if (schema.type === "path") relativePath(s);
+  if (schema.type === "matrix-source") parseReviewMatrixSource(s);
   if (schema.type === "root" && resolve(s) !== s) reject("TEMPLATE_BINDING", "bindings", "unaliased root required");
   if (schema.type === "branch" && (s.includes("..") || s.includes("//") || s.endsWith("/") || s.split("/").some((part) => part.endsWith(".") || part.endsWith(".lock")))) reject("TEMPLATE_BINDING", "bindings", "unaliased feature branch required");
   if (schema.type === "text" && /\b(?:approv\w*|reject\w*|withdraw\w*|revoke\w*)\b/i.test(s)) reject("TEMPLATE_BINDING", "bindings", "narrative cannot supply decision clauses");
   return s;
 }
-function validateShape(candidate: string, entry: TemplateEntry, host: TemplateHost): void {
+function validateShape(candidate: string, entry: TemplateEntry, host: TemplateHost, bindings: Row): void {
+  if (entry.validation.kind === "task-handoff" || entry.validation.kind === "pair-signoff") { validateWorkflowProducer(candidate, entry, bindings); return; }
   if (entry.validation.kind === "review-bundle") {
     if (!host.reviewBundleConsumer || host.reviewBundleConsumer.schemaVersion !== "pa-review-bundle/v1") reject("TEMPLATE_CONSUMER_REQUIRED", "workflow", "PAP-271 must register its actual pa-review-bundle/v1 parser; no template-side authority or fallback exists");
     host.reviewBundleConsumer.validate(Buffer.from(candidate)); return;

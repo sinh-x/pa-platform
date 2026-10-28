@@ -462,7 +462,9 @@ function lines(bytes: Uint8Array): Line[] {
   return result;
 }
 /** Hash raw byte offsets, never normalized text or reserialized JSON. */
-export function parseReviewMatrixArtifact(input: Uint8Array, source: string): ReviewMatrixArtifact {
+/** Raw plan syntax and authority bytes only; no approval-header claim. Useful
+ * before a real decision exists without rewriting a pending signed preview. */
+export function parseReviewMatrixPlan(input: Uint8Array, source: string): { source: string; authorityBytes: Uint8Array; digest: string; matrix: ReviewMatrix; preambleBytes: Uint8Array } {
   parseReviewMatrixSource(source);
   text(input, MAX_REVIEW_ARTIFACT_BYTES, "artifact");
   const all = lines(input); let fence: { marker: string; length: number } | undefined;
@@ -502,7 +504,11 @@ export function parseReviewMatrixArtifact(input: Uint8Array, source: string): Re
   const sourceLines = section.filter((line) => /^(?:\*\*)?Matrix Source:/.test(line.text));
   if (sourceLines.length !== 1 || sourceLines[0]!.text !== `Matrix Source: ${source}`) fail("REVIEW_BINDING", "artifact.matrixSource", "matrix source line must agree exactly with the selected prefixed source");
   equal(matrix.source, source, "matrix.source");
-  const headerLines = all.slice(0, start);
+  return { source, authorityBytes, digest: createHash("sha256").update(authorityBytes).digest("hex"), matrix, preambleBytes: input.slice(0, all[start]!.start) };
+}
+export function parseReviewMatrixArtifact(input: Uint8Array, source: string): ReviewMatrixArtifact {
+  const { matrix, authorityBytes, preambleBytes } = parseReviewMatrixPlan(input, source);
+  const headerLines = lines(preambleBytes);
   const header = (label: string): string => {
     const prefix = `> ${label}: `;
     const spelling = new RegExp(`^>[ \\t]+(?:\\*\\*)?${label}:`);
@@ -514,8 +520,13 @@ export function parseReviewMatrixArtifact(input: Uint8Array, source: string): Re
   const approvalText = header("Matrix Approval Evidence");
   const commentIds = approvalText.match(/c-[0-9]{17}/g) ?? [];
   if (commentIds.length !== 1 || !(approvalText === commentIds[0] || new RegExp(`^${ticket} comment ${commentIds[0]} by sinh(?: [^\\r\\n]+)?$`).test(approvalText))) fail("REVIEW_FIELD", "artifact.header.matrixApprovalEvidence", "requires one exact comment ID or ticket comment ID by sinh header");
+  const handoffLines = headerLines.filter((line) => /^>[ \t]+(?:\*\*)?Handoff Type:/.test(line.text));
+  const handoff = handoffLines.length ? header("Handoff Type") : "fresh";
+  if (handoff !== "fresh" && handoff !== "amendment") fail("REVIEW_FIELD", "artifact.header.handoffType", "requires a supported exact handoff kind");
+  const baseLabel = handoff === "amendment" ? "Retained Base SHA" : "Approved Base SHA";
+  if (headerLines.some((line) => new RegExp(`^>[ \\t]+(?:\\*\\*)?${handoff === "amendment" ? "Approved" : "Retained"} Base SHA:`).test(line.text))) fail("REVIEW_BINDING", "artifact.header.baseSha", "opposite handoff base fields cannot coexist");
   return { source, authorityBytes, digest: createHash("sha256").update(authorityBytes).digest("hex"), matrix, header: {
-    ticket, repositoryKey: str(header("Repository Key"), "artifact.header.repositoryKey", /^[a-z0-9][a-z0-9-]*$/), repositoryRoot: absolutePath(header("Repository Root"), "artifact.header.repositoryRoot"), approvedBaseSha: str(header("Approved Base SHA"), "artifact.header.approvedBaseSha", SHA), featureBranch: branch(header("Feature Branch"), "artifact.header.featureBranch", ticket), matrixAuthoritySha256: str(header("Matrix Authority SHA-256"), "artifact.header.matrixAuthoritySha256", DIGEST), matrixApprovalEvidence: commentIds[0]!,
+    ticket, repositoryKey: str(header("Repository Key"), "artifact.header.repositoryKey", /^[a-z0-9][a-z0-9-]*$/), repositoryRoot: absolutePath(header("Repository Root"), "artifact.header.repositoryRoot"), approvedBaseSha: str(header(baseLabel), "artifact.header.approvedBaseSha", SHA), featureBranch: branch(header("Feature Branch"), "artifact.header.featureBranch", ticket), matrixAuthoritySha256: str(header("Matrix Authority SHA-256"), "artifact.header.matrixAuthoritySha256", DIGEST), matrixApprovalEvidence: commentIds[0]!,
   } };
 }
 function equal(actual: unknown, expected: unknown, path: string): void {

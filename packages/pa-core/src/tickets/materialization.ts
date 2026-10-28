@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { getAiUsageDir } from "../paths.js";
-import { readReviewEvidenceFile } from "../validation/review-contract.js";
+import { parseReviewMatrixArtifact, parseReviewMatrixPlan, readReviewEvidenceFile } from "../validation/review-contract.js";
+import { assertProducerTuple, parsePairSignoff, parseTaskHandoff, producerHeader, producerPreamble, producerText, type TaskHandoff } from "./producer-contract.js";
 import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction, type RepositoryTicketSlotHandoff, type RepositoryTicketTransaction } from "../deploy/ticket-concurrency.js";
 import { observeReadonlyRepositoryAuthority } from "../deploy/repository-admission.js";
 import { LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects } from "../deploy/local-git-effects.js";
@@ -101,7 +102,44 @@ export function resolveOrdinaryTaskBaseline(options: OrdinaryTaskBaselineOptions
   const decision = `Approve ${options.ticketId} ${options.canonicalRepoKey} ${root} ${linked.branch}`;
   const approved = ["", "from "].some((prefix) => comments[0]?.content === `${decision} ${prefix}exact base ${baseSha}; source ${ref}.`);
   if (comments.length !== 1 || comments[0]!.author !== "sinh") fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
-  if (!approved) validateOrdinaryPairApproval(comments[0]!.content, { ticket: options.ticketId, ref, preamble, header, fail });
+  if (/^>[ \t]+(?:\*\*)?Handoff Contract:/m.test(preamble)) {
+    try {
+      const parsed = parseTaskHandoff(markdown);
+      assertProducerTuple(parsed, { ticket: options.ticketId, repositoryKey: options.canonicalRepoKey, repositoryRoot: root, branch: linked.branch, baseSha,
+        handoffType: handoff as TaskHandoff["handoffType"], branchAction: handoff === "fresh" ? "create" : "reuse", linkedBranchState: handoff === "fresh" ? "planned" : "materialized",
+        ...(handoff === "amendment" ? { featureSha: linked.headSha } : {}) });
+    } catch { fail("CONTRACT_INVALID"); }
+  }
+  if (!approved) {
+    if (comments[0]!.content.startsWith("PA pair-signoff/v1")) {
+      try {
+        const parsed = parsePairSignoff(comments[0]!.content);
+        assertProducerTuple(parsed, { ticket: options.ticketId, repositoryKey: options.canonicalRepoKey, repositoryRoot: root, branch: linked.branch, baseSha,
+          handoffType: handoff as TaskHandoff["handoffType"], branchAction: handoff === "fresh" ? "create" : "reuse", linkedBranchState: handoff === "fresh" ? "planned" : "materialized",
+          ...(handoff === "amendment" ? { featureSha: linked.headSha } : {}) });
+        if (parsed.requirementsSource !== ref || parsed.reviewRevision !== header("Review Revision") || parsed.matrixSha256 !== header("Matrix Authority SHA-256")) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        const preview = readReviewEvidenceFile(join(getAiUsageDir(), parsed.requirementsPreviewPath), 1_048_576, "ordinary requirements preview");
+        const uat = readReviewEvidenceFile(join(getAiUsageDir(), parsed.uatPreviewPath), 1_048_576, "ordinary UAT preview");
+        const hash = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex");
+        if (hash(preview) !== parsed.requirementsPreviewSha256 || hash(uat) !== parsed.uatPreviewSha256) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        const reviewed = producerPreamble(producerText(preview));
+        if (parseReviewMatrixPlan(preview, ref).digest !== parsed.matrixSha256 || producerHeader(reviewed, "Matrix Authority SHA-256") !== parsed.matrixSha256) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        for (const label of ["Ticket", "Repository Key", "Repository Root", "Handoff Type", "Feature Branch", baseLabel, "Review Revision"]) {
+          if (producerHeader(reviewed, label) !== header(label)) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        }
+        if (handoff === "amendment" && producerHeader(reviewed, "Current Feature SHA") !== parsed.featureSha) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        const uatHeader = producerPreamble(producerText(uat));
+        if (producerHeader(uatHeader, "Ticket") !== parsed.ticket || producerHeader(uatHeader, "Revision") !== parsed.reviewRevision) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        if (new RegExp(`^>[ \\t]+(?:\\*\\*)?${handoff === "fresh" ? "Retained" : "Approved"} Base SHA:`, "m").test(reviewed)) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+        const matrix = parseReviewMatrixArtifact(bytes, ref);
+        if (matrix.digest !== parsed.matrixSha256 || matrix.header.matrixApprovalEvidence !== ids[0]
+          || matrix.matrix.repository.key !== parsed.repositoryKey || matrix.matrix.repository.root !== parsed.repositoryRoot
+          || matrix.matrix.repository.branch !== parsed.branch || matrix.matrix.repository.baseSha !== parsed.baseSha
+          || (matrix.matrix.environment.PA_TICKET_ID as { literal?: string }).literal !== parsed.ticket
+          || matrix.matrix.prerequisites.some((item) => item.kind === "operatorGate" && item.ticket !== parsed.ticket)) fail("APPROVAL_REJECTED_INVALID_EVIDENCE");
+      } catch { fail("APPROVAL_REJECTED_INVALID_EVIDENCE"); }
+    } else validateOrdinaryPairApproval(comments[0]!.content, { ticket: options.ticketId, ref, preamble, header, fail });
+  }
   // Array order is retained history; timestamps also catch reordered later
   // withdrawals. An uncertain date on an applicable withdrawal fails closed.
   const selected = ticket.comments.indexOf(comments[0]!);
@@ -137,12 +175,13 @@ function validateOrdinaryPairApproval(content: string, context: {
     { kind: "waw", pattern: /^Explicit PA sign-off from interactive deployment d-[0-9a-f]{6}: Approve (r\d{3,}) pair and exact matrix\./ },
     { kind: "ttl012", pattern: /^APPROVED in standalone PA sign-off, deployment d-[0-9a-f]{6}: complete requirements\/UAT pair (r\d{3,})\./ },
     { kind: "ttl014", pattern: /^Final standalone PA sign-off in d-[0-9a-f]{6}\. Sinh selected Approve exact (r\d{3,}) pair and matrix after complete whole-document Markdown requirements and [A-Za-z0-9-]+-scenario UAT review was offered\./ },
+    { kind: "nx066", pattern: /^APPROVED in standalone PA decision during d-[0-9a-f]{6}\. Approve paired plan and matrix\./ },
   ];
   const family = families.find(({ pattern }) => pattern.test(content));
   if (!family) return fail("APPROVAL_REJECTED_UNSUPPORTED_PRODUCER");
   const opening = family.pattern.exec(content)!;
   const revision = header("Review Revision");
-  if (!/^r\d{3,}$/.test(revision) || opening.at(-1) !== revision || (family.kind === "standard" && opening[1] !== ticket)) invalid();
+  if (!/^r\d{3,}$/.test(revision) || (family.kind !== "nx066" && opening.at(-1) !== revision) || (family.kind === "standard" && opening[1] !== ticket)) invalid();
   let rest = content.slice(opening[0].length);
   // Every authoritative clause must occur once and have the expected value.
   // Count labels independently of valid matches so malformed duplicates cannot
@@ -155,7 +194,17 @@ function validateOrdinaryPairApproval(content: string, context: {
   };
   const canonical = `agent-teams/requirements/artifacts/reviews/${ticket}/${revision}/requirements.md`;
   let locator: string, hash: string;
-  if (family.kind === "ttl012") {
+  if (family.kind === "nx066") {
+    const match = take(/Requirements review/gi, /Requirements review (r\d{3,}) source ([A-Za-z0-9_./-]+) raw SHA-256 ([0-9a-f]{64})\.(?=\s|$)/);
+    if (match[1] !== revision) invalid(); locator = match[2]!; hash = match[3]!;
+    const uat = take(/Companion UAT/gi, /Companion UAT (r\d{3,}) source ([A-Za-z0-9_./-]+) raw SHA-256 ([0-9a-f]{64})\.(?=\s|$)/);
+    if (uat[1] !== revision || uat[2] !== `agent-teams/requirements/artifacts/reviews/${ticket}/${revision}/uat-preview.md`) invalid();
+    try {
+      const bytes = readReviewEvidenceFile(join(getAiUsageDir(), uat[2]!), 1_048_576, "ordinary reviewed UAT preview");
+      if (createHash("sha256").update(bytes).digest("hex") !== uat[3]) invalid();
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch { invalid(); }
+  } else if (family.kind === "ttl012") {
     const match = take(/Requirements source/gi, /Requirements source (requirements:[A-Za-z0-9_./-]+) reviewed as ([A-Za-z0-9_./-]+) raw SHA-256 ([0-9a-f]{64})(?=[;.,\s]|$)/);
     if (match[1] !== ref || match[2] !== `reviews/${ticket}/${revision}/requirements.md`) invalid();
     locator = `agent-teams/requirements/artifacts/${match[2]}`; hash = match[3]!;
@@ -168,7 +217,13 @@ function validateOrdinaryPairApproval(content: string, context: {
     locator = match[1]!; hash = match[2]!;
   }
   if (locator !== canonical) invalid();
-  const matrix = take(/Matrix Source/gi, /(?:Requirements Source and )?Matrix Source(?:: | )(requirements:[A-Za-z0-9_./-]+)\.(?=\s|$)/);
+  const matrix = family.kind === "nx066"
+    ? take(/Matrix Source/gi, /Matrix Source (requirements:[A-Za-z0-9_./-]+)(?= Matrix Authority SHA-256 )/)
+    : take(/Matrix Source/gi, /(?:Requirements Source and )?Matrix Source(?:: | )(requirements:[A-Za-z0-9_./-]+)\.(?=\s|$)/);
+  if (family.kind === "nx066") {
+    const authority = take(/Matrix Authority SHA-256/gi, /Matrix Authority SHA-256 ([0-9a-f]{64})\.(?=\s|$)/);
+    if (authority[1] !== header("Matrix Authority SHA-256")) invalid();
+  }
   if (matrix[1] !== ref) invalid();
   if (family.kind === "waw") {
     const grant = take(/I approve the complete/gi, /I approve the complete ([A-Z][A-Z0-9]*-\d+) requirements revision (r\d{3,}) and companion UAT,/);
@@ -180,10 +235,18 @@ function validateOrdinaryPairApproval(content: string, context: {
     // Legacy rich producers may bind their tuple solely through the preview.
     const marker = label === "Ticket" ? "\\bTicket(?::[ \\t]*|[ \\t]+(?=[A-Z][A-Z0-9]*-\\d))" : `\\b${label}(?::[ \\t]*|[ \\t]+)`;
     const count = [...rest.matchAll(new RegExp(marker, "gi"))].length;
-    if ((family.kind === "standard" || (label === "Ticket" && family.kind !== "ttl014")) && count === 0) continue;
+    if ((family.kind === "standard" || (label === "Ticket" && family.kind !== "ttl014" && family.kind !== "nx066")) && count === 0) continue;
     if (family.kind === "ttl012" && count === 0) continue; // compact tuple below
     const clause = take(new RegExp(marker, "gi"), new RegExp(`${marker}([^\\s]+)`));
     if (clause[1]!.replace(/\.$/, "") !== header(label)) invalid();
+  }
+  if (family.kind === "nx066") {
+    if (handoff !== "fresh") invalid();
+    const route = take(/\bRoute /gi, /Route (builder\/orchestrator)\.(?=\s|$)/);
+    const action = take(/\bBranch Action /gi, /Branch Action (create)(?=\s|$)/);
+    const state = take(/\bLinked Branch State /gi, /Linked Branch State (planned)(?=\s|$)/);
+    const link = take(/\bexact link /gi, /exact link ([A-Za-z0-9_-]+)\|([^\s]+) \[planned\](?=\s|$)/);
+    if (route[1] !== "builder/orchestrator" || action[1] !== "create" || state[1] !== "planned" || link[1] !== header("Repository Key") || link[2] !== header("Feature Branch")) invalid();
   }
   // The retained PAPC-068 standard producer names its tuple in a compact
   // Handoff clause. Validate it too; a preview cannot excuse conflicting prose.
@@ -209,8 +272,10 @@ function validateOrdinaryPairApproval(content: string, context: {
     waw: /I approve that exact \d+-command matrix and requirements\/UAT pair for promotion after final Shape-Conformance 13\/13\./,
     ttl012: /Approve this exact four-command matrix and pair, permitting only administrative approval\/status\/link metadata changes for final promotion\./,
     ttl014: /\ball [a-z0-9-]+ exact ordered commands, prerequisites, environment, outputs and pass criteria approved\./,
+    nx066: /Approve all [a-z0-9-]+ exact commands, prerequisites, environment and pass criteria\./,
   };
-  rest = rest.replace(planRestatements[family.kind]!, "").replace(/\bApproved intent:/, "");
+  rest = rest.replace(planRestatements[family.kind]!, "").replace(family.kind === "nx066" ? /\bApproved intent / : /\bApproved intent:/, "");
+  if (family.kind === "nx066") rest = rest.replace(/Authorize administrative approval metadata and final links only, final approval-bound 13 checks and paired promotion to requirements and UAT dated artifacts, followed by supported preparation assessment\./, "");
   // These exact safety boundaries qualify execution, not the plan decision.
   rest = rest.replace(/administrative approval\/status\/(?:hash\/)?link metadata/g, "")
     .replace(/administrative approval metadata/g, "")

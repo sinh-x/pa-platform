@@ -2,9 +2,31 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { templateService } from "@pa-platform/pa-core";
 import { templateFixture } from "../../../pa-core/src/__tests__/template-fixture.js";
+import { producerFixture } from "../../../pa-core/src/__tests__/template-producer-fixture.js";
 import { runCoreCommand } from "../../../pa-core/src/cli/core-command.js";
 import { createTemplateModule } from "../pi-extension/template-tool.js";
 import type { PiToolDefinition } from "../pi-extension/index.js";
+
+for (const kind of ["fresh", "amendment"] as const) test(`public CLI/native ${kind} producer bytes reach the actual consumer without authority effects`, async () => {
+  const f = producerFixture(kind); try {
+    let tool: PiToolDefinition | undefined;
+    createTemplateModule({ selection: f.selection })({ registerTool: (t) => { tool = t as PiToolDefinition; } });
+    for (const [id, bindings, candidate] of [[`handoff-${kind}`, f.handoffBindings, f.handoff.candidate], ["pair-signoff", f.bindings, f.pair.candidate]] as const) {
+      for (const action of ["render", "validate"]) for (let i = 0; i < 20; i++) {
+        const body = { bindings, ...(action === "validate" ? { candidate } : {}) };
+        const input = { action, id, version: "1", ...body };
+        const output: string[] = [];
+        assert.equal(await runCoreCommand(["template", action, id, "--version", "1"], { binaryName: "ppa", templateHost: { selection: f.selection, input: (async function* () { yield JSON.stringify(body); })() }, io: { stdout: (s) => output.push(s), stderr: (s) => assert.fail(s) } }), 0);
+        const native = await tool!.execute("synthetic-fixture", input, undefined, undefined, undefined);
+        assert.equal(native.isError, false); assert.deepEqual(JSON.parse(native.content[0]!.text), JSON.parse(output[0]!));
+        assert.equal(JSON.parse(output[0]!).candidate, candidate);
+      }
+    }
+    assert.equal(f.resolveBaseline().baseSha, f.bindings.baseSha);
+    f.record.comments[0]!.author = "requirements/analyst"; f.saveTicket();
+    assert.throws(f.resolveBaseline, /ORDINARY_BASELINE_/);
+  } finally { f.dispose(); }
+});
 
 test("actual registered native tool matches public PPA CLI for list/show/render/validate and errors", async () => {
   const f = templateFixture(); try {
