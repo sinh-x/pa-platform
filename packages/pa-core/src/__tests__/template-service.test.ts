@@ -1,11 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import childProcess from "node:child_process";
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
+import { syncBuiltinESMExports } from "node:module";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { templateService } from "../templates/service.js";
 import { digest } from "../templates/schema.js";
 import { templateFixture } from "./template-fixture.js";
 const render = { action: "render", id: "requirements", version: "1", bindings: { ticket: "FIX-1" } };
+test("success and rejection perform zero writes, subprocesses or network calls", (t) => {
+  const f = templateFixture(); const forbidden = (): never => { throw new Error("forbidden side effect"); };
+  const traps = [
+    t.mock.method(fs, "writeFileSync", forbidden), t.mock.method(fs, "appendFileSync", forbidden),
+    t.mock.method(fs, "mkdirSync", forbidden), t.mock.method(fs, "renameSync", forbidden),
+    t.mock.method(fs, "unlinkSync", forbidden), t.mock.method(fs, "rmSync", forbidden),
+    t.mock.method(fs, "writeSync", forbidden), t.mock.method(fs, "createWriteStream", forbidden),
+    t.mock.method(childProcess, "spawn", forbidden), t.mock.method(childProcess, "spawnSync", forbidden),
+    t.mock.method(childProcess, "execFileSync", forbidden), t.mock.method(childProcess, "execSync", forbidden),
+    t.mock.method(childProcess, "exec", forbidden), t.mock.method(childProcess, "execFile", forbidden),
+    t.mock.method(childProcess, "fork", forbidden), t.mock.method(net, "connect", forbidden),
+    t.mock.method(net, "createConnection", forbidden), t.mock.method(http, "request", forbidden),
+    t.mock.method(https, "request", forbidden), t.mock.method(globalThis, "fetch", forbidden),
+  ];
+  const open = fs.openSync;
+  t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+    const flags = args[1]; assert.ok(typeof flags === "number" || flags === "r");
+    if (typeof flags === "number") assert.equal(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND), 0);
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const req of [{ action: "list" }, { action: "show", id: "requirements", version: "1" }, render]) assert.equal(templateService(req, { selection: f.selection }).ok, true);
+    assert.equal(templateService({ ...render, bindings: {} }, { selection: f.selection }).ok, false);
+    for (const trap of traps) assert.equal(trap.mock.callCount(), 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); f.dispose(); }
+});
 test("all document fixtures render deterministically and validate exact CRLF without writes", () => {
   const f = templateFixture(); try {
     const before = readdirSync(f.root, { recursive: true });
@@ -32,6 +65,17 @@ test("actual context, unresolved source, duplicate sections and oversized transp
       writeFileSync(join(f.root, entry.source.path), body!); entry.source.sha256 = digest(body!); selection = f.save();
       assert.equal(templateService(render, { selection }).code, code);
     }
+  } finally { f.dispose(); }
+});
+test("explicit multiline encoding preserves CRLF while preventing heading/metadata injection", () => {
+  const f = templateFixture(); try {
+    const entry = f.registry.entries[0]!; const source = "## Body\r\n{{ticket}}\r\n{{note}}";
+    writeFileSync(join(f.root, entry.source.path), source); entry.source.sha256 = digest(source);
+    entry.bindings.note = { type: "multiline", required: true }; const selection = f.save();
+    const note = "line1\r\n## Body\r\n> Ticket: FOREIGN-2";
+    const r = templateService({ ...render, bindings: { ticket: "FIX-1", note } }, { selection });
+    assert.equal(r.ok, true); assert.equal(r.candidate, "## Body\r\nFIX-1\r\n    line1\r\n    ## Body\r\n    > Ticket: FOREIGN-2");
+    assert.equal(templateService({ ...render, bindings: { ticket: "FIX-1", note: "line\rINJECTION" } }, { selection }).ok, false);
   } finally { f.dispose(); }
 });
 test("raw source selectors preserve signed identity and exclude guidance", () => {

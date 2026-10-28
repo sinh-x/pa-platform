@@ -161,6 +161,11 @@
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             install -Dm644 ${reviewProvenance} $share/review-runtime-provenance.json
+            # Template compatibility pins are runtime-owned, not workflow enablement.
+            install -Dm644 .pa-platform-config.sha $share/.pa-platform-config.sha
+            if [ -f .pa-template-registry.sha ]; then
+              install -Dm644 .pa-template-registry.sha $share/.pa-template-registry.sha
+            fi
             install -Dm755 scripts/pap-237-installed-preflight-smoke.mjs $share/scripts/pap-237-installed-preflight-smoke.mjs
             cp -r packages/pa-core/src/__tests__/fixtures/protected-review-v1 $share/protected-review-v1-fixtures
             install -Dm755 scripts/pap-167-pi-retry-smoke.mjs $share/scripts/pap-167-pi-retry-smoke.mjs

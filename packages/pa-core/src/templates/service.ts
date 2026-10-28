@@ -93,7 +93,7 @@ function binding(value: unknown, schema: TemplateBinding): string {
     utf8(Buffer.from(value), MAX_TEMPLATE_REQUEST_BYTES);
     if (/[\p{Cf}\p{Cs}\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(value) || /\r(?!\n)|\{\{|\}\}/.test(value)) reject("TEMPLATE_BINDING", "bindings", "unsafe narrative control or placeholder");
     // Narrative is inert indented Markdown, never a producer clause/header.
-    return value.split(/\r?\n/).map((line) => `    ${line}`).join("\n");
+    return `    ${value.replaceAll("\n", "\n    ")}`;
   }
   const s = string(value, undefined, MAX_TEMPLATE_REQUEST_BYTES);
   const patterns: Partial<Record<TemplateBinding["type"], RegExp>> = {
