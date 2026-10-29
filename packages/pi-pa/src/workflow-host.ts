@@ -30,7 +30,7 @@ export function piWorkflowObservations(subject?: ReviewBundle): WorkflowObservat
 }
 export function piWorkflowReadHost(): WorkflowReadHost { return { observations: piWorkflowObservations, operations: new Set(["publication.pair", "ticket.queue"]) }; }
 
-export type PiWorkflowMutation = { action: "admit"; producer: string } | { action: "request-step"; revision: number; stepId: string }
+export type PiWorkflowMutation = { action: "admit"; producer: string } | { action: "revise"; revision: number; producer: string } | { action: "request-step"; revision: number; stepId: string }
   | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "revoke"; revision: number; decisionId: string };
 /** Foreground mutation host. Public JSON never supplies a caller, callback, selected config, effect owner or outcome. */
 export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiWorkflowContext): Promise<Record<string, unknown>> {
@@ -38,8 +38,8 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
   const caller = authenticate(), journal = new RegistryWorkflowJournal(getDb()), continues = createPiWorkflowContinuation(authenticate);
   let state = adoptedWorkflow(journal, caller.repoKey, caller.ticket);
   let subject = state?.subject;
-  const selection = request.action === "admit" ? loadSelectedWorkflows() : undefined;
-  if (request.action === "admit") {
+  const selection = request.action === "admit" || request.action === "revise" ? loadSelectedWorkflows() : undefined;
+  if (request.action === "admit" || request.action === "revise") {
     let occupied = false;
     try { observeReadonlyRepositoryTicketSlot(caller.repoRoot, caller.ticket); occupied = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", "existing-ticket-lineage", "custody-owner"); }
@@ -58,11 +58,12 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
     store.update(caller.ticket, { add_doc_ref: { type: "workflow", path: `registry-workflow:${state.runId}` } }, "workflow/runtime");
   } else {
     if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE");
-    if (request.action === "capture") decision = await service.decide(state.runId, request.revision, request.stepId);
+    if (request.action === "revise") state = service.reviseProduced(state.runId, request.revision, selection!, Buffer.from(request.producer), {});
+    else if (request.action === "capture") decision = await service.decide(state.runId, request.revision, request.stepId);
     else if (request.action === "revoke") await service.revoke(state.runId, request.revision, request.decisionId);
     else if (request.action === "request-step") await service.requestStep(state.runId, request.revision, request.stepId, packageDecision(state));
     else await service.reconcile(state.runId, request.revision, request.intentId);
     state = service.status(state.runId);
   }
-  return { schemaVersion: "pa-workflow-result/v1", ok: true, action: request.action, result: { runId: state.runId, revision: state.revision, subjectSha256: state.subjectSha256, outcomes: state.outcomes, revoked: state.revoked, reconcile: state.pending, ...(decision ? { decision } : {}) }, executionAdmitted: false };
+  return { schemaVersion: "pa-workflow-result/v1", ok: true, action: request.action, result: { runId: state.runId, revision: state.revision, subjectSha256: state.subjectSha256, outcomes: state.outcomes, attempts: state.attempts, revoked: state.revoked, reconcile: state.pending, ...(decision ? { decision } : {}) }, executionAdmitted: false };
 }

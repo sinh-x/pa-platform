@@ -4,6 +4,8 @@
 
 ## 1. Pin the candidate; do not replace the installed PPA
 
+**Continuation note:** the shared branch was operator-requestedly rebased onto runtime `develop` `3c8f6e8` (v0.1.153). The former handoff SHA remains historical evidence, not the current branch tip. Request the refreshed exact commit recorded on PAP-271/PAPC-070; do not move the shared checkout back to the old handoff. See `json-workflow-runtime.md` for the linked-subject continuation and its remaining publication/primary blocker.
+
 - Runtime checkout: `/home/sinh/.treehouse/pa-platform-cdb114/10/pa-platform`
 - Branch: `feature/PAP-271-json-workflow-runtime`
 - Existing interface baseline: `2088276c409a885100eab2f2c6fdbb2c1f1f52d7`.
@@ -47,7 +49,7 @@ Use the actual runtime parsers/metadata; do not copy schemas into another valida
 | `source.local` | Existing execution owner | Schema/vocabulary plus launch/scope/revocation consumers exist; **workflow result/progression port is unfinished**. |
 | `check.matrix` | Existing validation/review owners | Schema/vocabulary and structured review approval locator exist; **workflow result/progression port is unfinished**. |
 | Coordinator resume | Registry + foreground host | Exact same-role/repository/ticket resume chain; **not execution-holder replacement/restart**. |
-| Revised subjects after request-changes | Runtime | **Linked immutable revision/attempt admission unfinished**; do not invent a config loop/back-edge or reset. |
+| Revised subjects after request-changes | Registry + foreground host | Linked immutable attempts in the same pinned run now exist; new subject needs a new native decision. **Changed-primary/queue amendment reconciliation remains unfinished**; do not invent a config loop, overwrite, lineage or counter reset. |
 | `ppa workflow`, `ppa decision`; `pa_workflow`, `pa_decision` | Shared read service + native request host | Bounded read/capture/request interfaces documented in `json-workflow-runtime.md`; no actor/outcome/passed/force override. |
 | Full installed verifier and selected-v1 procedural isolation | Runtime | **Unfinished**; source pairing does not waive either. |
 
@@ -82,6 +84,6 @@ The handoff's paired-gate suite executes 31 cases, including four subprocess sou
 
 The handoff is sufficient to discuss/refine requirements and develop **separately authorized inactive drafts** using delivered contracts. Keep a visible list of runtime gaps above. Do not remove PAPC-070's `waiting-runtime-implementation` tag, advance its status or claim its full runtime milestone solely from this document/report; that decision belongs to the companion owner after verifying the required delivery scope.
 
-PAPC owns shortened selected-workflow instructions and fixtures, not executable operation semantics, decision issuance, another ledger, new native profiles or runtime gap workarounds. Preserve historical signed sources and other adapters/unselected modes. The runtime still needs to finish result progression, execution-holder restart with retained bounds/failures, linked revised subjects, selected-v1 procedural validator isolation and the installed verifier. The existing broader paired checker still contains legacy procedural requirements; a pass from this narrowly scoped source checker is not a pass from that checker or permission to delete its gates.
+PAPC owns shortened selected-workflow instructions and fixtures, not executable operation semantics, decision issuance, another ledger, new native profiles or runtime gap workarounds. Preserve historical signed sources and other adapters/unselected modes. The runtime still needs to finish result progression, execution-holder restart with retained bounds/failures, explicit changed-primary/queue amendment reconciliation, selected-v1 procedural validator isolation and the installed verifier. The existing broader paired checker still contains legacy procedural requirements; a pass from this narrowly scoped source checker is not a pass from that checker or permission to delete its gates.
 
 After both source deliveries, obtain the supported candidate build/selection and perform joint selected-pair/installed qualification, independent matrix/review, CI and genuine human UAT before authorized PAPC enablement. No circular requirement that PAP-271 be terminal is introduced, but these acceptance gates are not inferred from source development success.

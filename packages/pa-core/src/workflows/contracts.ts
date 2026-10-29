@@ -74,6 +74,10 @@ export function text(value: unknown, pattern?: RegExp, max = 4096): string {
   if (typeof value !== "string" || !value.length || value.length > max || value !== value.trim() || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value) || (pattern && !pattern.test(value))) reject();
   return value;
 }
+/** Preserve canonical ticket bytes, including padding; never normalize aliases. */
+export function workflowTicket(value: unknown): string {
+  const ticket = text(value); if (!isCanonicalTicketId(ticket)) reject(); return ticket;
+}
 export const ID = /^[a-z][a-z0-9.-]{0,127}$/;
 export const SHA256 = /^[a-f0-9]{64}$/;
 export const GIT_SHA = /^[a-f0-9]{40}$/;
@@ -118,7 +122,7 @@ export function parseReviewBundle(input: Uint8Array): ReviewBundle {
   const repository = object(r.repository, ["key", "root"]); const route = object(r.route, ["team", "mode"]);
   const h = r.handoff as Row; const fresh = h?.type === "fresh";
   object(h, fresh ? ["type", "baseSha", "branch", "branchAction"] : ["type", "baseSha", "branch", "featureSha", "branchAction"]);
-  const ticket = text(r.ticket); if (!isCanonicalTicketId(ticket)) reject();
+  const ticket = workflowTicket(r.ticket);
   const branch = text(h.branch, /^feature\/[A-Z][A-Z0-9]*-[0-9]+-[a-zA-Z0-9][a-zA-Z0-9._/-]*$/);
   if (!branch.startsWith(`feature/${ticket}-`) || branch.includes("..") || branch.includes("//") || branch.endsWith("/") || branch.split("/").some(p => p.endsWith(".lock") || p.endsWith("."))) reject();
   const baseSha = text(h.baseSha, GIT_SHA);

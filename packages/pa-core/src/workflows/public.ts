@@ -4,7 +4,7 @@ import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { loadRepoEntry } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { adoptedWorkflow, withExistingWorkflowJournal } from "./catalog.js";
-import { JsonWorkflowError, MAX_WORKFLOW_RECORD_BYTES, object, strictJson, parseWorkflowRequest, text, ID, type ReviewBundle } from "./contracts.js";
+import { JsonWorkflowError, MAX_WORKFLOW_RECORD_BYTES, object, strictJson, parseWorkflowRequest, workflowTicket, text, ID, type ReviewBundle } from "./contracts.js";
 import { queryWorkflow } from "./queries.js";
 import { unavailableWorkflowObservations, type WorkflowObservations } from "./preflight.js";
 import { loadSelectedWorkflows, type WorkflowSelection } from "./selected.js";
@@ -15,7 +15,7 @@ import { readWorkflowEvidence } from "./evidence.js";
 export interface WorkflowPrimerView { runId: string; workflowId: string; version: string; sha256: string; configRevision: string; nextOwner: string; nextAction: string }
 export function workflowPrimerView(state: WorkflowState): WorkflowPrimerView {
   const pending = state.pending[0], id = pending?.stepId ?? eligibleSteps(state)[0], step = state.definition.steps.find(s => s.id === id);
-  const revoked = step && step.kind !== "decision" && !state.decisions.some(d => d.outcome === "approved" && !state.revoked.includes(d.decisionId) && step.authorization.every(p => d.permissions.includes(p)));
+  const revoked = step && step.kind !== "decision" && !state.decisions.some(d => d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId) && step.authorization.every(p => d.permissions.includes(p)));
   return { runId: state.runId, workflowId: state.definition.workflowId, version: state.definition.version, sha256: state.subject.workflow.sha256, configRevision: state.configRevision,
     nextOwner: revoked && !pending ? "operator" : step?.owner ?? "workflow-owner", nextAction: pending ? `reconcile retained intent ${pending.intentId}; do not repeat effects` : revoked ? "blocked by absent/revoked authority; preserve state and inspect the exact decision" : step ? `request structurally eligible step ${step.id} through its owner; live availability/admission remains unproven` : "inspect retained terminal/blocked state; no completion or approval is inferred" };
 }
@@ -32,7 +32,7 @@ export const workflowFailure = (error: unknown) => {
 };
 /** No TicketStore constructor, database migration, process probe, authority import or writes. */
 export function readTicketWorkflow(ticket: string): WorkflowState | null {
-  text(ticket, /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/);
+  workflowTicket(ticket);
   const row = strictJson(readReviewEvidenceFile(join(getTicketsDir(), `${ticket}.json`), 1_048_576, "workflow.ticket")) as Record<string, unknown>;
   if (row.id !== ticket) throw new JsonWorkflowError("WORKFLOW_SOURCE");
   const repoKey = text(row.project, ID), repo = loadRepoEntry(repoKey);
@@ -50,7 +50,7 @@ export function workflowReadService(input: Uint8Array | string, host: WorkflowRe
     const r = object(parseWorkflowRequest(input), ["action"], ["id", "ticket", "definitionFile"]);
     const action = text(r.action); let result: unknown;
     const stateFor = () => {
-      const ticket = text(r.ticket, /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/);
+      const ticket = workflowTicket(r.ticket);
       return (host.state ?? readTicketWorkflow)(ticket);
     };
     if (action === "validate") {
@@ -74,8 +74,9 @@ export function workflowReadService(input: Uint8Array | string, host: WorkflowRe
         } else {
           const id = text(r.id, ID), decision = state.decisions.find(d => d.decisionId === id);
           if (!decision) throw new JsonWorkflowError("WORKFLOW_AUTHORITY");
-          if (action === "decision-verify") readWorkflowEvidence(state.subject, ref => readCanonicalWorkflowArtifact(ref.ref));
-          result = { decision, issued: true, revoked: state.revoked.includes(id), approved: decision.outcome === "approved" && !state.revoked.includes(id) };
+          const currentSubject = decision.subjectSha256 === state.subjectSha256;
+          if (action === "decision-verify" && currentSubject) readWorkflowEvidence(state.subject, ref => readCanonicalWorkflowArtifact(ref.ref));
+          result = { decision, issued: true, revoked: state.revoked.includes(id), currentSubject, approved: currentSubject && decision.outcome === "approved" && !state.revoked.includes(id) };
         }
       }
     } else throw new JsonWorkflowError("WORKFLOW_CONTRACT");

@@ -29,7 +29,8 @@ function fixture() {
   execFileSync("tar", ["-x", "-C", runtime], { input: archive });
   mkdirSync(join(runtime, "scripts/dev"), { recursive: true });
   cpSync(join(source, "scripts/dev/verify_workflow_source_pair.mts"), join(runtime, "scripts/dev/verify_workflow_source_pair.mts"));
-  cpSync(join(source, "packages/pa-core/src/workflows/paired.ts"), join(runtime, "packages/pa-core/src/workflows/paired.ts"));
+  cpSync(join(source, "packages/pa-core/src/workflows"), join(runtime, "packages/pa-core/src/workflows"), { recursive: true });
+  cpSync(join(source, "packages/pa-core/src/registry/workflows.ts"), join(runtime, "packages/pa-core/src/registry/workflows.ts"));
   symlinkSync(join(source, "node_modules"), join(runtime, "node_modules"));
   symlinkSync(join(source, "packages/pa-core/node_modules"), join(runtime, "packages/pa-core/node_modules"));
   init(runtime); const runtimeSha = commit(runtime);

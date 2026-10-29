@@ -21,6 +21,13 @@ export function preflightWorkflow(selection: WorkflowSelection, team: string, mo
   let selected: SelectedWorkflow | undefined;
   try { selected = selectNewWorkflow(selection, team, mode); }
   catch (error) { gates.push(gate(error instanceof JsonWorkflowError ? error.code : "WORKFLOW_SOURCE", "selected-binding", "blocked", "papc-owner")); }
+  return inspectWorkflow(selected, observations, subject, gates);
+}
+/** Trusted retained-run path only: no current binding is enabled or migrated. */
+export function preflightPinnedWorkflow(selected: Pick<SelectedWorkflow, "definition" | "sha256" | "configRevision">, observations: WorkflowObservations, subject: ReviewBundle): WorkflowPreflight {
+  return inspectWorkflow(selected, observations, subject, []);
+}
+function inspectWorkflow(selected: Pick<SelectedWorkflow, "definition" | "sha256" | "configRevision"> | undefined, observations: WorkflowObservations, subject: ReviewBundle | undefined, gates: WorkflowGateResult[]): WorkflowPreflight {
   if (selected) {
     if (selected.definition.requiredCapabilities.some(c => !observations.capabilities.has(c))) gates.push(gate("WORKFLOW_CAPABILITY", "required-capabilities", "blocked", "runtime-owner"));
     for (const step of selected.definition.steps) {

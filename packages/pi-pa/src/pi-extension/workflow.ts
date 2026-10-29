@@ -10,24 +10,22 @@ function mutation(input: unknown, tool: "workflow" | "decision"): PiWorkflowMuta
   if (!input || typeof input !== "object" || Array.isArray(input)) return denied();
   const r = input as Record<string, unknown>, action = r.action;
   if (typeof action !== "string") return denied();
-  const fields: Record<string, string[]> = tool === "workflow" ? { admit: ["producer"], "request-step": ["revision", "stepId"], reconcile: ["revision", "intentId"] } : { capture: ["revision", "stepId"], revoke: ["revision", "decisionId"] };
+  const fields: Record<string, string[]> = tool === "workflow" ? { admit: ["producer"], revise: ["revision", "producer"], "request-step": ["revision", "stepId"], reconcile: ["revision", "intentId"] } : { capture: ["revision", "stepId"], revoke: ["revision", "decisionId"] };
   if (!Object.hasOwn(fields, action)) {
     if (tool === "workflow" ? ["list", "show", "validate", "preflight", "status", "next"].includes(action) : ["show", "verify"].includes(action)) return null;
     return denied();
   }
   const allowed = ["action", ...fields[action]!];
   if (Object.keys(r).length !== allowed.length || Object.keys(r).some(k => !allowed.includes(k))) return denied();
-  if (action === "admit") { if (typeof r.producer !== "string" || !r.producer.length) return denied(); }
-  else {
-    if (!Number.isSafeInteger(r.revision) || Number(r.revision) < 1) return denied();
-    for (const field of fields[action]!.filter(f => f !== "revision")) if (typeof r[field] !== "string" || !/^[a-z][a-z0-9.-]{0,127}$/.test(r[field] as string)) return denied();
-  }
+  if (action !== "admit" && (!Number.isSafeInteger(r.revision) || Number(r.revision) < 1)) return denied();
+  if (action === "admit" || action === "revise") { if (typeof r.producer !== "string" || !r.producer.length) return denied(); }
+  else for (const field of fields[action]!.filter(f => f !== "revision")) if (typeof r[field] !== "string" || !/^[a-z][a-z0-9.-]{0,127}$/.test(r[field] as string)) return denied();
   return r as unknown as PiWorkflowMutation;
 }
 function tool(name: "workflow" | "decision", options: PiJsonWorkflowOptions, lifecycle?: PiSessionLifecycle): PiToolDefinition {
   return {
     name: `pa_${name}`, label: `PA ${name}`, executionMode: "sequential",
-    description: name === "workflow" ? "Read selected/pinned JSON workflows; request admission or an eligible registered step/reconciliation. No completion, capability or arbitrary command override." : "Read/verify issued decisions or request exact-subject native foreground capture/revocation. Never accepts actor, outcome or permission grants.",
+    description: name === "workflow" ? "Read selected/pinned JSON workflows; request admission, an exact-revision linked subject attempt, or an eligible registered step/reconciliation. No completion, capability or arbitrary command override." : "Read/verify issued decisions or request exact-subject native foreground capture/revocation. Never accepts actor, outcome or permission grants.",
     parameters: Type.Object({ request: Type.String({ maxLength: MAX_WORKFLOW_RECORD_BYTES, description: "One strict JSON request document; duplicate keys, unknown fields and byte limits reject." }) }, { additionalProperties: false }),
     execute: async (_id, input, _signal, _update, context) => {
       const run = async (): Promise<PiToolResult> => {

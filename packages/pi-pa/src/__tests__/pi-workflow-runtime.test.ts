@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { createTicketWorkflowOwners, TicketStore, appendRegistryEvent, closeDb, materializeTicketBranch, parseReviewMatrixPlan, workflowDecisionReference, structuredReviewArtifact, type ReviewMatrix, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { workflowRuntimeFixture } from "../../../pa-core/src/__tests__/workflow-runtime-fixture.js";
-import { bytes } from "../../../pa-core/src/__tests__/workflow-fixtures.js";
+import { bytes, fixtureEvidence } from "../../../pa-core/src/__tests__/workflow-fixtures.js";
 import { digest } from "../../../pa-core/src/workflows/contracts.js";
 import { authorizePiStructuredWork, parseStructuredLaunchNote, resolvePiStructuredBaseline, structuredLaunchNote } from "../workflow-consumers.js";
 import { ProjectCommandContract } from "../project-command-contract.js";
@@ -85,9 +85,37 @@ test("native public read tools match core JSON and reject outcome/actor/result/u
   }
   const duplicate = await tools.get("pa_decision")!.execute("synthetic", { request: '{"action":"capture","action":"show"}' }, undefined, undefined, {}); assert.equal(duplicate.isError, true);
   assert.equal(mutations, 0);
+  const revise = { action: "revise", revision: f.state.revision, producer: '{"action":"render","id":"review-bundle"}' };
+  const requested = await tools.get("pa_workflow")!.execute("synthetic-revision-transport-only", { request: JSON.stringify(revise) }, undefined, undefined, {});
+  assert.deepEqual(JSON.parse(requested.content[0]!.text).request, revise); assert.equal(mutations, 1);
+  for (const request of [{ ...revise, revision: 0 }, { ...revise, producer: {} }, { ...revise, actor: "operator" }, { ...revise, reason: "material-amendment" }, { ...revise, previousAttemptId: "forged" }, { ...revise, outcome: "approved" }]) {
+    const rejected = await tools.get("pa_workflow")!.execute("synthetic", { request: JSON.stringify(request) }, undefined, undefined, {}); assert.equal(rejected.isError, true);
+  }
+  assert.equal(mutations, 1);
   const view = workflowPrimerView(f.state);
   const primer = generatePrimer({ runtime: "pi", teamConfig: { name: "requirements", description: "Synthetic", objective: "Synthetic", agents: [] }, workflow: view });
   assert.ok(primer.includes(f.state.runId)); assert.ok(primer.includes(f.bundle.workflow.sha256)); assert.ok(primer.includes("projection, never approval"));
+}));
+test("a linked material amendment cannot inherit a pinned launch, old native scope or protected-review locator", () => fixture(async f => {
+  const oldNote = structuredLaunchNote("ordinary-native-execution/v1", f.authority), locator = workflowDecisionReference(f.state, f.authority.decisionId);
+  const oldArtifact = readFileSync(join(f.root, f.bundle.requirements.ref.slice("requirements:".length)));
+  const next = structuredClone(f.bundle); next.subjectId = "package-amended"; next.revision++;
+  next.handoff = { type: "amendment", branch: next.handoff.branch, baseSha: f.base, featureSha: f.base, branchAction: "reuse" };
+  next.requirements.ref = "requirements:agent-teams/requirements/artifacts/amended.md"; next.matrix.ref = next.requirements.ref;
+  for (const [ref, raw] of fixtureEvidence(next)) f.evidence.set(ref, raw);
+  next.scope.checks = [{ ...next.scope.checks[0]!, matrixSource: next.matrix.ref, matrixSha256: next.matrix.sha256 }];
+  const state = f.service.revise(f.state.runId, f.state.revision, bytes(next));
+  assert.equal(state.attempts[0]!.outcomes.queue, "completed"); assert.equal(state.outcomes.queue, undefined);
+  assert.deepEqual(parseStructuredLaunchNote(oldNote), f.authority); // immutable pin is not rewritten
+  const work = () => authorizePiStructuredWork("example", f.repo, "EX-1", f.bundle.handoff.branch, "source.edit-scoped", { paths: ["src/a.ts"], checks: ["check"] }, f.authority);
+  assert.throws(work, /WORKFLOW_AUTHORITY/);
+  assert.throws(() => structuredReviewArtifact("example", "EX-1", f.bundle.matrix.ref, locator), /WORKFLOW_AUTHORITY/);
+  const decision = await f.service.decide(state.runId, state.revision, "approve");
+  assert.throws(work, /WORKFLOW_AUTHORITY/); // new approval cannot upgrade an old start
+  assert.throws(() => resolvePiStructuredBaseline("example", f.repo, "EX-1"), /WORKFLOW_AUTHORITY/); // graph/publication/primary still unproven
+  await assert.rejects(f.service.requestStep(state.runId, f.service.status(state.runId).revision, "publish", decision.decisionId), /WORKFLOW_UNCERTAIN/);
+  assert.deepEqual(readFileSync(join(f.root, f.bundle.requirements.ref.slice("requirements:".length))), oldArtifact);
+  assert.equal(f.service.status(state.runId).pending.length, 1); // foreign-primary reconciliation is not guessed or auto-cleared
 }));
 test("structured baseline drives actual materialization without approval text; static profile inspection executes no tools", () => fixture(async f => {
   const before = f.git(["status", "--porcelain=v2"]), head = f.git(["rev-parse", "HEAD"]);

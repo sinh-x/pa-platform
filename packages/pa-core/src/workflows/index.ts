@@ -12,6 +12,7 @@ export { renderWorkflowGate } from "./presentation.js";
 export type { WorkflowGateResult } from "./presentation.js";
 export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision, projectWorkflowNext } from "./service.js";
 export type { WorkflowCaller, WorkflowDecision, WorkflowHost, WorkflowState, WorkflowEffectOwner, EffectIntent, EffectObservation } from "./service.js";
+export type { WorkflowAttempt } from "./revisions.js";
 export { RegistryWorkflowJournal } from "../registry/workflows.js";
 export { authorizeStructuredConsumer, structuredTaskBaseline, readCanonicalWorkflowArtifact } from "./consumers.js";
 export type { StructuredTaskBaseline, StructuredConsumerContext } from "./consumers.js";

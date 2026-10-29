@@ -6,7 +6,7 @@ import { runTemplateCommand } from "../cli/commands/template.js";
 import { digest } from "../workflows/contracts.js";
 import { templateService } from "../templates/service.js";
 import { reviewBundleTemplateConsumer } from "../workflows/producer.js";
-import { bytes } from "./workflow-fixtures.js";
+import { bytes, fixtureEvidence } from "./workflow-fixtures.js";
 import { workflowRuntimeFixture } from "./workflow-runtime-fixture.js";
 import { templateFixture } from "./template-fixture.js";
 
@@ -52,6 +52,32 @@ test("producer mismatch, injected receipts, malformed bundles and bad referenced
     f.bundle.matrix.sha256 = f.bundle.requirements.sha256; reject(); // Whole-document digest is not matrix identity.
     f.bundle.matrix.sha256 = "c".repeat(64); reject();
     assert.equal(writes(), 0);
+  } finally { f.close(); }
+});
+test("actual producer links revised candidate/provenance without re-enabling a disabled binding or accepting config drift", async () => {
+  const f = fixture(); try {
+    const host = { selection: f.templates }, capture = f.host.capture;
+    f.host.capture = async r => ({ ...await capture(r), outcome: "changes-requested" });
+    const run = f.service.admitProduced(f.selection, f.request(), host);
+    await f.service.decide(run.runId, 1, "approve");
+    f.bundle.revision = 2; f.bundle.subjectId = "package-two";
+    f.bundle.requirements.ref = "requirements:agent-teams/requirements/artifacts/revised.md";
+    f.bundle.matrix.ref = f.bundle.requirements.ref;
+    for (const [ref, raw] of fixtureEvidence(f.bundle)) f.evidence.set(ref, raw);
+    const disabled = { ...f.selection, bindings: f.selection.bindings.map(b => ({ ...b, enabled: false })) };
+    assert.throws(() => f.service.reviseProduced(run.runId, 2, { ...disabled, configRevision: "c".repeat(40) }, f.request(), host), /WORKFLOW_SOURCE/);
+    assert.throws(() => f.service.reviseProduced(run.runId, 2, disabled, bytes({ ...JSON.parse(f.request().toString()), outcome: "approved" }), host), /WORKFLOW_/);
+    assert.equal(f.service.status(run.runId).revision, 2);
+    const rendered = templateService(f.request(), { ...host, reviewBundleConsumer: reviewBundleTemplateConsumer });
+    const revised = f.service.reviseProduced(run.runId, 2, disabled, f.request(), host);
+    assert.equal(Buffer.from(f.journal.snapshot(revised.subjectSha256)).toString(), rendered.candidate);
+    assert.equal(revised.decisions.length, 1); assert.equal(revised.outcomes.approve, undefined);
+    const event = f.journal.read(run.runId).at(-1)!.event;
+    assert.equal(event.type, "subject-revised"); assert.equal(event.data.previousSubjectSha256, run.subjectSha256);
+    const provenance = JSON.parse(Buffer.from(f.journal.snapshot(event.data.producerSha256 as string)).toString());
+    assert.equal(provenance.producer.candidateSha256, revised.subjectSha256);
+    assert.equal(provenance.producer.registrySha256, f.templates.registrySha256);
+    assert.equal(disabled.bindings[0]!.enabled, false);
   } finally { f.close(); }
 });
 test("evidence mutation during the native dialog cannot mint a decision", async () => {

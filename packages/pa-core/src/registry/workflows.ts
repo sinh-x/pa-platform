@@ -3,7 +3,7 @@ import { digest, ID, integer, literal, MAX_WORKFLOW_BYTES, MAX_WORKFLOW_RECORD_B
 
 export interface StoredWorkflowEvent {
   schemaVersion: "pa-workflow-event/v1"; runId: string; eventId: string; expectedRevision: number;
-  predecessor: string | null; type: "admitted" | "decision" | "revocation" | "intent" | "reconcile" | "result";
+  predecessor: string | null; type: "admitted" | "subject-revised" | "decision" | "revocation" | "intent" | "reconcile" | "result";
   data: Record<string, unknown>;
 }
 export interface WorkflowJournalEntry { revision: number; sha256: string; event: StoredWorkflowEvent }
@@ -25,7 +25,7 @@ export class RegistryWorkflowJournal {
       literal(r.schemaVersion, "pa-workflow-event/v1");
       if (r.runId !== runId || row.revision !== index + 1 || r.expectedRevision !== index || r.predecessor !== predecessor || row.predecessor !== predecessor || digest(row.body) !== row.sha256) reject("WORKFLOW_UNCERTAIN");
       text(r.eventId, ID); integer(r.expectedRevision, 0); text(row.sha256, SHA256);
-      if (!["admitted", "decision", "revocation", "intent", "reconcile", "result"].includes(String(r.type)) || !r.data || typeof r.data !== "object" || Array.isArray(r.data)) reject("WORKFLOW_UNCERTAIN");
+      if (!["admitted", "subject-revised", "decision", "revocation", "intent", "reconcile", "result"].includes(String(r.type)) || !r.data || typeof r.data !== "object" || Array.isArray(r.data)) reject("WORKFLOW_UNCERTAIN");
       predecessor = row.sha256;
       return { revision: row.revision, sha256: row.sha256, event: r as unknown as StoredWorkflowEvent };
     });

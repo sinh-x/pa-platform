@@ -14,7 +14,7 @@ export function adoptedWorkflow(journal: RegistryWorkflowJournal, repoKey: strin
   return ids.length ? replayWorkflow(journal, ids[0]!) : null;
 }
 export function packageDecision(state: WorkflowState): string {
-  const decisions = state.decisions.filter(d => d.outcome === "approved" && !state.revoked.includes(d.decisionId));
+  const decisions = state.decisions.filter(d => d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId));
   if (decisions.length !== 1) reject("WORKFLOW_AUTHORITY");
   requireDecision(state, decisions[0]!.decisionId, []); return decisions[0]!.decisionId;
 }
