@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { ProducerContractError } from "../tickets/producer-contract.js";
+import { isCanonicalTicketId } from "../tickets/validate.js";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { parseReviewMatrix, parseReviewMatrixSource, parseReviewObjective, ReviewContractError } from "../validation/review-contract.js";
 import { validateDocument } from "./documents.js";
@@ -133,10 +134,11 @@ function binding(value: unknown, schema: TemplateBinding, source: string): strin
   const patterns: Partial<Record<TemplateBinding["type"], RegExp>> = {
     ticket: /^[A-Z][A-Z0-9]*-[0-9]+$/, repository: /^[A-Za-z0-9_-]+$/, sha: /^[0-9a-f]{40}$/, digest: /^[0-9a-f]{64}$/, revision: /^r[0-9]{3,}$/, handoff: /^(fresh|amendment)$/,
     branch: /^feature\/[A-Z][A-Z0-9]*-[0-9]+-[A-Za-z0-9][A-Za-z0-9._/-]*$/,
-    root: /^\/[A-Za-z0-9_./-]+$/, "comment-ref": /^[A-Z][A-Z0-9]*-[1-9][0-9]*#c-[0-9]{17}$/,
+    root: /^\/[A-Za-z0-9_./-]+$/, "comment-ref": /^[A-Z][A-Z0-9]*-[0-9]+#c-[0-9]{17}$/,
     text: /^[\p{L}\p{N} ,.'()_-]+$/u,
   };
   if (patterns[schema.type] && !patterns[schema.type]!.test(s)) reject("TEMPLATE_BINDING", source, `binding requires the exact ${schema.type} grammar`);
+  if ((schema.type === "ticket" && !isCanonicalTicketId(s)) || (schema.type === "comment-ref" && !isCanonicalTicketId(s.split("#")[0]))) reject("TEMPLATE_BINDING", source, "binding requires a canonical bounded ticket ID");
   if (schema.type === "path") relativePath(s);
   if (schema.type === "matrix-source") parseReviewMatrixSource(s);
   if (schema.type === "root" && resolve(s) !== s) reject("TEMPLATE_BINDING", source, "unaliased root required");

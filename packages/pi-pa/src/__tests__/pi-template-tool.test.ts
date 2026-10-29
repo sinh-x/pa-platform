@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { templateService } from "@pa-platform/pa-core";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { digest } from "../../../pa-core/src/templates/schema.js";
+import { DOCUMENT_DIAGNOSTIC_CASES } from "../../../pa-core/src/__tests__/template-document-diagnostic-fixture.js";
+import { templateService, reviewBundleTemplateConsumer } from "@pa-platform/pa-core";
+import { reviewBundleFixture } from "../../../pa-core/src/__tests__/review-bundle-template-fixture.js";
 import { templateFixture } from "../../../pa-core/src/__tests__/template-fixture.js";
 import { producerFixture } from "../../../pa-core/src/__tests__/template-producer-fixture.js";
 import { completeTemplateFixture } from "../../../pa-core/src/__tests__/template-complete-fixture.js";
@@ -56,6 +61,54 @@ for (const kind of ["fresh", "amendment"] as const) test(`public CLI/native ${ki
     assert.equal(f.resolveBaseline().baseSha, f.bindings.baseSha);
     f.record.comments[0]!.author = "requirements/analyst"; f.saveTicket();
     assert.throws(f.resolveBaseline, /ORDINARY_BASELINE_/);
+  } finally { f.dispose(); }
+});
+
+for (const kind of ["fresh", "amendment"] as const) test(`default native ${kind} review-bundle uses the actual shared parser, not workflow authority`, async () => {
+  const f = reviewBundleFixture(kind, "PAPC-070"); try {
+    const tools: PiToolDefinition[] = [];
+    createTemplateModule({ selection: f.selection })({ registerTool: t => { tools.push(t as PiToolDefinition); } });
+    assert.deepEqual(tools.map(t => t.name), ["pa_template"]);
+    const host = { selection: f.selection, reviewBundleConsumer: reviewBundleTemplateConsumer };
+    const rendered = templateService(f.request, host); assert.equal(rendered.ok, true);
+    const before = [readFileSync(join(f.root, "contracts/templates-v1.json")), readFileSync(join(f.root, "skills/templates/review-bundle.md"))];
+    for (const action of ["render", "validate"]) for (let n = 0; n < 20; n++) {
+      const request = { ...f.request, action, ...(action === "validate" ? { candidate: rendered.candidate } : {}) };
+      const native = await tools[0]!.execute("synthetic-review-bundle", { request: JSON.stringify(request) }, undefined, undefined, undefined);
+      assert.equal(native.isError, false); assert.deepEqual(JSON.parse(native.content[0]!.text), JSON.parse(JSON.stringify(templateService(request, host))));
+      assert.deepEqual(JSON.parse(native.content[0]!.text).validation, { structural: true, consumer: true, authority: false });
+    }
+    for (const bundle of [{ ...f.bundle, ticket: "PAPC-70" }, { ...f.bundle, approved: true }, { ...f.bundle, requestedPermissions: ["remote.push"] }]) {
+      const request = { ...f.request, bindings: { bundle } };
+      const result = await tools[0]!.execute("synthetic-review-bundle-negative", { request: JSON.stringify(request) }, undefined, undefined, undefined);
+      assert.equal(result.isError, true); assert.deepEqual(JSON.parse(result.content[0]!.text), templateService(request, host));
+    }
+    assert.deepEqual([readFileSync(join(f.root, "contracts/templates-v1.json")), readFileSync(join(f.root, "skills/templates/review-bundle.md"))], before);
+  } finally { f.dispose(); }
+});
+
+test("document-rule diagnostics have exact CLI/registered-native parity without rejected source echoes", async () => {
+  const f = templateFixture(); try {
+    for (const c of DOCUMENT_DIAGNOSTIC_CASES) {
+      const entry = f.registry.entries.find(e => e.id === c.id)!, path = join(f.root, entry.source.path), original = readFileSync(path, "utf8");
+      const source = c.mutate(original); writeFileSync(path, source); entry.source.sha256 = digest(source); f.selection = f.save();
+      let tool: PiToolDefinition | undefined;
+      createTemplateModule({ selection: f.selection })({ registerTool: t => { tool = t as PiToolDefinition; } });
+      const before = { source: readFileSync(path), registry: readFileSync(join(f.root, "contracts/templates-v1.json")) };
+      for (const action of ["render", "validate"]) {
+        const body = { bindings: { ticket: "FIX-1" }, ...(action === "validate" ? { candidate: "SECRET-SENTINEL" } : {}) };
+        const request = { action, id: c.id, version: "1", ...body };
+        const expected = templateService(request, { selection: f.selection });
+        assert.equal(expected.code, "TEMPLATE_STRUCTURE"); assert.ok((expected.diagnostic as string).includes(`Source: document.${c.rule}\n`));
+        const output: string[] = [];
+        assert.equal(await runCoreCommand(["template", action, c.id, "--version", "1", "--format", "json"], { binaryName: "ppa", templateHost: { selection: f.selection, input: (async function* () { yield JSON.stringify(body); })() }, io: { stdout: s => output.push(s), stderr: s => assert.fail(s) } }), 1);
+        const native = await tool!.execute("synthetic-document-rule", { request: JSON.stringify(request) }, undefined, undefined, undefined);
+        assert.equal(native.isError, true); assert.deepEqual(JSON.parse(output.join("")), expected); assert.deepEqual(JSON.parse(native.content[0]!.text), expected);
+        assert.ok(!native.content[0]!.text.includes("SECRET-SENTINEL"));
+      }
+      assert.deepEqual({ source: readFileSync(path), registry: readFileSync(join(f.root, "contracts/templates-v1.json")) }, before);
+      writeFileSync(path, original); entry.source.sha256 = digest(original); f.selection = f.save();
+    }
   } finally { f.dispose(); }
 });
 

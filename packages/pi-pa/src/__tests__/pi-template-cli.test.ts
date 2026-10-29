@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { templateService } from "../../../pa-core/src/templates/service.js";
 import { completeTemplateFixture } from "../../../pa-core/src/__tests__/template-complete-fixture.js";
+import { DOCUMENT_DIAGNOSTIC_CASES } from "../../../pa-core/src/__tests__/template-document-diagnostic-fixture.js";
 
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 function snapshot(root: string): string[] {
@@ -58,11 +59,11 @@ test("actual built PPA entry handles template revisions and all sixteen producer
     }
     mkdirSync(join(modules, "@pa-platform"), { recursive: true }); symlinkSync(join(stage, "packages/pa-core"), join(modules, "@pa-platform/pa-core"));
     writeFileSync(join(stage, ".pa-platform-config.sha"), selection.configRevision + "\n"); writeFileSync(join(stage, ".pa-template-registry.sha"), selection.registrySha256 + "\n");
-    const cases: Array<{ argv: string[]; body?: string; exitCode: number; repeats: number; expected: unknown }> = [];
+    const cases: Array<{ argv: string[]; body?: string; exitCode: number; repeats: number; expected: unknown; request: Record<string, unknown> }> = [];
     const add = (request: Record<string, unknown>, repeats = 1) => {
       const action = request.action as string, body = action === "render" ? { bindings: request.bindings } : action === "validate" ? { bindings: request.bindings, candidate: request.candidate } : undefined;
       const expected = templateService(request, { selection });
-      cases.push({ argv: ["template", action, ...(action === "list" ? [] : [request.id as string, "--version", request.version as string]), "--format", "json"], ...(body ? { body: JSON.stringify(body) } : {}), expected, exitCode: expected.ok ? 0 : 1, repeats });
+      cases.push({ argv: ["template", action, ...(action === "list" ? [] : [request.id as string, "--version", request.version as string]), "--format", "json"], ...(body ? { body: JSON.stringify(body) } : {}), expected, exitCode: expected.ok ? 0 : 1, repeats, request });
     };
     add({ action: "list" });
     for (const entry of f.registry.entries) {
@@ -87,6 +88,32 @@ test("actual built PPA entry handles template revisions and all sixteen producer
     const qualify = (args: string[]) => spawnSync(process.execPath, [driver, ...args], { env: { ...env, PA_PLATFORM_HOME: f.root, PA_PLATFORM_TEAMS: join(f.root, "teams"), PA_PLATFORM_CONFIG: join(stage, "empty-config") }, encoding: "utf8", timeout: 90000, maxBuffer: 1_048_576 });
     const paired = qualify(["--mode", "paired-config"]); assert.equal(paired.status, 0, paired.stdout + paired.stderr); const qualified = JSON.parse(paired.stdout);
     assert.equal(qualified.status, "passed"); assert.equal(qualified.consumers, 3); assert.equal(qualified.comparisons, 16 * 4 * 20); assert.equal(qualified.negativeCases, 16 * 5); assert.ok(qualified.runtime.moduleSha256["packages/pi-pa/dist/cli.js"]); assert.equal(existsSync(marker), false, "qualification never runs config-provided Git hooks/monitors");
+    // Bad but exactly selected sources must expose the SAME bounded first-rule
+    // error through the built public CLI and default native registration. Each
+    // revision is a synthetic disposable commit, never a production pin change.
+    for (const c of DOCUMENT_DIAGNOSTIC_CASES) {
+      const entry = f.registry.entries.find(e => e.id === c.id)!, path = join(f.root, entry.source.path), original = readFileSync(path, "utf8");
+      const mutated = c.mutate(original); assert.notEqual(mutated, original);
+      writeFileSync(path, mutated); entry.source.sha256 = createHash("sha256").update(mutated).digest("hex");
+      const selected = f.save(); git("add", "contracts/templates-v1.json", "skills/templates"); git("commit", "-qm", "synthetic malformed document rule");
+      const current = { ...selected, configRevision: git("rev-parse", "HEAD") };
+      writeFileSync(join(stage, ".pa-platform-config.sha"), current.configRevision + "\n"); writeFileSync(join(stage, ".pa-template-registry.sha"), current.registrySha256 + "\n");
+      const rejectedCases = ["render", "validate"].map(action => {
+        const body = { bindings: f.allBindings[c.id], ...(action === "validate" ? { candidate: "SECRET-SENTINEL" } : {}) };
+        const request = { action, id: c.id, version: entry.revision, ...body }, expected = templateService(request, { selection: current });
+        assert.equal(expected.code, "TEMPLATE_STRUCTURE"); assert.ok((expected.diagnostic as string).includes(`Source: document.${c.rule}\n`));
+        assert.ok(!JSON.stringify(expected).includes("SECRET-SENTINEL"));
+        return { argv: ["template", action, c.id, "--version", entry.revision, "--format", "json"], body: JSON.stringify(body), request, expected, exitCode: 1, repeats: 1 };
+      });
+      writeFileSync(packet, JSON.stringify(rejectedCases));
+      const beforeRejection = { config: snapshot(f.root), candidate: snapshot(stage) };
+      const rejected = spawnSync(process.execPath, [fileURLToPath(new URL("./template-cli-worker.mjs", import.meta.url)), cli, packet], { env: { ...env, PA_PLATFORM_HOME: f.root, PA_PLATFORM_TEAMS: join(f.root, "teams"), PA_PLATFORM_CONFIG: join(stage, "empty-config") }, encoding: "utf8", timeout: 15000, maxBuffer: 65536 });
+      assert.equal(rejected.status, 0, rejected.stderr); assert.equal(rejected.stderr, ""); assert.equal(JSON.parse(rejected.stdout).cases, 2);
+      assert.deepEqual({ config: snapshot(f.root), candidate: snapshot(stage) }, beforeRejection, "rejection is read-only through both default public entry points");
+      writeFileSync(path, original); entry.source.sha256 = createHash("sha256").update(original).digest("hex");
+    }
+    const restored = f.save(); git("add", "contracts/templates-v1.json", "skills/templates"); git("commit", "-qm", "restore synthetic valid document sources");
+    writeFileSync(join(stage, ".pa-platform-config.sha"), git("rev-parse", "HEAD") + "\n"); writeFileSync(join(stage, ".pa-template-registry.sha"), restored.registrySha256 + "\n");
     // An adopted instruction disappearing at a newly pinned clean revision is a
     // blocked required case, not a skipped consumer or a fallback formatter.
     writeFileSync(join(f.root, "teams/builder/modes/orchestrator.md"), "# Missing template adoption\nNo source/approval effects.\n"); git("add", "teams"); git("commit", "-qm", "synthetic missing adoption"); git("update-ref", "refs/remotes/origin/develop", git("rev-parse", "HEAD")); writeFileSync(join(stage, ".pa-platform-config.sha"), git("rev-parse", "HEAD") + "\n");

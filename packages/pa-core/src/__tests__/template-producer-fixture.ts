@@ -14,7 +14,7 @@ export const pairTemplate = "PA pair-signoff/v1\nDecision: approve-pair-and-matr
 export function handoffTemplate(kind: "fresh" | "amendment"): string {
   return `# Synthetic handoff fixture\n\n> Handoff Contract: pa-task-handoff/v1\n> Status: Draft\n> Route: builder/orchestrator\n> Ticket: {{ticket}}\n> Repository Key: {{repositoryKey}}\n> Repository Root: {{repositoryRoot}}\n> Handoff Type: {{handoffType}}\n> Feature Branch: {{branch}}\n> ${kind === "fresh" ? "Approved" : "Retained"} Base SHA: {{baseSha}}\n> Branch Action: ${kind === "fresh" ? "create" : "select"}\n> Linked Branch State: ${kind === "fresh" ? "planned" : "materialized"}${kind === "amendment" ? "\n> Current Feature SHA: {{featureSha}}\n> Amendment Source Requirements Ref: {{amendmentSource}}\n> Amendment Tuple Approval Evidence: {{tupleApprovalEvidence}}\n> Amendment Immediate Reread SHA-256: {{immediateRereadSha256}}\n> Amendment Final Reread SHA-256: {{finalRereadSha256}}" : ""}\n\n## Handoff\nSynthetic scoped fixture, not execution permission.\n`;
 }
-export function producerFixture(kind: "fresh" | "amendment" = "fresh") {
+export function producerFixture(kind: "fresh" | "amendment" = "fresh", ticket = "FIX-237") {
   const f = templateFixture(), originalEnvironment = process.env;
   process.env = { ...process.env };
   for (const key of Object.keys(process.env)) if (/^(PA_|GIT_)/.test(key)) delete process.env[key];
@@ -28,7 +28,7 @@ export function producerFixture(kind: "fresh" | "amendment" = "fresh") {
   const baseSha = git(["rev-parse", "HEAD"]);
   if (kind === "amendment") { writeFileSync(join(repo, "README"), "synthetic B"); git(["commit", "-qam", "synthetic feature"]); }
   const featureSha = git(["rev-parse", "HEAD"]);
-  const branch = "feature/FIX-237-templates", ticket = "FIX-237", commentId = "c-20000101000000000", reviewRevision = "r001";
+  const branch = `feature/${ticket}-templates`, commentId = "c-20000101000000000", reviewRevision = "r001";
   writeFileSync(join(userConfig, "config.yaml"), `repos:\n  fixture-repo:\n    path: ${repo}\n    prefix: FIX\n    develop_branch: develop\n`);
   const handoffBindings = { ticket, repositoryKey: "fixture-repo", repositoryRoot: repo, handoffType: kind, branch, baseSha, ...(kind === "amendment" ? { featureSha, amendmentSource: "requirements:agent-teams/requirements/artifacts/synthetic-previous.md", tupleApprovalEvidence: `${ticket}#c-19990101000000000`, immediateRereadSha256: "d".repeat(64), finalRereadSha256: "e".repeat(64) } : {}) };
   const put = (id: string, source: string) => {
@@ -42,6 +42,8 @@ export function producerFixture(kind: "fresh" | "amendment" = "fresh") {
   const requirementPath = join(ai, requirementsSource.slice("requirements:".length));
   const templateMatrix = parseReviewMatrixArtifact(readFileSync(new URL("./fixtures/protected-review-v1/producer-node-pnpm.md", import.meta.url)), "requirements:agent-teams/requirements/artifacts/fixture-producer-node-pnpm.md").matrix;
   templateMatrix.source = requirementsSource; templateMatrix.repository = { key: "fixture-repo", root: repo, branch, baseSha };
+  templateMatrix.environment.PA_TICKET_ID = { literal: ticket };
+  for (const gate of templateMatrix.prerequisites) if (gate.kind === "operatorGate") gate.ticket = ticket;
   const matrixAuthority = `### Full Validation Matrix\n\nMatrix Source: ${requirementsSource}\n\n\`\`\`json\n${JSON.stringify(templateMatrix, null, 2)}\n\`\`\`\n\n`;
   const matrixSha256 = digest(matrixAuthority);
   const metadata = `> Review Revision: ${reviewRevision}\n> Review Approval Evidence: ${ticket}#${commentId}\n> Matrix Authority SHA-256: ${matrixSha256}\n> Matrix Approval Evidence: ${commentId}\n`;

@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { MAX_TEMPLATE_REQUEST_BYTES, TemplateError, templateFailure, templateService, type TemplateHost } from "@pa-platform/pa-core";
+import { MAX_TEMPLATE_REQUEST_BYTES, TemplateError, templateFailure, templateService, reviewBundleTemplateConsumer, type TemplateHost } from "@pa-platform/pa-core";
 import type { PiExtensionModule, PiToolDefinition } from "./index.js";
 
 /** Raw request documents preserve decoded-key duplicates and exact UTF-8 bounds
@@ -15,7 +15,7 @@ export function createPaTemplateTool(host: TemplateHost = {}): PiToolDefinition 
     execute: async (_id, input) => {
       const valid = input !== null && typeof input === "object" && !Array.isArray(input) && Object.keys(input).length === 1 && Object.hasOwn(input, "request") && typeof input.request === "string";
       const result = valid
-        ? templateService(input.request as string, { ...host, team: host.team ?? process.env.PA_TEAM, mode: host.mode ?? process.env.PA_MODE })
+        ? templateService(input.request as string, { ...host, reviewBundleConsumer: host.reviewBundleConsumer ?? reviewBundleTemplateConsumer, team: host.team ?? process.env.PA_TEAM, mode: host.mode ?? process.env.PA_MODE })
         : templateFailure(new TemplateError("TEMPLATE_FIELD", "native-request", "one raw request document string is required; structured or unknown framing fields are unsupported"));
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: {}, isError: !result.ok };
     },

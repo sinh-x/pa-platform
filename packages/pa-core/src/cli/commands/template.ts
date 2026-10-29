@@ -1,6 +1,7 @@
 import { templateFailure, templateService, type TemplateHost } from "../../templates/service.js";
 import { MAX_TEMPLATE_REQUEST_BYTES, object, reject, strictJson, type Row } from "../../templates/schema.js";
 import type { CliIo } from "../utils.js";
+import { reviewBundleTemplateConsumer } from "../../workflows/producer.js";
 
 export interface TemplateCliHost extends TemplateHost { input?: AsyncIterable<Uint8Array | string> }
 export async function runTemplateCommand(argv: string[], io: Required<CliIo>, host: TemplateCliHost = {}): Promise<number> {
@@ -32,7 +33,7 @@ export async function runTemplateCommand(argv: string[], io: Required<CliIo>, ho
       const body = object(strictJson(Buffer.concat(chunks)), action === "render" ? ["bindings"] : ["bindings", "candidate"]);
       Object.assign(request, body);
     }
-    const result = templateService(request, { ...host, team: host.team ?? process.env.PA_TEAM, mode: host.mode ?? process.env.PA_MODE });
+    const result = templateService(request, { ...host, reviewBundleConsumer: host.reviewBundleConsumer ?? reviewBundleTemplateConsumer, team: host.team ?? process.env.PA_TEAM, mode: host.mode ?? process.env.PA_MODE });
     if (format === "json") io.stdout(JSON.stringify(result));
     else {
       const { source, candidate, ...metadata } = result;
