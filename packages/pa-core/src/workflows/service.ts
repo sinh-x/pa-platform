@@ -16,13 +16,16 @@ export interface WorkflowDecision {
   permissions: PackagePermission[]; captureEvidenceRef: EvidenceRef; principal: string; issuedAt: string;
 }
 export interface EffectIntent { intentId: string; runId: string; stepId: string; owner: string; decisionId: string; subjectSha256: string }
-export type EffectObservation = { state: "absent" } | { state: "unknown" | "conflict" } | { state: "proven"; outcome: StepOutcome; evidence: EvidenceRef[] };
+export type EffectObservation = { state: "absent" } | { state: "pending" } | { state: "unknown" | "conflict" } | { state: "proven"; outcome: StepOutcome; evidence: EvidenceRef[] };
 /** Existing service implements admission AND idempotency/reconciliation. Declaration metadata cannot supply these ports. */
 export interface WorkflowEffectOwner {
   admit(caller: WorkflowCaller, subject: ReviewBundle, intent: EffectIntent): void;
   observe(intent: EffectIntent): Promise<EffectObservation>;
   execute(intent: EffectIntent): Promise<EffectObservation>;
   verify(intent: EffectIntent, observation: EffectObservation): boolean;
+  /** Existing owner may serialize final verification and registry settlement
+   * with its effect boundary. Holding a lock is not source/custody authority. */
+  settle?<T>(intent: EffectIntent, action: () => T): T;
 }
 export interface WorkflowHost {
   authenticate(): WorkflowCaller;
@@ -271,16 +274,24 @@ export class JsonWorkflowService {
       // Owner must execute idempotently by intentId, including overlapping original/recovery callers.
       observed = await owner.execute(intent);
     }
-    if (observed.state !== "proven" || !owner.verify(intent, observed)) throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", `effect.${intent.stepId}`, intent.owner);
-    const current = this.status(intent.runId);
-    if (!current.pending.some(i => i.intentId === intent.intentId)) return current;
-    const step = current.definition.steps.find(s => s.id === intent.stepId)!;
-    oneOf(observed.outcome, STEP_OUTCOMES[step.kind]); if (!observed.evidence.length) reject("WORKFLOW_UNCERTAIN");
+    // Interactive native owners can acknowledge the SAME durable intent while
+    // awaiting their authenticated caller. This is neither a result nor a
+    // license to retry uncertain work; native custody still owns every effect.
+    if (observed.state === "pending") return this.status(intent.runId);
+    if (observed.state !== "proven") throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", `effect.${intent.stepId}`, intent.owner);
     const result = observed;
-    this.journal.append(intent.runId, current.revision, entries => {
-      if (!replayWorkflow(this.journal, intent.runId, entries).pending.some(i => i.intentId === intent.intentId)) reject("WORKFLOW_CONFLICT");
-      return { eventId: `event-${randomUUID()}`, type: "result", data: { intentId: intent.intentId, outcome: result.outcome, evidence: result.evidence.map(evidenceRef) } };
-    });
-    return this.status(intent.runId);
+    const settle = () => {
+      if (!owner.verify(intent, result)) throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", `effect.${intent.stepId}`, intent.owner);
+      const current = this.status(intent.runId);
+      if (!current.pending.some(i => i.intentId === intent.intentId)) return current;
+      const step = current.definition.steps.find(s => s.id === intent.stepId)!;
+      oneOf(result.outcome, STEP_OUTCOMES[step.kind]); if (!result.evidence.length) reject("WORKFLOW_UNCERTAIN");
+      this.journal.append(intent.runId, current.revision, entries => {
+        if (!replayWorkflow(this.journal, intent.runId, entries).pending.some(i => i.intentId === intent.intentId)) reject("WORKFLOW_CONFLICT");
+        return { eventId: `event-${randomUUID()}`, type: "result", data: { intentId: intent.intentId, outcome: result.outcome, evidence: result.evidence.map(evidenceRef) } };
+      });
+      return this.status(intent.runId);
+    };
+    return owner.settle ? owner.settle(intent, settle) : settle();
   }
 }

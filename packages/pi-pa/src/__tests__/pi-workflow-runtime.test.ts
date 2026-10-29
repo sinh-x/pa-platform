@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { createTicketWorkflowOwners, TicketStore, appendRegistryEvent, closeDb, materializeTicketBranch, parseReviewMatrixPlan, workflowDecisionReference, structuredReviewArtifact, type ReviewMatrix, type RuntimeAdapter } from "@pa-platform/pa-core";
@@ -16,22 +16,25 @@ import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { TreehouseClient } from "./treehouse-fixture.js";
 import { createJsonWorkflowModule } from "../pi-extension/workflow.js";
+import { createPiExecutionModule } from "../pi-extension/prepared-workflow.js";
+import { createPiSourceWorkflowOwner } from "../workflow-source.js";
 import type { PiToolDefinition, PiRuntime } from "../pi-extension/index.js";
 import { workflowReadService, workflowPrimerView, generatePrimer } from "@pa-platform/pa-core";
 
-async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, amendment = false) {
+async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, amendment = false, source = false) {
   const env = process.env; process.env = { ...env };
   for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key) && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
   const f = workflowRuntimeFixture();
-  try { await run(await setup(f, amendment)); } finally { closeDb(); f.close(); process.env = env; }
+  try { await run(await setup(f, amendment, source)); } finally { closeDb(); f.close(); process.env = env; }
 }
-async function setup(f: ReturnType<typeof workflowRuntimeFixture>, amendment = false) {
+async function setup(f: ReturnType<typeof workflowRuntimeFixture>, amendment = false, source = false) {
   Object.assign(process.env, { PA_AI_USAGE_HOME: f.root, PA_REGISTRY_DB: join(f.root, "registry.db"), PA_PLATFORM_CONFIG: join(f.root, "config") });
   const repo = join(f.root, "repo"), checkout = join(f.root, "checkout"); mkdirSync(repo); mkdirSync(join(f.root, "config")); mkdirSync(join(f.root, "tickets"));
   const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git(["init", "-q", "-b", "develop"]); git(["config", "user.name", "Synthetic fixture"]); git(["config", "user.email", "fixture@example.invalid"]); git(["config", "commit.gpgsign", "false"]); git(["config", "core.hooksPath", "/dev/null"]);
-  const script = "process.exit(0)\n"; writeFileSync(join(repo, "check.cjs"), script);
-  const profile = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [{ id: "check", executable: realpathSync(process.execPath), argv: ["check.cjs"], environment: {}, readPaths: [], prerequisites: [{ path: "check.cjs", sha256: digest(script) }], timeoutSeconds: 10, maximumOutputBytes: 1024 }] });
+  const script = source ? "const fs=require('node:fs'); console.log('native source check'); process.exit(fs.readFileSync('source.txt','utf8').includes('repaired')?0:2);\n" : "process.exit(0)\n"; writeFileSync(join(repo, "check.cjs"), script);
+  if (source) { writeFileSync(join(repo, "source.txt"), "original\n"); f.bundle.scope.files = ["source.txt"]; }
+  const profile = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [{ id: "check", executable: realpathSync(process.execPath), argv: ["check.cjs"], environment: {}, readPaths: source ? ["source.txt"] : [], prerequisites: [{ path: "check.cjs", sha256: digest(script) }], timeoutSeconds: 10, maximumOutputBytes: 1024 }] });
   writeFileSync(join(repo, "checks.json"), profile); git(["add", "."]); git(["commit", "-qm", "fixture base"]);
   const base = git(["rev-parse", "HEAD"]);
   git(amendment ? ["worktree", "add", "-b", f.bundle.handoff.branch, checkout, base] : ["worktree", "add", "--detach", checkout, base]);
@@ -56,16 +59,27 @@ async function setup(f: ReturnType<typeof workflowRuntimeFixture>, amendment = f
     inputs: [{ name: "pair", schemaVersion: "pa-publication-pair/v1", source: "output", stepId: "publish", output: "pair" }, { name: "decision", schemaVersion: "pa-decision/v1", source: "output", stepId: "approve", output: "decision" }],
     operation: { id: "ticket.queue", version: "v1" }, authorization: ["ticket.queue.advance"], effects: ["ticket.queue"], outputs: [{ name: "queue", schemaVersion: "pa-ticket-queue-result/v1" }], verification: [{ id: "ticket.queue-observed", version: "v1", inputs: ["pair", "decision"] }],
     transitions: { completed: "completed", failed: "blocked", unknown: "blocked" }, failurePolicy: { strategy: "reconcile", correctionOwner: "tickets" } });
+  if (source) {
+    d.requiredCapabilities.push("execution.scoped-local"); d.steps[2]!.transitions.completed = "source-phase";
+    d.steps.push({ id: "source-phase", order: 4, title: "Scoped native source phase", kind: "action", owner: "execution", dependsOn: [{ stepId: "queue", outcome: "completed" }], when: true,
+      inputs: [{ name: "package", schemaVersion: "pa-review-bundle/v1", source: "context", field: "bundle" }, { name: "decision", schemaVersion: "pa-decision/v1", source: "output", stepId: "approve", output: "decision" }],
+      operation: { id: "source.local", version: "v1" }, authorization: ["source.edit-scoped", "repair.same-scope", "git.commit-local"], effects: ["source.scoped", "git.local"], outputs: [{ name: "execution", schemaVersion: "pa-execution-result/v1" }],
+      verification: [{ id: "execution.native", version: "v1", inputs: ["package", "decision"] }], transitions: { completed: "source-next", failed: "blocked", unknown: "blocked" }, failurePolicy: { strategy: "reconcile", correctionOwner: "execution" } });
+    d.steps.push({ ...structuredClone(d.steps[3]!), id: "source-next", order: 5, title: "Second scoped native phase", dependsOn: [{ stepId: "source-phase", outcome: "completed" }], transitions: { completed: "completed", failed: "blocked", unknown: "blocked" } });
+  }
   const definition = bytes(d); f.bundle.workflow.sha256 = digest(definition);
   f.selection = { ...f.selection, definitions: f.selection.definitions.map(row => ({ ...row, raw: definition, sha256: digest(definition) })) };
   const owners = createTicketWorkflowOwners(f.journal, new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true }), f.root, f.host.authenticate);
   for (const [id, owner] of owners) (f.host.owners as Map<string, typeof owner>).set(id, owner);
+  const nativeAuthority = new PiPreparedNativeAuthority({ root: join(f.root, "native-authority"), aiUsageRoot: f.root });
+  const sourceOwner = createPiSourceWorkflowOwner(f.journal, () => f.host.authenticate(), undefined, nativeAuthority);
+  if (source) (f.host.owners as Map<string, typeof sourceOwner>).set("source.local", sourceOwner);
   const admitted = f.service.admit(f.selection, bytes(f.bundle)), decision = await f.service.decide(admitted.runId, 1, "approve");
   assert.throws(() => resolvePiStructuredBaseline("example", repo, "EX-1"), /WORKFLOW_AUTHORITY/); // forged early queue status is not progression
   const published = await f.service.requestStep(admitted.runId, 2, "publish", decision.decisionId);
   const state = await f.service.requestStep(admitted.runId, published.revision, "queue", decision.decisionId);
   const authority = { runId: state.runId, decisionId: decision.decisionId, subjectSha256: state.subjectSha256 };
-  return { ...f, repo, checkout, base, git, ticketPath, ticket, state, authority };
+  return { ...f, repo, checkout, base, git, ticketPath, ticket, state, authority, nativeAuthority, sourceOwner };
 }
 
 test("native public read tools match core JSON and reject outcome/actor/result/unknown overrides before mutation", () => fixture(async f => {
@@ -181,6 +195,112 @@ test("default Pi launcher and native execution owner consume the structured gran
   if (bodyFailure) throw bodyFailure;
   assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1);
 }));
+test("roadmap Step 2: exact source intent settles from real native checked/committed phase evidence, never agent flags", () => fixture(async f => {
+  assert.throws(() => resolvePiStructuredBaseline("example", f.repo, "EX-1"), /WORKFLOW_AUTHORITY/);
+  const waiting = await f.service.requestStep(f.state.runId, f.state.revision, "source-phase", f.authority.decisionId);
+  assert.equal(waiting.pending.length, 1); assert.equal(waiting.outcomes["source-phase"], undefined);
+  assert.equal(existsSync(f.nativeAuthority.evidenceRoot()), false); // request did not allocate/spawn/initialize execution
+  let intent = waiting.pending[0]!;
+  assert.equal(f.sourceOwner.verify(intent, { state: "proven", outcome: "completed", evidence: [{ schemaVersion: "pa-workflow-evidence-ref/v1", ref: "model-passed", version: "v1", sha256: "a".repeat(64) }] }), false);
+  const baseline = resolvePiStructuredBaseline("example", f.repo, "EX-1")!;
+  materializeTicketBranch({ canonicalRepoKey: "example", canonicalRepoRoot: f.repo, worktreeRoot: f.checkout, ticketId: "EX-1", intendedTaskBaseline: baseline, rereadStructuredTaskBaseline: () => resolvePiStructuredBaseline("example", f.repo, "EX-1")! });
+  const teams = join(f.root, "teams"); mkdirSync(teams); process.env.PA_PLATFORM_TEAMS = teams;
+  writeFileSync(join(teams, "builder.yaml"), "name: builder\ndescription: Synthetic provider, real native source\nobjective: Fixture\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+  const treehouse = new TreehouseClient({ run: args => {
+    if (args[0] !== "status") throw Error("no checkout allocation/return");
+    return { status: 0, stdout: Buffer.from(JSON.stringify([{ name: "1", path: f.checkout, status: "leased", branch: f.bundle.handoff.branch, detached: false, flavor: "git", lease_id: "synthetic-source-intent", lease_holder: "pa:example:EX-1", leased_at: "2026-10-29T00:00:00Z", processes: [] }])), stderr: Buffer.alloc(0) };
+  } });
+  let bodyFailure: unknown, spawns = 0;
+  const adapter: RuntimeAdapter & { preflight(): Promise<void> } = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "synthetic-source-intent", async preflight() {}, installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "fixture" }), extractActivity: () => [], resume: async () => { throw Error("not holder restart qualification"); },
+    async spawn(opts) {
+      spawns++; const env = process.env, cwd = process.cwd(); process.env = { ...env, ...opts.env }; process.chdir(f.checkout);
+      try {
+        assert.equal(recordPiProcessIdentity(opts.deployId, process.env.PA_DEPLOYMENT_DIR!, process.pid), true); opts.onPid?.(process.pid);
+        const native = new PiNativeExecutionAdapter({ authority: f.nativeAuthority, helperDependencies: { treehouse } }), context = { cwd: f.checkout };
+        const session = native.resolve(context)!, bounds = session.service.status(session.actor).bounds;
+        const tools = new Map<string, PiToolDefinition>(), handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
+        createPiExecutionModule({ nativeAdapter: native })({ registerTool: t => tools.set(t.name, t as PiToolDefinition), on: (name, handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]) } as PiRuntime);
+        const dispatch = async (name: string, event: unknown) => { for (const handler of handlers.get(name) ?? []) { const result = await handler(event, context); if (result !== undefined) return result; } };
+        await dispatch("session_start", {});
+        const control = (input: Record<string, unknown>) => tools.get("pa_execution")!.execute("native-control", input, undefined, undefined, context);
+        const observe = async (kind: string, rationale?: string) => (await control({ action: "observe", kind, ...(rationale ? { rationale } : {}) })).details.evidence;
+        const select = async () => { const holder = await observe("holder"); await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder }); };
+        const settle = async () => control({ action: "settle", evidence: await observe("inventory") });
+        let count = 0;
+        const execute = async (name: string, input: Record<string, unknown>) => {
+          const id = `source-${++count}`; assert.equal(await dispatch("tool_call", { toolName: name, toolCallId: id, input }), undefined);
+          if (count === 1) {
+            const before = session.service.status(session.actor);
+            assert.equal((await f.sourceOwner.observe(intent)).state, "unknown");
+            const current = f.service.status(waiting.runId);
+            await assert.rejects(f.service.reconcile(waiting.runId, current.revision, intent.intentId), /WORKFLOW_UNCERTAIN/);
+            assert.deepEqual(session.service.status(session.actor), before); assert.equal(before.operation!.id, id);
+          }
+          let result: unknown, isError = false;
+          try { result = await tools.get(name)!.execute(id, input, undefined, undefined, context); } catch (error) { result = String(error); isError = true; }
+          await dispatch("tool_execution_end", { toolName: name, toolCallId: id, result, isError }); return { result, isError };
+        };
+        const plan = { phaseId: "source-phase", scope: "Exact native workflow phase", paths: ["source.txt"], requirements: ["FR-01"], prerequisites: [], checks: ["check"], size: "S", complexity: "bounded", rationale: "Synthetic capture; real native execution, checks and local commit" };
+        assert.throws(() => session.service.apply(session.actor, { action: "plan", plan: { ...plan, phaseId: "foreign-phase" } }), /WORKFLOW_AUTHORITY/);
+        assert.throws(() => session.service.apply(session.actor, { action: "plan", plan: { ...plan, paths: ["outside.txt"] } }), /WORKFLOW_AUTHORITY/);
+        assert.equal(session.service.status(session.actor).plan, null);
+        await control({ action: "plan", plan }); await select();
+        assert.equal((await dispatch("tool_call", { toolName: "bash", toolCallId: "forged-check-environment", input: { command: "node 'check.cjs'", env: { TEST_MODE: "forged" } } }) as { block: boolean }).block, true);
+        assert.equal((await execute("bash", { command: "node 'check.cjs'", timeout: 10 })).isError, true);
+        const failure = session.service.status(session.actor).originalFailure!; assert.equal(failure.exitCode, 2); await settle();
+        const unfinished = await f.service.reconcile(waiting.runId, f.service.status(waiting.runId).revision, intent.intentId);
+        assert.equal(unfinished.outcomes["source-phase"], undefined); assert.equal(unfinished.pending[0]!.intentId, intent.intentId);
+        assert.deepEqual(session.service.status(session.actor).originalFailure, failure);
+        await control({ action: "attempt", evidence: await observe("recovery", "Native exit 2 and declared source input identify the unrepaired content; repair source only.") });
+        await select(); assert.equal((await execute("write", { path: "source.txt", content: "repaired\n" })).isError, false);
+        assert.equal((await execute("bash", { command: "node 'check.cjs'", timeout: 10 })).isError, false); await settle();
+        await control({ action: "resolve", evidence: session.reportFacts().checks.at(-1)!.output }); await select();
+        await execute("bash", { command: "git add -- source.txt" }); assert.equal((await execute("bash", { command: "git commit -m 'feat: native workflow source'" })).isError, false); await settle();
+        const firstPhaseRef = await observe("phase");
+        const firstPhase = session.evidence.read(firstPhaseRef as Parameters<typeof session.evidence.read>[0], "phase") as { workflow: { intentId: string } };
+        assert.equal(firstPhase.workflow.intentId, intent.intentId);
+        const firstState = f.service.status(waiting.runId), firstComplete = await f.service.reconcile(waiting.runId, firstState.revision, intent.intentId);
+        assert.equal(firstComplete.outcomes["source-phase"], "completed"); assert.equal(firstComplete.outcomes["source-next"], undefined);
+        assert.throws(() => session.service.apply(session.actor, { action: "plan", plan }), /WORKFLOW_AUTHORITY/); // completion is not a new intent
+        const secondPending = await f.service.requestStep(waiting.runId, firstComplete.revision, "source-next", f.authority.decisionId); intent = secondPending.pending[0]!;
+        await control({ action: "advance", plan: { ...plan, phaseId: "source-next" }, evidence: firstPhaseRef });
+        await select();
+        assert.equal((await dispatch("tool_call", { toolName: "bash", toolCallId: "premature-second-commit", input: { command: "git commit -m 'feat: stale phase checks'" } }) as { block: boolean }).block, true);
+        await execute("write", { path: "source.txt", content: "repaired phase two\n" });
+        assert.equal((await execute("bash", { command: "node 'check.cjs'", timeout: 10 })).isError, false);
+        await execute("bash", { command: "git add -- source.txt" }); assert.equal((await execute("bash", { command: "git commit -m 'feat: second native source phase'" })).isError, false); await settle();
+        const phaseRef = await observe("phase"), nativeState = session.service.status(session.actor);
+        const phase = session.evidence.read(phaseRef as Parameters<typeof session.evidence.read>[0], "phase") as { workflow: { intentId: string }; commit: Parameters<typeof session.evidence.read>[0] };
+        assert.equal(phase.workflow.intentId, intent.intentId); assert.equal(f.service.status(waiting.runId).outcomes["source-next"], undefined);
+        const actual = await f.sourceOwner.observe(intent); assert.equal(actual.state, "proven"); assert.equal(f.sourceOwner.verify(intent, actual), true);
+        if (actual.state === "proven") { const original = structuredClone(actual); actual.evidence[0]!.sha256 = "f".repeat(64); assert.equal(f.sourceOwner.verify(intent, actual), false); actual.evidence = original.evidence; }
+        assert.equal(f.sourceOwner.verify(intent, { state: "proven", outcome: "completed", evidence: [] }), false);
+        // Changed checked bytes/config/output cannot inherit the retained pass.
+        const sourcePath = join(f.checkout, "source.txt"), raw = readFileSync(sourcePath); writeFileSync(sourcePath, "foreign change\n");
+        assert.equal((await f.sourceOwner.observe(intent)).state, "unknown"); writeFileSync(sourcePath, raw);
+        const candidate = f.git(["rev-parse", "HEAD"], f.checkout); f.git(["commit", "--allow-empty", "-qm", "injected foreign candidate"], f.checkout);
+        assert.equal((await f.sourceOwner.observe(intent)).state, "unknown"); f.git(["update-ref", `refs/heads/${f.bundle.handoff.branch}`, candidate], f.checkout);
+        const configPath = join(f.root, "config/config.yaml"), config = readFileSync(configPath); writeFileSync(configPath, config.toString().replace(/sha256: [0-9a-f]{64}/, `sha256: ${"0".repeat(64)}`));
+        assert.equal((await f.sourceOwner.observe(intent)).state, "unknown"); writeFileSync(configPath, config);
+        const commit = session.evidence.read(phase.commit, "tool-result") as { process: { stdout: { name: string } } };
+        const outputPath = join(f.nativeAuthority.evidenceRoot(), commit.process.stdout.name), output = readFileSync(outputPath); unlinkSync(outputPath);
+        assert.equal((await f.sourceOwner.observe(intent)).state, "unknown"); writeFileSync(outputPath, output, { mode: 0o600 });
+        assert.equal((await f.sourceOwner.observe({ ...intent, decisionId: "foreign-decision" })).state, "unknown");
+        const current = f.service.status(waiting.runId); await f.service.revoke(waiting.runId, current.revision, f.authority.decisionId);
+        assert.throws(() => session.service.apply(session.actor, { action: "plan", plan }), /WORKFLOW_AUTHORITY/); // no new effects after revoke
+        const revoked = f.service.status(waiting.runId), settled = await f.service.reconcile(waiting.runId, revoked.revision, intent.intentId);
+        assert.equal(settled.outcomes["source-phase"], "completed"); assert.equal(settled.outcomes["source-next"], "completed"); assert.equal(settled.pending.length, 0);
+        assert.equal(settled.decisions.length, 1); // two exact native phases, no repeated unchanged package approval
+        assert.deepEqual(session.service.status(session.actor), nativeState); assert.equal(nativeState.bounds.deadlineAt, bounds.deadlineAt);
+        assert.equal(session.reportFacts().checks[0]!.exitCode, 2); assert.equal(f.journal.runs("example", "EX-1").length, 1);
+      } catch (error) { bodyFailure = error; throw error; } finally { process.chdir(cwd); process.env = env; }
+      return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId! } };
+    } };
+  const result = await deployWithPi({ team: "builder", mode: "orchestrator", repo: "example", ticket: "EX-1", timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: f.nativeAuthority });
+  if (bodyFailure) throw bodyFailure;
+  assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1);
+}, false, true));
+
 test("pinned native start binds scope/commands; new work rejects foreign, revoked and legacy-start authority", () => fixture(async f => {
   const note = structuredLaunchNote("ordinary-native-execution/v1", f.authority); assert.deepEqual(parseStructuredLaunchNote(note), f.authority);
   const authorize = (paths = ["src/a.ts"], checks = ["check"]) => authorizePiStructuredWork("example", f.repo, "EX-1", f.bundle.handoff.branch, "source.edit-scoped", { paths, checks }, f.authority);

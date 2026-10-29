@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, m
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
   captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
-  parseExecutionBinding, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
+  parseExecutionBinding, readExecutionState, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects, assertLocalGitIndexMatchesWorking, localGitIndexFingerprint, localGitTreeFingerprint,
   executionFailure, executionWorkflowError, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
@@ -22,7 +22,7 @@ import { environmentSecrets } from "./diagnostics.js";
 import { executionAdministration, runExecutionAdministration, type ExecutionAdministration, type ExecutionAdministrationIdentity } from "./native-execution-administration.js";
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { readPiForegroundCompletion } from "./terminal-status.js";
-import { authorizePiStructuredWork, parseStructuredLaunchNote } from "./workflow-consumers.js";
+import { authorizePiStructuredWork, parseStructuredLaunchNote, requirePiSourceIntent, retainedPiSourceIntent } from "./workflow-consumers.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -129,7 +129,8 @@ export function captureNativeScope(root: string): NativeScopeSnapshot {
   if (!equal(captureRepositoryGitSnapshot(root, git), snapshot)) throw workflowError();
   return Object.freeze({ git: snapshot, files: Object.freeze(files) });
 }
-interface NativeIntent {
+export function readNativeCommitTree(root: string, commit: string): string { return localGitTreeFingerprint(root, git, workflowSha(commit, 40)); }
+export interface NativeIntent {
   executionId: string; actor: ExecutionHolder; operationId: string; toolName: string; inputSha256: string; command: string; before: NativeScopeSnapshot;
   /** Native observations only. Missing historical proof is never upgraded. */
   checkedInputsSha256?: string; commitIndexSha256?: string;
@@ -297,7 +298,8 @@ export class NativeExecutionSession {
       locks: this.locks, now: () => new Date().toISOString(),
       authorize: (_binding, actor, command) => {
         this.assertCaller({ cwd: process.cwd() }); if (!equal(actor, this.actor)) throw workflowError();
-        if (command !== "status" && !(command === "initialize" && exists) && (typeof command === "string" || !["finish", "settle"].includes(command.action))) this.#newWork();
+        if (command !== "status" && !(command === "initialize" && exists) && (typeof command === "string" || !["finish", "settle"].includes(command.action)))
+          this.#newWork(typeof command !== "string" && (command.action === "plan" || command.action === "advance") ? command.plan.phaseId : undefined);
         if (typeof command !== "string" && ["finish", "settle"].includes(command.action)) this.#authenticateSourceCustody();
         // Historical journals remain readable, but a fresh/adopted ordinary
         // source action cannot turn missing project registration into legacy
@@ -478,10 +480,15 @@ export class NativeExecutionSession {
     const identity = this.#administrativeIdentity();
     return this.executeAdministration(id, call, context, () => runExecutionAdministration(request, identity));
   }
-  #newWork(): void {
+  #newWork(phaseId?: string): void {
     if (this.#consumed && !this.#retained().active) throw workflowError();
     this.#authenticateSourceCustody();
-    authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "source.edit-scoped", undefined, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
+    const authority = parseStructuredLaunchNote(this.#ordinary?.start.note);
+    const state = authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "source.edit-scoped", undefined, authority ?? undefined);
+    if (state && authority) {
+      const native = this.evidence.store.records().includes(`${this.service.executionId}.intent.json`) ? readExecutionState(this.evidence.store, this.contract) : null;
+      requirePiSourceIntent(state, authority, phaseId ?? native?.plan?.phaseId);
+    }
   }
   #authenticateSourceCustody(): void {
     const authentication = createPiReadonlyHelperCapability(this.#helper).authenticate(this.#physical.worktreeRoot); authentication.reread();
@@ -832,8 +839,15 @@ export class NativeExecutionSession {
       if (!intent.command.startsWith("git commit -m ")) continue;
       if (result.exitCode !== 0 || !result.scopeValid || !result.process?.groupSettled || !this.#commitContentProven(intent, result) || result.after.git.head === intent.before.git.head || !equal(result.after, snapshot)
         || this.#ordinaryPassedChecks({ ...state, sequence: sequence - 1 }).length !== state.plan.checks.length) throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
+      const authority = parseStructuredLaunchNote(this.#ordinary.start.note);
+      const workflow = authority ? retainedPiSourceIntent(authority, state.plan.phaseId) : null;
+      const commands = workflow ? this.#projectCommands() : null;
+      if (workflow && !commands) throw executionFailure("EXECUTION_PROJECT_CONTRACT_REQUIRED");
+      commands?.assertCurrent();
       return { executionId: this.service.executionId, sequence: state.sequence, phaseId: state.plan.phaseId, candidateSha: state.candidateSha,
-        commit: event.command.evidence, snapshot: snapshot.git };
+        commit: event.command.evidence, snapshot: snapshot.git,
+        ...(workflow && commands ? { workflow, projectCommands: { registrationSha256: this.#commandRegistration, sha256: commands.sha256,
+          checks: state.plan.checks.map(name => { const check = commands.check(name); if (!check) throw workflowError(); return { id: check.id, command: check.command, inputsSha256: commands.inputIdentity(check) }; }) } } : {}) };
     }
     throw executionFailure("EXECUTION_PHASE_PREREQUISITE");
   }

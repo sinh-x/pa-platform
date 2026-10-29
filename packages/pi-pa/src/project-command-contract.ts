@@ -113,6 +113,15 @@ export class ProjectCommandContract {
     const observed = new ProjectCommandContract(repoKey, repoRoot, repoRoot, repo.projectCommands, true);
     return { sha256: observed.sha256, checks: observed.checks };
   }
+  /** Result verification only: validate the exact current command/input bytes
+   * without namespace probes or constructing a dispatch program. */
+  static inspectWorktree(repoKey: string, repoRoot: string, worktreeRoot: string): { sha256: string; checks: readonly ProjectCheck[]; inputIdentity(check: ProjectCheck): string } | null {
+    const repo = loadRepoEntry(repoKey);
+    if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();
+    if (!repo.projectCommands) return null;
+    const observed = new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands, true);
+    return { sha256: observed.sha256, checks: observed.checks, inputIdentity: check => observed.inputIdentity(check) };
+  }
   static resolve(repoKey: string, repoRoot: string, worktreeRoot: string): ProjectCommandContract | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();

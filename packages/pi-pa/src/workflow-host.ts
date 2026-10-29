@@ -7,6 +7,7 @@ import {
   type WorkflowHost, type WorkflowObservations, type WorkflowReadHost, type ReviewBundle, type JsonWorkflowEvidenceRef,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
+import { createPiSourceWorkflowOwner } from "./workflow-source.js";
 import { authenticatePiWorkflowCaller, createPiWorkflowCapture, createPiWorkflowContinuation, type PiWorkflowContext } from "./workflow-native.js";
 
 /** Exact preview location derives from the immutable subject, never directory discovery or a tool path override. */
@@ -26,9 +27,9 @@ export function piWorkflowObservations(subject?: ReviewBundle): WorkflowObservat
   let profile: WorkflowObservations["projectProfile"] = "missing", producer: WorkflowObservations["producerContract"] = "missing";
   if (subject) { try { profile = ProjectCommandContract.inspect(subject.repository.key, subject.repository.root) ? "supported" : "missing"; } catch { profile = "unsupported"; } }
   try { if (loadTemplateRegistry().registry.entries.some(e => e.id === "review-bundle" && e.validation.kind === "review-bundle" && e.capabilities.render && e.capabilities.validate)) producer = "supported"; } catch { /* missing pair is a blocker, never fallback */ }
-  return { capabilities: new Set(["operator.foreground", "artifact.paired-publication", "ticket.queue"]), projectProfile: profile, producerContract: producer, readEvidence: ref => sourceBytes(subject, ref) };
+  return { capabilities: new Set(["operator.foreground", "artifact.paired-publication", "ticket.queue", "execution.scoped-local"]), projectProfile: profile, producerContract: producer, readEvidence: ref => sourceBytes(subject, ref) };
 }
-export function piWorkflowReadHost(): WorkflowReadHost { return { observations: piWorkflowObservations, operations: new Set(["publication.pair", "ticket.queue"]) }; }
+export function piWorkflowReadHost(): WorkflowReadHost { return { observations: piWorkflowObservations, operations: new Set(["publication.pair", "ticket.queue", "source.local"]) }; }
 
 export type PiWorkflowMutation = { action: "admit"; producer: string } | { action: "revise"; revision: number; producer: string } | { action: "request-step"; revision: number; stepId: string }
   | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "revoke"; revision: number; decisionId: string };
@@ -48,7 +49,7 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
   }
   const store = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
   const host: WorkflowHost = { authenticate, observations: () => piWorkflowObservations(subject), capture: createPiWorkflowCapture(context, authenticate),
-    owners: createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), continues, now: () => new Date().toISOString() };
+    owners: new Map([...createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), ["source.local", createPiSourceWorkflowOwner(journal, authenticate, continues)] as const]), continues, now: () => new Date().toISOString() };
   const service = new JsonWorkflowService(journal, host);
   let decision: unknown;
   if (request.action === "admit") {

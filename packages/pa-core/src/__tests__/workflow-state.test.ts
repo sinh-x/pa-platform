@@ -32,6 +32,24 @@ function fixture() {
   const service = new JsonWorkflowService(journal, host);
   return { db, journal, host, selection, service, subject: bytes(b), close: () => { db.close(); rmSync(root, { recursive: true, force: true }); } };
 }
+test("native interactive pending acknowledgement retains one intent and settles only under its existing owner boundary", async () => {
+  const f = fixture(); try {
+    let completed = false, executions = 0, locked = false, verifications = 0;
+    const native: WorkflowEffectOwner = { admit: () => {}, observe: async () => completed ? { state: "proven", outcome: "completed", evidence: [{ schemaVersion: "pa-workflow-evidence-ref/v1", ref: "synthetic-native-result", version: "v1", sha256: "a".repeat(64) }] } : { state: "pending" },
+      execute: async () => { executions++; throw Error("coordinator cannot auto-execute interactive native work"); }, verify: () => { verifications++; assert.equal(locked, true); return completed; },
+      settle: (_intent, action) => { locked = true; try { return action(); } finally { locked = false; } } };
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("publication.pair", native);
+    const run = f.service.admit(f.selection, f.subject), decision = await f.service.decide(run.runId, 1, "approve");
+    const pending = await f.service.requestStep(run.runId, 2, "publish", decision.decisionId);
+    const again = await f.service.reconcile(run.runId, pending.revision, pending.pending[0]!.intentId);
+    assert.equal(again.pending[0]!.intentId, pending.pending[0]!.intentId); assert.equal(again.outcomes.publish, undefined); assert.equal(executions, 0); assert.equal(verifications, 0);
+    completed = true;
+    const settled = await f.service.reconcile(run.runId, again.revision, again.pending[0]!.intentId);
+    assert.equal(settled.outcomes.publish, "completed"); assert.equal(settled.pending.length, 0); assert.equal(verifications, 1); assert.equal(executions, 0);
+    assert.equal(f.journal.read(run.runId).filter(entry => entry.event.type === "intent").length, 1);
+  } finally { f.close(); }
+});
+
 test("pinned continuation, immutable snapshots, approval/rejection and revocation do not depend on summaries", async () => {
   const f = fixture(); try {
     const admitted = f.service.admit(f.selection, f.subject); const decision = await f.service.decide(admitted.runId, 1, "approve");

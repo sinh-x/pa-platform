@@ -499,6 +499,29 @@ interface ExecutionEvent { schemaVersion: "execution-event/v1"; executionId: str
  * tool errors, agent shutdown nor a copied completion flag clears the barrier.
  * No production native binding/activation is installed by this constructor.
  */
+function readExecutionJournal(store: ProtectedWorkflowStore, binding: ExecutionBinding): { state: ExecutionState; previous: unknown } {
+  const id = workflowDigest(JSON.stringify(["execution/v1", binding.operationId, binding.lineageId]));
+  const names = store.records().filter(name => name.startsWith(`${id}.`));
+  if (!names.includes(`${id}.intent.json`)) throw workflowError();
+  const intent = workflowObject(store.read(`${id}.intent.json`), ["schemaVersion", "binding", "recordedAt"]);
+  if (intent.schemaVersion !== "execution-intent/v1" || !same(parseExecutionBinding(intent.binding), binding)) throw workflowError();
+  let state = initialState(binding, workflowTimestamp(intent.recordedAt)); let previous: unknown = intent;
+  const entries = names.filter(name => name !== `${id}.intent.json`);
+  if (entries.length > 256) throw workflowError();
+  for (let sequence = 1; sequence <= entries.length; sequence++) {
+    const name = `${id}.transaction-${sequence}.json`; if (!entries.includes(name)) throw workflowError();
+    const row = workflowObject(store.read(name), ["schemaVersion", "executionId", "sequence", "previousSha256", "actor", "command", "recordedAt"]);
+    if (row.schemaVersion !== "execution-event/v1" || row.executionId !== id || row.sequence !== sequence || row.previousSha256 !== workflowDigest(JSON.stringify(previous))) throw workflowError();
+    const event: ExecutionEvent = { schemaVersion: "execution-event/v1", executionId: id, sequence, previousSha256: workflowSha(row.previousSha256), actor: parseHolder(row.actor), command: parseCommand(row.command), recordedAt: workflowTimestamp(row.recordedAt) };
+    state = transition(state, event.actor, event.command, event.recordedAt); previous = event;
+  }
+  return { state: freezeExecution(state), previous };
+}
+/** Existing-owner observational replay only: no locks, reaffirm/fsync, process
+ * probe, initialize or authority. A projection cannot acquire/change custody. */
+export function readExecutionState(store: ProtectedWorkflowStore, binding: ExecutionBinding): ExecutionState {
+  return readExecutionJournal(store, parseExecutionBinding(binding)).state;
+}
 export class ExecutionCustodyService {
   readonly binding: ExecutionBinding;
   readonly executionId: string;
@@ -508,24 +531,7 @@ export class ExecutionCustodyService {
     this.executionId = workflowDigest(JSON.stringify(["execution/v1", this.binding.operationId, this.binding.lineageId]));
   }
   #locked<T>(run: (scope: PreparedLockScope) => T): T { return withPreparedWorkflowLocks(this.host.locks, run); }
-  #load(): { state: ExecutionState; previous: unknown } {
-    const id = this.executionId; const names = this.store.records().filter((name) => name.startsWith(`${id}.`));
-    if (!names.includes(`${id}.intent.json`)) throw workflowError();
-    const intent = workflowObject(this.store.read(`${id}.intent.json`), ["schemaVersion", "binding", "recordedAt"]);
-    if (intent.schemaVersion !== "execution-intent/v1" || !same(parseExecutionBinding(intent.binding), this.binding)) throw workflowError();
-    let state = initialState(this.binding, workflowTimestamp(intent.recordedAt)); let previous: unknown = intent;
-    const entries = names.filter((name) => name !== `${id}.intent.json`);
-    if (entries.length > 256) throw workflowError();
-    for (let sequence = 1; sequence <= entries.length; sequence++) {
-      const name = `${id}.transaction-${sequence}.json`;
-      if (!entries.includes(name)) throw workflowError();
-      const row = workflowObject(this.store.read(name), ["schemaVersion", "executionId", "sequence", "previousSha256", "actor", "command", "recordedAt"]);
-      if (row.schemaVersion !== "execution-event/v1" || row.executionId !== id || row.sequence !== sequence || row.previousSha256 !== workflowDigest(JSON.stringify(previous))) throw workflowError();
-      const event: ExecutionEvent = { schemaVersion: "execution-event/v1", executionId: id, sequence, previousSha256: workflowSha(row.previousSha256), actor: parseHolder(row.actor), command: parseCommand(row.command), recordedAt: workflowTimestamp(row.recordedAt) };
-      state = transition(state, event.actor, event.command, event.recordedAt); previous = event;
-    }
-    return { state: freezeExecution(state), previous };
-  }
+  #load(): { state: ExecutionState; previous: unknown } { return readExecutionJournal(this.store, this.binding); }
   initialize(actorInput: ExecutionHolder): ExecutionState {
     const actor = parseHolder(actorInput);
     return this.#locked((scope) => {
