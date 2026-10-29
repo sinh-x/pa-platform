@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { digest } from "../../../pa-core/src/templates/schema.js";
+import { DOCUMENT_DIAGNOSTIC_CASES } from "../../../pa-core/src/__tests__/template-document-diagnostic-fixture.js";
 import { templateService } from "@pa-platform/pa-core";
 import { templateFixture } from "../../../pa-core/src/__tests__/template-fixture.js";
 import { producerFixture } from "../../../pa-core/src/__tests__/template-producer-fixture.js";
@@ -56,6 +60,31 @@ for (const kind of ["fresh", "amendment"] as const) test(`public CLI/native ${ki
     assert.equal(f.resolveBaseline().baseSha, f.bindings.baseSha);
     f.record.comments[0]!.author = "requirements/analyst"; f.saveTicket();
     assert.throws(f.resolveBaseline, /ORDINARY_BASELINE_/);
+  } finally { f.dispose(); }
+});
+
+test("document-rule diagnostics have exact CLI/registered-native parity without rejected source echoes", async () => {
+  const f = templateFixture(); try {
+    for (const c of DOCUMENT_DIAGNOSTIC_CASES) {
+      const entry = f.registry.entries.find(e => e.id === c.id)!, path = join(f.root, entry.source.path), original = readFileSync(path, "utf8");
+      const source = c.mutate(original); writeFileSync(path, source); entry.source.sha256 = digest(source); f.selection = f.save();
+      let tool: PiToolDefinition | undefined;
+      createTemplateModule({ selection: f.selection })({ registerTool: t => { tool = t as PiToolDefinition; } });
+      const before = { source: readFileSync(path), registry: readFileSync(join(f.root, "contracts/templates-v1.json")) };
+      for (const action of ["render", "validate"]) {
+        const body = { bindings: { ticket: "FIX-1" }, ...(action === "validate" ? { candidate: "SECRET-SENTINEL" } : {}) };
+        const request = { action, id: c.id, version: "1", ...body };
+        const expected = templateService(request, { selection: f.selection });
+        assert.equal(expected.code, "TEMPLATE_STRUCTURE"); assert.ok((expected.diagnostic as string).includes(`Source: document.${c.rule}\n`));
+        const output: string[] = [];
+        assert.equal(await runCoreCommand(["template", action, c.id, "--version", "1", "--format", "json"], { binaryName: "ppa", templateHost: { selection: f.selection, input: (async function* () { yield JSON.stringify(body); })() }, io: { stdout: s => output.push(s), stderr: s => assert.fail(s) } }), 1);
+        const native = await tool!.execute("synthetic-document-rule", { request: JSON.stringify(request) }, undefined, undefined, undefined);
+        assert.equal(native.isError, true); assert.deepEqual(JSON.parse(output.join("")), expected); assert.deepEqual(JSON.parse(native.content[0]!.text), expected);
+        assert.ok(!native.content[0]!.text.includes("SECRET-SENTINEL"));
+      }
+      assert.deepEqual({ source: readFileSync(path), registry: readFileSync(join(f.root, "contracts/templates-v1.json")) }, before);
+      writeFileSync(path, original); entry.source.sha256 = digest(original); f.selection = f.save();
+    }
   } finally { f.dispose(); }
 });
 
