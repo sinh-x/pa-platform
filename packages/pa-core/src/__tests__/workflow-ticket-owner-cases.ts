@@ -10,7 +10,7 @@ import type { WorkflowEffectOwner } from "../workflows/service.js";
 import { bytes } from "./workflow-fixtures.js";
 import { workflowRuntimeFixture } from "./workflow-runtime-fixture.js";
 
-function fixture() {
+export function ticketOwnerFixture() {
   const f = workflowRuntimeFixture(); const d = f.selection.definitions[0]!.definition;
   d.requiredCapabilities.push("ticket.queue"); d.steps[1]!.transitions.completed = "queue";
   d.steps.push({ id: "queue", order: 3, title: "Advance exact pair", kind: "action", owner: "tickets", dependsOn: [{ stepId: "publish", outcome: "completed" }], when: true,
@@ -30,6 +30,8 @@ function fixture() {
   const admit = () => f.service.admit(f.selection, bytes(f.bundle));
   return { ...f, store, req, uat, artifactRoot, owners, admit };
 }
+
+const fixture = ticketOwnerFixture;
 
 test("actual ticket publication/queue owners publish exact pair once and preserve counters and audit on replay", async () => {
   const f = fixture(); try {
