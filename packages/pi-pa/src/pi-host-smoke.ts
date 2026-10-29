@@ -92,7 +92,7 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
       registerShortcut: (shortcut) => shortcuts.push(shortcut),
       on: (event) => { handlers.push(event); },
     });
-    const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"];
+    const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"];
     assertEqual(registered, expectedRegistered, "registered PA tools");
     if (registered.filter((name) => name === "todo").length !== 1) throw new Error("managed extension smoke did not register Todo exactly once");
     assertManagedExtensionCommands(commands, BUNDLED_EDITOR_FACTORIES);

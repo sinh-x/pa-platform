@@ -7,6 +7,7 @@ import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { boundJson } from "./tool-result.js";
 import { createPaTicketTool } from "./ticket-tool.js";
+import { registerTemplateModule } from "./template-tool.js";
 export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
 import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
@@ -41,7 +42,7 @@ export interface PiTicketToolInput extends Record<string, unknown> {
   search?: string;
 }
 export interface PiTextContent { type: "text"; text: string }
-export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails }
+export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails; isError?: boolean }
 export interface PiToolTheme {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
@@ -194,6 +195,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
 
 export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
   registerPaToolsModule,
+  registerTemplateModule,
   registerQuestionModule,
   registerTodoModule,
   registerContextUiModule,

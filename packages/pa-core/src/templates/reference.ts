@@ -1,0 +1,2 @@
+/** Discovery only, never a workflow activation or source-work approval gate. */
+export const TEMPLATE_TOOL_REFERENCE = "Canonical templates: `ppa template --help` / `ppa template list --format json`, or native `pa_template` with one raw JSON `request` document (for example, {\"action\":\"list\"}). Retrieval/render/validation are read-only unsigned drafts, never human approval, native facts or readiness. A missing selected pair blocks the dependent template operation, not an existing scoped-work permission.";

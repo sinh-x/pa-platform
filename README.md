@@ -74,6 +74,14 @@ pa-core serve
 
 Without a deployment adapter hook, `pa-core deploy` returns an explicit error instead of invoking a runtime directly. `pa-core serve` starts the core Agent API server and routes API deployment requests through the configured default adapter when one is provided.
 
+## Canonical templates (Pi/PPA only, PAP-270)
+
+`ppa template list/show/render/validate` and native `pa_template` share one selected-config service. They return versioned provenance and unsigned structural drafts, never human decisions, native facts or readiness. Start with `ppa template --help` or `ppa template list --format json`; use the exact selected ID/revision and typed bindings.
+
+Native input is one raw JSON request document, for example `{"request":"{\"action\":\"list\"}"}`. This preserves duplicate-key and UTF-8 byte-limit checks. No template operation saves files, writes approvals or activates a workflow.
+
+**Source implementation is not paired/installed readiness.** The separately scoped config companion, exact pins and qualified package selection are required; missing support fails closed. See [the contract, PAP-271 integration seam and remaining delivery gates](docs/canonical-templates.md).
+
 ## Artifact companions and owned review (PAP-197, interface v1)
 
 **Source implementation, not installed readiness or workflow enablement.**

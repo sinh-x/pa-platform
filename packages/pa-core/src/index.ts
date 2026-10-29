@@ -1,3 +1,9 @@
+export { TEMPLATE_TOOL_REFERENCE } from "./templates/reference.js";
+export { parseTaskHandoff, parsePairSignoff, ProducerContractError, type TaskHandoff, type PairSignoff } from "./tickets/producer-contract.js";
+export { workflowProducerBindings } from "./templates/binding-contracts.js";
+export { templateService, templateFailure, TEMPLATE_LIMITATIONS, MAX_TEMPLATE_RESULT_BYTES, type TemplateHost, type TemplateConsumerPort, type TemplateResult } from "./templates/service.js";
+export { loadTemplateRegistry, selectedTemplates, type TemplateSelection } from "./templates/registry.js";
+export { TemplateError, TEMPLATE_CONTRACT, TEMPLATE_RUNTIME, TEMPLATE_IDS, TEMPLATE_EXTENSION_IDS, MAX_TEMPLATE_REQUEST_BYTES, type TemplateRegistry, type TemplateEntry } from "./templates/schema.js";
 export * from "./paths.js";
 export * from "./time.js";
 export * from "./config.js";
