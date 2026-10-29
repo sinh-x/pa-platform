@@ -1,7 +1,7 @@
 # Canonical templates — PAP-270
 
 **Runtime source implementation; not production readiness or ticket acceptance.**
-Pi/PPA only. The separate config companion, approved pin integration, actual installed qualification, independent review and human UAT remain delivery gates. No config edits, installation, activation, live product launch, real decision or signed-history rewrite is performed here.
+Pi/PPA only. PAP-272 integrates the selected config/registry pins on the released v0.1.152 baseline; actual installed qualification, independent review and human UAT remain separate gates. This repair excludes unfinished PAP-271 executable workflow changes. No config edits, installation, activation, live product launch, real decision or signed-history rewrite is performed here.
 
 ## Public interface
 
@@ -68,7 +68,7 @@ Runtime metadata adds the exact `templateSchema`. The initial inventory is autho
 
 The first ten IDs retain their canonical filenames. Additional canonical-family files require explicit runtime inventory/version support; directory enumeration is only a closure check. Missing, undeclared, nonregular or aliased resources reject the whole selection. The optional explicitly inventoried PAP-271 extension is `review-bundle`; it does not create another registry.
 
-The currently selected config's `builder-objective.md` is a **retired implementation-child template**. It was not copied, revived or aliased here. The companion must deliberately supply an appropriate direct-phase producer or obtain an explicit disposition; a retired source cannot pass the mandatory active-producer qualification by changing a capability flag.
+At the initial PAP-270 checkpoint the then-selected config's `builder-objective.md` was a **retired implementation-child template**. It was not copied, revived or aliased here. The PAP-272 selected pair includes the companion's direct-phase producer; it must pass the actual active-producer qualification, not merely change a capability flag.
 
 ## Determinism, bounds and provenance
 
@@ -78,7 +78,7 @@ Missing/unknown/unused/unresolved/duplicate/wrong-type bindings reject. Declared
 
 Limits: request documents 65,536 UTF-8 bytes; registry/source/candidate 1,048,576 bytes each; nesting 64. Complete envelopes share a 50-KiB transport cap; oversized results fail on both interfaces, never truncate authority-bearing bytes. BOM, malformed UTF-8/unpaired surrogates, unsafe aliases, oversized/nonregular/changed sources and conflicting shared-source identities reject. Diagnostics have five named fields, stay below 2,000 characters and disclose no body/token/raw OS exception.
 
-Runtime pins are `.pa-platform-config.sha` and `.pa-template-registry.sha`. The registry pin is deliberately absent until separate companion delivery and authorized integration. It is **content compatibility, not a workflow enablement toggle**. Nix packaging copies these pins when available; immutable Nix metadata may legitimately be store-deduplicated, but template resources cannot use that exception.
+Runtime pins are `.pa-platform-config.sha` and `.pa-template-registry.sha`. PAP-272 integrates merged config `fe0ba632aeb8a7128d490cd90c4756d91d6aba92` and raw registry SHA-256 `4a7bc6560c86fea7ea06de0b7383a51fa8283f4b1fda3cb20f4096c149534a2d`. The earlier installed v0.1.152 lacked the registry pin and pinned the older config, so selected retrieval correctly failed closed with `TEMPLATE_IO`. The repair does not relax that check or add a local producer fallback. It is **content compatibility, not a workflow enablement toggle**. Nix packaging copies these pins when available; immutable Nix metadata may legitimately be store-deduplicated, but template resources cannot use that exception. Sinh owns installation of the repaired candidate; source-built results do not prove that a running Pi process has loaded the repaired package. Retry native `list` and exact-version `show` in the actually selected process before resuming dependent PAPC-070 drafting; retain its original approvals and fresh branch/base history.
 
 The existing selected home/teams resolver must agree physically. Default selection observes exact loose/packed/detached/linked-worktree Git HEAD without a subprocess, validates worktree back-pointers and checks the runtime pin. Raw resources are content-addressed, read without following aliases and rechecked as one stable source set with nanosecond fingerprints. Relevant dirty substitutions, inventory additions, root/revision changes and read races fail closed. No alternate checkout, `PA_CONFIG`, newest-file or bundled-prose fallback exists. Qualification additionally proves a clean committed selection and ancestry of cached `origin/develop`; it never queries a live remote or supplies merge authority. Actual merge provenance/freshness remains with the release/review owner. An envelope is not a whole-checkout clean/merged attestation.
 
