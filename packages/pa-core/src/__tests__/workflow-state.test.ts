@@ -10,7 +10,7 @@ import { digest, JsonWorkflowError, type EvidenceRef, type WorkflowDefinition } 
 import { parseWorkflowDefinition } from "../workflows/definition.js";
 import { JsonWorkflowService, type WorkflowEffectOwner, type WorkflowHost } from "../workflows/service.js";
 import type { WorkflowSelection } from "../workflows/selected.js";
-import { bundle, bytes, definition } from "./workflow-fixtures.js";
+import { bundle, bytes, definition, fixtureEvidence } from "./workflow-fixtures.js";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "pa-json-workflow-")); const db = getDb(join(root, "registry.db"));
@@ -21,8 +21,7 @@ function fixture() {
     operation: { id: "publication.pair", version: "v1" }, authorization: ["artifact.publish-pair"], effects: ["artifact.write-pair"], outputs: [{ name: "pair", schemaVersion: "pa-publication-pair/v1" }],
     verification: [{ id: "publication.exact-pair", version: "v1", inputs: ["package", "decision"] }], transitions: { completed: "completed", failed: "blocked", unknown: "blocked" }, failurePolicy: { strategy: "reconcile", correctionOwner: "tickets" } });
   const raw = bytes(d); parseWorkflowDefinition(raw); const b = bundle(); b.workflow.sha256 = digest(raw);
-  const evidence = new Map([[b.requirements.ref, Buffer.from("requirements")], [b.uat.ref, Buffer.from("uat")]]);
-  b.requirements.sha256 = digest(evidence.get(b.requirements.ref)!); b.uat.sha256 = digest(evidence.get(b.uat.ref)!); b.matrix.sha256 = b.requirements.sha256;
+  const evidence = fixtureEvidence(b);
   const selection: WorkflowSelection = { schemaVersion: "pa-workflow-selection/v1", configRoot: "/selected", configRevision: "a".repeat(40), manifestSha256: "a".repeat(64), bindings: [{ schemaVersion: "pa-workflow-binding/v1", team: "builder", mode: "orchestrator", enabled: true, workflowId: d.workflowId, workflowVersion: d.version }], definitions: [{ definition: d, raw, sha256: digest(raw), configRoot: "/selected", configRevision: "a".repeat(40), manifestSha256: "a".repeat(64) }] };
   let captures = 0;
   const ref = (): EvidenceRef => ({ schemaVersion: "pa-workflow-evidence-ref/v1", ref: `synthetic-capture-${++captures}`, version: "v1", sha256: digest(`synthetic-${captures}`) });

@@ -1,5 +1,6 @@
-import { digest, JsonWorkflowError, type EvidenceRef, type ReviewBundle } from "./contracts.js";
+import { JsonWorkflowError, type EvidenceRef, type ReviewBundle } from "./contracts.js";
 import { operationContract } from "./operations.js";
+import { readWorkflowEvidence } from "./evidence.js";
 import { gate, type WorkflowGateResult } from "./presentation.js";
 import { selectNewWorkflow, type SelectedWorkflow, type WorkflowSelection } from "./selected.js";
 
@@ -32,10 +33,8 @@ export function preflightWorkflow(selection: WorkflowSelection, team: string, mo
   if (observations.projectProfile !== "supported") gates.push(gate("WORKFLOW_CAPABILITY", "project-command-contract-required", "blocked", "project-command-owner"));
   if (observations.producerContract !== "supported") gates.push(gate("WORKFLOW_CAPABILITY", "shared-producer-contract-required", "blocked", "pap-270-producer-owner"));
   if (subject) {
-    for (const ref of [subject.requirements, subject.uat, subject.matrix]) {
-      try { const raw = observations.readEvidence(ref); if (!raw || digest(raw) !== ref.sha256) throw new Error(); }
-      catch { gates.push(gate("WORKFLOW_SOURCE", "subject-evidence", "blocked", "artifact-owner")); }
-    }
+    try { readWorkflowEvidence(subject, observations.readEvidence); }
+    catch { gates.push(gate("WORKFLOW_SOURCE", "subject-evidence", "blocked", "artifact-owner")); }
   }
   const status = gates.some(g => g.outcome === "blocked") ? "blocked" : "static-compatible";
   if (status === "static-compatible") gates.push(gate("WORKFLOW_STATIC_COMPATIBLE", "static-contract", "compatible", "workflow-owner"));

@@ -1,3 +1,5 @@
+import "./workflow-producer-cases.js";
+import "./workflow-ticket-owner-cases.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { digest } from "../workflows/contracts.js";

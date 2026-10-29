@@ -15,3 +15,6 @@ export type { WorkflowCaller, WorkflowDecision, WorkflowHost, WorkflowState, Wor
 export { RegistryWorkflowJournal } from "../registry/workflows.js";
 export { authorizeStructuredConsumer, structuredTaskBaseline, readCanonicalWorkflowArtifact } from "./consumers.js";
 export type { StructuredTaskBaseline, StructuredConsumerContext } from "./consumers.js";
+export { reviewBundleTemplateConsumer, produceWorkflowSubject } from "./producer.js";
+export { readWorkflowEvidence } from "./evidence.js";
+export { createTicketWorkflowOwners } from "./ticket-owner.js";

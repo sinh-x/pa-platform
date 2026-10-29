@@ -7,7 +7,7 @@ Status: **partial implementation, not a supported production route**. The approv
 - Phase 1, `bcca196`: strict contracts, graph/type validation, selected-source loader and isolated fixtures.
 - Phase 2, `3485d97`: observational preflight, bounded diagnostics and shared read projections.
 - Phase 3, `d061fc7`: registry transaction/CAS owner extension, pinned snapshots/replay, package decisions, named revocation, intent reconciliation and native foreground capture port.
-- Phase 4: **partial checkpoint only**. Structured consumer/baseline seam and materialization-time reread support. Existing legacy defaults are unchanged; no structured launcher or effect owner is registered.
+- Phase 4: **partial checkpoint only**. Structured consumer/baseline seam, materialization-time reread, actual PAP-270 producer admission/retention, and concrete opt-in ticket publication/queue adapters. Existing legacy defaults are unchanged; no structured launcher or default effect-owner host is registered.
 - Phase 5: **not implemented**. Public CLI/native registration, generated primers/completions, paired validator integration and installed verifier remain outstanding.
 
 Phase commits were separated at the operator's request during this session. Future work must commit after each verified phase, preserving these commits rather than squashing away the phase boundaries.
@@ -76,8 +76,8 @@ Revocation blocks new work, while proof/settlement of an already-started result 
 
 Outstanding runtime source work (not merely companion rollout work):
 
-- Integrate legitimate subject retention/admission from PAP-270's shared producer service; do not fork templates. That service is absent at this base. PAP-270 remains pending implementation with a recorded project-command-contract blocker.
-- Implement per-member absent-only paired publication and verified complete-pair/primary selection before queue advancement through their existing owners.
+- Register the new producer admission and concrete ticket owners in a legitimate default workflow host. PAP-270/PAPC-071 are now merged/installed dependencies; this checkout contains the merged PAP-270 service. The default native template host still needs the actual review-bundle parser registration (CLI registration is implemented). PAPC-070 must add the optional review-bundle entry/fixtures to the SAME registry, not a second registry.
+- Qualify publication/queue adapters in that host, including selected canonical home and authenticated ticket-store mutation context. Current concrete owner checks use disposable files and the actual TicketStore mutex/audit; they are not live publication or installed qualification.
 - Wire structured baseline decisions through Pi launch/materialization and execution, including exact fresh/amendment identity, scope/command references, revocation at new-effect boundaries and authenticated restart continuation.
 - Integrate native validation evidence and protected review launch without weakening one-use claims, active-review exclusion, limits or candidate binding.
 - Exercise actual owner integration: sole writer, one lineage/four checkouts, no duplicate reservations/authorizations, interrupted effects, changed candidate/input/environment, and retained failures. Existing regression tests are not substitutes for these new-route cases.
@@ -86,7 +86,21 @@ Outstanding runtime source work (not merely companion rollout work):
 
 Historical signed documents/comments and other adapters are unchanged. No optional preparation, change-impact/base policy, production binding, installation, remote effect, checkout return or deployment launch is authorized/performed by this checkpoint.
 
+## Phase 4 continuation: producer and ticket owners
+
+`JsonWorkflowService.admitProduced` invokes PAP-270's shared `templateService` with the actual `parseReviewBundle`, never a caller-supplied receipt/callback. Producer and workflow must name the same selected physical config root/revision. Exact rendered bytes, unsigned producer provenance (source/registry/config/bindings/candidate digests), artifact bytes and raw matrix section are retained by `RegistryWorkflowJournal` in the existing SQLite snapshot owner. No decision is inferred from this provenance. The trusted internal `admit` seam is not a public import API.
+
+`readWorkflowEvidence` now authenticates the matrix using the existing `parseReviewMatrixPlan`: its hash is the raw Full Validation Matrix SECTION, not the whole requirements document. It binds repository/root/base/branch, operator-gate ticket and named scope commands. Requirements/UAT are bounded UTF-8, exact raw hashes; both are reread before and after native capture. This corrects the earlier synthetic fixture assumption that document and matrix hashes were interchangeable. Old immutable events/signed artifacts are not rewritten.
+
+`createTicketWorkflowOwners` provides concrete **opt-in** `publication.pair`/`ticket.queue` adapters. They use `TicketPairPublication` under the SAME TicketStore transaction mutex used by ordinary writers, retaining lifecycle checks and audit. Each absent member is created exclusively with no overwrite through a pinned no-symlink parent; exact existing members are reused. Partial writes, conflicting bytes, missing directories, symlinks or a foreign primary block and preserve original state. Parent directories must already exist; the adapter does not allocate or repair them. Queue advancement requires both exact files, both correctly typed refs and the unique requirements primary. It targets only the supported builder/orchestrator -> builder/team-manager handoff.
+
+Authority/caller/pending intent are freshly checked inside that ticket transaction before EACH new file, doc-ref or queue effect. Interrupted partial work reuses the same intent; fully observed publication/queue can settle after revocation, but absent work cannot. No second publication/resource/approval ledger exists. These adapters do not yet provide the remaining authenticated launch, amendment, execution, review or cross-deployment continuation paths. No production binding is enabled.
+
+The new producer/ticket cases are imported by `workflow-owner-integration.test.ts`, so the approved explicit matrix entry includes them rather than silently omitting newly split files. Source-case hosts and operator captures are synthetic; file, ticket mutex/audit and registry owners are real disposable instances.
+
 ## Observed checks
+
+Continuation checks (implementation-phase evidence only): workspace typecheck/build, completion generation (no output diff), secrets scan and whitespace passed. The combined workflow/template/ordinary-baseline/ticket/registry regression run passed 424 tests, zero failures/skips/cancellations before the final two additional recovery/concurrency cases. Final focused recheck: 46 workflow cases and 9 Pi capture/template CLI/tool regressions passed, all zero failures/skips/cancellations; workspace typecheck/build passed again. Initial test-authoring failures (readonly fixture assignments and a mistaken audit accessor) were corrected; no passing run is substituted for independent matrix, installed qualification or human UAT.
 
 All focused checks here are implementation-phase evidence, not the independent full matrix:
 

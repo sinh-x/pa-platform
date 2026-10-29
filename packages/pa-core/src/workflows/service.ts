@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type { TemplateHost } from "../templates/service.js";
+import { readWorkflowEvidence } from "./evidence.js";
+import { produceWorkflowSubject } from "./producer.js";
 import { RegistryWorkflowJournal, type WorkflowJournalEntry } from "../registry/workflows.js";
-import { array, digest, evidenceRef, ID, integer, literal, object, oneOf, PACKAGE_PERMISSIONS, parseReviewBundle, reject, SHA256, STEP_OUTCOMES, text, unique, type EvidenceRef, type PackagePermission, type ReviewBundle, type StepOutcome, type WorkflowDefinition } from "./contracts.js";
+import { array, digest, evidenceRef, ID, integer, literal, object, oneOf, PACKAGE_PERMISSIONS, parseReviewBundle, reject, SHA256, strictJson, STEP_OUTCOMES, text, unique, type EvidenceRef, type PackagePermission, type ReviewBundle, type StepOutcome, type WorkflowDefinition } from "./contracts.js";
 import { evaluatePredicate, parseWorkflowDefinition } from "./definition.js";
 import { preflightWorkflow, type WorkflowObservations } from "./preflight.js";
 import { selectNewWorkflow, type WorkflowSelection } from "./selected.js";
@@ -59,12 +62,19 @@ export function eligibleSteps(state: WorkflowState): string[] {
 /** Pure replay validates every event's discriminated grammar and semantic predecessor. No exported JSON is accepted as state. */
 export function replayWorkflow(journal: RegistryWorkflowJournal, runId: string, entries = journal.read(runId)): WorkflowState {
   const first = entries[0]; if (!first || first.event.type !== "admitted") reject("WORKFLOW_UNCERTAIN");
-  const a = object(first.event.data, ["definitionSha256", "subjectSha256", "configRevision", "caller"]);
+  const a = object(first.event.data, ["definitionSha256", "subjectSha256", "configRevision", "caller"], ["producerSha256"]);
   const subjectSha256 = text(a.subjectSha256, SHA256); const definitionSha256 = text(a.definitionSha256, SHA256);
   const definition = parseWorkflowDefinition(journal.snapshot(definitionSha256)); const subject = parseReviewBundle(journal.snapshot(subjectSha256));
   if (subject.workflow.sha256 !== definitionSha256 || subject.workflow.id !== definition.workflowId || subject.workflow.version !== definition.version) reject("WORKFLOW_UNCERTAIN");
   const state: WorkflowState = { runId, revision: 1, definition, subject, subjectSha256, configRevision: text(a.configRevision, /^[a-f0-9]{40}$/), caller: parseCaller(a.caller), decisions: [], revoked: [], outcomes: Object.create(null) as Record<string, StepOutcome>, pending: [] };
   assertSubjectCaller(state, state.caller, false);
+  if (a.producerSha256 !== undefined) {
+    const p = object(strictJson(journal.snapshot(text(a.producerSha256, SHA256))), ["schemaVersion", "unsigned", "requestSha256", "producer"]);
+    literal(p.schemaVersion, "pa-workflow-producer-provenance/v1"); text(p.requestSha256, SHA256);
+    const producer = p.producer as Record<string, unknown>;
+    if (p.unsigned !== true || producer?.candidateSha256 !== subjectSha256 || producer.configRevision !== state.configRevision || producer.consumerContract !== "pa-review-bundle/v1") reject("WORKFLOW_UNCERTAIN");
+    readWorkflowEvidence(subject, ref => journal.snapshot(ref.sha256));
+  }
   for (const entry of entries.slice(1)) {
     const { type, data } = entry.event;
     if (type === "decision") {
@@ -122,22 +132,35 @@ export class JsonWorkflowService {
     });
     return { runId, revision: state.revision, eligible, reconcile: state.pending, blocked };
   }
+  admitProduced(selection: WorkflowSelection, request: Uint8Array, templateHost: TemplateHost): WorkflowState {
+    const caller = parseCaller(this.host.authenticate());
+    const produced = produceWorkflowSubject(selection, request, { ...templateHost, team: caller.team, mode: caller.mode });
+    return this.admitInternal(selection, produced.raw, produced.provenance, caller);
+  }
+  /** Trusted-host seam for non-template internal fixtures; not a public raw-subject import. */
   admit(selection: WorkflowSelection, rawSubject: Uint8Array): WorkflowState {
+    return this.admitInternal(selection, rawSubject);
+  }
+  private admitInternal(selection: WorkflowSelection, rawSubject: Uint8Array, provenance?: Uint8Array, originalCaller?: WorkflowCaller): WorkflowState {
     const caller = parseCaller(this.host.authenticate()); const subject = parseReviewBundle(rawSubject);
+    if (originalCaller && JSON.stringify(caller) !== JSON.stringify(originalCaller)) reject("WORKFLOW_AUTHORITY");
     const selected = selectNewWorkflow(selection, caller.team, caller.mode);
     const report = preflightWorkflow(selection, caller.team, caller.mode, this.host.observations(), subject);
     if (report.status !== "static-compatible") reject("WORKFLOW_CAPABILITY");
     const runId = `wf-${randomUUID()}`;
     const state = { subject, caller } as WorkflowState; assertSubjectCaller(state, caller, false);
-    this.journal.append(runId, 0, () => ({ eventId: `event-${randomUUID()}`, type: "admitted", data: { definitionSha256: selected.sha256, subjectSha256: digest(rawSubject), configRevision: selected.configRevision, caller } }), [selected.raw, rawSubject]);
+    const evidence = readWorkflowEvidence(subject, this.host.observations().readEvidence);
+    this.journal.append(runId, 0, () => ({ eventId: `event-${randomUUID()}`, type: "admitted", data: { definitionSha256: selected.sha256, subjectSha256: digest(rawSubject), configRevision: selected.configRevision, caller, ...(provenance ? { producerSha256: digest(provenance) } : {}) } }), [selected.raw, rawSubject, ...evidence, ...(provenance ? [provenance] : [])]);
     return this.status(runId);
   }
   async decide(runId: string, expectedRevision: number, stepId: string): Promise<WorkflowDecision> {
     const state = this.status(runId); assertSubjectCaller(state, parseCaller(this.host.authenticate()));
     const step = state.definition.steps.find(s => s.id === stepId);
     if (state.revision !== expectedRevision || !step || step.kind !== "decision" || !eligibleSteps(state).includes(stepId)) reject("WORKFLOW_CONFLICT");
+    readWorkflowEvidence(state.subject, this.host.observations().readEvidence);
     const capture = await this.host.capture({ action: "package", runId, revision: expectedRevision, subject: structuredClone(state.subject), subjectSha256: state.subjectSha256 });
     assertSubjectCaller(state, parseCaller(this.host.authenticate()));
+    readWorkflowEvidence(state.subject, this.host.observations().readEvidence);
     const issuedAt = this.host.now();
     const decision = parseDecision({ schemaVersion: "pa-decision/v1", decisionId: `decision-${randomUUID()}`, kind: "package", runId, stepId, subjectRef: state.subject.subjectId, subjectSha256: state.subjectSha256,
       outcome: capture.outcome, permissions: capture.outcome === "approved" ? state.subject.requestedPermissions : [], captureEvidenceRef: capture.evidence, principal: capture.principal, issuedAt });
