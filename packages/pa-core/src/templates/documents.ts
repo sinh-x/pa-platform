@@ -1,6 +1,7 @@
 import yaml from "js-yaml";
 import { resolve } from "node:path";
 import { parseReviewMatrixPlan } from "../validation/review-contract.js";
+import { isCanonicalTicketId } from "../tickets/validate.js";
 import { reject, type TemplateId } from "./schema.js";
 
 import { DOCUMENT_PROFILES } from "./document-profiles.js";
@@ -96,7 +97,7 @@ export function validateDocument(candidate: string, id: TemplateId, required: st
     if (found.length !== 1 || found[0]!.index <= previous || !nonemptySection(shape, found[0]!.index)) failure(); previous = found[0]!.index;
   }
   for (const label of profile.headers) documentHeader(shape, label);
-  if (profile.headers.includes("Ticket") && !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(documentHeader(shape, "Ticket"))) failure();
+  if (profile.headers.includes("Ticket") && !isCanonicalTicketId(documentHeader(shape, "Ticket"))) failure();
   if (profile.headers.includes("Repository Key") && !/^[a-zA-Z0-9_-]+$/.test(documentHeader(shape, "Repository Key"))) failure();
   if (profile.headers.includes("Repository Root")) { const root = documentHeader(shape, "Repository Root"); if (!/^\/[A-Za-z0-9_./-]+$/.test(root) || resolve(root) !== root) failure(); }
   for (const label of ["Review Revision", "Revision"]) if (profile.headers.includes(label) && !/^r[0-9]{3,}$/.test(documentHeader(shape, label))) failure();

@@ -4,7 +4,7 @@ import { parseReviewMatrixArtifact } from "../validation/review-contract.js";
 import { DOCUMENT_PROFILES } from "../templates/document-profiles.js";
 import { digest, type TemplateId } from "../templates/schema.js";
 const scenario = "### TS-1: Synthetic scenario\r\n- Acceptance Criterion: AC-1\r\n- Preconditions: Isolated fixture.\r\n- Steps:\r\n  1. Inspect synthetic fixture.\r\n- Expected Result: Documented observation.\r\n- Actual Result: Not run.\r\n- Status: Not run.\r\n";
-export function documentFixture(id: TemplateId): { source: string; sections: string[] } {
+export function documentFixture(id: TemplateId, ticket = "FIX-1"): { source: string; sections: string[] } {
   const profile = DOCUMENT_PROFILES[id]; if (!profile) throw new Error("not a document fixture");
   const numbered = ["requirements", "project-agent-guide", "spike-full-requirements"].includes(id);
   let sections = Array.from({ length: profile.minimumSections }, (_, i) => numbered ? `## ${i + 1}. Synthetic fixture` : `## Synthetic ${i + 1}`);
@@ -14,8 +14,8 @@ export function documentFixture(id: TemplateId): { source: string; sections: str
   sections.push("## Body");
   const source = "requirements:agent-teams/requirements/artifacts/synthetic-document.md";
   const matrix = parseReviewMatrixArtifact(readFileSync(new URL("./fixtures/protected-review-v1/producer-node-pnpm.md", import.meta.url)), "requirements:agent-teams/requirements/artifacts/fixture-producer-node-pnpm.md").matrix;
-  matrix.source = source; matrix.repository.branch = "feature/FIX-1-fixture"; matrix.environment.PA_TICKET_ID = { literal: "FIX-1" };
-  for (const gate of matrix.prerequisites) if (gate.kind === "operatorGate") gate.ticket = "FIX-1";
+  matrix.source = source; matrix.repository.branch = `feature/${ticket}-fixture`; matrix.environment.PA_TICKET_ID = { literal: ticket };
+  for (const gate of matrix.prerequisites) if (gate.kind === "operatorGate") gate.ticket = ticket;
   const authority = `### Full Validation Matrix\r\n\r\nMatrix Source: ${source}\r\n\r\n\`\`\`json\r\n${JSON.stringify(matrix, null, 2).replaceAll("\n", "\r\n")}\r\n\`\`\`\r\n\r\n`;
   const metadata: Record<string, string> = { Ticket: "{{ticket}}", "Repository Key": "fixture-repo", "Repository Root": "/fixture/canonical", Class: "software-dev", Route: "builder/orchestrator", Status: "Draft", "Handoff Type": "fresh", "Feature Branch": "feature/{{ticket}}-fixture", "Matrix Authority SHA-256": digest(authority + "\r\n"), "Review Revision": "r001", Requirements: source, Implementation: "Not implemented - draft", "Execution Model": "direct-phase", Version: "1", Repository: "/fixture/canonical", Date: "2000-01-01", Deployment: "d-000001", Revision: "r001", "Acceptance Criteria": '["AC-1"]' };
   const frontmatter = id === "spike-learning-note" ? "---\r\ntype: spike-research\r\nstatus: draft\r\nsource_doc: synthetic.md\r\nsource_repo: fixture\r\nsource_ticket: FIX-1\r\nsource_deployments:\r\n  - d-000001\r\n---\r\n" : "";

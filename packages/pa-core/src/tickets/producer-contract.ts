@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { parseReviewMatrixSource } from "../validation/review-contract.js";
+import { isCanonicalTicketId } from "./validate.js";
 
 /** Syntax only. A parsed candidate is never an authenticated operator decision. */
 export class ProducerContractError extends Error {
@@ -9,7 +10,6 @@ const invalid = (): never => { throw new ProducerContractError(); };
 const sha = /^[0-9a-f]{40}$/;
 const hash = /^[0-9a-f]{64}$/;
 const revision = /^r[0-9]{3,}$/;
-const ticket = /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
 export interface TaskHandoff {
   ticket: string; repositoryKey: string; repositoryRoot: string;
   handoffType: "fresh" | "amendment"; branch: string; baseSha: string;
@@ -55,10 +55,13 @@ function field(value: string, pattern: RegExp): string {
   return value;
 }
 function tuple(values: Omit<TaskHandoff, "branchAction" | "linkedBranchState">): TaskHandoff {
-  field(values.ticket, ticket); field(values.repositoryKey, /^[a-zA-Z0-9_-]{1,128}$/);
+  // Registry-issued numeric suffixes may be zero-padded. Preserve the exact ID;
+  // padding is not a license to alias a different ticket, branch or preview.
+  if (!isCanonicalTicketId(values.ticket)) return invalid();
+  field(values.repositoryKey, /^[a-zA-Z0-9_-]{1,128}$/);
   field(values.repositoryRoot, /^\/[A-Za-z0-9_./-]+$/);
   if (resolve(values.repositoryRoot) !== values.repositoryRoot) return invalid();
-  field(values.branch, /^feature\/[A-Z][A-Z0-9]*-[1-9][0-9]*-[A-Za-z0-9][A-Za-z0-9._/-]*$/);
+  field(values.branch, /^feature\/[A-Z][A-Z0-9]*-[0-9]+-[A-Za-z0-9][A-Za-z0-9._/-]*$/);
   if (!values.branch.startsWith(`feature/${values.ticket}-`) || values.branch.includes("..") || values.branch.includes("//") || values.branch.endsWith("/") || values.branch.split("/").some(part => part.endsWith(".") || part.endsWith(".lock"))) return invalid();
   field(values.baseSha, sha);
   if (values.handoffType !== "fresh" && values.handoffType !== "amendment") return invalid();
