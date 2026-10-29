@@ -1,4 +1,4 @@
-export { WORKFLOW_CONTRACT, MAX_WORKFLOW_BYTES, MAX_WORKFLOW_RECORD_BYTES, MAX_WORKFLOW_STEPS, PACKAGE_PERMISSIONS, STEP_OUTCOMES, JsonWorkflowError, parseReviewBundle, parseWorkflowBinding } from "./contracts.js";
+export { WORKFLOW_CONTRACT, MAX_WORKFLOW_BYTES, MAX_WORKFLOW_RECORD_BYTES, MAX_WORKFLOW_STEPS, PACKAGE_PERMISSIONS, STEP_OUTCOMES, JsonWorkflowError, parseReviewBundle, parseWorkflowBinding, parseWorkflowRequest } from "./contracts.js";
 export type { WorkflowDefinition, WorkflowStep, WorkflowBinding, ReviewBundle, EvidenceRef as JsonWorkflowEvidenceRef, PackagePermission } from "./contracts.js";
 export { parseWorkflowDefinition, evaluatePredicate } from "./definition.js";
 export { OPERATIONS, operationContract } from "./operations.js";
@@ -10,7 +10,7 @@ export { queryWorkflow } from "./queries.js";
 export type { WorkflowReadRequest } from "./queries.js";
 export { renderWorkflowGate } from "./presentation.js";
 export type { WorkflowGateResult } from "./presentation.js";
-export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision } from "./service.js";
+export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision, projectWorkflowNext } from "./service.js";
 export type { WorkflowCaller, WorkflowDecision, WorkflowHost, WorkflowState, WorkflowEffectOwner, EffectIntent, EffectObservation } from "./service.js";
 export { RegistryWorkflowJournal } from "../registry/workflows.js";
 export { authorizeStructuredConsumer, structuredTaskBaseline, readCanonicalWorkflowArtifact } from "./consumers.js";
@@ -18,3 +18,9 @@ export type { StructuredTaskBaseline, StructuredConsumerContext } from "./consum
 export { reviewBundleTemplateConsumer, produceWorkflowSubject } from "./producer.js";
 export { readWorkflowEvidence } from "./evidence.js";
 export { createTicketWorkflowOwners } from "./ticket-owner.js";
+export { adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable } from "./catalog.js";
+export { workflowDecisionReference, structuredReviewArtifact } from "./review.js";
+export { workflowReadService, workflowFailure, readTicketWorkflow, workflowPrimerView } from "./public.js";
+export type { WorkflowReadHost, WorkflowPrimerView } from "./public.js";
+export { runWorkflowCommand } from "../cli/commands/workflow.js";
+export { validateWorkflowPair } from "./paired.js";

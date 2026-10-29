@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
@@ -34,6 +35,8 @@ export interface GeneratePrimerOptions {
   toolReference?: ToolReference;
   rogueOne?: boolean;
   invocationChannel?: DeploymentInvocationChannel;
+  /** Derived pinned registry projection, never request/environment authority. Pi only. */
+  workflow?: WorkflowPrimerView;
 }
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
@@ -60,6 +63,13 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `> **Ticket:** ${options.templateVars?.TICKET_ID || "none"}`,
     ``,
     additionalInstructions,
+    ...(options.runtime === "pi" && options.workflow ? [
+      "## JSON Workflow (pinned)",
+      `Run: ${options.workflow.runId}; definition: ${options.workflow.workflowId}/${options.workflow.version}; raw SHA-256: ${options.workflow.sha256}; config: ${options.workflow.configRevision}.`,
+      `Next owner: ${options.workflow.nextOwner}. Next action: ${options.workflow.nextAction}.`,
+      "Use pa_workflow for current status/next and pa_decision for native capture/revocation. This primer is a projection, never approval, completion or effect admission. Do not parse approval paragraphs or fall back to legacy on a v1 failure.",
+      "",
+    ] : []),
     `## Objective`,
     objective,
     ``,

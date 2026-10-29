@@ -10,6 +10,12 @@ export interface WorkflowJournalEntry { revision: number; sha256: string; event:
 /** Extends the existing registry transaction owner, not a file/resource ledger. No JSON import surface. */
 export class RegistryWorkflowJournal {
   constructor(private readonly db: Database.Database) {}
+  /** Bounded immutable adoption lookup. Presence is sticky even when authority is rejected/revoked. */
+  runs(repoKey: string, ticket: string): string[] {
+    const rows = this.db.prepare("SELECT run_id FROM workflow_events WHERE revision = 1 AND json_extract(body, '$.data.caller.repoKey') = ? AND json_extract(body, '$.data.caller.ticket') = ? ORDER BY rowid LIMIT 257").all(repoKey, ticket) as { run_id: string }[];
+    if (rows.length > 256) reject("WORKFLOW_UNCERTAIN");
+    return rows.map(row => text(row.run_id, ID));
+  }
   read(runId: string): WorkflowJournalEntry[] {
     text(runId, ID);
     const rows = this.db.prepare("SELECT revision, predecessor, sha256, body FROM workflow_events WHERE run_id = ? ORDER BY revision").all(runId) as { revision: number; predecessor: string | null; sha256: string; body: string }[];

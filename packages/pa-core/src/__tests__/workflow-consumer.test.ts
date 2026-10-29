@@ -7,14 +7,14 @@ import { getDb } from "../registry/db.js";
 import { RegistryWorkflowJournal } from "../registry/workflows.js";
 import { digest } from "../workflows/contracts.js";
 import { authorizeStructuredConsumer, structuredTaskBaseline } from "../workflows/consumers.js";
-import { bundle, bytes, definition } from "./workflow-fixtures.js";
+import { bundle, bytes, definition, fixtureEvidence } from "./workflow-fixtures.js";
 
 test("structured baseline uses issued registry authority and exact artifacts, never approval paragraphs or additional resources", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-structured-consumer-")); const db = getDb(join(root, "registry.db"));
   try {
     const journal = new RegistryWorkflowJournal(db); const d = definition(); const b = bundle();
-    const req = Buffer.from("# Deliberately no Approved status or approval paragraph\n"); const uat = Buffer.from("# UAT plan, not executed\n");
-    b.requirements.sha256 = digest(req); b.uat.sha256 = digest(uat);
+    const evidence = fixtureEvidence(b);
+    const req = evidence.get(b.requirements.ref)!, uat = evidence.get(b.uat.ref)!;
     const subjectRaw = bytes(b); const subjectSha256 = digest(subjectRaw); const definitionRaw = bytes(d);
     journal.append("wf-consumer", 0, () => ({ type: "admitted", eventId: "event-admitted", data: { definitionSha256: digest(definitionRaw), subjectSha256, configRevision: "a".repeat(40), caller: { deploymentId: "d-abcdef", repoKey: b.repository.key, repoRoot: b.repository.root, ticket: b.ticket, team: "requirements", mode: "analyze", identitySha256: "a".repeat(64) } } }), [subjectRaw, definitionRaw]);
     const capture = { schemaVersion: "pa-workflow-evidence-ref/v1", ref: "synthetic-capture", version: "v1", sha256: "a".repeat(64) };

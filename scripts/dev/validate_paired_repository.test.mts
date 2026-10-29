@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { definition, bytes } from "../../packages/pa-core/src/__tests__/workflow-fixtures.js";
+import { workflowDigest } from "../../packages/pa-core/src/index.js";
 import { validatePairedRepository, validateReviewProducerFixtures } from "./validate_paired_repository.mts";
 
 test("v1 paired producer fixtures require exact three-profile manifest, shared parser and digest agreement", () => {
@@ -172,6 +174,22 @@ function createDirectFixture() {
   git(root, "add", "."); git(root, "commit", "-qm", "direct fixture");
   return { root, sha: git(root, "rev-parse", "HEAD"), checker };
 }
+
+test("JSON workflow pairing rejects ignored overlays and missing enabled producer/fixture counterparts", () => {
+  for (const variant of ["ignored", "missing-counterpart"] as const) {
+    const f = createFixture();
+    try {
+      const d = definition(), raw = bytes(d);
+      if (variant === "ignored") { writeFileSync(join(f.root, ".gitignore"), "workflows/\n"); git(f.root, "add", ".gitignore"); git(f.root, "commit", "-qm", "ignored overlay fixture"); }
+      mkdirSync(join(f.root, "workflows/definitions"), { recursive: true });
+      writeFileSync(join(f.root, "workflows/definitions/software.json"), raw);
+      writeFileSync(join(f.root, "workflows/manifest.json"), JSON.stringify({ schemaVersion: "pa-workflow-manifest/v1", definitions: [{ workflowId: d.workflowId, version: d.version, file: "workflows/definitions/software.json", sha256: workflowDigest(raw) }], bindings: [{ schemaVersion: "pa-workflow-binding/v1", team: "requirements", mode: "analyze", enabled: true, workflowId: d.workflowId, workflowVersion: d.version }] }));
+      if (variant === "missing-counterpart") { git(f.root, "add", "."); git(f.root, "commit", "-qm", "enabled workflow without producer fixtures"); }
+      assert.equal(git(f.root, "status", "--porcelain", "--untracked-files=all"), "");
+      assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: git(f.root, "rev-parse", "HEAD") }), variant === "ignored" ? /WORKFLOW_SOURCE/ : /Required pinned workflow fixture is missing/);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }
+});
 
 test("PAP-268 paired direct-only profile validates source producer without restoring retired borrower policy", () => {
   const f = createDirectFixture();

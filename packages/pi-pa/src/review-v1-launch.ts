@@ -6,7 +6,7 @@ import {
   assertRepositoryGitIdentity, captureRepositoryGitSnapshot, claimReviewAuthorization,
   digestValidationManifest, parseReviewEvidenceJson, readReviewEvidenceFile, readReviewMatrixArtifact,
   getAiUsageDir, getDeploymentEvents, queryReviewAuthorizationClaim, parseReviewObjective,
-  getPlatformHomeDir, loadReposYaml, readReviewProducerFixtures,
+  getPlatformHomeDir, loadReposYaml, readReviewProducerFixtures, structuredReviewArtifact,
   VALIDATION_HANDOFF_SCHEMA_VERSION, VALIDATION_MANIFEST_SCHEMA_VERSION, ReviewContractError,
   type ReviewCheckoutEvidence, type ReviewMatrix, type ReviewObjective, type ReviewReadinessBinding,
   type ValidationHandoff, type ValidationAuthorityBinding,
@@ -34,16 +34,19 @@ export function authorizeVersionedReview(request: PiValidationLaunchInput["reque
 export function assertVersionedReviewReference(binding: Pick<ReviewCheckoutEvidence, "repoKey" | "ticket" | "branch" | "baseSha" | "approvedReference">): void {
   const ref = binding.approvedReference;
   if (!ref) reject("review.reference", "requires approved source/digest/reference authority");
-  const a = readReviewMatrixArtifact(getAiUsageDir(), ref.matrixSource);
   const ticket = reviewPreflightDependencies().readTicket(binding.ticket);
+  const structured = structuredReviewArtifact(binding.repoKey, binding.ticket, ref.matrixSource, ref.matrixApprovalEvidence);
+  if (!structured && ticket.doc_refs.some(r => r.type === "workflow")) reject("review.reference", "structured authority unavailable; no legacy fallback");
+  const a = structured ?? readReviewMatrixArtifact(getAiUsageDir(), ref.matrixSource);
   const approvals = ticket.comments.filter((comment) => comment.id === ref.matrixApprovalEvidence);
   const links = ticket.linkedBranches.filter((link) => link.repo === binding.repoKey);
   if (a.matrix.repository.key !== binding.repoKey || a.header.ticket !== binding.ticket || a.matrix.repository.branch !== binding.branch
     || a.header.featureBranch !== binding.branch || a.matrix.repository.baseSha !== binding.baseSha || a.header.approvedBaseSha !== binding.baseSha
     || ref.sha !== binding.baseSha || a.digest !== ref.matrixAuthoritySha256 || a.header.matrixAuthoritySha256 !== a.digest
     || a.header.matrixApprovalEvidence !== ref.matrixApprovalEvidence || links.length !== 1 || links[0]?.state !== "materialized"
-    || links[0]?.branch !== binding.branch || links[0]?.baseSha !== binding.baseSha || approvals.length !== 1 || approvals[0]?.author !== "sinh"
-    || [ref.matrixSource, a.digest, binding.branch].some((value) => approvals[0]!.content.split(value).length - 1 !== 1)) reject("review.reference", "durable artifact, ticket branch and approval changed or conflict");
+    || links[0]?.branch !== binding.branch || links[0]?.baseSha !== binding.baseSha
+    || (!structured && (approvals.length !== 1 || approvals[0]?.author !== "sinh"
+      || [ref.matrixSource, a.digest, binding.branch].some((value) => approvals[0]!.content.split(value).length - 1 !== 1)))) reject("review.reference", "durable artifact, ticket branch and approval changed or conflict");
 }
 export function versionedReviewEnvironment(matrix: ReviewMatrix, objective: ReviewObjective, root: string, trustedPath: string): Record<string, string> {
   if (!trustedPath || trustedPath.split(":").some((entry) => !isAbsolute(entry)) || trustedPath.includes("review-auth:")) reject("environment.PATH", "requires an explicit non-authority trusted absolute PATH");

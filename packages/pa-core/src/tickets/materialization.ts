@@ -415,6 +415,11 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
         ? options.rereadStructuredTaskBaseline?.()
         : resolveOrdinaryTaskBaseline(options);
       if (!current || JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");
+      if (ordinary.schemaVersion === "structured-task-baseline/v1" && ordinary.handoff.type === "amendment") {
+        if (currentLinked.state !== "materialized" || currentLinked.headSha !== ordinary.handoff.featureSha
+          || currentLinked.baseSha !== ordinary.handoff.baseSha || symbolicBranch(runGit, worktreeRoot) !== ordinary.branch
+          || fullCommit(runGit, worktreeRoot, "HEAD^{commit}", "amendment feature") !== ordinary.handoff.featureSha) throw ordinaryBaselineError("CHANGED");
+      }
       if (gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], worktreeRoot)).length) throw ordinaryBaselineError("CHECKOUT_DIRTY");
       const gitDir = gitText(runGit(["rev-parse", "--absolute-git-dir"], worktreeRoot)).trim();
       let authority;

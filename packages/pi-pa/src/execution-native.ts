@@ -22,6 +22,7 @@ import { environmentSecrets } from "./diagnostics.js";
 import { executionAdministration, runExecutionAdministration, type ExecutionAdministration, type ExecutionAdministrationIdentity } from "./native-execution-administration.js";
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { readPiForegroundCompletion } from "./terminal-status.js";
+import { authorizePiStructuredWork, parseStructuredLaunchNote } from "./workflow-consumers.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -39,7 +40,7 @@ function ordinaryDescriptorName(id: string): string {
 function ordinaryStart(id: string): RegistryEvent | null {
   const starts = queryReadonlyDeploymentEvents(id).filter((event) => event.event === "started");
   if (!starts.some((event) => event.note?.startsWith("ordinary-native-execution/"))) return null;
-  if (starts.length !== 1 || starts[0]!.note !== ORDINARY_NATIVE_EXECUTION_START) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+  if (starts.length !== 1 || (starts[0]!.note !== ORDINARY_NATIVE_EXECUTION_START && !parseStructuredLaunchNote(starts[0]!.note))) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
   return starts[0]!;
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -303,6 +304,7 @@ export class NativeExecutionSession {
         // host-shell permission. Administration/finish/settlement stay separate.
         if (this.#ordinary && typeof command !== "string" && ["plan", "advance", "select", "begin", "candidate"].includes(command.action)) this.#projectCommands();
         if (typeof command !== "string" && (command.action === "plan" || command.action === "advance")) {
+          authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "source.edit-scoped", command.plan, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
           if (command.plan.checks.some((name) => !this.#checkText(name)) || new Set(command.plan.checks.map((name) => this.#checkText(name))).size !== command.plan.checks.length)
             throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
           if (this.#commands && JSON.stringify(command.plan.checks.map((name) => this.#checkText(name))) !== JSON.stringify(this.#commands.checks.map((check) => check.command))) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
@@ -479,6 +481,7 @@ export class NativeExecutionSession {
   #newWork(): void {
     if (this.#consumed && !this.#retained().active) throw workflowError();
     this.#authenticateSourceCustody();
+    authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "source.edit-scoped", undefined, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
   }
   #authenticateSourceCustody(): void {
     const authentication = createPiReadonlyHelperCapability(this.#helper).authenticate(this.#physical.worktreeRoot); authentication.reread();
@@ -537,6 +540,7 @@ export class NativeExecutionSession {
     const check = state.plan.checks.find((name) => this.#checkText(name) === command);
     if (Object.keys(call.input).some((key) => !["command", "timeout"].includes(key))) throw this.#commands ? executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID") : workflowError();
     if (check) {
+      authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "check.execute-scoped", state.plan, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
       this.#commands?.assertCurrent();
       if (this.#ordinary && state.plan.checks[this.#ordinaryPassedChecks(state).length] !== check) throw workflowError();
       return;
@@ -546,6 +550,7 @@ export class NativeExecutionSession {
     if (/[\n\r$`;&|<>\\]/.test(command)) throw workflowError();
     if (["git status", "git status --short", "git diff --check", "git log -n 5 --oneline", "git rev-parse HEAD"].includes(command)) return;
     if (/^git commit -m (?:"[^"\n]+"|'[^'\n]+')$/.test(command)) {
+      authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "git.commit-local", state.plan, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
       if (this.#ordinary) {
         this.#commands!.assertCurrent();
         if (state.originalFailure || this.#ordinaryPassedChecks(state).length !== state.plan.checks.length) throw workflowError();

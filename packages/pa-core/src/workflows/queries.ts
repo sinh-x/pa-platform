@@ -1,6 +1,6 @@
 import { parseWorkflowDefinition } from "./definition.js";
 import { preflightWorkflow, unavailableWorkflowObservations, type WorkflowObservations } from "./preflight.js";
-import { JsonWorkflowError, type ReviewBundle } from "./contracts.js";
+import { digest, JsonWorkflowError, type ReviewBundle } from "./contracts.js";
 import type { WorkflowSelection } from "./selected.js";
 export type WorkflowReadRequest = { action: "list" } | { action: "show"; id: string } | { action: "validate"; raw: Uint8Array }
   | { action: "preflight"; team: string; mode: string; subject?: ReviewBundle };
@@ -14,7 +14,10 @@ export function queryWorkflow(selection: WorkflowSelection, request: WorkflowRea
       if (!selected.length) throw new JsonWorkflowError("WORKFLOW_SOURCE", "definition-selection", "papc-owner");
       return { schemaVersion: "pa-workflow-show/v1", definitions: selected.map(d => ({ definition: d.definition, sha256: d.sha256, configRevision: d.configRevision })) };
     }
-    case "validate": return { schemaVersion: "pa-workflow-validation/v1", definition: parseWorkflowDefinition(request.raw), staticOnly: true, executionAdmitted: false };
+    case "validate": {
+      const definition = parseWorkflowDefinition(request.raw);
+      return { schemaVersion: "pa-workflow-validation/v1", workflowId: definition.workflowId, version: definition.version, sha256: digest(request.raw), stepCount: definition.steps.length, staticOnly: true, executionAdmitted: false };
+    }
     case "preflight": return preflightWorkflow(selection, request.team, request.mode, observations, request.subject);
   }
 }

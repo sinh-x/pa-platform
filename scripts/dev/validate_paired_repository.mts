@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures } from "../../packages/pa-core/src/index.js";
+import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures, loadSelectedWorkflows, readReviewEvidenceFile, workflowDigest, validateWorkflowPair } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
   configRoot: string;
@@ -214,6 +214,21 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     const result = spawnSync("git", ["-C", configRoot, "merge-base", "--is-ancestor", expectedSha, "origin/develop"], { stdio: "ignore" });
     if (result.status !== 0) throw new Error(`pa-platform-config ${expectedSha} is not contained in origin/develop; merge the config prerequisite first`);
   }
+  const selectedRead = (relative: string): Uint8Array | null => {
+    const path = resolve(configRoot, relative);
+    if (!existsSync(path)) return null;
+    const raw = readReviewEvidenceFile(path, 1_048_576, "paired.workflow-source");
+    const committed = execFileSync("git", ["--no-replace-objects", "--no-optional-locks", "-C", configRoot, "show", `${actualSha}:${relative}`], { env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), maxBuffer: 1_048_577, stdio: ["ignore", "pipe", "ignore"] });
+    if (workflowDigest(raw) !== workflowDigest(committed)) throw new Error("Selected workflow source differs from the pinned committed bytes");
+    return raw;
+  };
+  const requiredRead = (relative: string): Uint8Array => { const raw = selectedRead(relative); if (!raw) throw new Error("Required pinned workflow fixture is missing"); return raw; };
+  const workflowSelection = loadSelectedWorkflows({ root: () => configRoot, revision: () => git(configRoot, ["rev-parse", "HEAD"]), read: (_root, relative) => selectedRead(relative) });
+  let workflowFixtureCount: number | undefined;
+  if (workflowSelection.bindings.some(b => b.enabled)) {
+    const registry = requiredRead("contracts/templates-v1.json"), fixtures = requiredRead("workflows/fixtures-v1.json");
+    workflowFixtureCount = validateWorkflowPair(workflowSelection, { root: configRoot, configRevision: actualSha, registrySha256: workflowDigest(registry) }, fixtures, requiredRead).fixtures.length;
+  }
   const reviewProducerCount = options.requireReviewV1 ? validateReviewProducerFixtures(configRoot) : undefined;
   const planFirstPrimerCount = validateRepositoryContracts(configRoot);
   const builderConfig = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
@@ -267,6 +282,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
 
   return [
     `CONFIG_SHA=${actualSha}`,
+    ...(workflowFixtureCount === undefined ? [] : [`JSON_WORKFLOW_STRUCTURAL_FIXTURES=${workflowFixtureCount}`, "JSON_WORKFLOW_EXECUTION_ADMITTED=false"]),
     ...(reviewProducerCount === undefined ? [] : [`REVIEW_V1_PRODUCER_PROFILES=${reviewProducerCount}/3`]),
     "CONFIG_CLEAN=true",
     `TEAMS_VALID=${teamFiles.length}/10`,
