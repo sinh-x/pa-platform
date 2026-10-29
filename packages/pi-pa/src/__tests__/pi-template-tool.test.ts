@@ -4,7 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { digest } from "../../../pa-core/src/templates/schema.js";
 import { DOCUMENT_DIAGNOSTIC_CASES } from "../../../pa-core/src/__tests__/template-document-diagnostic-fixture.js";
-import { templateService } from "@pa-platform/pa-core";
+import { templateService, reviewBundleTemplateConsumer } from "@pa-platform/pa-core";
+import { reviewBundleFixture } from "../../../pa-core/src/__tests__/review-bundle-template-fixture.js";
 import { templateFixture } from "../../../pa-core/src/__tests__/template-fixture.js";
 import { producerFixture } from "../../../pa-core/src/__tests__/template-producer-fixture.js";
 import { completeTemplateFixture } from "../../../pa-core/src/__tests__/template-complete-fixture.js";
@@ -60,6 +61,29 @@ for (const kind of ["fresh", "amendment"] as const) test(`public CLI/native ${ki
     assert.equal(f.resolveBaseline().baseSha, f.bindings.baseSha);
     f.record.comments[0]!.author = "requirements/analyst"; f.saveTicket();
     assert.throws(f.resolveBaseline, /ORDINARY_BASELINE_/);
+  } finally { f.dispose(); }
+});
+
+for (const kind of ["fresh", "amendment"] as const) test(`default native ${kind} review-bundle uses the actual shared parser, not workflow authority`, async () => {
+  const f = reviewBundleFixture(kind, "PAPC-070"); try {
+    const tools: PiToolDefinition[] = [];
+    createTemplateModule({ selection: f.selection })({ registerTool: t => { tools.push(t as PiToolDefinition); } });
+    assert.deepEqual(tools.map(t => t.name), ["pa_template"]);
+    const host = { selection: f.selection, reviewBundleConsumer: reviewBundleTemplateConsumer };
+    const rendered = templateService(f.request, host); assert.equal(rendered.ok, true);
+    const before = [readFileSync(join(f.root, "contracts/templates-v1.json")), readFileSync(join(f.root, "skills/templates/review-bundle.md"))];
+    for (const action of ["render", "validate"]) for (let n = 0; n < 20; n++) {
+      const request = { ...f.request, action, ...(action === "validate" ? { candidate: rendered.candidate } : {}) };
+      const native = await tools[0]!.execute("synthetic-review-bundle", { request: JSON.stringify(request) }, undefined, undefined, undefined);
+      assert.equal(native.isError, false); assert.deepEqual(JSON.parse(native.content[0]!.text), JSON.parse(JSON.stringify(templateService(request, host))));
+      assert.deepEqual(JSON.parse(native.content[0]!.text).validation, { structural: true, consumer: true, authority: false });
+    }
+    for (const bundle of [{ ...f.bundle, ticket: "PAPC-70" }, { ...f.bundle, approved: true }, { ...f.bundle, requestedPermissions: ["remote.push"] }]) {
+      const request = { ...f.request, bindings: { bundle } };
+      const result = await tools[0]!.execute("synthetic-review-bundle-negative", { request: JSON.stringify(request) }, undefined, undefined, undefined);
+      assert.equal(result.isError, true); assert.deepEqual(JSON.parse(result.content[0]!.text), templateService(request, host));
+    }
+    assert.deepEqual([readFileSync(join(f.root, "contracts/templates-v1.json")), readFileSync(join(f.root, "skills/templates/review-bundle.md"))], before);
   } finally { f.dispose(); }
 });
 
