@@ -560,11 +560,12 @@ export interface ExecutionWorktreeTransaction {
   /** Native direct-holder settlement only; never rewrites the immutable launch snapshot. */
   advanceDirectSnapshot(input: { deploymentId: string; ownershipToken: string; expected: RepositoryGitSnapshot; next: RepositoryGitSnapshot }): void;
 }
-const activeExecutionWorktreeOwners = new WeakMap<ExecutionWorktreeTransaction, { repoRoot: string; worktreeRoot: string }>();
+const activeExecutionWorktreeOwners = new WeakMap<ExecutionWorktreeTransaction, { repoRoot: string; worktreeRoot: string; gitDir: string }>();
 /** Internal capability check, not a public process/token assertion. */
-export function assertExecutionWorktreeOwner(transaction: ExecutionWorktreeTransaction, repoRoot: string, worktreeRoot: string): void {
+export function assertExecutionWorktreeOwner(transaction: ExecutionWorktreeTransaction, repoRoot: string, worktreeRoot: string): string {
   const owner = activeExecutionWorktreeOwners.get(transaction);
   if (!owner || owner.repoRoot !== repoRoot || owner.worktreeRoot !== worktreeRoot) throw new Error("native worktree transaction is absent or expired");
+  return owner.gitDir;
 }
 /** Existing lock composition for native execution: capacity -> worktree. This
  * wrapper is not authority; the native host must authenticate each command. */
@@ -641,7 +642,7 @@ export function withExecutionWorktreeAdmission<T>(canonicalRepoRoot: string, wor
         advanceDirectAuthoritySnapshot({ deploymentId: input.deploymentId, repoRoot: location.root, worktreeRoot: location.worktree, ticket: lease.ticket!,
           expectedBranchHeadSha: input.expected.head, branchHeadSha: input.next.head, timestamp: next.authorityUpdatedAt });
       } });
-      activeExecutionWorktreeOwners.set(transaction, { repoRoot: location.root, worktreeRoot: location.worktree });
+      activeExecutionWorktreeOwners.set(transaction, { repoRoot: location.root, worktreeRoot: location.worktree, gitDir: location.gitDir });
       try { const result = operation(transaction); if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("native execution transaction must be synchronous"); return result; }
       finally { active = false; activeExecutionWorktreeOwners.delete(transaction); }
     });

@@ -496,8 +496,17 @@ export function withPreparedTicketCapacity<T>(options: {
       inventory,
       handoffExecution(expected, source, worktreeOwner) {
         assertActive();
-        assertExecutionWorktreeOwner(worktreeOwner, root, source.binding.worktreeRoot);
+        const gitDir = assertExecutionWorktreeOwner(worktreeOwner, root, source.binding.worktreeRoot);
         const binding = source.binding, native = authenticateNativeExecutionRestart(source);
+        // Repository ownership moves FIRST while this same capacity permit is
+        // continuously occupied. Never transfer capacity across foreign/unknown
+        // exclusion merely because a worktree mutex was obtained.
+        const custody = observeReadonlyRepositoryAuthority(gitDir);
+        if (!custody.owner || custody.borrower || custody.implement || custody.review
+          || custody.owner.deploymentId !== native.actor.deploymentId || custody.owner.ticket !== binding.ticket
+          || custody.owner.canonicalRepoRoot !== root || custody.owner.worktreeRoot !== binding.worktreeRoot
+          || custody.owner.directExecutionCustody !== native.custody
+          || JSON.stringify(custody.owner.processFingerprint) !== JSON.stringify(native.actor.process)) throw new Error("native restart repository handoff is not proven");
         if (binding.repoKey !== key || binding.repoRoot !== root || expected.canonicalRepoKey !== key || expected.canonicalRepoRoot !== root
           || expected.ticket !== binding.ticket || expected.deploymentId !== native.previous.deploymentId) throw new Error("native restart capacity identity conflicts");
         assertNativeRestartProcessDead(expected.processFingerprint);

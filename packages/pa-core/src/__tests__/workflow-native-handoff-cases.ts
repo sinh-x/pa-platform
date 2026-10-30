@@ -145,11 +145,19 @@ test("PAP-271 resource interruption retains pending intent and capacity/exclusio
 
 test("PAP-271 capacity-publish fault is recovered only under same pending intent; no second permit or snapshot reset", () => fixture(f => {
   assert.throws(() => withPreparedTicketCapacity({ canonicalRepoKey: "fixture", canonicalRepoRoot: f.repo, boundary(point) { if (point === "published") throw new Error("injected after capacity publication"); } }, cap =>
-    withExecutionWorktreeAdmission(f.repo, f.worktree, cap, wt => { cap.handoffExecution(f.slot, f.source, wt); })));
+    withExecutionWorktreeAdmission(f.repo, f.worktree, cap, wt => { wt.handoffDirectOwner(f.lease, f.source); cap.handoffExecution(f.slot, f.source, wt); })));
   assert.equal(JSON.parse(readFileSync(f.slotPath, "utf8")).deploymentId, nextId);
-  assert.equal(JSON.parse(readFileSync(f.ownerPath, "utf8")).deploymentId, previousId);
+  assert.equal(JSON.parse(readFileSync(f.ownerPath, "utf8")).deploymentId, nextId);
   f.handoff(); assert.equal(readExecutionState(f.store, f.binding).pendingRestart?.sequence, f.pending.sequence);
   assert.equal(f.service.restart(f.actor, f.pending.sequence, evidence).bounds.replacementsUsed, 1);
+}));
+
+test("PAP-271 capacity cannot move ahead of proven repository handoff even with both owner locks", () => fixture(f => {
+  const before = f.snapshot();
+  withPreparedTicketCapacity({ canonicalRepoKey: "fixture", canonicalRepoRoot: f.repo }, cap => withExecutionWorktreeAdmission(f.repo, f.worktree, cap, wt => {
+    assert.throws(() => cap.handoffExecution(f.slot, f.source, wt));
+  }));
+  assert.deepEqual(f.snapshot(), before);
 }));
 
 test("PAP-271 changed physical snapshot or overlapping review custody is never adopted", () => fixture(f => {
