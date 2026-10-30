@@ -379,7 +379,7 @@ export class NativeExecutionSession {
     const state = this.service.initialize(this.actor);
     if (this.#currentStart) {
       const chain = ordinaryExecutionOrigin(this.#currentStart);
-      if (state.pendingRestart || !equal(state.activeOwner, this.actor) || !equal(state.retiredOwners.map(holder => holder.deploymentId), chain.retiredIds)
+      if (state.restartLaunch || state.pendingRestart || !equal(state.activeOwner, this.actor) || !equal(state.retiredOwners.map(holder => holder.deploymentId), chain.retiredIds)
         || !Number.isSafeInteger(this.#currentStart.effective_timeout_seconds) || this.#currentStart.effective_timeout_seconds! <= 0
         || Date.parse(this.#currentStart.timestamp) + this.#currentStart.effective_timeout_seconds! * 1000 > Date.parse(this.contract.bounds.deadlineAt)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
       for (const retired of state.retiredOwners) assertNativeRestartProcessDead(retired.process);
@@ -489,7 +489,7 @@ export class NativeExecutionSession {
     if (!request) return null;
     this.assertCaller(context); this.#soleOwner();
     const state = this.service.status(this.actor);
-    if (this.#administrationRunning || state.operation !== null || state.pendingRestart !== null) throw workflowError();
+    if (this.#administrationRunning || state.operation !== null || state.pendingRestart !== null || state.restartLaunch !== null) throw workflowError();
     if (request.kind === "core" && request.argv[0] === "registry" && process.env.PA_PI_EXECUTION_MODE !== "foreground") throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
     return request;
   }

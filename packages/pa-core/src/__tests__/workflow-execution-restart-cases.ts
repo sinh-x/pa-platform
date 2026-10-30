@@ -248,6 +248,30 @@ test("PAP-271 preparing handoff around an unknown operation retains both barrier
     action: "finish", operationId: "unknown", evidence: ref("forged"), failure: null }));
 }));
 
+test("PAP-271 durable launch reservation precedes OS child binding and cannot cross ordinary work or change successor identity", () => fixture(f => {
+  f.plan(); f.select(); const before = f.status(), launcher = holders[1]!, child = { ...launcher, process: holders[2]!.process };
+  f.host.assertLive = () => undefined; // Synthetic process admission only.
+  const launch = f.service.reserveRestartLaunch(launcher, before.sequence, ref("native-resume"));
+  assert.equal(launch.pendingRestart, null); assert.equal(launch.restartLaunch!.actor.deploymentId, launcher.deploymentId);
+  assert.deepEqual(launch.bounds, before.bounds); assert.deepEqual(launch.custody, before.custody);
+  const files = f.files(); assert.deepEqual(f.service.reserveRestartLaunch(launcher, before.sequence, ref("native-resume")), launch); assert.deepEqual(f.files(), files);
+  assert.throws(() => f.begin("bypass")); assert.throws(() => f.settle());
+  assert.throws(() => f.service.prepareRestart(holders[2]!, launch.sequence, ref("native-resume")));
+  assert.throws(() => f.service.prepareRestart(child, launch.sequence, ref("changed-evidence")));
+  const pending = f.service.prepareRestart(child, launch.sequence, ref("native-resume"));
+  assert.deepEqual(pending.restartLaunch, launch.restartLaunch); assert.deepEqual(pending.pendingRestart!.actor, child);
+  const settled = f.service.restart(child, pending.sequence, ref("native-resume"));
+  assert.equal(settled.restartLaunch, null); assert.equal(settled.pendingRestart, null); assert.equal(settled.bounds.replacementsUsed, 1);
+  assert.deepEqual(settled.activeOwner, child); assert.deepEqual(settled.binding, before.binding);
+}));
+
+test("PAP-271 unknown operations cannot acquire a runtime launch reservation and public apply cannot import one", () => fixture(f => {
+  f.plan(); f.select(); f.begin("unknown"); const before = f.status(), files = f.files();
+  assert.throws(() => f.service.reserveRestartLaunch(holders[1]!, before.sequence, ref("native-resume")));
+  assert.throws(() => f.apply({ action: "restart-launch", previousOwner: holders[0]!, evidence: ref("native-resume") }, holders[1]!));
+  assert.deepEqual(f.status(), before); assert.deepEqual(f.files(), files);
+}));
+
 test("PAP-271 operation replay retains each original actor and open intent without latest-holder substitution or writes", () => fixture(f => {
   f.plan(); f.select(); f.begin("old-operation"); f.finish("old-operation");
   const old = readExecutionOperations(f.store, f.contract)[0]!; assert.deepEqual(old.actor, holders[0]);

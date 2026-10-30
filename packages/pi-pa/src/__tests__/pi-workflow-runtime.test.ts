@@ -1,3 +1,4 @@
+import "./runtime-start-gate.test.js";
 import "./pi-workflow-operation-cases.js";
 import "./pi-workflow-bootstrap-cases.js";
 import assert from "node:assert/strict";

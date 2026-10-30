@@ -37,8 +37,12 @@ export function authenticateNativeExecutionRestart(source: NativeExecutionRestar
     || (state.custody.holder !== null && !same(state.custody.holder, state.activeOwner))
     || loadRepoEntry(binding.repoKey)?.path !== binding.repoRoot) throw workflowError();
   const previous = state.activeOwner, actor = pending.actor;
+  const launcher = state.restartLaunch?.actor;
+  const trustedLauncher = launcher && launcher.deploymentId === actor.deploymentId
+    && same(readProcessFingerprint(launcher.process.pid), launcher.process)
+    && processIsWithinFingerprintLineage(process.pid, launcher.process) && processIsWithinFingerprintLineage(actor.process.pid, launcher.process);
   if (previous.deploymentId === actor.deploymentId || !same(readProcessFingerprint(actor.process.pid), actor.process)
-    || !processIsWithinFingerprintLineage(process.pid, actor.process)) throw workflowError();
+    || (!processIsWithinFingerprintLineage(process.pid, actor.process) && !trustedLauncher)) throw workflowError();
   assertNativeRestartProcessDead(previous.process);
   const ids = [binding.lineageId, previous.deploymentId, actor.deploymentId];
   const rows = ids.map(id => {
