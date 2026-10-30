@@ -2,8 +2,8 @@ import {
   assertNativeRestartProcessDead, authenticateNativeExecutionRestart, captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths,
   observeReadonlyRepositoryAuthority, observeRetainedRepositoryTicketSlot, parseExecutionBinding, processIsWithinFingerprintLineage,
   queryReadonlyDeploymentEvents, queryReadonlyDeploymentStatus, readExecutionState, readProcessFingerprint, requireTicketLinkedBranch,
-  resolveRepoExecutionPath, TicketStore, withExecutionWorktreeAdmission, withPreparedTicketCapacity, workflowDigest, workflowError, workflowObject,
-  type ExecutionHolder, type ExecutionHost, type ExecutionWorktreeTransaction, type PreparedTicketCapacityTransaction, type RegistryEvent,
+  resolveRepoExecutionPath, TicketStore, withExecutionWorktreeAdmission, withPreparedTicketCapacity, workflowDigest, workflowError,
+  type ExecutionHolder, type ExecutionHost, type ExecutionWorktreeTransaction, type PreparedTicketCapacityTransaction,
   type StructuredTaskBaseline, type TreehouseLaunchEvidence,
 } from "@pa-platform/pa-core";
 import { NativeExecutionEvidence } from "./native-execution-evidence.js";

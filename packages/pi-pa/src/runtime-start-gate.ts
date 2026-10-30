@@ -11,9 +11,10 @@ const [gate,nonce,binary,...args]=process.argv.slice(1);
 if(typeof process.execve!=='function'||!path.isAbsolute(gate)||!path.isAbsolute(binary)||!/^[a-f0-9]{64}$/.test(nonce))process.exit(125);
 const started=Date.now();
 function wait(){
+  if(Date.now()-started>=30000)process.exit(124);
   try {
     const fd=fs.openSync(gate,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
-    let body;try{const s=fs.fstatSync(fd);if(s.nlink===2){setTimeout(wait,10);return}if(!s.isFile()||s.nlink!==1||s.uid!==process.getuid()||(s.mode&4095)!==384||s.size!==65)process.exit(125);body=fs.readFileSync(fd,'utf8')}finally{fs.closeSync(fd)}
+    let body;try{const s=fs.fstatSync(fd);if(s.nlink===2){setTimeout(wait,10);return}if(!s.isFile()||s.nlink!==1||s.uid!==process.getuid()||(s.mode&4095)!==384||s.size!==65)process.exit(125);const bytes=Buffer.alloc(65);if(fs.readSync(fd,bytes,0,65,0)!==65)process.exit(125);body=bytes.toString('utf8')}finally{fs.closeSync(fd)}
     if(body!==nonce+'\n')process.exit(125);
     const env={...process.env};if(env.PA_PI_START_NODE_OPTIONS)env.NODE_OPTIONS=env.PA_PI_START_NODE_OPTIONS;else delete env.NODE_OPTIONS;
     delete env.PA_PI_START_NODE_OPTIONS;
