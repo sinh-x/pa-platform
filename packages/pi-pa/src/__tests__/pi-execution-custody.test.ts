@@ -172,6 +172,35 @@ test("AC11 failed update preserves started operation and exact expected-head int
   await assert.rejects(f.execute({ candidateSha: sha, expectedRemoteSha: "d".repeat(40) }, "pa_feature_update", "retry-update"));
 }));
 
+test("PAP-271 internal journal successor can use unchanged Pi hooks, but restart is never a public process-selection action", () => fixture(async f => {
+  // Synthetic trusted handoff only: the default native adapter still has no
+  // authenticated repository/capacity restart producer.
+  f.start(); f.call("before"); f.end("before");
+  const before = f.service.status(owner);
+  f.host.assertRestart = () => undefined;
+  f.service.restart(child, before.sequence, source("native-restart")); f.setActor(child);
+  await assert.rejects(f.execute({ action: "restart", previousOwner: source("owner"), evidence: source("native-restart") }));
+  assert.equal(f.call("after"), undefined); f.end("after");
+  const next = f.service.status(child);
+  assert.equal(next.binding.lineageId, before.binding.lineageId);
+  assert.deepEqual(next.binding.owner, owner); assert.deepEqual(next.activeOwner, child);
+  assert.equal(next.bounds.replacementsUsed, 1); assert.equal(next.bounds.deadlineAt, before.bounds.deadlineAt);
+  assert.equal(next.operation, null);
+  f.setActor(owner); assert.equal((f.call("retired") as { block: boolean }).block, true);
+}));
+
+test("PAP-271 Pi pending tool hook cannot finish an old operation after internal holder restart", () => fixture(f => {
+  f.start(); f.call("unknown-before-restart");
+  f.host.assertRestart = () => undefined;
+  const before = f.service.status(owner);
+  f.service.restart(child, before.sequence, source("native-restart")); f.setActor(child);
+  assert.throws(() => f.end("unknown-before-restart"));
+  assert.equal((f.call("retry-after-restart") as { block: boolean }).block, true);
+  f.setActor(owner); assert.throws(() => f.end("unknown-before-restart"));
+  assert.deepEqual(f.service.status(child).operation, before.operation);
+  assert.deepEqual(f.service.status(child).custody, before.custody);
+}));
+
 test("AC1/AC8 inactive/mismatched/async bindings reject controls and cannot mint authority from environment", () => fixture(async (f) => {
   f.setActive(false); await assert.rejects(f.execute({ action: "plan", plan: plan() }));
   const r = runtime(); createPiExecutionModule({ env: { PA_TEAM: "builder", PA_MODE: "orchestrator", PA_PREPARED_ENABLED: "1" } })(r.pi);
