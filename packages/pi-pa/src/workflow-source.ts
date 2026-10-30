@@ -68,7 +68,7 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
           if (starts.length !== 1 || starts[0]!.note !== structuredLaunchNote("ordinary-native-execution/v1", { runId: intent.runId, decisionId: intent.decisionId, subjectSha256: intent.subjectSha256 })) continue;
           matches++;
           const native = readExecutionState(store, binding);
-          if (native.operation || ["settling", "uncertain-blocked"].includes(native.custody.state)) return { state: "unknown" };
+          if (native.pendingRestart || native.operation || ["settling", "uncertain-blocked"].includes(native.custody.state)) return { state: "unknown" };
         }
         return { state: matches > 1 ? "conflict" : "pending" }; // never quiet logs or agent completion messages
       }
@@ -89,7 +89,7 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
         const native = readExecutionState(store, binding);
         // Exact native journal revision, not newest-file or largest-SHA selection.
         // Old proofs remain historical when further native work invalidates them.
-        if (native.operation || ["settling", "uncertain-blocked"].includes(native.custody.state)) blocked();
+        if (native.pendingRestart || native.operation || ["settling", "uncertain-blocked"].includes(native.custody.state)) blocked();
         if (phase.sequence !== native.sequence) continue;
         if (!native.plan || native.plan.phaseId !== intent.stepId || native.custody.state !== "idle" || native.operation || native.originalFailure || native.recoveryPending || native.candidateSha !== phase.candidateSha) blocked();
         const registration = loadRepoEntry(binding.repoKey)?.projectCommands;

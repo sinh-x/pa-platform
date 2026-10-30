@@ -232,7 +232,7 @@ export type ExecutionCommand =
   | { readonly action: "advance"; readonly plan: PhaseExecutionPlan; readonly evidence: SourceVersion }
   | { readonly action: "select"; readonly executor: "orchestrator-direct" | "implement-child" | "review-reserved"; readonly holder: ExecutionHolder; readonly handover: SourceVersion }
   /** Internal native-owner event. Public apply cannot dispatch it. */
-  | { readonly action: "restart"; readonly previousOwner: ExecutionHolder; readonly evidence: SourceVersion }
+  | { readonly action: "restart" | "restart-intent"; readonly previousOwner: ExecutionHolder; readonly evidence: SourceVersion }
   | { readonly action: "begin"; readonly operation: ExecutionOperation }
   | { readonly action: "finish"; readonly operationId: string; readonly evidence: SourceVersion; readonly failure: ExecutionFailure | null; readonly candidateSha?: string }
   | { readonly action: "settle"; readonly evidence: SourceVersion; readonly inventory: ExecutionRecoveryInventory }
@@ -245,6 +245,8 @@ export interface ExecutionState {
   /** Journal-derived holder, never substituted into the immutable launch binding. */
   readonly activeOwner: ExecutionHolder;
   readonly retiredOwners: readonly ExecutionHolder[];
+  /** Persisted before any native resource projection. No ordinary work may cross it. */
+  readonly pendingRestart: { readonly actor: ExecutionHolder; readonly previousOwner: ExecutionHolder; readonly evidence: SourceVersion; readonly sequence: number } | null;
   readonly sequence: number;
   readonly recordedAt: string;
   readonly plan: PhaseExecutionPlan | null;
@@ -359,7 +361,7 @@ function parseCommand(value: unknown): ExecutionCommand {
       if (row.executor !== "orchestrator-direct" && row.executor !== "implement-child" && row.executor !== "review-reserved") throw workflowError();
       return { action, executor: row.executor, holder: parseHolder(row.holder), handover: parseSourceVersion(row.handover) };
     }
-    case "restart": { const row = workflowObject(value, ["action", "previousOwner", "evidence"]); return { action, previousOwner: parseHolder(row.previousOwner), evidence: parseSourceVersion(row.evidence) }; }
+    case "restart": case "restart-intent": { const row = workflowObject(value, ["action", "previousOwner", "evidence"]); return { action, previousOwner: parseHolder(row.previousOwner), evidence: parseSourceVersion(row.evidence) }; }
     case "begin": { const row = workflowObject(value, ["action", "operation"]); return { action, operation: parseOperation(row.operation) }; }
     case "finish": { const hasCandidate = Object.hasOwn(value, "candidateSha"); const row = workflowObject(value, ["action", "operationId", "evidence", "failure", ...(hasCandidate ? ["candidateSha"] : [])]); return { action, operationId: workflowText(row.operationId), evidence: parseSourceVersion(row.evidence), failure: row.failure === null ? null : parseFailure(row.failure), ...(hasCandidate ? { candidateSha: workflowSha(row.candidateSha, 40) } : {}) }; }
     case "settle": { const row = workflowObject(value, ["action", "evidence", "inventory"]); return { action, evidence: parseSourceVersion(row.evidence), inventory: parseExecutionRecoveryInventory(row.inventory) }; }
@@ -383,7 +385,7 @@ function sources(command: ExecutionCommand): readonly SourceVersion[] {
     case "plan": return command.plan.prerequisites;
     case "advance": return [command.evidence, ...command.plan.prerequisites];
     case "select": return [command.handover];
-    case "restart": return [command.evidence];
+    case "restart": case "restart-intent": return [command.evidence];
     case "begin": return command.operation.intent ? [command.operation.intent] : [];
     case "finish": return [command.evidence, ...(command.failure ? [command.failure.output] : [])];
     case "settle": return [command.evidence, command.inventory.evidence];
@@ -393,7 +395,7 @@ function sources(command: ExecutionCommand): readonly SourceVersion[] {
   }
 }
 function initialState(binding: ExecutionBinding, recordedAt: string): ExecutionState {
-  return Object.freeze({ binding, activeOwner: binding.owner, retiredOwners: [], recordedAt, sequence: 0, plan: null, custody: parseExecutionCustody({ state: "idle", holder: null, inFlightOperation: null }), bounds: binding.bounds,
+  return Object.freeze({ binding, activeOwner: binding.owner, retiredOwners: [], pendingRestart: null, recordedAt, sequence: 0, plan: null, custody: parseExecutionCustody({ state: "idle", holder: null, inFlightOperation: null }), bounds: binding.bounds,
     candidateSha: binding.initialHeadSha, operation: null, usedOperationIds: [], originalFailure: null, recoveryPending: false, diagnosticDigests: [], remedyDigests: [], passedChecks: {}, actionPasses: {}, acceptance: {} });
 }
 function runnable(state: ExecutionState, now: string): void {
@@ -410,18 +412,29 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
   if (Date.parse(now) < Date.parse(state.recordedAt)) throw workflowError();
   let next = { ...state, sequence: state.sequence + 1, recordedAt: now };
   const idle = () => { if (state.custody.state !== "idle" || state.operation) throw workflowError(); };
+  if (state.pendingRestart && command.action !== "restart") throw workflowError();
   switch (command.action) {
-    case "restart": {
-      runnable(state, now);
+    case "restart-intent": case "restart": {
+      const pending = state.pendingRestart;
+      if (pending) {
+        if (command.action !== "restart" || pending.sequence !== state.sequence || !same(pending.actor, actor)
+          || !same(pending.previousOwner, command.previousOwner) || !same(pending.evidence, command.evidence)) throw workflowError();
+        // Completing an already persisted handoff is settlement, not renewed
+        // runtime. Its original deadline still denies subsequent new effects.
+      } else runnable(state, now);
       if (!same(command.previousOwner, state.activeOwner) || same(actor, state.activeOwner)
         || [state.activeOwner, ...state.retiredOwners].some(holder => same(holder.process, actor.process) || same(holder, actor))
         || state.bounds.replacementsUsed >= DEFAULT_EXECUTION_BOUNDS.replacementLimit
         || !["idle", "orchestrator-direct"].includes(state.custody.state)
         || (state.custody.holder !== null && !same(state.custody.holder, state.activeOwner))) throw workflowError();
+      if (command.action === "restart-intent") {
+        next = { ...next, pendingRestart: { actor, previousOwner: state.activeOwner, evidence: command.evidence, sequence: next.sequence } };
+        break;
+      }
       // A known quiescent direct holder transfers without an idle gap. An
       // unresolved operation retains its EXACT original custody and operation;
       // neither the retired caller nor its successor can finish/clear it.
-      next = { ...next, activeOwner: actor, retiredOwners: [...state.retiredOwners, state.activeOwner],
+      next = { ...next, activeOwner: actor, retiredOwners: [...state.retiredOwners, state.activeOwner], pendingRestart: null,
         bounds: { ...state.bounds, replacementsUsed: state.bounds.replacementsUsed + 1 },
         custody: state.custody.state === "orchestrator-direct" && !state.operation && !state.custody.inFlightOperation
           ? parseExecutionCustody({ ...state.custody, holder: actor }) : state.custody };
@@ -584,6 +597,32 @@ export class ExecutionCustodyService {
       const state = this.#load().state; this.store.reaffirm(scope); return state;
     });
   }
+  /** Durable native handoff barrier. This publishes ONLY the intent, before
+   * changing capacity/repository custody. Identical retry reuses that intent;
+   * another actor/evidence/revision cannot substitute a new transfer. */
+  prepareRestart(actorInput: ExecutionHolder, expectedSequence: number, evidenceInput: SourceVersion): ExecutionState {
+    const actor = parseHolder(actorInput), evidence = parseSourceVersion(evidenceInput);
+    if (!Number.isSafeInteger(expectedSequence) || expectedSequence < 0 || !this.host.assertRestart) throw workflowError();
+    return this.#locked((scope) => {
+      const { state, previous } = this.#load();
+      const pending = state.pendingRestart;
+      const reuse = pending !== null && pending.sequence === expectedSequence + 1 && state.sequence === pending.sequence
+        && same(pending.actor, actor) && same(pending.evidence, evidence);
+      if ((!reuse && state.sequence !== expectedSequence) || (!reuse && state.sequence >= 255)) throw workflowError();
+      const command = freezeExecution(parseCommand({ action: "restart-intent", previousOwner: state.activeOwner, evidence }));
+      nativeCheck(() => this.host.authorize(this.binding, actor, command)); nativeCheck(() => this.host.assertLive(actor));
+      const now = workflowTimestamp(this.host.now());
+      const next = reuse ? state : transition(state, actor, command, now);
+      nativeCheck(() => this.host.verifyEvidence(evidence, "restart-intent", state, command));
+      nativeCheck(() => this.host.assertRestart!(state, actor, evidence));
+      this.store.reaffirm(scope);
+      if (!reuse) this.store.publish(scope, `${this.executionId}.transaction-${next.sequence}.json`, {
+        schemaVersion: "execution-event/v1", executionId: this.executionId, sequence: next.sequence,
+        previousSha256: workflowDigest(JSON.stringify(previous)), actor, command, recordedAt: now,
+      } satisfies ExecutionEvent);
+      return next;
+    });
+  }
   /** Native-only exact-revision handoff. No initialize/rebinding, reset, resource
    * acquisition, operation completion or automatic retry is performed here. */
   restart(actorInput: ExecutionHolder, expectedSequence: number, evidenceInput: SourceVersion): ExecutionState {
@@ -608,7 +647,7 @@ export class ExecutionCustodyService {
   }
   apply(actorInput: ExecutionHolder, input: ExecutionCommand): ExecutionState {
     const actor = parseHolder(actorInput); const command = freezeExecution(parseCommand(input));
-    if (command.action === "restart") throw workflowError(); // never a public control/import surface
+    if (command.action === "restart" || command.action === "restart-intent") throw workflowError(); // never a public control/import surface
     return this.#locked((scope) => {
       nativeCheck(() => this.host.authorize(this.binding, actor, command)); nativeCheck(() => this.host.assertLive(actor));
       const { state, previous } = this.#load();
@@ -633,7 +672,7 @@ export class ExecutionCustodyService {
 /** Allowlisted public projection: no fingerprints, arbitrary refs, private paths or commands. */
 export function projectExecution(state: ExecutionState): Readonly<Record<string, unknown>> {
   return Object.freeze({ schemaVersion: "execution-status/v1", sequence: state.sequence, phaseId: state.plan?.phaseId ?? null,
-    state: state.custody.state, inFlight: state.operation !== null, candidateSha: state.candidateSha,
+    state: state.custody.state, inFlight: state.operation !== null, restartPending: state.pendingRestart !== null, candidateSha: state.candidateSha,
     consecutiveNoProgress: state.bounds.consecutiveNoProgress, replacementsUsed: state.bounds.replacementsUsed,
     reviewsUsed: state.bounds.reviewsUsed, reviewCap: state.bounds.reviewCap, failureRecorded: state.originalFailure !== null, recoveryPending: state.recoveryPending,
     checkCount: Object.keys(state.passedChecks).filter((check) => state.plan?.checks.includes(check)).length, integrationVerified: state.custody.state === "idle" && state.operation === null && Boolean(state.acceptance.integration) });

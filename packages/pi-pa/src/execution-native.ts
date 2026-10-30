@@ -453,7 +453,8 @@ export class NativeExecutionSession {
     const request = executionAdministration(call, this.#administrativeIdentity());
     if (!request) return null;
     this.assertCaller(context); this.#soleOwner();
-    if (this.#administrationRunning || this.service.status(this.actor).operation !== null) throw workflowError();
+    const state = this.service.status(this.actor);
+    if (this.#administrationRunning || state.operation !== null || state.pendingRestart !== null) throw workflowError();
     if (request.kind === "core" && request.argv[0] === "registry" && process.env.PA_PI_EXECUTION_MODE !== "foreground") throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
     return request;
   }

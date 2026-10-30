@@ -187,6 +187,67 @@ test("PAP-271 delegated/review holders are not implicitly adopted by coordinator
   });
 });
 
+test("PAP-271 durable restart intent precedes resource projection and blocks all ordinary work until exact settlement", () => fixture(f => {
+  f.plan(); f.select(); const before = f.status(), files = f.files(); let projections = 0;
+  f.host.projectCustody = () => { projections++; };
+  const pending = f.service.prepareRestart(holders[1]!, before.sequence, ref("native-resume"));
+  assert.equal(projections, 0); assert.deepEqual(pending.custody, before.custody); assert.deepEqual(pending.bounds, before.bounds);
+  assert.deepEqual(pending.activeOwner, before.activeOwner); assert.equal(pending.pendingRestart?.sequence, pending.sequence);
+  assert.deepEqual(f.files().filter(([name]) => files.some(([old]) => old === name)), files);
+  const records = f.files();
+  assert.deepEqual(f.service.prepareRestart(holders[1]!, before.sequence, ref("native-resume")), pending);
+  assert.deepEqual(f.files(), records);
+  for (const actor of holders.slice(0, 2)) {
+    assert.throws(() => f.apply({ action: "plan", plan: plan() }, actor));
+    assert.throws(() => f.apply({ action: "select", executor: "orchestrator-direct", holder: actor!, handover: ref("holder") }, actor));
+    assert.throws(() => f.apply({ action: "begin", operation: { id: "bypass", kind: "check", check: "check", intent: null } }, actor));
+    assert.throws(() => f.apply({ action: "restart-intent", previousOwner: holders[0]!, evidence: ref("native-resume") }, actor));
+  }
+  assert.throws(() => f.service.prepareRestart(holders[2]!, before.sequence, ref("native-resume")));
+  assert.throws(() => f.service.prepareRestart(holders[1]!, before.sequence, ref("changed-evidence")));
+  assert.throws(() => f.restart(holders[2]!));
+  const successor = new ExecutionCustodyService(f.store, f.contract, f.host);
+  const settled = successor.restart(holders[1]!, pending.sequence, ref("native-resume"));
+  assert.equal(settled.pendingRestart, null); assert.equal(settled.bounds.replacementsUsed, 1); assert.equal(projections, 2);
+  assert.equal(settled.sequence, before.sequence + 2); assert.deepEqual(settled.binding, before.binding);
+}));
+
+for (const fault of ["before", "after"] as const) test(`PAP-271 ${fault}-publication interruption retains the durable handoff or exact successor, never rolls it back`, () => fixture(f => {
+  f.plan(); f.select(); const before = f.status();
+  const pending = f.service.prepareRestart(holders[1]!, before.sequence, ref("native-resume"));
+  f.host.projectCustody = (_next, command, stage) => { assert.equal(command.action, "restart");
+    assert.equal(f.status().pendingRestart !== null, stage === "before");
+    if (stage === fault) throw new Error("injected resource boundary"); };
+  assert.throws(() => f.restart());
+  const observed = readExecutionState(f.store, f.contract);
+  if (fault === "before") {
+    assert.deepEqual(observed, pending); delete f.host.projectCustody;
+    const complete = f.restart(); assert.equal(complete.pendingRestart, null); assert.equal(complete.bounds.replacementsUsed, 1);
+  } else {
+    assert.equal(observed.pendingRestart, null); assert.deepEqual(observed.activeOwner, holders[1]);
+    assert.equal(observed.bounds.replacementsUsed, 1); assert.throws(() => f.service.restart(holders[1]!, pending.sequence, ref("native-resume")));
+    assert.deepEqual(f.status(), observed);
+  }
+}));
+
+test("PAP-271 persisted handoff can settle after deadline without renewing runtime or authorizing new work", () => fixture(f => {
+  f.plan(); const before = f.status(); f.service.prepareRestart(holders[1]!, before.sequence, ref("native-resume"));
+  f.setNow("2026-10-17T02:01:00.000Z"); const settled = f.restart();
+  assert.deepEqual(settled.bounds, { ...before.bounds, replacementsUsed: 1 });
+  assert.throws(() => f.select()); assert.throws(() => f.plan());
+}));
+
+test("PAP-271 preparing handoff around an unknown operation retains both barriers across owner recreation", () => fixture(f => {
+  f.plan(); f.select(); f.begin("unknown"); const before = f.status();
+  const pending = f.service.prepareRestart(holders[1]!, before.sequence, ref("native-resume"));
+  assert.deepEqual(pending.operation, before.operation); assert.deepEqual(pending.custody, before.custody);
+  const successor = new ExecutionCustodyService(f.store, f.contract, f.host);
+  const settled = successor.restart(holders[1]!, pending.sequence, ref("native-resume"));
+  assert.deepEqual(settled.operation, before.operation); assert.deepEqual(settled.custody, before.custody);
+  for (const actor of holders.slice(0, 2)) assert.throws(() => successor.apply(actor!, {
+    action: "finish", operationId: "unknown", evidence: ref("forged"), failure: null }));
+}));
+
 test("PAP-271 restart replays in a separate process without replacement descriptor or mutation of historical bytes", () => fixture(f => {
   f.plan(); f.select(); f.begin("unknown"); const next = f.restart(), files = f.files();
   const script = join(f.root, "read.mts");
