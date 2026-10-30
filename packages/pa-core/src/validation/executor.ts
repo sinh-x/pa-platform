@@ -127,6 +127,8 @@ export interface ValidationExecutorOptions {
   terminationGraceMs?: number;
   terminationVerifyMs?: number;
   beforeArtifactOpen?: (path: string) => void | Promise<void>;
+  /** Structured workflow result qualification; legacy executor behavior is unchanged. */
+  requireProcessGroupSettlement?: boolean;
 }
 
 export interface ValidationExecutionResult {
@@ -321,6 +323,18 @@ export async function executeValidationHandoff(
   return { admitted: true, ledger, ledgerPath: options.ledgerPath, events };
 }
 
+/** Observational terminal-result reader. Unlike crash recovery this never creates
+ * a ledger/state, marks an interrupted command, probes a process or retries work. */
+export async function readValidationLedger(input: unknown, options: Pick<ValidationExecutorOptions, "authority" | "evidenceRoot" | "ledgerPath">): Promise<ValidationLedger | null> {
+  const handoff = parseValidationHandoff(input);
+  assertValidationAuthority(handoff, options.authority);
+  const root = resolve(options.evidenceRoot), path = resolve(options.ledgerPath);
+  if (root !== options.evidenceRoot || path !== options.ledgerPath || await realpath(root) !== root) reject("executor.observation.paths", "requires canonical protected evidence paths");
+  assertWithin(root, path, "executor.observation.ledgerPath");
+  const record = await readRecoveryRecord(path);
+  return record ? validationLedgerFromRecord(record, handoff, root) : null;
+}
+
 export async function finalizeValidationExecutorCrash(
   input: unknown,
   options: ValidationExecutorOptions,
@@ -513,7 +527,10 @@ async function executeCommand(
   entry.stdout = stdout.evidence;
   entry.stderr = stderr.evidence;
   const activeStop = stop as StopState | undefined;
-  const cleanup = activeStop?.cleanup ? await activeStop.cleanup : undefined;
+  const lingering = !activeStop && options.requireProcessGroupSettlement && child.pid && groupAlive(child.pid);
+  const cleanup = activeStop?.cleanup ? await activeStop.cleanup : lingering
+    ? await terminateProcessGroup(child.pid!, options.terminationGraceMs ?? TERMINATION_GRACE_MS, options.terminationVerifyMs ?? TERMINATION_VERIFY_MS) : undefined;
+  if (!activeStop && options.requireProcessGroupSettlement && child.pid && !lingering) entry.processGroupVerifiedDead = !groupAlive(child.pid);
   if (cleanup) {
     entry.terminationSignals = cleanup.signals;
     entry.processGroupVerifiedDead = cleanup.verifiedDead;
@@ -525,6 +542,9 @@ async function executeCommand(
   } else if (activeStop) {
     entry.status = cleanup?.verifiedDead === false ? "cleanup_failure" : activeStop.status;
     entry.reason = cleanup?.verifiedDead === false ? `process group cleanup could not be verified: ${activeStop.reason}` : activeStop.reason;
+  } else if (options.requireProcessGroupSettlement && (lingering || entry.processGroupVerifiedDead !== true)) {
+    entry.status = "cleanup_failure";
+    entry.reason = "normal command exit did not establish a settled process group";
   } else if (outcome.spawnError) {
     entry.status = "failed";
     entry.reason = outcome.spawnError.message;

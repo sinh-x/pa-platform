@@ -12,6 +12,7 @@ import {
   type ValidationHandoff, type ValidationAuthorityBinding,
 } from "@pa-platform/pa-core";
 import { requireReviewPreflight, reviewPreflightDependencies } from "./review-preflight.js";
+import { requirePiMatrixIntent } from "./workflow-matrix.js";
 import { PI_PROTECTED_VALIDATION_SCHEMA_VERSION, type PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { writePiMatrixStartedEvent, type PiValidationLaunchInput } from "./validation-launch.js";
 
@@ -26,6 +27,7 @@ export function authorizeVersionedReview(request: PiValidationLaunchInput["reque
   if (!request.background || request.resume) reject("review.mode", "requires a fresh background deployment");
   const { objective: o, artifact: a } = requireReviewPreflight({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
   if (a.matrix.repository.key !== repository.repoKey || a.matrix.repository.root !== repository.repoRoot) reject("review.repository", "registered canonical selector conflicts with approved repository");
+  requirePiMatrixIntent(repository.repoKey, o.ticket, o.matrixSource, o.matrixApprovalEvidence);
   return { binding: { repoKey: repository.repoKey, repoRoot: repository.repoRoot, ticket: o.ticket, branch: o.branch,
     baseSha: a.matrix.repository.baseSha, featureSha: o.featureSha,
     approvedReference: { sha: a.matrix.repository.baseSha, matrixSource: o.matrixSource,
@@ -162,6 +164,7 @@ export async function createVersionedValidationLaunch(input: PiValidationLaunchI
   const { plan, request, deploymentId } = input;
   const { objective: o, artifact: a, readiness } = requireReviewPreflight({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
   const checkout = plan.reviewCheckout;
+  requirePiMatrixIntent(plan.repoKey, o.ticket, o.matrixSource, o.matrixApprovalEvidence);
   if (!request.background || request.resume || plan.runtime !== "pi" || plan.team !== "requirements" || plan.mode !== "review-auto" || !checkout?.approvedReference
     || plan.ticket !== o.ticket || plan.repoKey !== a.matrix.repository.key || plan.repoRoot !== a.matrix.repository.root
     || plan.worktreeRoot === plan.repoRoot || plan.repositoryCwd !== plan.worktreeRoot

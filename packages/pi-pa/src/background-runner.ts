@@ -24,6 +24,7 @@ import {
   type RepositoryGitSnapshot,
   type RepositoryReviewReservation,
   type ValidationEvent,
+  type SourceVersion,
 } from "@pa-platform/pa-core";
 import {
   buildPiBackgroundArgs,
@@ -40,6 +41,7 @@ import {
   type PiSupervisorOwnership,
 } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
+import { beginPiWorkflowMatrix, finishPiWorkflowMatrix } from "./workflow-matrix.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 import { assertPiMatrixStartedForLaunch, withPiReviewCandidateAtMatrixBoundary, withPiNixosPrerequisites } from "./validation-launch.js";
@@ -230,13 +232,15 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       }
       const validationRoot = resolve(deployDir, "validation-evidence");
       const ledgerPath = resolve(validationRoot, "ledger.json");
+      let workflowMatrixStart: SourceVersion | null = null;
       const supervised = await runPiValidationBeforeReviewer(validationLaunch, {
         evidenceRoot: validationRoot,
         ledgerPath,
         now,
         abortSignal: shutdown.signal,
         emit: (event) => appendValidationActivity(config.deploymentId, event, secrets),
-        beforeExecute: (launch) => {
+        beforeExecute: async (launch) => {
+          workflowMatrixStart = await beginPiWorkflowMatrix(launch);
           assertPiMatrixStartedForLaunch(deployDir, launch);
           (options.reviewBoundary ?? withPiReviewCandidateAtMatrixBoundary)({ launch, reservation: reviewReservation!,
             rereadCheckout: () => rereadPiReviewCandidate(reviewReservation!.checkout) }, () => {
@@ -249,6 +253,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           });
         },
         onMatrixTerminationVerified: () => { matrixExecutionTerminated = true; },
+        afterMatrix: launch => finishPiWorkflowMatrix(workflowMatrixStart, launch),
         revalidateNixosPrerequisites: (launch, execute) => withPiNixosPrerequisites(launch, execute,
           () => rereadPiReviewCandidate(reviewReservation!.checkout)),
         beforeReviewer: (launch) => {

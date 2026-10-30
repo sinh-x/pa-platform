@@ -29,10 +29,10 @@ export interface NativeProcessResult {
  * choose its pathname. Records alone grant no execution/admission authority. */
 export class NativeExecutionEvidence {
   constructor(readonly store: ProtectedWorkflowStore, readonly root: string, readonly locks: PreparedLockOwners) {}
-  publish(kind: string, payload: unknown): SourceVersion {
+  publish(kind: string, payload: unknown, beforePublish?: () => void): SourceVersion {
     const value = { schemaVersion: VERSION, kind, payload };
     const id = workflowDigest(JSON.stringify(value));
-    withPreparedWorkflowLocks(this.locks, (scope) => this.store.publish(scope, `${id}.intent.json`, value));
+    withPreparedWorkflowLocks(this.locks, (scope) => { beforePublish?.(); this.store.publish(scope, `${id}.intent.json`, value); });
     return parseSourceVersion({ ref: `native-execution-evidence:${id}`, version: VERSION, sha256: id });
   }
   read(reference: SourceVersion, kind: string): unknown {
