@@ -1,9 +1,9 @@
 import { isDeepStrictEqual as equal } from "node:util";
 import {
-  JsonWorkflowError, replayWorkflow, requireDecision, readExecutionState, parseExecutionBinding, parseSourceVersion,
+  JsonWorkflowError, replayWorkflow, requireDecision, readExecutionState, readExecutionOperations, parseExecutionBinding, parseSourceVersion,
   queryReadonlyDeploymentEvents, queryReadonlyDeploymentStatus, workflowDigest, workflowObject, loadRepoEntry, parseReviewMatrixPlan, withPreparedTicketCapacity, withExecutionWorktreeAdmission,
   type RegistryWorkflowJournal, type WorkflowCaller, type WorkflowHost, type WorkflowEffectOwner, type EffectIntent, type EffectObservation,
-  type ExecutionCommand, type ExecutionBinding, type ExecutionState, type SourceVersion, type ProtectedWorkflowStore,
+  type ExecutionCommand, type ExecutionBinding, type ExecutionState, type ExecutionOperationRecord, type SourceVersion, type ProtectedWorkflowStore,
 } from "@pa-platform/pa-core";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
 import { NativeExecutionEvidence, type NativeProcessResult } from "./native-execution-evidence.js";
@@ -23,6 +23,22 @@ function processProof(evidence: NativeExecutionEvidence, intent: SourceVersion, 
   const frame = evidence.read(process.frame, "process-frame") as { intent: SourceVersion };
   if (!equal(frame.intent, intent)) blocked();
   evidence.blob(process.stdout); evidence.blob(process.stderr);
+}
+function operationResult(evidence: NativeExecutionEvidence, binding: ExecutionBinding, operations: readonly ExecutionOperationRecord[], source: SourceVersion, sequence?: number): { result: NativeToolResult; intent: NativeIntent } {
+  const records = operations.filter(operation => operation.finish && equal(operation.finish.evidence, source));
+  if (records.length !== 1) blocked();
+  const record = records[0]!, result = evidence.read(source, "tool-result") as NativeToolResult;
+  const intent = evidence.read(result.intent, "tool-intent") as NativeIntent;
+  if (!record.operation.intent || !equal(record.operation.intent, result.intent) || record.operation.id !== intent.operationId
+    || !equal(record.actor, intent.actor) || (sequence !== undefined && record.finish!.sequence !== sequence)
+    || intent.executionId !== workflowDigest(JSON.stringify(["execution/v1", binding.operationId, binding.lineageId]))) blocked();
+  return { result, intent };
+}
+/** Internal native proof reader; never a public result/actor import. Historical
+ * operation identities come from the actual validated execution replay, even
+ * after a later holder replacement. Unfinished/unissued/reused results reject. */
+export function readPiSourceOperation(store: ProtectedWorkflowStore, evidence: NativeExecutionEvidence, binding: ExecutionBinding, source: SourceVersion): { result: NativeToolResult; intent: NativeIntent } {
+  return operationResult(evidence, binding, readExecutionOperations(store, binding), source);
 }
 /** Concrete interactive execution-owner bridge. An acknowledged intent does not
  * spawn/edit/commit or allocate resources. The existing authenticated native
@@ -103,8 +119,8 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
         const nativeOwner = await import("./execution-native.js"); nativeReader = nativeOwner;
         const current = nativeOwner.captureNativeScope(binding.worktreeRoot);
         if (current.git.dirty || current.git.head !== phase.candidateSha || !equal(current.git, phase.snapshot)) blocked();
-        const commit = evidence.read(phase.commit, "tool-result") as NativeToolResult, commitIntent = evidence.read(commit.intent, "tool-intent") as NativeIntent;
-        if (commit.exitCode !== 0 || !commit.scopeValid || !equal(commit.after, current) || commitIntent.executionId !== phase.executionId || !equal(commitIntent.actor, binding.owner)
+        const { result: commit, intent: commitIntent } = readPiSourceOperation(store, evidence, binding, phase.commit);
+        if (commit.exitCode !== 0 || !commit.scopeValid || !equal(commit.after, current) || commitIntent.executionId !== phase.executionId
           || !commitIntent.command.startsWith("git commit -m ") || commitIntent.before.git.head === commit.after.git.head || !commitIntent.commitIndexSha256
           || nativeOwner.readNativeCommitTree(binding.worktreeRoot, phase.candidateSha) !== commitIntent.commitIndexSha256) blocked();
         processProof(evidence, commit.intent, commit.process);
@@ -144,7 +160,7 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
         const checks = native.plan!.checks.map(name => { const check = commands.checks.find(c => c.id === name || c.command === name); if (!check) return blocked(); return { id: check.id, command: check.command, inputsSha256: commands.inputIdentity(check) }; });
         if (!equal(checks, proof.phase.projectCommands.checks)) return false;
         verifyChecks(store, evidence, proof.binding, native, proof.phase, checks);
-        const commit = evidence.read(proof.phase.commit, "tool-result") as NativeToolResult; processProof(evidence, commit.intent, commit.process);
+        const { result: commit } = readPiSourceOperation(store, evidence, proof.binding, proof.phase.commit); processProof(evidence, commit.intent, commit.process);
         return readExecutionState(store, proof.binding).sequence === proof.phase.sequence && equal(nativeReader.captureNativeScope(proof.binding.worktreeRoot), proof.snapshot);
       } catch { return false; }
     },
@@ -158,17 +174,18 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
 }
 function verifyChecks(store: ProtectedWorkflowStore, evidence: NativeExecutionEvidence, binding: ExecutionBinding, state: ExecutionState, phase: PhaseResult, expected: PhaseResult["projectCommands"]["checks"]): void {
   let passed = 0, commitSeen = false;
+  const operations = readExecutionOperations(store, binding);
   for (let sequence = 1; sequence <= state.sequence; sequence++) {
     const row = store.read(`${phase.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
     const command = row.command;
     if (["plan", "advance", "candidate", "attempt"].includes(command.action)) passed = 0;
     if (command.action !== "finish") continue;
-    const result = evidence.read(command.evidence, "tool-result") as NativeToolResult, intent = evidence.read(result.intent, "tool-intent") as NativeIntent;
+    const { result, intent } = operationResult(evidence, binding, operations, command.evidence, sequence);
     if (equal(command.evidence, phase.commit)) { commitSeen = true; break; }
     if (!result.scopeValid || result.exitCode !== 0 || intent.toolName !== "bash" || !equal(intent.before.files, result.after.files) || intent.before.git.head !== result.after.git.head) { passed = 0; continue; }
     const check = expected[passed];
     if (!check || check.command !== intent.command) continue;
-    if (intent.executionId !== phase.executionId || !equal(intent.actor, binding.owner)) blocked();
+    if (intent.executionId !== phase.executionId) blocked();
     // Historical checks are retained, not reclassified as corrupt merely
     // because later scoped work changed their inputs. Invalidate their pass;
     // only a subsequent exact current-input check can rebuild the sequence.

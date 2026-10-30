@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  ExecutionCustodyService, parseExecutionBinding, parseExecutionPlan, readExecutionState,
+  ExecutionCustodyService, parseExecutionBinding, parseExecutionPlan, readExecutionState, readExecutionOperations,
   type ExecutionCommand, type ExecutionHolder, type ExecutionHost,
 } from "../deploy/execution-custody.js";
 import { ProtectedWorkflowStore, workflowDigest, type SourceVersion } from "../deploy/prepared-workflow.js";
@@ -246,6 +246,19 @@ test("PAP-271 preparing handoff around an unknown operation retains both barrier
   assert.deepEqual(settled.operation, before.operation); assert.deepEqual(settled.custody, before.custody);
   for (const actor of holders.slice(0, 2)) assert.throws(() => successor.apply(actor!, {
     action: "finish", operationId: "unknown", evidence: ref("forged"), failure: null }));
+}));
+
+test("PAP-271 operation replay retains each original actor and open intent without latest-holder substitution or writes", () => fixture(f => {
+  f.plan(); f.select(); f.begin("old-operation"); f.finish("old-operation");
+  const old = readExecutionOperations(f.store, f.contract)[0]!; assert.deepEqual(old.actor, holders[0]);
+  f.restart(); f.begin("new-operation"); f.finish("new-operation"); f.begin("still-unknown");
+  const files = f.files(), calls = [...f.calls], operations = readExecutionOperations(f.store, f.contract);
+  assert.deepEqual(operations[0], old); assert.deepEqual(operations[1]!.actor, holders[1]);
+  assert.equal(operations[2]!.finish, null); assert.equal(operations[2]!.operation.id, "still-unknown");
+  assert.ok(operations[0]!.finish!.sequence < operations[1]!.beginSequence);
+  assert.throws(() => Object.assign(operations[0]!.actor.process, holders[1]!.process));
+  assert.throws(() => Object.assign(operations[0]!.operation, { id: "rewritten" }));
+  assert.deepEqual(f.files(), files); assert.deepEqual(f.calls, calls);
 }));
 
 test("PAP-271 restart replays in a separate process without replacement descriptor or mutation of historical bytes", () => fixture(f => {

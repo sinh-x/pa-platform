@@ -536,19 +536,27 @@ function freezeExecution<T>(value: T): T {
   return value;
 }
 interface ExecutionEvent { schemaVersion: "execution-event/v1"; executionId: string; sequence: number; previousSha256: string; actor: ExecutionHolder; command: ExecutionCommand; recordedAt: string }
+/** Private native provenance, never a public status/result-import surface. */
+export interface ExecutionOperationRecord {
+  readonly operation: ExecutionOperation;
+  readonly actor: ExecutionHolder;
+  readonly beginSequence: number;
+  readonly finish: { readonly sequence: number; readonly evidence: SourceVersion } | null;
+}
 /**
  * Append-only journal under the existing protected storage and mutex composition.
  * Crash after begin is deliberately retained as in-flight; neither quiet logs,
  * tool errors, agent shutdown nor a copied completion flag clears the barrier.
  * No production native binding/activation is installed by this constructor.
  */
-function readExecutionJournal(store: ProtectedWorkflowStore, binding: ExecutionBinding): { state: ExecutionState; previous: unknown } {
+function readExecutionJournal(store: ProtectedWorkflowStore, binding: ExecutionBinding): { state: ExecutionState; previous: unknown; operations: readonly ExecutionOperationRecord[] } {
   const id = workflowDigest(JSON.stringify(["execution/v1", binding.operationId, binding.lineageId]));
   const names = store.records().filter(name => name.startsWith(`${id}.`));
   if (!names.includes(`${id}.intent.json`)) throw workflowError();
   const intent = workflowObject(store.read(`${id}.intent.json`), ["schemaVersion", "binding", "recordedAt"]);
   if (intent.schemaVersion !== "execution-intent/v1" || !same(parseExecutionBinding(intent.binding), binding)) throw workflowError();
   let state = initialState(binding, workflowTimestamp(intent.recordedAt)); let previous: unknown = intent;
+  const operations: ExecutionOperationRecord[] = [];
   const entries = names.filter(name => name !== `${id}.intent.json`);
   if (entries.length > 256) throw workflowError();
   for (let sequence = 1; sequence <= entries.length; sequence++) {
@@ -557,13 +565,26 @@ function readExecutionJournal(store: ProtectedWorkflowStore, binding: ExecutionB
     if (row.schemaVersion !== "execution-event/v1" || row.executionId !== id || row.sequence !== sequence || row.previousSha256 !== workflowDigest(JSON.stringify(previous))) throw workflowError();
     const event: ExecutionEvent = { schemaVersion: "execution-event/v1", executionId: id, sequence, previousSha256: workflowSha(row.previousSha256), actor: parseHolder(row.actor), command: parseCommand(row.command), recordedAt: workflowTimestamp(row.recordedAt) };
     state = transition(state, event.actor, event.command, event.recordedAt); previous = event;
+    if (event.command.action === "begin") operations.push({ operation: event.command.operation, actor: event.actor, beginSequence: sequence, finish: null });
+    if (event.command.action === "finish") {
+      const command = event.command, index = operations.findIndex(operation => operation.operation.id === command.operationId);
+      const begun = operations[index];
+      if (!begun || begun.finish || !same(begun.actor, event.actor)) throw workflowError();
+      operations[index] = { ...begun, finish: { sequence, evidence: command.evidence } };
+    }
   }
-  return { state: freezeExecution(state), previous };
+  return { state: freezeExecution(state), previous, operations: freezeExecution(operations) };
 }
 /** Existing-owner observational replay only: no locks, reaffirm/fsync, process
  * probe, initialize or authority. A projection cannot acquire/change custody. */
 export function readExecutionState(store: ProtectedWorkflowStore, binding: ExecutionBinding): ExecutionState {
   return readExecutionJournal(store, parseExecutionBinding(binding)).state;
+}
+/** Same validated replay as readExecutionState: original per-operation actors,
+ * NOT the latest holder substituted over historical evidence. No process probes,
+ * locks, initialization, mutations or effect authority. Unknown starts stay open. */
+export function readExecutionOperations(store: ProtectedWorkflowStore, binding: ExecutionBinding): readonly ExecutionOperationRecord[] {
+  return readExecutionJournal(store, parseExecutionBinding(binding)).operations;
 }
 export class ExecutionCustodyService {
   readonly binding: ExecutionBinding;
