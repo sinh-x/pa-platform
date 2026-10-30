@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
-  captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
+  assertNativeRestartProcessDead, captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
   parseExecutionBinding, readExecutionState, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects, assertLocalGitIndexMatchesWorking, localGitIndexFingerprint, localGitTreeFingerprint,
@@ -42,6 +42,25 @@ function ordinaryStart(id: string): RegistryEvent | null {
   if (!starts.some((event) => event.note?.startsWith("ordinary-native-execution/"))) return null;
   if (starts.length !== 1 || (starts[0]!.note !== ORDINARY_NATIVE_EXECUTION_START && !parseStructuredLaunchNote(starts[0]!.note))) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
   return starts[0]!;
+}
+/** Immutable native resume chain only. A link is correlation, not permission
+ * to transfer custody or initialize a replacement journal. */
+function ordinaryExecutionOrigin(current: RegistryEvent): { start: RegistryEvent; retiredIds: readonly string[] } {
+  const chain: RegistryEvent[] = [current]; let cursor = current;
+  while (cursor.resumed_from_deployment_id) {
+    if (chain.length >= 4 || chain.some(start => start.deployment_id === cursor.resumed_from_deployment_id)
+      || !parseStructuredLaunchNote(current.note)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+    const prior = ordinaryStart(cursor.resumed_from_deployment_id), status = queryReadonlyHelperRegistry(cursor.resumed_from_deployment_id).status;
+    const terminals = queryReadonlyDeploymentEvents(cursor.resumed_from_deployment_id).filter(event => event.event === "completed" || event.event === "crashed");
+    if (!prior || !status || !["success", "partial", "failed", "crashed"].includes(status.status) || terminals.length !== 1
+      || prior.note !== current.note || prior.runtime !== "pi" || prior.binary !== "ppa" || prior.team !== "builder" || prior.mode !== "orchestrator"
+      || prior.builder_authority !== "orchestrator" || prior.rogue_one || prior.parent_deployment_id
+      || prior.repo_root !== current.repo_root || prior.worktree_root !== current.worktree_root || prior.ticket_id !== current.ticket_id
+      || prior.branch_base_sha !== current.branch_base_sha || prior.treehouse_lease_id !== current.treehouse_lease_id || prior.treehouse_lease_holder !== current.treehouse_lease_holder
+      || prior.ticket_slot_id !== current.ticket_slot_id || prior.repository_permit !== current.repository_permit) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    chain.push(prior); cursor = prior;
+  }
+  return { start: cursor, retiredIds: Object.freeze(chain.slice(1).reverse().map(start => start.deployment_id)) };
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function gitEnvironment(): Record<string, string> {
@@ -202,7 +221,8 @@ export class PiNativeExecutionAdapter {
       const authentication = createPiReadonlyHelperCapability(this.#options.helperDependencies).authenticate(cwd);
       authentication.reread();
       if (authentication.context.role !== "orchestrator" || authentication.context.deploymentId !== id) throw executionFailure("EXECUTION_BINDING_CONFLICT");
-      session = new NativeExecutionSession(this.authority, this.#options.helperDependencies ?? {}, consumed, authentication.context, ordinary);
+      const original = ordinary ? ordinaryExecutionOrigin(ordinary).start : null;
+      session = new NativeExecutionSession(this.authority, this.#options.helperDependencies ?? {}, consumed, authentication.context, original, ordinary);
       this.#sessions.set(id, session);
     }
     session.assertCaller(context); return session;
@@ -211,8 +231,11 @@ export class PiNativeExecutionAdapter {
 type HelperContext = ReturnType<ReturnType<typeof createPiReadonlyHelperCapability>["authenticate"]>["context"];
 /** Read exclusively from native registry and protected owners AFTER physical
  * authentication. Tokens remain private and only their digests bind the journal. */
-function ordinaryLineage(start: RegistryEvent, physical: HelperContext) {
-  const id = start.deployment_id;
+export function readOrdinaryNativeLineage(start: RegistryEvent, physical: HelperContext, current: RegistryEvent = start) {
+  const id = start.deployment_id, currentId = current.deployment_id;
+  if (!equal(ordinaryStart(currentId), current) || !equal(ordinaryExecutionOrigin(current).start, start) || physical.deploymentId !== currentId
+    || current.runtime !== "pi" || current.binary !== "ppa" || current.team !== "builder" || current.mode !== "orchestrator"
+    || current.builder_authority !== "orchestrator" || current.rogue_one || current.parent_deployment_id) throw executionFailure("EXECUTION_BINDING_CONFLICT");
   if (!equal(ordinaryStart(id), start) || start.runtime !== "pi" || start.binary !== "ppa" || start.team !== "builder" || start.mode !== "orchestrator"
     || start.builder_authority !== "orchestrator" || start.parent_deployment_id || start.resumed_from_deployment_id
     || start.repo !== physical.worktreeRoot || start.worktree_root !== physical.worktreeRoot || start.repo_root !== physical.repoRoot || start.ticket_id !== physical.ticket
@@ -220,7 +243,7 @@ function ordinaryLineage(start: RegistryEvent, physical: HelperContext) {
   const custody = observeReadonlyRepositoryAuthority(physical.gitDir);
   if (!custody.owner || custody.borrower || custody.implement || custody.review) throw executionFailure("EXECUTION_HOLDER_CONFLICT");
   const owner = custody.owner; const slot = observeReadonlyRepositoryTicketSlot(physical.repoRoot, physical.ticket!).slot;
-  if (owner.deploymentId !== id || slot.deploymentId !== id || start.ticket_slot_id !== slot.slotId || start.repository_permit !== slot.repositoryPermit
+  if (owner.deploymentId !== currentId || slot.deploymentId !== currentId || start.ticket_slot_id !== slot.slotId || start.repository_permit !== slot.repositoryPermit
     || owner.preLaunchGitSnapshot.head !== start.branch_head_sha || !owner.preLaunchGitSnapshot.branch || owner.preLaunchGitSnapshot.dirty) throw executionFailure("EXECUTION_BINDING_CONFLICT");
   return Object.freeze({ schemaVersion: ORDINARY_NATIVE_EXECUTION_START, deploymentId: id, repoKey: physical.repoKey, repoRoot: physical.repoRoot,
     worktreeRoot: physical.worktreeRoot, ticket: physical.ticket, branch: owner.preLaunchGitSnapshot.branch, baseSha: workflowSha(start.branch_base_sha, 40),
@@ -237,7 +260,8 @@ export class NativeExecutionSession {
   readonly #authority: PiPreparedNativeAuthority;
   readonly #helper: PiReadonlyHelperDependencies;
   readonly #consumed: Record<string, unknown> | null;
-  readonly #ordinary: ReturnType<typeof ordinaryLineage> | null;
+  readonly #ordinary: ReturnType<typeof readOrdinaryNativeLineage> | null;
+  readonly #currentStart: RegistryEvent | null;
   readonly #launch: Record<string, unknown>;
   readonly #physical: HelperContext;
   readonly #physicalIdentity: string;
@@ -248,11 +272,12 @@ export class NativeExecutionSession {
   readonly #resultLinks = new Map<string, SourceVersion>();
   readonly #started = new Set<string>();
   #administrationRunning = false;
-  constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown> | null, physical: HelperContext, ordinary: RegistryEvent | null = null) {
+  constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown> | null, physical: HelperContext, ordinary: RegistryEvent | null = null, currentStart: RegistryEvent | null = ordinary) {
     this.#authority = authority; this.#helper = helper; this.#consumed = consumed; this.#physical = physical;
     this.#physicalIdentity = this.#capturePhysicalIdentity();
     if (Boolean(consumed) === Boolean(ordinary)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
-    this.#ordinary = ordinary ? ordinaryLineage(ordinary, physical) : null;
+    this.#currentStart = currentStart;
+    this.#ordinary = ordinary && currentStart ? readOrdinaryNativeLineage(ordinary, physical, currentStart) : null;
     this.#launch = consumed ?? this.#ordinary!; const launch = this.#launch;
     this.#grantId = consumed ? workflowSha(consumed.grantId) : null;
     const id = workflowText(launch.deploymentId); const status = queryReadonlyHelperRegistry(id).status;
@@ -262,7 +287,9 @@ export class NativeExecutionSession {
       || physical.ticket !== launch.ticket) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     if (!Number.isSafeInteger(status.effective_timeout_seconds) || status.effective_timeout_seconds! % 60 !== 0
       || (consumed && status.effective_timeout_seconds! < 3600)) throw executionFailure("EXECUTION_CONTRACT_INVALID");
-    this.actor = Object.freeze({ deploymentId: id, process: readPiProcessIdentity(id, getDeployPaths(id).deployDir) });
+    const currentId = workflowText(physical.deploymentId);
+    this.actor = Object.freeze({ deploymentId: currentId, process: readPiProcessIdentity(currentId, getDeployPaths(currentId).deployDir) });
+    const originalOwner = this.#ordinary ? Object.freeze({ deploymentId: id, process: readPiProcessIdentity(id, getDeployPaths(id).deployDir) }) : this.actor;
     const native = consumed ? this.#retained() : null;
     if (consumed && native) {
       const consumer = authority.retainedConsumer(native.grant, parseSourceVersion(consumed.consumer), id);
@@ -270,7 +297,7 @@ export class NativeExecutionSession {
         || native.grant.contract.branch !== consumed.branch || native.grant.contract.approvalBaseSha !== consumed.baseSha) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     }
     try { this.contract = parseExecutionBinding({ schemaVersion: "execution-binding/v1", operationId: workflowSha(launch.operationId), lineageId: id,
-      repoKey: physical.repoKey, repoRoot: physical.repoRoot, worktreeRoot: physical.worktreeRoot, ticket: physical.ticket, branch: launch.branch, initialHeadSha: launch.headSha, owner: this.actor,
+      repoKey: physical.repoKey, repoRoot: physical.repoRoot, worktreeRoot: physical.worktreeRoot, ticket: physical.ticket, branch: launch.branch, initialHeadSha: launch.headSha, owner: originalOwner,
       bounds: { startedAt: status.started_at, deadlineAt: new Date(Date.parse(status.started_at) + status.effective_timeout_seconds! * 1000).toISOString(), runtimeMinutes: status.effective_timeout_seconds! / 60,
         consecutiveNoProgress: 0, replacementsUsed: 0, reviewCap: 3, reviewsUsed: 0, unresolvedFailureRef: null } }); }
     catch { throw executionFailure("EXECUTION_CONTRACT_INVALID"); }
@@ -334,6 +361,7 @@ export class NativeExecutionSession {
     const descriptorId = workflowDigest(JSON.stringify(["native-execution-descriptor/v1", this.service.executionId]));
     const descriptorName = `${descriptorId}.intent.json`;
     const exists = store.records().includes(descriptorName);
+    if (currentId !== id && !exists) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
     const originField = this.#ordinary ? "launchSha256" : "consumptionSha256";
     const descriptorVersion = this.#ordinary ? "native-ordinary-execution-descriptor/v1" : "native-execution-descriptor/v1";
     if (exists) {
@@ -349,6 +377,13 @@ export class NativeExecutionSession {
       if ((!this.#ordinary && !native?.active) || this.#initial.git.head !== launch.headSha || names(this.#initial.git).length) throw workflowError();
     }
     const state = this.service.initialize(this.actor);
+    if (this.#currentStart) {
+      const chain = ordinaryExecutionOrigin(this.#currentStart);
+      if (state.pendingRestart || !equal(state.activeOwner, this.actor) || !equal(state.retiredOwners.map(holder => holder.deploymentId), chain.retiredIds)
+        || !Number.isSafeInteger(this.#currentStart.effective_timeout_seconds) || this.#currentStart.effective_timeout_seconds! <= 0
+        || Date.parse(this.#currentStart.timestamp) + this.#currentStart.effective_timeout_seconds! * 1000 > Date.parse(this.contract.bounds.deadlineAt)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+      for (const retired of state.retiredOwners) assertNativeRestartProcessDead(retired.process);
+    }
     if (!exists) {
       if (state.sequence !== 0) throw workflowError();
       withPreparedWorkflowLocks(this.locks, (scope) => store.publish(scope, descriptorName, { schemaVersion: descriptorVersion, binding: this.contract, [originField]: workflowDigest(JSON.stringify(launch)), initial: this.#initial, ...(this.#commandRegistration ? { projectCommandsRegistrationSha256: this.#commandRegistration } : {}) }));
@@ -413,7 +448,7 @@ export class NativeExecutionSession {
    * roots/Git-pointer identity remains pinned even for reporting, before any Git
    * observation. Source work independently takes the strict helper reread below. */
   assertCaller(context: unknown): void {
-    const p = this.#physical; const id = String(this.#launch.deploymentId); const env = process.env;
+    const p = this.#physical; const id = workflowText(p.deploymentId); const env = process.env;
     if (this.#capturePhysicalIdentity() !== this.#physicalIdentity) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
     const status = queryReadonlyHelperRegistry(id).status;
     if ((context as { cwd?: string } | null)?.cwd !== p.worktreeRoot || process.cwd() !== p.worktreeRoot || env.PA_DEPLOYMENT_ID !== id || env.PA_DEPLOYMENT_DIR !== getDeployPaths(id).deployDir
@@ -422,8 +457,8 @@ export class NativeExecutionSession {
     if (status.runtime !== "pi" || status.binary !== "ppa" || status.team !== "builder" || status.mode !== "orchestrator"
       || status.builder_authority !== "orchestrator" || status.parent_deployment_id || status.repo_root !== p.repoRoot || status.worktree_root !== p.worktreeRoot || status.ticket_id !== p.ticket) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     if (this.#ordinary) {
-      if (!equal(ordinaryStart(id), this.#ordinary.start) || nativeStartDigest(id, true) || marker(getDeployPaths(id).deployDir, true)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
-      if (!equal(ordinaryLineage(this.#ordinary.start, p), this.#ordinary) || status.branch_base_sha !== this.#ordinary.baseSha
+      if (!equal(ordinaryStart(id), this.#currentStart) || nativeStartDigest(id, true) || marker(getDeployPaths(id).deployDir, true)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+      if (!this.#currentStart || !equal(readOrdinaryNativeLineage(this.#ordinary.start, p, this.#currentStart), this.#ordinary) || status.branch_base_sha !== this.#ordinary.baseSha
         || status.treehouse_lease_id !== this.#ordinary.start.treehouse_lease_id || status.treehouse_lease_holder !== this.#ordinary.start.treehouse_lease_holder) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     } else if (nativeStartDigest(id, true) !== workflowDigest(JSON.stringify(this.#consumed)) || !equal(marker(getDeployPaths(id).deployDir, true), this.#consumed)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
     const anchor = readPiProcessIdentity(id, getDeployPaths(id).deployDir);

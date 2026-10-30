@@ -1,4 +1,5 @@
 import "./pi-workflow-operation-cases.js";
+import "./pi-workflow-bootstrap-cases.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, unlinkSync } from "node:fs";
