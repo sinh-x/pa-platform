@@ -3,6 +3,7 @@ import "./workflow-ticket-owner-cases.js";
 import "./workflow-amendment-owner-cases.js";
 import "./workflow-paired-cases.js";
 import "./workflow-execution-restart-cases.js";
+import "./workflow-native-handoff-cases.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { digest } from "../workflows/contracts.js";

@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { observeReadonlyRepositoryAuthority, readProcessFingerprint, type ProcessFingerprint } from "./repository-admission.js";
+import { assertExecutionWorktreeOwner, observeReadonlyRepositoryAuthority, readProcessFingerprint, type ExecutionWorktreeTransaction, type ProcessFingerprint } from "./repository-admission.js";
 import { queryReadonlyDeploymentEvents, queryReadonlyHelperRegistry } from "../registry/index.js";
 import { parseIdlePreparationReservation, type IdlePreparationReservation } from "./execution-custody.js";
+import { authenticateNativeExecutionRestart, assertNativeRestartProcessDead, type NativeExecutionRestartSource } from "./execution-restart.js";
 
 export const MAX_REPOSITORY_TICKET_SLOTS = 4;
 export const MAX_REPOSITORY_TICKET_SLOT_BYTES = 64 * 1024;
@@ -442,6 +443,8 @@ function writeSlot(path: string, slot: RepositoryTicketSlot): void {
  * No process-death reclamation, expiry, return or delete operation is provided.
  */
 export interface PreparedTicketCapacityTransaction {
+  /** Retained ordinary direct custody only; no allocation, token/permit reset or prepared adoption. */
+  readonly handoffExecution: (expected: RepositoryTicketSlot, source: NativeExecutionRestartSource, worktreeOwner: ExecutionWorktreeTransaction) => RepositoryTicketSlot;
   readonly inventory: () => readonly (RepositoryTicketSlot | IdlePreparationReservation)[];
   readonly reserve: (input: {
     ticket: string; operationId: string; reservationId: string; retainedAt: string;
@@ -491,6 +494,29 @@ export function withPreparedTicketCapacity<T>(options: {
     };
     const transaction = Object.freeze<PreparedTicketCapacityTransaction>({
       inventory,
+      handoffExecution(expected, source, worktreeOwner) {
+        assertActive();
+        assertExecutionWorktreeOwner(worktreeOwner, root, source.binding.worktreeRoot);
+        const binding = source.binding, native = authenticateNativeExecutionRestart(source);
+        if (binding.repoKey !== key || binding.repoRoot !== root || expected.canonicalRepoKey !== key || expected.canonicalRepoRoot !== root
+          || expected.ticket !== binding.ticket || expected.deploymentId !== native.previous.deploymentId) throw new Error("native restart capacity identity conflicts");
+        assertNativeRestartProcessDead(expected.processFingerprint);
+        const next: RepositoryTicketSlot = Object.freeze({ ...expected, deploymentId: native.actor.deploymentId,
+          deploymentDirectory: native.deploymentDirectory, processFingerprint: native.actor.process });
+        assertSlot(next);
+        const current = inventory().find(row => row.ticket === binding.ticket);
+        if (!current || "operationId" in current || (JSON.stringify(current) !== JSON.stringify(expected) && JSON.stringify(current) !== JSON.stringify(next)))
+          throw new Error("native restart capacity compare-and-swap failed");
+        // Never acquire a new permit, rotate a token, reset acquiredAt or lose
+        // the original materialization intent. Identical interrupted retry is reuse.
+        if (JSON.stringify(current) !== JSON.stringify(next)) {
+          replaceAtomic(repositoryTicketSlotPath(root, binding.ticket), next, dependencies.createToken);
+          options.boundary?.("published");
+        }
+        syncPreparedCapacityDirectory(root);
+        options.boundary?.("directory-synced");
+        return next;
+      },
       reserve(input) {
         const rows = inventory();
         const existing = rows.find((row) => row.ticket === input.ticket);

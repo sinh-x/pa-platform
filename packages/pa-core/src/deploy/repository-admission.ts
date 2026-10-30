@@ -31,6 +31,7 @@ import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 import { assertSupportedRuntime } from "./runtime-config.js";
+import { authenticateNativeExecutionRestart, assertNativeRestartProcessDead, type NativeExecutionRestartSource } from "./execution-restart.js";
 import type { ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { withPreparedRepositoryTicketOwner, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
@@ -553,9 +554,17 @@ export function withVacantPreparationWorktree<T>(canonicalRepoRoot: string, work
 }
 
 export interface ExecutionWorktreeTransaction {
+  /** Retained native direct owner only. The pending execution intent is the barrier. */
+  handoffDirectOwner(expected: RepositoryMutationLease, source: NativeExecutionRestartSource): RepositoryMutationLease;
   setDirectCustody(input: { deploymentId: string; ownershipToken: string; custody: "active" | "idle" }): void;
   /** Native direct-holder settlement only; never rewrites the immutable launch snapshot. */
   advanceDirectSnapshot(input: { deploymentId: string; ownershipToken: string; expected: RepositoryGitSnapshot; next: RepositoryGitSnapshot }): void;
+}
+const activeExecutionWorktreeOwners = new WeakMap<ExecutionWorktreeTransaction, { repoRoot: string; worktreeRoot: string }>();
+/** Internal capability check, not a public process/token assertion. */
+export function assertExecutionWorktreeOwner(transaction: ExecutionWorktreeTransaction, repoRoot: string, worktreeRoot: string): void {
+  const owner = activeExecutionWorktreeOwners.get(transaction);
+  if (!owner || owner.repoRoot !== repoRoot || owner.worktreeRoot !== worktreeRoot) throw new Error("native worktree transaction is absent or expired");
 }
 /** Existing lock composition for native execution: capacity -> worktree. This
  * wrapper is not authority; the native host must authenticate each command. */
@@ -567,6 +576,32 @@ export function withExecutionWorktreeAdmission<T>(canonicalRepoRoot: string, wor
     return withMutationMutex(location.mutexPath, () => {
       let active = true;
       const transaction: ExecutionWorktreeTransaction = Object.freeze({
+        handoffDirectOwner(expected: RepositoryMutationLease, source: NativeExecutionRestartSource) {
+          if (!active || settlementPending(location.gitDir)) throw new Error("native restart worktree transaction unavailable");
+          const binding = source.binding, native = authenticateNativeExecutionRestart(source);
+          assertExpectedGitIdentity(location.worktree, location.gitDir, common);
+          if (binding.repoRoot !== location.root || binding.worktreeRoot !== location.worktree || expected.canonicalRepoRoot !== location.root
+            || expected.canonicalRepoKey !== binding.repoKey || expected.worktreeRoot !== location.worktree || expected.ticket !== binding.ticket
+            || expected.deploymentId !== native.previous.deploymentId || expected.runtime !== "pi" || expected.team !== "builder" || expected.mode !== "orchestrator"
+            || expected.slot !== "orchestrator" || expected.directExecutionCustody !== native.custody
+            || expected.repositoryGitDir !== location.gitDir || expected.repositoryGitCommonDir !== common
+            || !expected.repositoryMetadataIdentity || expected.repositoryMetadataIdentity !== repositoryMetadataIdentity(location.root, location.worktree, location.gitDir, common))
+            throw new Error("native restart physical owner identity conflicts");
+          assertNativeRestartProcessDead(expected.processFingerprint);
+          for (const name of [REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+            if (reviewReservationPresent(join(location.gitDir, name))) throw new Error("native restart overlaps retained custody");
+          }
+          const snapshot = captureRepositoryGitSnapshot(location.worktree);
+          if (snapshot.dirty || snapshot.branch !== binding.branch || snapshot.head !== native.candidateSha
+            || !repositoryGitSnapshotsEqual(snapshot, expected.authorityGitSnapshot ?? expected.preLaunchGitSnapshot)) throw new Error("native restart snapshot is unknown or changed");
+          const next = Object.freeze({ ...expected, deploymentId: native.actor.deploymentId,
+            deploymentDirectory: native.deploymentDirectory, processFingerprint: native.actor.process });
+          const current = readValidLeaseUnlocked(location.leasePath);
+          if (!current || (JSON.stringify(current) !== JSON.stringify(expected) && JSON.stringify(current) !== JSON.stringify(next)))
+            throw new Error("native restart owner compare-and-swap failed");
+          if (JSON.stringify(current) !== JSON.stringify(next)) replaceLeaseAtomic(location.leasePath, next, randomUUID);
+          return next;
+        },
         setDirectCustody(input: Parameters<ExecutionWorktreeTransaction["setDirectCustody"]>[0]) {
           if (!active || settlementPending(location.gitDir)) throw new Error("native custody transaction is unavailable");
           assertExpectedGitIdentity(location.worktree, location.gitDir, common);
@@ -606,8 +641,9 @@ export function withExecutionWorktreeAdmission<T>(canonicalRepoRoot: string, wor
         advanceDirectAuthoritySnapshot({ deploymentId: input.deploymentId, repoRoot: location.root, worktreeRoot: location.worktree, ticket: lease.ticket!,
           expectedBranchHeadSha: input.expected.head, branchHeadSha: input.next.head, timestamp: next.authorityUpdatedAt });
       } });
+      activeExecutionWorktreeOwners.set(transaction, { repoRoot: location.root, worktreeRoot: location.worktree });
       try { const result = operation(transaction); if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("native execution transaction must be synchronous"); return result; }
-      finally { active = false; }
+      finally { active = false; activeExecutionWorktreeOwners.delete(transaction); }
     });
   });
 }
