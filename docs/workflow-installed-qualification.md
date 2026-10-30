@@ -2,6 +2,8 @@
 
 Status: **verifier not implemented; qualification blocked**. This is a continuation inventory, not a report, readiness receipt, substitute command or amendment of the approved matrix.
 
+Latest source continuation (`12ccba1`, `ae82b3a`) delivers replay-bound per-operation actor verification and native session reconstruction AFTER an already-settled handoff, including current Treehouse reread at session authentication. The remaining restart gap is the DEFAULT LAUNCHER: retained pre-admission selection, durable pre-spawn bootstrap intent, effect-bound lease verification and a child-start handshake before tool dispatch. The session constructor does not allocate or perform that transfer. Full default CLI restart and the installed verifier are still NOT delivered; do not install this source as an activation shortcut.
+
 The required command remains:
 
 ```sh
@@ -28,7 +30,7 @@ The real disabled PAPC source at `d4855185cecc3cb26af5d3ceec2133bc0297455f` supp
 ## Implementation order
 
 1. Finish native restart through EXISTING ticket-capacity, repository admission and execution journal owners. Keep the original immutable descriptor and deadline. Authenticate the exact predecessor's death/terminal registry and the successor's live resume chain, physical checkout, branch/snapshot, lease and slot/permit. Unknown resource or operation state stays blocked. Do not invoke fresh allocation/materialization as a restart fallback.
-2. Teach native evidence verification to resolve each tool actor from the journal at that operation's sequence, rather than replacing every historical `binding.owner` comparison with the latest holder. Old results and launch identity stay immutable; a later restart cannot retroactively issue an operation.
+2. The per-operation evidence reader is now delivered (`readExecutionOperations` / `readPiSourceOperation`): it authenticates each exact begin/finish actor, intent and result without latest-holder substitution. Qualify it across an ACTUAL default-launched restart once the missing launcher is delivered. Old results and launch identity remain immutable; a later restart cannot retroactively issue an operation.
 3. Extract reusable disposable owner-case drivers that can import the EXACT installed modules and exercise actual default public hosts. The current test-only injected host is not a production restart producer. Do not run source modules linked through workspace `@pa-platform` resolution and label them installed.
 4. Implement the exact matrix verifier CLI with strict arguments, mandatory case accounting and bounded JSON diagnostics. Validate the complete case inventory before reporting success. Absent support, skipped/cancelled cases, missing proof or provenance mismatch must exit nonzero.
 5. With separately supported candidate packaging/selection, run the unchanged command on the exact candidate and coherent selected config. Independent review/full matrix, CI, actual human UAT and authorized PAPC adoption remain separate gates.
