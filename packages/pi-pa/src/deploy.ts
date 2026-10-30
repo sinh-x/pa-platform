@@ -11,6 +11,7 @@ import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { resolvePiStructuredBaseline, structuredLaunchNote } from "./workflow-consumers.js";
+import { selectPiStructuredResume, type PiStructuredResume } from "./workflow-resume.js";
 import { readTicketWorkflow, workflowPrimerView, type StructuredTaskBaseline } from "@pa-platform/pa-core";
 import { assertNativePreparedChildLaunchSupported, ORDINARY_NATIVE_EXECUTION_START } from "./execution-native.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -826,6 +827,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   };
   let activeTicketSlot: RepositoryTicketSlotHandoff | undefined;
   let preparedBuilderAdmission: PiPreparedBuilderAdmission | undefined;
+  let retainedResume: PiStructuredResume | undefined;
   let treehouseEvidence: TreehouseLaunchEvidence | undefined;
   let reauthenticateParentBeforeSpawn: (() => void) | undefined;
   let selectedTicketWorktree: ReturnType<typeof authenticateTicketWorktreeSelection> | undefined;
@@ -934,6 +936,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const intendedTaskBaseline = structuredBaseline ?? (builderMode === "orchestrator" && !preparedBuilderAdmission && !team.deploy_modes?.some((entry) => entry.id === "implement")
         ? resolveOrdinaryTaskBaseline({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, ticketId })
         : undefined);
+      if (structuredBaseline && request.resume) {
+        if (builderMode !== "orchestrator" || request.background || request.force) throw new Error("structured native resume requires foreground direct custody without force");
+        retainedResume = selectPiStructuredResume({ previousId: request.resume, deploymentId, repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot,
+          ticket: ticketId, baseline: structuredBaseline, timeoutSeconds: timeout.timeout, treehouse: dependencies.treehouse ?? new TreehouseClient(), authority: dependencies.preparedAuthority });
+        treehouseEvidence = retainedResume.treehouse; planningCwd = retainedResume.worktreeRoot; timeout = { timeout: retainedResume.timeoutSeconds };
+        const { repo: _selector, ...resumeRequest } = request; planningRequest = resumeRequest;
+      } else {
       const ownsTicketSlot = builderMode === "orchestrator" || !parent;
       if (ownsTicketSlot && !preparedBuilderAdmission) {
         dependencies.observeOperation?.("slot");
@@ -1031,6 +1040,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       planningCwd = lease.path;
       const { repo: _explicitRepo, ...requestWithoutRepo } = request;
       planningRequest = requestWithoutRepo;
+      }
     }
     plan = resolveExecutionPlan({
       request: { ...planningRequest, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
@@ -1307,6 +1317,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     selectedTicketWorktree?.reread();
+    if (retainedResume) { retainedResume.reread(); retainedResume.reserve(); }
     const inheritedParent = inheritedAttempt;
     if (inheritedParent) {
       reauthenticateParentBeforeSpawn?.();
@@ -1353,7 +1364,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         deploymentId: registration.borrower.deploymentId,
         ...(registration.borrower.approvedMutationPaths ? { approvedMutationPaths: [...registration.borrower.approvedMutationPaths] } : {}),
       };
-    } else if (plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
+    } else if (!retainedResume && plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
       const acquisition = acquireRepositoryMutationLease({
         canonicalRepoKey: plan.repoKey,
         canonicalRepoRoot: plan.repoRoot,
@@ -1460,6 +1471,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     preparedBuilderAdmission?.reread();
     if (structuredBaseline) rereadStructured();
     selectedTicketWorktree?.reread();
+    retainedResume?.reread();
 
     let publishedPid: number | undefined;
     const publishPid = (pid: number): void => {
@@ -1468,7 +1480,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       observedRuntimeFingerprint = readProcessFingerprint(pid);
       publishedPid = pid;
     };
-    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    const beforeRuntimeStart = retainedResume ? (pid: number): void => {
+      const handoff = retainedResume!.bindChild(pid); activeRepositoryLease = handoff; activeTicketSlot = handoff.ticketSlot;
+      if (Date.now() >= Date.parse(retainedResume!.binding.bounds.deadlineAt)) throw workflowError();
+    } : undefined;
+    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, ...(request.background || retainedResume ? { timeoutMs: Math.min(plan.timeoutSeconds * 1000, retainedResume ? Math.max(1, Date.parse(retainedResume.binding.bounds.deadlineAt) - Date.now()) : Infinity) } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
     if (protectedValidationLaunch) {
       (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
     }
@@ -1484,6 +1500,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     // proof must retain the borrower, including thrown/ambiguous spawn failures.
     runtimeLaunchAttempted = true;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
+    if (result.exitCode === 0) retainedResume?.assertCompleted();
     reviewRuntimeTerminated = result.metadata?.["cleanupVerified"] !== false && result.metadata?.["pending"] !== true;
     const rawExitCode = result.metadata?.["rawExitCode"];
     if (reviewRuntimeTerminated && observedRuntimeFingerprint && result.metadata?.["normalExit"] === true

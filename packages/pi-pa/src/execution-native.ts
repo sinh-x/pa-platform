@@ -3,13 +3,13 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
-  assertNativeRestartProcessDead, captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
+  assertNativeRestartProcessDead, captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, loadTeamConfig, loadRepoEntry, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, observeRetainedRepositoryTicketSlot,
   parseExecutionBinding, readExecutionState, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead, assertSupportedLocalGitEffects, assertLocalGitIndexMatchesWorking, localGitIndexFingerprint, localGitTreeFingerprint,
   executionFailure, executionWorkflowError, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
-  type PreparedLockOwners, type PreparedTicketCapacityTransaction, type ExecutionWorktreeTransaction, type RegistryEvent, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
+  type PreparedLockOwners, type PreparedTicketCapacityTransaction, type ExecutionWorktreeTransaction, type RegistryEvent, type RepositoryGitSnapshot, type RepositoryTicketSlot, type SourceVersion, type PhaseReportCheck,
 } from "@pa-platform/pa-core";
 import { createPiReadonlyHelperCapability, type PiReadonlyHelperDependencies } from "./deploy.js";
 import { readPiProcessIdentity } from "./process-identity.js";
@@ -45,7 +45,7 @@ function ordinaryStart(id: string): RegistryEvent | null {
 }
 /** Immutable native resume chain only. A link is correlation, not permission
  * to transfer custody or initialize a replacement journal. */
-function ordinaryExecutionOrigin(current: RegistryEvent): { start: RegistryEvent; retiredIds: readonly string[] } {
+export function ordinaryExecutionOrigin(current: RegistryEvent): { start: RegistryEvent; retiredIds: readonly string[] } {
   const chain: RegistryEvent[] = [current]; let cursor = current;
   while (cursor.resumed_from_deployment_id) {
     if (chain.length >= 4 || chain.some(start => start.deployment_id === cursor.resumed_from_deployment_id)
@@ -231,7 +231,15 @@ export class PiNativeExecutionAdapter {
 type HelperContext = ReturnType<ReturnType<typeof createPiReadonlyHelperCapability>["authenticate"]>["context"];
 /** Read exclusively from native registry and protected owners AFTER physical
  * authentication. Tokens remain private and only their digests bind the journal. */
-export function readOrdinaryNativeLineage(start: RegistryEvent, physical: HelperContext, current: RegistryEvent = start) {
+type NativeLineagePhysical = Pick<HelperContext, "deploymentId" | "repoKey" | "repoRoot" | "worktreeRoot" | "gitDir" | "ticket">;
+export function readOrdinaryNativeLineage(start: RegistryEvent, physical: NativeLineagePhysical, current: RegistryEvent = start) {
+  return ordinaryNativeLineage(start, physical, current, observeReadonlyRepositoryTicketSlot(physical.repoRoot, physical.ticket!).slot);
+}
+/** Existing-only dead-predecessor provenance, NOT live custody or a source grant. */
+export function readRetainedOrdinaryNativeLineage(start: RegistryEvent, physical: NativeLineagePhysical, current: RegistryEvent) {
+  return ordinaryNativeLineage(start, physical, current, observeRetainedRepositoryTicketSlot(physical.repoRoot, physical.ticket!));
+}
+function ordinaryNativeLineage(start: RegistryEvent, physical: NativeLineagePhysical, current: RegistryEvent, slot: RepositoryTicketSlot) {
   const id = start.deployment_id, currentId = current.deployment_id;
   if (!equal(ordinaryStart(currentId), current) || !equal(ordinaryExecutionOrigin(current).start, start) || physical.deploymentId !== currentId
     || current.runtime !== "pi" || current.binary !== "ppa" || current.team !== "builder" || current.mode !== "orchestrator"
@@ -242,7 +250,7 @@ export function readOrdinaryNativeLineage(start: RegistryEvent, physical: Helper
     || start.treehouse_path !== physical.worktreeRoot || start.branch_state !== "materialized") throw executionFailure("EXECUTION_BINDING_CONFLICT");
   const custody = observeReadonlyRepositoryAuthority(physical.gitDir);
   if (!custody.owner || custody.borrower || custody.implement || custody.review) throw executionFailure("EXECUTION_HOLDER_CONFLICT");
-  const owner = custody.owner; const slot = observeReadonlyRepositoryTicketSlot(physical.repoRoot, physical.ticket!).slot;
+  const owner = custody.owner;
   if (owner.deploymentId !== currentId || slot.deploymentId !== currentId || start.ticket_slot_id !== slot.slotId || start.repository_permit !== slot.repositoryPermit
     || owner.preLaunchGitSnapshot.head !== start.branch_head_sha || !owner.preLaunchGitSnapshot.branch || owner.preLaunchGitSnapshot.dirty) throw executionFailure("EXECUTION_BINDING_CONFLICT");
   return Object.freeze({ schemaVersion: ORDINARY_NATIVE_EXECUTION_START, deploymentId: id, repoKey: physical.repoKey, repoRoot: physical.repoRoot,

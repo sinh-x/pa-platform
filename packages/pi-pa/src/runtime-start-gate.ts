@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 // Fixed inert bootstrap: no Pi/provider/project code executes until the parent
@@ -13,11 +13,11 @@ const started=Date.now();
 function wait(){
   try {
     const fd=fs.openSync(gate,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
-    let body;try{const s=fs.fstatSync(fd);if(!s.isFile()||s.nlink!==1||s.uid!==process.getuid()||(s.mode&4095)!==384||s.size!==65)process.exit(125);body=fs.readFileSync(fd,'utf8')}finally{fs.closeSync(fd)}
+    let body;try{const s=fs.fstatSync(fd);if(s.nlink===2){setTimeout(wait,10);return}if(!s.isFile()||s.nlink!==1||s.uid!==process.getuid()||(s.mode&4095)!==384||s.size!==65)process.exit(125);body=fs.readFileSync(fd,'utf8')}finally{fs.closeSync(fd)}
     if(body!==nonce+'\n')process.exit(125);
     const env={...process.env};if(env.PA_PI_START_NODE_OPTIONS)env.NODE_OPTIONS=env.PA_PI_START_NODE_OPTIONS;else delete env.NODE_OPTIONS;
     delete env.PA_PI_START_NODE_OPTIONS;
-    process.execve(binary,[binary,...args],env);
+    try{process.execve(binary,[binary,...args],env)}catch{process.exit(125)}
   } catch(error) {if(error.code!=='ENOENT')process.exit(125)}
   if(Date.now()-started>=30000)process.exit(124);setTimeout(wait,10);
 }wait();`;
@@ -44,8 +44,10 @@ export function createRuntimeStartGate(deploymentDirectory: string, args: readon
   return { file: process.execPath, args: ["--disable-warning=ExperimentalWarning", "-e", BOOTSTRAP, gate, nonce, binary, ...args], env: environment,
     release() {
       if (released) throw new Error("native runtime-start gate already released");
-      const fd = openSync(gate, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      const temporary = join(directory, "release.tmp");
+      const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       try { writeFileSync(fd, `${nonce}\n`); fsyncSync(fd); } finally { closeSync(fd); }
+      linkSync(temporary, gate); unlinkSync(temporary);
       const dir = openSync(dirname(gate), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { fsyncSync(dir); } finally { closeSync(dir); }
       released = true;

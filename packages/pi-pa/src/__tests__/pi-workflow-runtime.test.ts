@@ -211,6 +211,89 @@ test("default Pi launcher and native execution owner consume the structured gran
   if (bodyFailure) throw bodyFailure;
   assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1);
 }));
+test("foreground default launcher retains failed-check custody across real predecessor exit and resumes two native source phases without allocation", () => fixture(async f => {
+  const waiting = await f.service.requestStep(f.state.runId, f.state.revision, "source-phase", f.authority.decisionId);
+  const baseline = resolvePiStructuredBaseline("example", f.repo, "EX-1")!;
+  materializeTicketBranch({ canonicalRepoKey: "example", canonicalRepoRoot: f.repo, worktreeRoot: f.checkout, ticketId: "EX-1", intendedTaskBaseline: baseline, rereadStructuredTaskBaseline: () => resolvePiStructuredBaseline("example", f.repo, "EX-1")! });
+  const teams = join(f.root, "teams"); mkdirSync(teams); process.env.PA_PLATFORM_TEAMS = teams;
+  writeFileSync(join(teams, "builder.yaml"), "name: builder\ndescription: Synthetic provider, real restart admission\nobjective: Fixture\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+  const row = { name: "1", path: f.checkout, status: "leased", branch: f.bundle.handoff.branch, detached: false, flavor: "git", lease_id: "synthetic-resume", lease_holder: "pa:example:EX-1", leased_at: "2026-10-30T00:00:00Z", processes: [] };
+  const treehouse = new TreehouseClient({ run: args => { if (args[0] !== "status") throw Error("no allocation/return"); return { status: 0, stdout: Buffer.from(JSON.stringify([row])), stderr: Buffer.alloc(0) }; } });
+  const script = join(f.root, "original-runtime.mts"), resultPath = join(f.root, "original-result.json");
+  const module = (name: string) => new URL(`../${name}.ts`, import.meta.url).href;
+  writeFileSync(script, `import assert from 'node:assert/strict';import {writeFileSync} from 'node:fs';
+import {deployWithPi} from ${JSON.stringify(module("deploy"))};import {PiNativeExecutionAdapter} from ${JSON.stringify(module("execution-native"))};
+import {PiPreparedNativeAuthority} from ${JSON.stringify(module("prepared-native"))};import {recordPiProcessIdentity} from ${JSON.stringify(module("process-identity"))};
+import {createPiExecutionModule} from ${JSON.stringify(new URL("../pi-extension/prepared-workflow.ts", import.meta.url).href)};
+import {TreehouseClient} from ${JSON.stringify(new URL("./treehouse-fixture.ts", import.meta.url).href)};
+const root=${JSON.stringify(f.root)},checkout=${JSON.stringify(f.checkout)},row=${JSON.stringify(row)};
+const treehouse=new TreehouseClient({run:args=>{if(args[0]!=='status')throw Error('no checkout effects');return{status:0,stdout:Buffer.from(JSON.stringify([row])),stderr:Buffer.alloc(0)}}});
+const authority=new PiPreparedNativeAuthority({root:root+'/native-authority',aiUsageRoot:root});
+const adapter={name:'pi',defaultModel:'',sessionFileName:'session-id-pi.txt',allocateSessionId:()=> 'synthetic-retained-source',async preflight(){},installHooks(){},describeTools:()=>({runtime:'pi',markdown:'fixture'}),extractActivity:()=>[],async resume(){throw Error('original only')},
+async spawn(opts){const env=process.env,cwd=process.cwd();process.env={...env,...opts.env};process.chdir(checkout);
+try{recordPiProcessIdentity(opts.deployId,process.env.PA_DEPLOYMENT_DIR,process.pid);opts.onPid?.(process.pid);
+const native=new PiNativeExecutionAdapter({authority,helperDependencies:{treehouse}}),context={cwd:checkout},session=native.resolve(context),tools=new Map(),handlers=new Map();
+createPiExecutionModule({nativeAdapter:native})({registerTool:t=>tools.set(t.name,t),on:(n,h)=>handlers.set(n,[...(handlers.get(n)||[]),h])});
+const dispatch=async(n,e)=>{for(const h of handlers.get(n)||[]){const r=await h(e,context);if(r!==undefined)return r}};await dispatch('session_start',{});
+const control=input=>tools.get('pa_execution').execute('control',input,undefined,undefined,context);
+await control({action:'plan',plan:{phaseId:'source-phase',scope:'restart fixture',paths:['source.txt'],requirements:['FR-01'],prerequisites:[],checks:['check'],size:'S',complexity:'bounded',rationale:'Retain actual original failure across restart'}});
+const holder=(await control({action:'observe',kind:'holder'})).details.evidence;await control({action:'select',executor:'orchestrator-direct',holder,handover:holder});
+const input={command:"node 'check.cjs'",timeout:10};assert.equal(await dispatch('tool_call',{toolName:'bash',toolCallId:'original-failure',input}),undefined);
+let result;try{result=await tools.get('bash').execute('original-failure',input,undefined,undefined,context)}catch(error){result=String(error)}
+await dispatch('tool_execution_end',{toolName:'bash',toolCallId:'original-failure',result,isError:true});assert.equal(session.service.status(session.actor).originalFailure.exitCode,2);
+}finally{process.chdir(cwd);process.env=env}return{sessionId:opts.sessionId,exitCode:0,metadata:{sessionId:opts.sessionId}}}};
+const result=await deployWithPi({team:'builder',mode:'orchestrator',repo:'example',ticket:'EX-1',timeout:1800,provider:'openai-codex',model:'gpt-6.1-sol'},adapter,undefined,{treehouse,preparedAuthority:authority});writeFileSync(${JSON.stringify(resultPath)},JSON.stringify(result));
+`);
+  execFileSync(process.execPath, ["--import", "tsx", script], { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"], timeout: 60000 });
+  const previous = JSON.parse(readFileSync(resultPath, "utf8")); assert.equal(previous.status, "failed"); assert.ok(previous.deploymentId);
+  let bodyFailure: unknown, resumes = 0;
+  const operations: string[] = [];
+  const adapter: RuntimeAdapter & { preflight(): Promise<void> } = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "not-new", async preflight() {}, installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "fixture" }), extractActivity: () => [], spawn: async () => { throw Error("must resume"); },
+    async resume(opts) {
+      resumes++; const env = process.env, cwd = process.cwd(); process.env = { ...env, ...opts.env }; process.chdir(f.checkout);
+      try {
+        assert.ok(opts.beforeRuntimeStart); recordPiProcessIdentity(opts.deployId, process.env.PA_DEPLOYMENT_DIR!, process.pid); opts.onPid?.(process.pid); opts.beforeRuntimeStart!(process.pid);
+        const native = new PiNativeExecutionAdapter({ authority: f.nativeAuthority, helperDependencies: { treehouse } }), context = { cwd: f.checkout }, session = native.resolve(context)!;
+        assert.equal(session.contract.lineageId, previous.deploymentId); assert.equal(session.actor.deploymentId, opts.deployId);
+        const before = session.service.status(session.actor); assert.equal(before.originalFailure!.exitCode, 2); assert.equal(before.bounds.replacementsUsed, 1);
+        const tools = new Map<string, PiToolDefinition>(), handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
+        createPiExecutionModule({ nativeAdapter: native })({ registerTool: t => tools.set(t.name, t as PiToolDefinition), on: (n, h) => handlers.set(n, [...(handlers.get(n) ?? []), h]) } as PiRuntime);
+        const dispatch = async (name: string, event: unknown) => { for (const h of handlers.get(name) ?? []) { const result = await h(event, context); if (result !== undefined) return result; } };
+        await dispatch("session_start", {});
+        const control = (input: Record<string, unknown>) => tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
+        const observe = async (kind: string, rationale?: string) => (await control({ action: "observe", kind, ...(rationale ? { rationale } : {}) })).details.evidence;
+        const settle = async () => control({ action: "settle", evidence: await observe("inventory") });
+        const select = async () => { const holder = await observe("holder"); return control({ action: "select", executor: "orchestrator-direct", holder, handover: holder }); };
+        let id = 0;
+        const execute = async (name: string, input: Record<string, unknown>) => { const call = `resumed-${++id}`; assert.equal(await dispatch("tool_call", { toolName: name, toolCallId: call, input }), undefined);
+          const result = await tools.get(name)!.execute(call, input, undefined, undefined, context); await dispatch("tool_execution_end", { toolName: name, toolCallId: call, result, isError: false }); };
+        await settle(); await control({ action: "attempt", evidence: await observe("recovery", "The retained actual check failed because source.txt is not repaired.") }); await select();
+        await execute("write", { path: "source.txt", content: "repaired after restart\n" }); await execute("bash", { command: "node 'check.cjs'", timeout: 10 });
+        await settle(); const pass = session.service.status(session.actor).passedChecks.check!; await control({ action: "resolve", evidence: pass }); await select();
+        await execute("bash", { command: "git add -- source.txt" }); await execute("bash", { command: "git commit -m 'restart phase one'" }); await settle();
+        const phase = await observe("phase"); const current = f.service.status(waiting.runId); await f.service.reconcile(waiting.runId, current.revision, waiting.pending[0]!.intentId);
+        const done = f.service.status(waiting.runId), next = await f.service.requestStep(waiting.runId, done.revision, "source-next", f.authority.decisionId);
+        await control({ action: "advance", plan: { ...session.service.status(session.actor).plan!, phaseId: "source-next" }, evidence: phase }); await select();
+        await execute("write", { path: "source.txt", content: "repaired second phase\n" }); await execute("bash", { command: "node 'check.cjs'", timeout: 10 });
+        await execute("bash", { command: "git add -- source.txt" }); await execute("bash", { command: "git commit -m 'restart phase two'" }); await settle(); await observe("phase");
+        const final = f.service.status(waiting.runId); await f.service.reconcile(waiting.runId, final.revision, next.pending[0]!.intentId);
+        const state = session.service.status(session.actor); assert.equal(state.bounds.deadlineAt, before.bounds.deadlineAt); assert.equal(state.bounds.replacementsUsed, 1);
+        assert.ok(session.evidence.store.records().some(name => JSON.stringify(session.evidence.store.read(name)).includes("original-failure")));
+      } catch (error) { bodyFailure = error; throw error; } finally { process.chdir(cwd); process.env = env; }
+      return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId! } };
+    } };
+  const retained = f.nativeAuthority.execution()!, records = retained.records().map(name => [name, JSON.stringify(retained.read(name))]);
+  for (const flags of [{ background: true }, { force: true }]) {
+    const denied = await deployWithPi({ team: "builder", mode: "orchestrator", repo: "example", ticket: "EX-1", resume: previous.deploymentId, timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol", ...flags }, adapter, undefined, { treehouse, preparedAuthority: f.nativeAuthority });
+    assert.equal(denied.status, "failed"); assert.equal(resumes, 0); assert.deepEqual(retained.records().map(name => [name, JSON.stringify(retained.read(name))]), records);
+  }
+  const result = await deployWithPi({ team: "builder", mode: "orchestrator", repo: "example", ticket: "EX-1", resume: previous.deploymentId, timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: f.nativeAuthority, observeOperation: op => operations.push(op) });
+  if (bodyFailure) throw bodyFailure;
+  assert.equal(result.status, "success", result.reason); assert.equal(resumes, 1);
+  for (const operation of ["slot", "permit", "checkout", "branch", "lineage"]) assert.ok(!operations.includes(operation), operation);
+  assert.equal(f.service.status(waiting.runId).outcomes["source-next"], "completed");
+}, false, true));
+
 test("roadmap Step 2: exact source intent settles from real native checked/committed phase evidence, never agent flags", () => fixture(async f => {
   assert.throws(() => resolvePiStructuredBaseline("example", f.repo, "EX-1"), /WORKFLOW_AUTHORITY/);
   const waiting = await f.service.requestStep(f.state.runId, f.state.revision, "source-phase", f.authority.decisionId);

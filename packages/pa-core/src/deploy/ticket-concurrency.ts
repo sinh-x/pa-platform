@@ -85,6 +85,15 @@ export function observeReadonlyRepositoryTicketSlot(canonicalRepoRoot: string, t
   return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex") };
 }
 
+/** Protected retained observation only, including a dead predecessor. This
+ * cannot authenticate liveness, acquire custody, repair or reclaim a permit. */
+export function observeRetainedRepositoryTicketSlot(canonicalRepoRoot: string, ticket: string): RepositoryTicketSlot {
+  const path = executionSlotPath(canonicalRepoRoot, ticket, false);
+  if (path.endsWith(".prepared.json")) throw new Error("retained ordinary capacity required");
+  const slot = readSlot(path);
+  if (!slot) throw new Error("retained ordinary capacity is absent or uncertain");
+  return Object.freeze({ ...slot, processFingerprint: Object.freeze({ ...slot.processFingerprint }) });
+}
 export function authenticateRepositoryTicketSlot(options: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
