@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { definition, bytes } from "../../packages/pa-core/src/__tests__/workflow-fixtures.js";
-import { workflowDigest } from "../../packages/pa-core/src/index.js";
+import { bundle, fixtureEvidence, definition, bytes } from "../../packages/pa-core/src/__tests__/workflow-fixtures.js";
+import { workflowDigest, parseReviewBundle, templateService } from "../../packages/pa-core/src/index.js";
+import { templateFixture } from "../../packages/pa-core/src/__tests__/template-fixture.js";
 import { validatePairedRepository, validateReviewProducerFixtures } from "./validate_paired_repository.mts";
 
 test("v1 paired producer fixtures require exact three-profile manifest, shared parser and digest agreement", () => {
@@ -164,7 +165,7 @@ function createDirectFixture() {
   mkdirSync(join(root, "scripts"));
   // Synthetic producer module proves profile selection/response checks only;
   // the real selected PAPC producer has its own source/mutation test suite.
-  const checker = `import { readFileSync } from 'node:fs';\nexport const DIRECT_ONLY_DECLARATION = {version:4,candidatePolicy:'orchestrator-direct-only'};\nexport function checkScopedLocalText(source) { if (!source.includes('scoped ordinary fixture')) throw new Error('scoped instruction control missing'); }\nexport function checkDirectOnlyWorkflow(root) { checkScopedLocalText(readFileSync(root+'/teams/builder/modes/orchestrator.md','utf8')); return {ok:true,evidenceClass:'current-structural-and-synthetic-not-runtime-proof',scopedLocal:{runtimeOwner:'PAP-268',presentation:'Markdown-sufficient-rich-view-optional',acceptance:'paired-proof-required',sources:[{path:'fixture'}]}}; }\n`;
+  const checker = `import { readFileSync } from 'node:fs';\nexport const DIRECT_ONLY_DECLARATION = {version:4,candidatePolicy:'orchestrator-direct-only'};\nexport function checkScopedLocalText(source) { if (!source.includes('scoped ordinary fixture')) throw new Error('scoped instruction control missing'); }\nexport function checkDirectOnlyWorkflow(root, read) { if(read!==undefined&&typeof read!=='function')throw new Error('existing optional reader must remain callable'); checkScopedLocalText(readFileSync(root+'/teams/builder/modes/orchestrator.md','utf8')); return {ok:true,evidenceClass:'current-structural-and-synthetic-not-runtime-proof',scopedLocal:{runtimeOwner:'PAP-268',presentation:'Markdown-sufficient-rich-view-optional',acceptance:'paired-proof-required',sources:[{path:'fixture'}]}}; }\n`;
   writeFileSync(join(root, "scripts/check-prepared-autonomy-workflow.mjs"), checker);
   writeFileSync(join(root, "teams/builder/modes/orchestrator.md"), "# scoped ordinary fixture\nOne authenticated writer, explicit native command contract, Markdown only; no retired implement fallback.\n");
   for (const [name, ids] of [["builder", ["orchestrator", "worker", "housekeeping", "data-analysis"]], ["requirements", ["analyze", "analyze-auto", "spike", "review", "review-auto", "focus"]]] as const) {
@@ -174,6 +175,83 @@ function createDirectFixture() {
   git(root, "add", "."); git(root, "commit", "-qm", "direct fixture");
   return { root, sha: git(root, "rev-parse", "HEAD"), checker };
 }
+
+function addWorkflowPair(root: string, enabled: boolean) {
+  const t = templateFixture();
+  try {
+    t.registry.configRevision = "selected";
+    const entry = structuredClone(t.registry.entries[0]!); entry.id = "review-bundle";
+    entry.source = { path: "skills/templates/review-bundle.md", sha256: workflowDigest("{{bundle}}\n"), selector: null };
+    entry.bindings = { bundle: { type: "json", required: true } }; entry.validation = { kind: "review-bundle", sections: [] };
+    t.registry.entries.push(entry); writeFileSync(join(t.root, entry.source.path), "{{bundle}}\n");
+    for (const resource of t.registry.entries) {
+      const path = join(root, resource.source.path);
+      if (existsSync(path)) resource.source.sha256 = workflowDigest(readFileSync(path));
+      else cpSync(join(t.root, resource.source.path), path);
+    }
+    t.save(); mkdirSync(join(root, "contracts"), { recursive: true }); cpSync(join(t.root, "contracts/templates-v1.json"), join(root, "contracts/templates-v1.json"));
+    const d = definition(), b = bundle(), evidence = fixtureEvidence(b), raw = bytes(d);
+    mkdirSync(join(root, "workflows/definitions"), { recursive: true }); mkdirSync(join(root, "workflows/fixtures"));
+    writeFileSync(join(root, "workflows/definitions/software.json"), raw);
+    const manifest = { schemaVersion: "pa-workflow-manifest/v1", definitions: [{ workflowId: d.workflowId, version: d.version, file: "workflows/definitions/software.json", sha256: workflowDigest(raw) }], bindings: [{ schemaVersion: "pa-workflow-binding/v1", team: "requirements", mode: "analyze", enabled, workflowId: d.workflowId, workflowVersion: d.version }] };
+    writeFileSync(join(root, "workflows/manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(root, "workflows/fixtures/requirements.md"), evidence.get(b.requirements.ref)!); writeFileSync(join(root, "workflows/fixtures/uat.md"), evidence.get(b.uat.ref)!);
+    const fixtures = ["fresh", "amendment"].map(id => {
+      const subject = structuredClone(b); if (id === "amendment") subject.handoff = { type: "amendment", baseSha: b.handoff.baseSha, branch: b.handoff.branch, branchAction: "reuse", featureSha: "c".repeat(40) };
+      const request = { action: "render", id: "review-bundle", version: "1", bindings: { bundle: subject } };
+      const result = templateService(request, { selection: { root, configRevision: "a".repeat(40), registrySha256: workflowDigest(readFileSync(join(root, "contracts/templates-v1.json"))) }, team: "requirements", mode: "analyze", reviewBundleConsumer: { schemaVersion: "pa-review-bundle/v1", validate: parseReviewBundle } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return { id, team: "requirements", mode: "analyze", producer: JSON.stringify(request), requirementsFile: "workflows/fixtures/requirements.md", uatFile: "workflows/fixtures/uat.md", candidateSha256: workflowDigest(result.candidate as string) };
+    });
+    writeFileSync(join(root, "workflows/fixtures-v1.json"), JSON.stringify({ schemaVersion: "pa-workflow-fixtures/v1", fixtures }));
+    return manifest;
+  } finally { t.dispose(); }
+}
+
+for (const direct of [false, true]) test(`selected v1 analyze isolates legacy procedural paragraphs, not unselected safety (direct=${direct})`, () => {
+  const f = direct ? createDirectFixture() : createFixture();
+  try {
+    const manifest = addWorkflowPair(f.root, true);
+    writeFileSync(join(f.root, "skills/requirements/analyze-objective.md"), "# Short selected route\nUse the pinned native workflow and decision interfaces. No copied approval paragraphs.\n");
+    const commit = () => { git(f.root, "add", "."); git(f.root, "commit", "-qm", "synthetic selected route"); return git(f.root, "rev-parse", "HEAD"); };
+    let sha = commit();
+    if (direct) {
+      assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: sha }), /producer failed/); // old companion checker cannot silently certify adoption
+      const checker = join(f.root, "scripts/check-prepared-autonomy-workflow.mjs");
+      writeFileSync(checker, readFileSync(checker, "utf8").replace("checkDirectOnlyWorkflow(root, read)", "checkDirectOnlyWorkflow(root, read, options)").replace("return {ok:true", "return {workflowRoutes:options.workflowRoutes,ok:true")); sha = commit();
+    }
+    const result = validatePairedRepository({ configRoot: f.root, expectedSha: sha });
+    assert.ok(result.includes("JSON_WORKFLOW_PROCEDURAL_ROUTES=requirements/analyze")); assert.ok(result.includes("JSON_WORKFLOW_PRIMER_IDENTITY=verified-structural-only"));
+    assert.ok(result.includes("JSON_WORKFLOW_STRUCTURAL_FIXTURES=2"));
+    const other = join(f.root, "skills/requirements/analyze-auto-objective.md"), before = readFileSync(other);
+    writeFileSync(other, "Missing unselected legacy safety\n"); sha = commit();
+    assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: sha }), /requirements\/analyze-auto.*missing plan-first/);
+    writeFileSync(other, before);
+    manifest.bindings[0]!.enabled = false; writeFileSync(join(f.root, "workflows/manifest.json"), JSON.stringify(manifest)); sha = commit();
+    assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: sha }), /requirements\/analyze.*missing plan-first/); // disable does not select short guidance for new runs
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+for (const enabled of [false, true]) test(`declared v1 incomplete handoff coverage fails closed (enabled=${enabled})`, () => {
+  const f = createFixture(); try {
+    addWorkflowPair(f.root, enabled);
+    const path = join(f.root, "workflows/fixtures-v1.json"), document = JSON.parse(readFileSync(path, "utf8"));
+    document.fixtures.pop(); writeFileSync(path, JSON.stringify(document));
+    git(f.root, "add", "."); git(f.root, "commit", "-qm", "missing typed handoff");
+    assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: git(f.root, "rev-parse", "HEAD") }), /WORKFLOW_SOURCE/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("selected unsupported v1 procedural modes cannot borrow analyze or legacy compatibility", () => {
+  const f = createFixture(); try {
+    const manifest = addWorkflowPair(f.root, true); manifest.bindings[0]!.mode = "analyze-auto";
+    writeFileSync(join(f.root, "workflows/manifest.json"), JSON.stringify(manifest));
+    const path = join(f.root, "workflows/fixtures-v1.json"), document = JSON.parse(readFileSync(path, "utf8"));
+    document.fixtures.forEach((row: { mode: string }) => row.mode = "analyze-auto"); writeFileSync(path, JSON.stringify(document));
+    git(f.root, "add", "."); git(f.root, "commit", "-qm", "unsupported selected procedural route");
+    assert.throws(() => validatePairedRepository({ configRoot: f.root, expectedSha: git(f.root, "rev-parse", "HEAD") }), /Unsupported selected v1 procedural route/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
 
 test("JSON workflow pairing rejects ignored overlays and missing enabled producer/fixture counterparts", () => {
   for (const variant of ["ignored", "missing-counterpart"] as const) {
