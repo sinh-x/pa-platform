@@ -486,7 +486,7 @@ test("frozen managed Pi fixture retains its legacy loadout alongside separately 
   finally { process.env = originalEnvironment; }
   // Preserve historical fixture bytes; PAP-270 has its own full registered-tool
   // and public-entrypoint fixtures rather than fabricating historical events.
-  assert.deepEqual(["read", "bash", ...registered].sort(), [...fixture.managedTools, "pa_template"].sort());
+  assert.deepEqual(["read", "bash", ...registered].sort(), [...fixture.managedTools, "pa_template", "pa_workflow", "pa_decision"].sort());
 });
 
 test("installed native characterization only skips without an explicit candidate output", () => {

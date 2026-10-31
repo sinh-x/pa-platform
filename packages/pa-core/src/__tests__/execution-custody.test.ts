@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  ExecutionCustodyService, parseExecutionBinding, parseExecutionPlan, parseExecutionRecoveryInventory, projectExecution, updateFeatureWithExpectedHead,
+  ExecutionCustodyService, readExecutionState, parseExecutionBinding, parseExecutionPlan, parseExecutionRecoveryInventory, projectExecution, updateFeatureWithExpectedHead,
   type ExecutionBinding, type ExecutionCommand, type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type PhaseExecutionPlan,
 } from "../deploy/execution-custody.js";
 import { ProtectedWorkflowStore, workflowDigest, type SourceVersion } from "../deploy/prepared-workflow.js";
@@ -59,6 +59,17 @@ const failure = (candidateSha = sha): ExecutionFailure => ({ check: "typecheck",
 function failed(f: ReturnType<typeof setup>) {
   f.plan(); f.select(); f.begin("failed-check", "check"); f.finish("failed-check", failure()); f.settle();
 }
+
+test("observational execution replay retains unknown operations/bounds without locks, live probes, reaffirm or initialization", () => fixture(f => {
+  f.plan(); f.select(); f.begin("retained-unknown");
+  const before = f.service.status(owner), calls = [...f.calls], files = f.store.records().map(name => [name, readFileSync(join(f.root, name), "utf8")]);
+  f.setDeny(true); f.setLive(false);
+  const observed = readExecutionState(f.store, f.service.binding);
+  assert.deepEqual(observed, before); assert.equal(observed.operation!.id, "retained-unknown");
+  assert.deepEqual(f.calls, calls); assert.deepEqual(f.store.records().map(name => [name, readFileSync(join(f.root, name), "utf8")]), files);
+  assert.throws(() => readExecutionState(f.store, { ...f.service.binding, lineageId: "foreign-lineage" }));
+  assert.deepEqual(f.calls, calls);
+}));
 
 test("AC7 plan and rationale precede judgment-based selection; strict input never grants authority", () => fixture((f) => {
   assert.throws(() => f.select());

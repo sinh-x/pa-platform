@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures } from "../../packages/pa-core/src/index.js";
+import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures, loadSelectedWorkflows, readReviewEvidenceFile, workflowDigest, validateWorkflowPair, type WorkflowSelection, type WorkflowPrimerView } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
   configRoot: string;
@@ -20,7 +20,31 @@ function git(root: string, args: string[]): string {
 
 const planFirstRequirementsModes = ["analyze", "analyze-auto", "spike"] as const;
 
-function validatePlanFirstRequirementsContracts(configRoot: string, directLocal = false): number {
+/** Read-only selected-route projection checks. Fixture subjects are NOT issued
+ * decisions; the preview run ID is explicitly structural and never persisted. */
+export function validateWorkflowProcedures(configRoot: string, selection: WorkflowSelection, paired: ReturnType<typeof validateWorkflowPair>): ReadonlyMap<string, WorkflowPrimerView> {
+  const routes = new Map<string, WorkflowPrimerView>();
+  for (const binding of selection.bindings.filter(b => b.enabled)) {
+    const key = `${binding.team}/${binding.mode}`;
+    if (key !== "requirements/analyze") throw new Error("Unsupported selected v1 procedural route; no legacy fallback");
+    const definition = selection.definitions.find(d => d.definition.workflowId === binding.workflowId && d.definition.version === binding.workflowVersion);
+    const cases = paired.fixtures.filter(f => f.team === binding.team && f.mode === binding.mode);
+    if (!definition || !["fresh", "amendment"].every(type => cases.some(f => f.handoff === type && f.bindingEnabled && f.definitionSha256 === definition.sha256))) throw new Error("Selected v1 procedure requires both exact typed handoffs");
+    const team = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams", `${binding.team}.yaml`), "utf8"));
+    if (!team.deploy_modes?.some(m => m.id === binding.mode)) throw new Error("Selected v1 procedure names a missing team/mode");
+    const view: WorkflowPrimerView = { runId: "paired-structural-preview", workflowId: binding.workflowId, version: binding.workflowVersion, sha256: definition.sha256,
+      configRevision: selection.configRevision, nextOwner: "operator", nextAction: "Request the exact native package decision; structural preview grants no authority." };
+    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: binding.mode, workflow: view,
+      repository: { repoKey: "pa-platform-config", repoRoot: configRoot }, resolveFile: path => resolve(configRoot, path), skillsDir: resolve(configRoot, "skills/global"),
+      templateVars: { DEPLOY_ID: "paired-v1-preview", TEAM_NAME: binding.team, TICKET_ID: "PAP-271", TODAY: "2026-10-30" } });
+    const identity = `Run: ${view.runId}; definition: ${view.workflowId}/${view.version}; raw SHA-256: ${view.sha256}; config: ${view.configRevision}.`;
+    if (!primer.includes(identity) || !primer.includes(`Next owner: ${view.nextOwner}. Next action: ${view.nextAction}.`)) throw new Error("Selected v1 generated primer lost pinned contract identity");
+    routes.set(key, view);
+  }
+  return routes;
+}
+
+function validatePlanFirstRequirementsContracts(configRoot: string, directLocal = false, workflows: ReadonlyMap<string, WorkflowPrimerView> = new Map()): number {
   const requirements = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams", "requirements.yaml"), "utf8"));
   const configuredModes = new Set(requirements.deploy_modes?.map((mode) => mode.id) ?? []);
   const requiredCases = [
@@ -52,6 +76,7 @@ function validatePlanFirstRequirementsContracts(configRoot: string, directLocal 
     if (!configuredModes.has(mode)) throw new Error(`requirements/${mode}: plan-first mode is not configured`);
     const primer = generatePrimer({
       runtime: "pi",
+      ...(workflows.has(`requirements/${mode}`) ? { workflow: workflows.get(`requirements/${mode}`)! } : {}),
       teamConfig: requirements,
       mode,
       objective: `Validate plan-first requirements behavior for ${mode}.`,
@@ -60,7 +85,9 @@ function validatePlanFirstRequirementsContracts(configRoot: string, directLocal 
       skillsDir: resolve(configRoot, "skills", "global"),
       templateVars: { DEPLOY_ID: `paired-${mode}`, TEAM_NAME: "requirements", TICKET_ID: "PAPC-024", TODAY: "2026-09-19" },
     });
-    for (const [label, pattern] of requiredCases) {
+    // Only this exact enabled/typed route replaces procedural paragraphs.
+    // Every unselected mode retains the previous complete legacy checks.
+    for (const [label, pattern] of workflows.has(`requirements/${mode}`) ? [] : requiredCases) {
       if (!pattern.test(primer) && !(directLocal && directLocalCases[label]?.test(primer))) throw new Error(`requirements/${mode}: generated primer is missing plan-first contract: ${label}`);
     }
     for (const stale of prohibited) {
@@ -74,7 +101,7 @@ function validatePlanFirstRequirementsContracts(configRoot: string, directLocal 
  * split-mode fixtures retain their old checks below; requiring an implement
  * borrower or per-fix approval in a direct-only candidate would restore the bug.
  * This is source pairing, never runtime readiness or independent acceptance. */
-export function validateDirectLocalProfile(configRoot: string): number {
+export function validateDirectLocalProfile(configRoot: string, workflows: ReadonlyMap<string, WorkflowPrimerView> = new Map()): number {
   const checkerPath = resolve(configRoot, "scripts/check-prepared-autonomy-workflow.mjs");
   if (realpathSync(checkerPath) !== checkerPath) throw new Error("Direct local producer checker must be a physical file in the selected config");
   const team = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
@@ -89,20 +116,21 @@ export function validateDirectLocalProfile(configRoot: string): number {
   const script = `import{readFileSync}from'node:fs';import{pathToFileURL}from'node:url';import{resolve}from'node:path';
     const input=JSON.parse(readFileSync(0,'utf8')); const c=await import(pathToFileURL(resolve(input.root,'scripts/check-prepared-autonomy-workflow.mjs')).href);
     if(c.DIRECT_ONLY_DECLARATION?.version!==4||c.DIRECT_ONLY_DECLARATION.candidatePolicy!=='orchestrator-direct-only'||typeof c.checkDirectOnlyWorkflow!=='function'||typeof c.checkScopedLocalText!=='function')throw Error('unsupported producer');
-    const r=c.checkDirectOnlyWorkflow(input.root); c.checkScopedLocalText(input.primer,'teams/builder/modes/orchestrator.md');
+    const r=c.checkDirectOnlyWorkflow(input.root,undefined,{workflowRoutes:input.routes}); c.checkScopedLocalText(input.primer,'teams/builder/modes/orchestrator.md');
+    if(input.routes.length&&JSON.stringify(r.workflowRoutes)!==JSON.stringify(input.routes))throw Error('selected procedural coexistence counterpart missing');
     console.log(JSON.stringify({ok:r.ok,evidenceClass:r.evidenceClass,scopedLocal:r.scopedLocal}));`;
-  const checked = spawnSync(process.execPath, ["--input-type=module", "-e", script], { input: JSON.stringify({ root: configRoot, primer }),
+  const checked = spawnSync(process.execPath, ["--input-type=module", "-e", script], { input: JSON.stringify({ root: configRoot, primer, routes: [...workflows.keys()].sort() }),
     env: { HOME: "/nonexistent", LANG: "C.UTF-8", TZ: "UTC" }, encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
   if (checked.error || checked.status !== 0 || checked.signal) throw new Error("Selected direct-only/scoped-local producer failed its source check; no legacy fallback");
   const result = JSON.parse(checked.stdout) as { ok?: boolean; evidenceClass?: string; scopedLocal?: { runtimeOwner?: string; presentation?: string; acceptance?: string; sources?: unknown[] } };
   if (result.ok !== true || result.evidenceClass !== "current-structural-and-synthetic-not-runtime-proof" || result.scopedLocal?.runtimeOwner !== "PAP-268"
     || result.scopedLocal.presentation !== "Markdown-sufficient-rich-view-optional" || result.scopedLocal.acceptance !== "paired-proof-required" || !result.scopedLocal.sources?.length) throw new Error("Direct local config checker did not prove its source-only instruction contract");
-  return validatePlanFirstRequirementsContracts(configRoot, true);
+  return validatePlanFirstRequirementsContracts(configRoot, true, workflows);
 }
 
-function validateRepositoryContracts(configRoot: string): number {
+function validateRepositoryContracts(configRoot: string, workflows: ReadonlyMap<string, WorkflowPrimerView> = new Map()): number {
   const builder = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
-  if (builder.deploy_modes?.some((mode) => mode.id === "orchestrator") && !builder.deploy_modes.some((mode) => mode.id === "implement")) return validateDirectLocalProfile(configRoot);
+  if (builder.deploy_modes?.some((mode) => mode.id === "orchestrator") && !builder.deploy_modes.some((mode) => mode.id === "implement")) return validateDirectLocalProfile(configRoot, workflows);
   const orchestratorPath = resolve(configRoot, "teams", "builder", "modes", "orchestrator.md");
   const orchestrator = readFileSync(orchestratorPath, "utf8");
   const ppaBranchContracts = [
@@ -194,7 +222,7 @@ function validateRepositoryContracts(configRoot: string): number {
     || !/PAP-215 owns plan-first Treehouse[\s\S]{0,240}must pin the exact merged PAPC-024 `develop` SHA/iu.test(runtimeNeutral)) {
     throw new Error("Paired configuration must retain the plan-first requirements/builder materialization boundary");
   }
-  return validatePlanFirstRequirementsContracts(configRoot);
+  return validatePlanFirstRequirementsContracts(configRoot, false, workflows);
 }
 
 /** Producer-owned read-only manifest; missing pairing is a rollout blocker, never inferred from template prose. */
@@ -214,8 +242,26 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     const result = spawnSync("git", ["-C", configRoot, "merge-base", "--is-ancestor", expectedSha, "origin/develop"], { stdio: "ignore" });
     if (result.status !== 0) throw new Error(`pa-platform-config ${expectedSha} is not contained in origin/develop; merge the config prerequisite first`);
   }
+  const selectedRead = (relative: string): Uint8Array | null => {
+    const path = resolve(configRoot, relative);
+    if (!existsSync(path)) return null;
+    const raw = readReviewEvidenceFile(path, 1_048_576, "paired.workflow-source");
+    const committed = execFileSync("git", ["--no-replace-objects", "--no-optional-locks", "-C", configRoot, "show", `${actualSha}:${relative}`], { env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), maxBuffer: 1_048_577, stdio: ["ignore", "pipe", "ignore"] });
+    if (workflowDigest(raw) !== workflowDigest(committed)) throw new Error("Selected workflow source differs from the pinned committed bytes");
+    return raw;
+  };
+  const requiredRead = (relative: string): Uint8Array => { const raw = selectedRead(relative); if (!raw) throw new Error("Required pinned workflow fixture is missing"); return raw; };
+  const workflowSelection = loadSelectedWorkflows({ root: () => configRoot, revision: () => git(configRoot, ["rev-parse", "HEAD"]), read: (_root, relative) => selectedRead(relative) });
+  let workflowFixtureCount: number | undefined;
+  let workflowProcedures: ReadonlyMap<string, WorkflowPrimerView> = new Map();
+  if (workflowSelection.bindings.length) {
+    const registry = requiredRead("contracts/templates-v1.json"), fixtures = requiredRead("workflows/fixtures-v1.json");
+    const paired = validateWorkflowPair(workflowSelection, { root: configRoot, configRevision: actualSha, registrySha256: workflowDigest(registry) }, fixtures, requiredRead);
+    workflowFixtureCount = paired.fixtures.length;
+    workflowProcedures = validateWorkflowProcedures(configRoot, workflowSelection, paired);
+  }
   const reviewProducerCount = options.requireReviewV1 ? validateReviewProducerFixtures(configRoot) : undefined;
-  const planFirstPrimerCount = validateRepositoryContracts(configRoot);
+  const planFirstPrimerCount = validateRepositoryContracts(configRoot, workflowProcedures);
   const builderConfig = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
   const directLocal = builderConfig.deploy_modes?.some((mode) => mode.id === "orchestrator") === true && !builderConfig.deploy_modes.some((mode) => mode.id === "implement");
   const expected = directLocal ? { modes: 52, builder: 4, requirements: 6, other: 42 } : { modes: 59, builder: 6, requirements: 11, other: 42 };
@@ -267,6 +313,8 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
 
   return [
     `CONFIG_SHA=${actualSha}`,
+    ...(workflowFixtureCount === undefined ? [] : [`JSON_WORKFLOW_STRUCTURAL_FIXTURES=${workflowFixtureCount}`, "JSON_WORKFLOW_EXECUTION_ADMITTED=false"]),
+    ...(workflowProcedures.size ? [`JSON_WORKFLOW_PROCEDURAL_ROUTES=${[...workflowProcedures.keys()].sort().join(",")}`, "JSON_WORKFLOW_PRIMER_IDENTITY=verified-structural-only"] : []),
     ...(reviewProducerCount === undefined ? [] : [`REVIEW_V1_PRODUCER_PROFILES=${reviewProducerCount}/3`]),
     "CONFIG_CLEAN=true",
     `TEAMS_VALID=${teamFiles.length}/10`,

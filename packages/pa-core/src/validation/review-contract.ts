@@ -26,6 +26,7 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const TICKET = /^(?=.{1,64}$)[A-Z][A-Z0-9]*-[0-9]+$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const COMMENT = /^c-[0-9]{17}$/;
+const MATRIX_APPROVAL = /^(?:c-[0-9]{17}|workflow-decision:[a-z][a-z0-9.-]{0,127}:[a-z][a-z0-9.-]{0,127}:[a-f0-9]{64})$/;
 const TOOL_VERSION: Record<ReviewTool, RegExp> = {
   node: /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/,
   npm: /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/,
@@ -284,7 +285,7 @@ export function parseReviewObjective(input: string | Uint8Array): ReviewObjectiv
     schemaVersion: REVIEW_OBJECTIVE_SCHEMA_VERSION, ticket, branch: branch(r.branch, `${p}.branch`, ticket),
     featureSha: str(r.featureSha, `${p}.featureSha`, SHA), matrixSource: matrixSourceAt(r.matrixSource, `${p}.matrixSource`),
     matrixAuthoritySha256: str(r.matrixAuthoritySha256, `${p}.matrixAuthoritySha256`, DIGEST),
-    matrixApprovalEvidence: str(r.matrixApprovalEvidence, `${p}.matrixApprovalEvidence`, COMMENT),
+    matrixApprovalEvidence: str(r.matrixApprovalEvidence, `${p}.matrixApprovalEvidence`, MATRIX_APPROVAL),
     reviewAuthorizationId: str(r.reviewAuthorizationId, `${p}.reviewAuthorizationId`, AUTHORIZATION), prerequisiteEvidence,
   };
 }
@@ -306,7 +307,7 @@ export function inspectReviewObjective(input: string | Uint8Array): { objective?
   check(() => str(r.featureSha, "objective.featureSha", SHA));
   check(() => matrixSourceAt(r.matrixSource, "objective.matrixSource"));
   check(() => str(r.matrixAuthoritySha256, "objective.matrixAuthoritySha256", DIGEST));
-  check(() => str(r.matrixApprovalEvidence, "objective.matrixApprovalEvidence", COMMENT));
+  check(() => str(r.matrixApprovalEvidence, "objective.matrixApprovalEvidence", MATRIX_APPROVAL));
   check(() => str(r.reviewAuthorizationId, "objective.reviewAuthorizationId", AUTHORIZATION));
   check(() => {
     const evidence = object(r.prerequisiteEvidence, "objective.prerequisiteEvidence");

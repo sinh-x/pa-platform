@@ -9,4 +9,5 @@ export * from "./repository-admission.js";
 export * from "./ticket-concurrency.js";
 export * from "./prepared-workflow.js";
 export * from "./execution-custody.js";
+export * from "./execution-restart.js";
 export * from "./rogue-one.js";

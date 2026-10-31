@@ -41,5 +41,6 @@ export * from "./skills/index.js";
 export * from "./knowledge/index.js";
 export * from "./validation/index.js";
 export * from "./validation/review-contract.js";
+export * from "./workflows/index.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";

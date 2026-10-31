@@ -65,7 +65,7 @@ export class ProjectCommandContract {
   readonly checks: readonly ProjectCheck[];
   readonly #pin: NonNullable<RepoEntry["projectCommands"]>;
   readonly #bwrap: string;
-  private constructor(readonly repoKey: string, readonly repoRoot: string, readonly worktreeRoot: string, pin: NonNullable<RepoEntry["projectCommands"]>) {
+  private constructor(readonly repoKey: string, readonly repoRoot: string, readonly worktreeRoot: string, pin: NonNullable<RepoEntry["projectCommands"]>, observational = false) {
     const rawPin = object(pin, ["manifest", "sha256"]);
     this.#pin = Object.freeze({ manifest: path(rawPin.manifest), sha256: sha(rawPin.sha256) });
     const bytes = read(worktreeRoot, this.#pin.manifest);
@@ -99,11 +99,28 @@ export class ProjectCommandContract {
         environment: Object.freeze(environment), readPaths, prerequisites: Object.freeze(prerequisites), timeoutSeconds: count(row.timeoutSeconds, 1800), maximumOutputBytes: count(row.maximumOutputBytes, 16 * 1024 * 1024) });
     }));
     if (new Set(this.checks.map((check) => check.id)).size !== this.checks.length || new Set(this.checks.map((check) => check.command)).size !== this.checks.length) throw invalid();
-    this.sha256 = workflowDigest(bytes); this.#bwrap = bubblewrap(); this.assertCurrent();
+    this.sha256 = workflowDigest(bytes); this.#bwrap = observational ? "" : bubblewrap(); this.assertCurrent();
+    if (observational) return; // no namespace/tool/project-command probe at static preflight
     // A fixed native capability probe, not a project check or guessed pass. It
     // must succeed before admitting project dispatch; raw failure is not public.
     try { execFileSync(this.#bwrap, [...this.#sandbox(), "--", installedExecutable(realpathSync(process.execPath)), "--version"], { env: {}, timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }); }
     catch { throw executionFailure("EXECUTION_PROJECT_PREREQUISITE"); }
+  }
+  static inspect(repoKey: string, repoRoot: string): { sha256: string; checks: readonly ProjectCheck[] } | null {
+    const repo = loadRepoEntry(repoKey);
+    if (!repo || repo.path !== repoRoot || realpathSync(repoRoot) !== repoRoot) throw invalid();
+    if (!repo.projectCommands) return null;
+    const observed = new ProjectCommandContract(repoKey, repoRoot, repoRoot, repo.projectCommands, true);
+    return { sha256: observed.sha256, checks: observed.checks };
+  }
+  /** Result verification only: validate the exact current command/input bytes
+   * without namespace probes or constructing a dispatch program. */
+  static inspectWorktree(repoKey: string, repoRoot: string, worktreeRoot: string): { sha256: string; checks: readonly ProjectCheck[]; inputIdentity(check: ProjectCheck): string } | null {
+    const repo = loadRepoEntry(repoKey);
+    if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();
+    if (!repo.projectCommands) return null;
+    const observed = new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands, true);
+    return { sha256: observed.sha256, checks: observed.checks, inputIdentity: check => observed.inputIdentity(check) };
   }
   static resolve(repoKey: string, repoRoot: string, worktreeRoot: string): ProjectCommandContract | null {
     const repo = loadRepoEntry(repoKey);
