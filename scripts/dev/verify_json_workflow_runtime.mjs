@@ -66,7 +66,7 @@ try {
   const actualModules = new Set(imports.map(row => row.path));
   for (const required of ["packages/pa-core/dist/workflows/service.js", "packages/pa-core/dist/deploy/execution-custody.js", "packages/pi-pa/dist/deploy.js", "packages/pi-pa/dist/workflow-resume.js", "packages/pi-pa/dist/workflow-source.js", "packages/pi-pa/dist/adapter.js"]) if (!actualModules.has(join(installed.share, required))) block("WORKFLOW_REQUIRED_INSTALLED_IMPORT_MISSING");
   passed([{ id: "isolation-accounting", status: "passed", observations: originalResources.size + Object.keys(entry.resources).length, sourceUnchanged: true, configUnchanged: true,
-    livePolicyEnabled: false, liveResourcesAllocated: false, disposableRoot: evidenceRoot }]);
+    livePolicyMutated: false, liveResourcesAllocated: false, disposableRoot: evidenceRoot }]);
   if (cases.some(row => row.status !== "passed")) block("WORKFLOW_REQUIRED_CASE_OMITTED");
   output({ schemaVersion: "pa-workflow-installed-qualification/v1", status: "passed", unsigned: true, evidenceClass: "selected-installed-disposable-not-independent-review-or-human-UAT", runtime: identity,
     selection: { ...selection, manifestSha256: originalResources.get("workflows/manifest.json"), bindings: manifest.bindings }, moduleSha256: modules, cases, tests: run.tests,
