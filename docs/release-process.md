@@ -12,7 +12,7 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
-For an explicitly approved worktree-only build label, update the same four manifests together. The PAP-271 worktree uses `0.1.153-pap271.1`, displayed by `ppa --version` and used as the Nix package version. Rebuilding/selecting the package is still required; editing source manifests does not change an existing installation.
+For an explicitly approved worktree-only build label, update the same four manifests together. The PAP-271 operator-selected development build used `0.1.153-pap271.1`, displayed by `ppa --version` and used as the Nix package version. Its integration candidate restores the plain `develop` version for the normal auto-patch flow; the installed development build retains its readable label. Rebuilding/selecting the package is still required; editing source manifests does not change an existing installation.
 
 This prerelease suffix is an operator-readable label, not a release, tag, activation approval, or replacement for exact source/module provenance required by qualification. Do not run the manual release script to set it. Reconcile the worktree-only version before integration into the normal `develop` auto-patch flow. No lockfile or Nix dependency-hash refresh is needed for a version-only change.
 
