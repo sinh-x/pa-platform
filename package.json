@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "corepack pnpm -r build",
-    "test": "node --test scripts/dev/run_code_tests.test.mjs scripts/dev/verify_template_contracts.test.mjs && corepack pnpm -r --workspace-concurrency=1 test",
-    "test:code": "node --test scripts/dev/run_code_tests.test.mjs scripts/dev/verify_template_contracts.test.mjs && corepack pnpm --filter @pa-platform/pa-core test:code && corepack pnpm --filter @pa-platform/opencode-pa test && corepack pnpm --filter @pa-platform/pi-pa test:code && corepack pnpm --filter @pa-platform/runtime-host test",
+    "test": "node --test scripts/dev/run_code_tests.test.mjs scripts/dev/verify_template_contracts.test.mjs scripts/dev/verify_json_workflow_runtime.test.mjs && corepack pnpm -r --workspace-concurrency=1 test",
+    "test:code": "node --test scripts/dev/run_code_tests.test.mjs scripts/dev/verify_template_contracts.test.mjs scripts/dev/verify_json_workflow_runtime.test.mjs && corepack pnpm --filter @pa-platform/pa-core test:code && corepack pnpm --filter @pa-platform/opencode-pa test && corepack pnpm --filter @pa-platform/pi-pa test:code && corepack pnpm --filter @pa-platform/runtime-host test",
     "test:coverage": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm --filter @pa-platform/pi-pa validate:sources && corepack pnpm --filter @pa-platform/pi-pa bundle:extensions && corepack pnpm -r --filter '!@pa-platform/pi-pa' exec node --experimental-test-coverage --import=tsx --test \"src/**/*.test.ts\" && corepack pnpm --filter @pa-platform/pi-pa exec node --experimental-test-coverage --import=tsx --test \"scripts/**/*.test.mjs\" && PI_PA_PLUGIN_SELECTION='{\"pi-vimmode\":true,\"proper-base\":true}' corepack pnpm --filter @pa-platform/pi-pa bundle:extensions && corepack pnpm --filter @pa-platform/pi-pa exec node --experimental-test-coverage --import=tsx --test \"src/**/*.test.ts\" && corepack pnpm --filter @pa-platform/pi-pa bundle:extensions",
     "test:paired": "bash scripts/dev/test_paired_repository.sh",
     "test:paired-gate": "tsx --test scripts/dev/validate_paired_repository.test.mts scripts/dev/verify_workflow_source_pair.test.mts",

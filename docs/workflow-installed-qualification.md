@@ -1,66 +1,68 @@
-# PAP-271 installed qualification — implementation prerequisites
+# PAP-271 installed workflow qualification
 
-Status: **verifier not implemented; qualification blocked**. This is a continuation inventory, not a report, readiness receipt, substitute command or amendment of the approved matrix.
+Status: **verifier source implemented; actual selected-installed qualification NOT RUN/PASSED**. No installation, policy enablement, independent review, CI, human approval or UAT is implied by this source delivery.
 
-Latest source continuation (`e9e1b69`, `6c41e5a`) delivers DEFAULT FOREGROUND structured resume admission: retained selection without new allocation/materialization, durable pre-runtime reservation, effect-bound current Treehouse proof and a PID-preserving inert exec gate before source tools. Its default-launcher integration case crosses an actual predecessor exit with a retained real check failure, repairs it and completes two native source phases under one package. Provider/Treehouse/dialogs are fixtures; actual OS gate exclusion is separately tested. Background/force structured resume explicitly reject before effects. This delivers the initial foreground source path, NOT installed/native-provider qualification or human UAT. The installed verifier remains UNIMPLEMENTED and is the next source deliverable; do not install as an activation shortcut.
-
-The required command remains:
+## Exact approved command
 
 ```sh
 node scripts/dev/verify_json_workflow_runtime.mjs --selected-installed \
   --require-candidate "$PA_FEATURE_SHA" --require-paired-config
 ```
 
-Do not replace it with `verify_workflow_source_pair.mts`, a template-only verifier, a successful HTML build, a source-test run, or a script that reports success after checking prerequisites alone.
+Only that ordered four-argument contract is accepted. The candidate must be a full lower-case 40-hex commit. There is no binary/module/config/source-root/result-file/skip override, `HEAD` substitution, source-mode fallback, passing prerequisite-only stub or caller-supplied result import.
 
-## Observed blockers in d-502d03
+## Prerequisites and identity
 
-Read-only inspection of the selected PATH binary resolved to:
+Run from the exact clean candidate checkout with its cached lockfile-compatible build/development dependencies already available. The selected PATH `ppa` must physically resolve into its immutable Nix package. `review-runtime-provenance.json` must name the EXACT candidate/config/package identity; `unversioned-dirty-source`, dirty source, wrong SHA or arbitrary executable substitutes block before disposable case execution. The caller's Node ABI needs the candidate's matching native registry addon. The verifier installs/downloads nothing.
 
-`/nix/store/h3ldz8n8bbz4ack47iyl71d9icy84pbd-pa-platform-0.1.153/bin/ppa`
+The actual selected physical PAPC home/teams, HEAD, runtime-owned config/registry pins, committed manifest/definitions/producers/fresh-and-amendment fixtures and consumed instruction bytes must agree. The complete non-test implementation module inventory for pa-core/Pi/OpenCode/runtime-host is compared byte-for-byte against the candidate build, including package metadata and actual registry addon identities. Installed Pi's pa-core dependency must resolve to that same closure, not a workspace copy. These are observations, not approvals.
 
-Its `share/pa-platform/review-runtime-provenance.json` reports `sourceSha: unversioned-dirty-source`, package version `0.1.153`, and config SHA `d4855185cecc3cb26af5d3ceec2133bc0297455f`. It cannot satisfy exact candidate provenance for this feature. This is only a filesystem observation of that installation, not an installed workflow test or a statement about all installations. No package was installed or selection changed.
+Source/config HEAD, cleanliness, pins, resources, selected binary/provenance and implementation bytes are reread after all cases. Final enabled-pair qualification must use that actual final selected revision; a disabled predecessor's pass cannot certify enablement.
 
-Continuation source checkpoints `685f58b` and `8a06796` now supply the durable journal barrier and real native-fact/retained owner transfer operations. Resource order is repository → capacity → final journal settlement under both existing locks; no capacity-first transfer is permitted. Their real subprocess/Git/registry/owner tests are still not default CLI/installed restart qualification. Default Pi launcher/bootstrap integration, current Treehouse lease authentication and resumed operation-actor proof remain missing.
+## Execution model: pinned drivers, installed implementations
 
-Historical `4ba2268` alone was only a journal foundation; later source checkpoints now deliver the bounded foreground launcher/owner/actor/session path. An installed verifier must still exercise the ACTUAL candidate-installed public CLI/native/provider path; the source fixtures do not satisfy that case. Its missing executable drivers and complete case accounting are still implementation gaps, not merely external packaging permissions.
+The private disposable harness copies only exact committed test/fixture CODE/DATA. TypeScript transpiles those drivers, not product implementations. Every implementation path (including child `.ts`/compiled-path imports) is a one-line bridge to the verified installed module. Actual `@pa-platform` dependencies resolve into that package. Cached tsx/TypeScript are harness dependencies, never installers.
 
-The real disabled PAPC source at `d4855185cecc3cb26af5d3ceec2133bc0297455f` supplies paired fixtures, but enabled shortened-procedure qualification also needs the companion coexistence checker/instruction update described in `papc-070-source-handoff.md`. Bindings remain disabled. No source/config pin or signed artifact is changed by this inventory.
+A native Node import audit rejects product source fallback, changed bridges, changed implementation bytes and missing required installed imports, including subprocess/worker imports. The final report records the installed import/module digests and the private driver identity artifact. Existing core/Pi cases exercise actual registry CAS, publication/queue, retained custody/resource handoffs, confined source checks/local commits, failed checks, two phases, foreground restart, validation/review claims/ledgers/seals and adversarial recovery. Exact native test events and final Node summaries are required; failed, omitted, skipped, cancelled, summaryless or forged-summary cases block.
 
-## Implementation order
+A separate child exercises the ACTUAL selected public `ppa workflow`/`decision`/`template` CLI and default native read/template tools, not injected public read callbacks. It creates a clearly synthetic private issued-state fixture for positive status/decision reads, validates both selected handoff producers and generates a selected pinned primer. Native mutation override negatives do not display real approval dialogs.
 
-1. Qualify the delivered FOREGROUND restart path through the actual candidate-installed CLI/Pi/native hosts. Keep the original immutable descriptor and deadline, exact predecessor death/terminal registry, live successor chain/checkout/lease/slot proof and unknown-operation barriers. Missing, background or force continuation must reject, never invoke fresh allocation/materialization as a fallback. Wider background/prepared support is not silently advertised.
-2. The per-operation evidence reader is now delivered (`readExecutionOperations` / `readPiSourceOperation`): it authenticates each exact begin/finish actor, intent and result without latest-holder substitution. Qualify it across an ACTUAL default-launched restart once the missing launcher is delivered. Old results and launch identity remain immutable; a later restart cannot retroactively issue an operation.
-3. Extract reusable disposable owner-case drivers that can import the EXACT installed modules and exercise actual default public hosts. The current test-only injected host is not a production restart producer. Do not run source modules linked through workspace `@pa-platform` resolution and label them installed.
-4. Implement the exact matrix verifier CLI with strict arguments, mandatory case accounting and bounded JSON diagnostics. Validate the complete case inventory before reporting success. Absent support, skipped/cancelled cases, missing proof or provenance mismatch must exit nonzero.
-5. With separately supported candidate packaging/selection, run the unchanged command on the exact candidate and coherent selected config. Independent review/full matrix, CI, actual human UAT and authorized PAPC adoption remain separate gates.
+The private environment selects disposable HOME/config/AI/registry/Git resources. Existing native owners/command confinement remain authoritative; this is not an OS sandbox. No live configuration is enabled or rewritten, no live slot/checkout is allocated and no provider/worker is launched by the verifier. Native principal/dialog, original admission/provider and Treehouse seams in the reusable cases remain explicitly labelled fixtures. Actual real-provider/foreground-human UAT is separate.
 
-## Mandatory installed case inventory
+## Mandatory case inventory
 
-These are required implementation targets, **not executed installed results**:
+Every ID is required. The first/final identity/unchanged-state checks and installed public-entry drivers combine with exact pinned native-test anchors in `workflow_installed_support.mjs`:
 
-| Case ID | Required observation |
-| --- | --- |
-| installed-identity | Resolve physical PATH `ppa`, package/module roots, package/source/config/registry provenance; exact 40-hex candidate and clean source; committed selected resources; source-built/installed module digest agreement. Reject unversioned, stale, dirty, aliased or substituted inputs. |
-| installed-entry-points | Actual public CLI and default native workflow/decision/template hosts agree on list/show/validate/preflight/status/next. No arbitrary module/actor/outcome/permission/result override. |
-| paired-handoffs | Both committed fresh and amendment fixtures for every declared binding use the SAME selected template registry and actual review-bundle parser; authenticate artifact and raw matrix identities. |
-| selected-procedure | Actual generated pinned primer and enabled route coexistence checks; unselected and non-Pi legacy contracts remain effective. Live config is never enabled by the verifier. |
-| static-zero-effects | Missing observable project profile/operation/producer support rejects before slot, permit, checkout, registry/ticket/source effects or command probes. |
-| structured-decision | Labelled synthetic foreground outcomes use the real capture/service path, exact principal/subject/revision rereads and registry persistence; reject stale dialogs, caller-supplied actors/outcomes, unissued/foreign/rejected authority. Not real human approval. |
-| package-effects | One package permission set covers paired publication, queue and admitted scoped phases/checks/repair/local commits. No remote/risky effect, separate unchanged-facts approval or legacy paragraph fallback. |
-| publication-interruption | Inject before/after each member/ref/primary/queue effect; recover only the same intent. Preserve exact existing historical bytes/metadata; unknown/conflicting persistence remains blocked. |
-| amendment | Explicit linked subject chain and fresh native decision; exact predecessor-only primary promotion and implementing-queue reuse. Old launch/scope/review pins deny new work. |
-| native-two-phases | Actual admitted native source path across two exact intent-bound phases; real confined commands and local commits, fresh input checks per phase, native process/output proof. Source checks never count as independent full matrix. |
-| native-restart | Real process/deployment handoff through default native admission, not service recreation or coordinator resume. Same descriptor/lineage/slot/permit/checkout, sole holder, original deadline, replacement/review/no-progress counters, failures and used operation IDs. Test both quiescent and unresolved-operation cases. |
-| restart-interruption | Fault both sides of capacity/repository/journal handoff publication; actual multi-process contenders cannot obtain a second holder/permit. Stale/PID-recycled/live/nonterminal/foreign predecessors reject. Unknown work is not finished or retried from quiet logs. |
-| native-matrix | Real protected review owner, one-use claim, durable attempt accounting, exact candidate/raw matrix/commands/environment/input/streams and native result seal. Test known failure, missing seal, process-group cleanup and changed evidence. |
-| revocation | Named immutable decision revocation denies dependent new effects while proven completion can settle under the SAME intent. Status/reporting remain available; no resource return, counter reset or fake completion. |
-| actual-cas | Registry-backed 32-connection expected-revision races accept at most one successor. Resource handoff contention also exercises its actual capacity/worktree owners; a synthetic lock callback is insufficient. |
-| tamper-no-fallback | Restart/reload/module loss, forged JSON/session tasks, missing/corrupt output, changed subject/candidate/input/environment/config and permission summaries cannot mint or inherit authority; adopted v1 never falls back to prose. |
-| isolation-accounting | Disposable homes/repos/registry/resources only; snapshot live source/config/pins/selection before/after; no provider/worker/network launch or live allocation/enablement. All required cases execute with zero failures/skips/cancellations. |
+1. `installed-identity`: physical package/binary, exact source/config/registry, module/package/addon provenance.
+2. `installed-entry-points`: default public CLI/native list/show/validate/preflight/status/next/decision/template agreement and override rejection.
+3. `paired-handoffs`: actual shared producer/parser, exact artifact/raw-matrix bytes, fresh AND amendment for every declared binding.
+4. `selected-procedure`: installed pinned-primer identity from actual selected instructions and typed fixtures. Full policy/legacy coexistence adoption remains independently paired-matrix/human acceptance, not a new verifier approval.
+5. `static-zero-effects`: independent compatibility defects reject without effects/probes.
+6. `structured-decision`: synthetic native capture, exact subject/permissions/rereads, stale/forged authority rejection.
+7. `package-effects`: one package, publication/queue/scoped work through real owners, no legacy fallback or new approval prompts.
+8. `publication-interruption`: same-intent absent-only effects, conflicts/symlinks/foreign primary retained.
+9. `amendment`: explicit predecessor-only promotion/queue reuse; old scope/launch/review pins denied.
+10. `native-two-phases`: actual confined checks/local commits with fresh input/provenance per phase.
+11. `native-restart`: actual predecessor exit, retained failure/repair, foreground default-launcher admission, same bounds/lineage/resources/operation history and two phases; unknown work stays blocked.
+12. `restart-interruption`: retained resource publication faults, real multi-process contention and exact retry; no duplicate permit/holder.
+13. `native-matrix`: real native executor/review claim/attempt/ledger/streams/result seal and known-failure/missing-seal negatives.
+14. `revocation`: no dependent new effect, completed proven same-intent settlement preserved.
+15. `actual-cas`: actual 32-connection registry contention and retained linked subjects.
+16. `tamper-no-fallback`: unissued/foreign/unfinished/reused result and missing adopted authority reject.
+17. `isolation-accounting`: exact source/config/selection/imports unchanged, private native event accounting and complete mandatory inventory.
 
-## Output and trust
+Initial supported restart scope is FOREGROUND structured direct custody. Force/background structured continuation explicitly rejects before effects; optional prepared/other-adapter continuation is not silently widened. A missing capability cannot be skipped to obtain success.
 
-The future report must identify exact physical installed package/module/binary identities and digests, candidate/source/config/registry pins, case IDs and real outcomes, subprocess exits/timeouts/cancellations, disposable scope and unchanged-live-state observations. Result flags are observations, not native authority. Include explicit limitations: synthetic capture is not human approval/UAT, installation is not enablement, and installed qualification is not independent review/CI or permission to merge/activate.
+## Output, failures and retained evidence
 
-No caller-provided `passed` flags, report path, historical source report, task state or template receipt may satisfy a required case. Preserve failed invocations rather than replacing them with a later success narrative. Missing prerequisites block their dependent operation, not already authorized unrelated source work.
+One bounded unsigned `pa-workflow-installed-qualification/v1` JSON document is emitted. `status: passed` requires every mandatory ID and actual case runner to succeed; otherwise exit is nonzero with `status: blocked`, bounded five-field diagnostics and explicit not-run cases. No path/check/outcome/`passed` input is accepted as authority.
+
+The report names physical installed roots/binary/source/config/module/addon digests, exact selected bindings, driver/bridge/import/test-event digests, case inventory/counts and limitations. Private evidence remains under a native-created external temporary directory: driver identity, public CLI/native results, import audit, original test-event/failure/stderr artifacts. Failure/timeout artifacts are retained, never rewritten as a success narrative; uncertain process/resource cleanup is not certified by a failed report. Full logs are private mode0600. Rerun only after the named owning prerequisite is reconciled.
+
+## Observed development checks, not installed acceptance
+
+The public verifier's parser/accounting/identity/audit negatives have source regression tests wired into the existing root test commands. An internal local-BUILT bridge run (NOT the public selected-installed route) executed241 core/Pi cases with zero failures/skips/cancellations, including real OS/CAS/owner/restart/matrix cases. An import-audited repeat also passed241 cases; the public-entry driver against the local built CLI/default native hosts passed13 parity/negative observations, both actual selected disabled handoff fixtures and pinned-primer checks. These establish driver implementation behavior, NOT a candidate-installed pass. There is no public source override for these internal regressions.
+
+The installed package observed in d-502d03 was `/nix/store/h3ldz8n8bbz4ack47iyl71d9icy84pbd-pa-platform-0.1.153`; its provenance said `unversioned-dirty-source`. It cannot satisfy the current exact feature candidate. A later separately supported exact Git-candidate build/selection is required before the actual installed command can pass. This document does not authorize installing it.
+
+After both runtime/config source contracts are reconciled, perform actual exact candidate packaging/selection and this installed verification, then independent approved full matrix/review, exact CI, genuine human UAT, explicit final-pair adoption, enabled-revision qualification and authorized canary/rollback. PAPC-072 owns its approvals/content/rollout; no circular terminal-ticket dependency or automatic ticket completion is introduced.
