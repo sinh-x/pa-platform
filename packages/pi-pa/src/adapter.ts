@@ -14,6 +14,7 @@ import { axiRuntimeEnvironment } from "./axi-policy.js";
 import { browserLifecycleEnvironment, cleanupManagedBrowser } from "./axi-browser.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
+import { createRuntimeStartGate } from "./runtime-start-gate.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
@@ -293,6 +294,7 @@ export class PiAdapter implements RuntimeAdapter {
       audit.observe("adapter-diagnostic", message, secrets);
       return failure(message);
     }
+    if (opts.beforeRuntimeStart && (this.runCommand || !interactive)) return failure("native runtime-start gate requires the foreground production adapter");
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
       : interactive
@@ -1125,7 +1127,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
-  const pty = (supervision.spawnPty ?? spawnPty)("pi", args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env });
+  const gate = opts.beforeRuntimeStart ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
+  const pty = (supervision.spawnPty ?? spawnPty)(gate?.file ?? "pi", gate?.args ?? args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env: gate?.env ?? env });
   const input = supervision.input ?? process.stdin;
   const output = supervision.output ?? process.stdout;
   const outputPath = resolve(deployDir, "pi-output.jsonl");
@@ -1339,6 +1342,10 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
       recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), pty.pid);
       opts.onPid?.(pty.pid);
+      if (opts.beforeRuntimeStart) {
+        if (opts.beforeRuntimeStart(pty.pid) !== undefined) throw new Error("native runtime-start admission must be synchronous");
+        gate!.release();
+      }
       if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
       void monitorProcessExit();
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }

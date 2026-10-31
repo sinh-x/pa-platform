@@ -105,6 +105,8 @@ export interface PiValidationSupervisorOptions<T> {
   /** Phase 3 supplies the trusted session's fresh observation/authority revalidation. */
   revalidateNixosPrerequisites?: (launch: PiProtectedValidationLaunch, execute: () => Promise<ValidationExecutionResult>) => Promise<ValidationExecutionResult>;
   beforeReviewer?: (launch: PiProtectedValidationLaunch) => void;
+  /** Trusted native result capture after terminal ledger verification, before reviewer startup. */
+  afterMatrix?: (launch: PiProtectedValidationLaunch) => void | Promise<void>;
   /** Normal executor return with no unresolved process cleanup; independent of reviewer startup. */
   onMatrixTerminationVerified?: () => void;
   execute?: typeof executeValidationHandoff;
@@ -148,6 +150,7 @@ export async function runPiValidationBeforeReviewer<T>(
 
   const executorOptions: ValidationExecutorOptions = {
     authority: launch.authority,
+    requireProcessGroupSettlement: launch.review.matrixApprovalEvidence.startsWith("workflow-decision:"),
     evidenceRoot: options.evidenceRoot,
     ledgerPath: options.ledgerPath,
     ...(options.statePath ? { statePath: options.statePath } : {}),
@@ -207,6 +210,7 @@ export async function runPiValidationBeforeReviewer<T>(
       && command.status !== "cleanup_failure" && command.processGroupVerifiedDead !== false)) options.onMatrixTerminationVerified?.();
   const ledger = (await recover(launch.validationHandoff, executorOptions)).ledger;
   const reviewerContext = reviewerContextFor(launch.review, ledger, options.evidenceRoot, options.ledgerPath);
+  await options.afterMatrix?.(launch);
   options.beforeReviewer?.(launch);
   const reviewerResult = await options.startReviewer(reviewerContext);
   return { admitted: true, reviewerStarted: true, validation: { ...validation, ledger, ledgerPath: options.ledgerPath }, reviewerContext, reviewerResult };

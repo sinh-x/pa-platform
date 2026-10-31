@@ -3,7 +3,7 @@ import {
   getAiUsageDir, getTicketsDir, loadReposYaml, MAX_REVIEW_ARTIFACT_BYTES, MAX_REVIEW_OBJECTIVE_BYTES, isCanonicalTicketId, assertNoSensitiveMatch,
   parseReviewEvidenceJson, inspectReviewObjective, parseReviewReadinessBinding,
   readReviewEvidenceFile, readReviewMatrixArtifact, ReviewContractError,
-  formatReviewContractDiagnostic, type ReviewObjective, type ReviewMatrixArtifact,
+  formatReviewContractDiagnostic, structuredReviewArtifact, type ReviewObjective, type ReviewMatrixArtifact,
   type ReviewReadinessBinding, type Ticket, type ValidationDiagnostic,
 } from "@pa-platform/pa-core";
 
@@ -20,6 +20,7 @@ export interface ReviewPreflightDependencies {
   aiUsageRoot: string;
   readTicket: (ticket: string) => Ticket;
   repositories: () => Record<string, { path: string }>;
+  structuredArtifact?: typeof structuredReviewArtifact;
 }
 export interface ReviewStaticEvidence {
   report: ReviewPreflightReport;
@@ -30,7 +31,7 @@ export interface ReviewStaticEvidence {
 }
 export function reviewPreflightDependencies(): ReviewPreflightDependencies {
   return {
-    aiUsageRoot: getAiUsageDir(), repositories: loadReposYaml,
+    aiUsageRoot: getAiUsageDir(), repositories: loadReposYaml, structuredArtifact: structuredReviewArtifact,
     readTicket: (ticket) => {
       if (!isCanonicalTicketId(ticket)) throw new ReviewContractError("REVIEW_FIELD", "ticket", "requires an exact canonical ticket ID");
       const bytes = readReviewEvidenceFile(resolve(getTicketsDir(), `${ticket}.json`), MAX_REVIEW_ARTIFACT_BYTES, "ticket");
@@ -69,6 +70,7 @@ export function inspectReviewPreflight(input: { ticket: string; objective: strin
   let objective: ReviewObjective | undefined;
   let artifact: ReviewMatrixArtifact | undefined;
   let ticket: Ticket | undefined;
+  let structuredAuthority = false;
   const inputSize = typeof input.objective === "string" ? Buffer.byteLength(input.objective, "utf8") : input.objective.byteLength;
   check("objective.sensitiveInput", inputSize <= MAX_REVIEW_OBJECTIVE_BYTES ? () => {
     try { assertNoSensitiveMatch("content", typeof input.objective === "string" ? input.objective : Buffer.from(input.objective).toString("utf8")); }
@@ -87,7 +89,14 @@ export function inspectReviewPreflight(input: { ticket: string; objective: strin
   check("ticket.evidence", () => { ticket = dependencies.readTicket(input.ticket); });
   check("objective.ticket", objective ? () => equal(objective!.ticket, input.ticket, "objective.ticket") : undefined);
   const sensitiveObjective = report.diagnostics.some((d) => d.code === "REVIEW_SENSITIVE");
-  check("artifact.schema", objective && !sensitiveObjective ? () => { artifact = readReviewMatrixArtifact(dependencies.aiUsageRoot, objective!.matrixSource); } : undefined);
+  check("artifact.schema", objective && ticket && !sensitiveObjective ? () => {
+    const structured = dependencies.structuredArtifact?.(ticket!.project, ticket!.id, objective!.matrixSource, objective!.matrixApprovalEvidence);
+    if (structured) { artifact = structured; structuredAuthority = true; }
+    else {
+      if (ticket!.doc_refs.some(ref => ref.type === "workflow") || objective!.matrixApprovalEvidence.startsWith("workflow-decision:")) throw new ReviewContractError("REVIEW_BINDING", "structured-approval", "adopted structured authority is absent; no legacy fallback");
+      artifact = readReviewMatrixArtifact(dependencies.aiUsageRoot, objective!.matrixSource);
+    }
+  } : undefined);
   const o = objective; const a = artifact; const t = ticket;
   check("artifact.sensitiveInput", a ? () => {
     try {
@@ -133,6 +142,7 @@ export function inspectReviewPreflight(input: { ticket: string; objective: strin
   if (!pairs.length) check("authority.agreement");
   for (const [id, actual, expected] of pairs) check(id, () => equal(actual, expected, id));
   check("matrix.approval", o && a && t ? () => {
+    if (structuredAuthority) return; // already verified against native issued/revoked registry state above
     const approvals = t.comments.filter((comment) => comment.id === o.matrixApprovalEvidence);
     equal(approvals.length, 1, "approval.commentId");
     const approval = approvals[0]!;

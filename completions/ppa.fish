@@ -610,3 +610,12 @@ complete -c ppa -n __fish_use_subcommand -a template -d 'Selected canonical temp
 complete -c ppa -n '__fish_seen_subcommand_from template; and not __fish_seen_subcommand_from list show render validate' -a 'list show render validate'
 complete -c ppa -n '__fish_seen_subcommand_from template' -l version -r -d 'Exact selected template revision'
 complete -c ppa -n '__fish_seen_subcommand_from template' -l format -r -a 'json markdown'
+
+# Pi-only JSON workflow reads; decisions are written only by authenticated native dialogs
+complete -c ppa -n __fish_use_subcommand -a 'workflow decision' -d 'Structured workflow read surfaces'
+complete -c ppa -n '__fish_seen_subcommand_from workflow; and not __fish_seen_subcommand_from list show validate preflight status next' -a 'list show validate preflight status next'
+complete -c ppa -n '__fish_seen_subcommand_from decision; and not __fish_seen_subcommand_from show verify' -a 'show verify'
+complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l ticket -r -d 'Exact ticket ID'
+complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l id -r -d 'Exact workflow or decision ID'
+complete -c ppa -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate' -l definition-file -r -d 'Bounded local JSON for static inspection only'
+complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l json -d 'Stable JSON projection'

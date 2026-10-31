@@ -12,6 +12,7 @@ import { loadRepoEntry, MAX_REPOSITORY_DIAGNOSTIC_CHARS, resolveRepoExecutionPat
 import { requireTicketLinkedBranch } from "./git-validation.js";
 import { TicketStore } from "./store.js";
 import type { LinkedBranch } from "./types.js";
+import type { StructuredTaskBaseline } from "../workflows/consumers.js";
 
 export interface MaterializeTicketBranchOptions {
   canonicalRepoKey: string;
@@ -25,7 +26,10 @@ export interface MaterializeTicketBranchOptions {
   approvedPreparationBaseSha?: string;
   /** Native ordinary launcher only. Reauthenticated against durable task/sign-off
    * evidence inside the transaction; never an agent/environment SHA override. */
-  intendedTaskBaseline?: OrdinaryTaskBaseline;
+  intendedTaskBaseline?: OrdinaryTaskBaseline | StructuredTaskBaseline;
+  /** Trusted structured consumer adapter; rereads registry authority inside the existing owner transaction.
+   * No public JSON/CLI callback, SHA override or implicit legacy translation. */
+  rereadStructuredTaskBaseline?: () => StructuredTaskBaseline;
   /** Existing live launcher capacity owner, never supplied by tool/CLI JSON. */
   ordinaryOwner?: RepositoryTicketSlotHandoff & { deploymentId: string };
   /** Live existing repository owner; avoids recursive mutex acquisition during preparation. */
@@ -407,8 +411,15 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
     }
 
     if (ordinary) {
-      const current = resolveOrdinaryTaskBaseline(options);
-      if (JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");
+      const current = ordinary.schemaVersion === "structured-task-baseline/v1"
+        ? options.rereadStructuredTaskBaseline?.()
+        : resolveOrdinaryTaskBaseline(options);
+      if (!current || JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");
+      if (ordinary.schemaVersion === "structured-task-baseline/v1" && ordinary.handoff.type === "amendment") {
+        if (currentLinked.state !== "materialized" || currentLinked.headSha !== ordinary.handoff.featureSha
+          || currentLinked.baseSha !== ordinary.handoff.baseSha || symbolicBranch(runGit, worktreeRoot) !== ordinary.branch
+          || fullCommit(runGit, worktreeRoot, "HEAD^{commit}", "amendment feature") !== ordinary.handoff.featureSha) throw ordinaryBaselineError("CHANGED");
+      }
       if (gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], worktreeRoot)).length) throw ordinaryBaselineError("CHECKOUT_DIRTY");
       const gitDir = gitText(runGit(["rev-parse", "--absolute-git-dir"], worktreeRoot)).trim();
       let authority;

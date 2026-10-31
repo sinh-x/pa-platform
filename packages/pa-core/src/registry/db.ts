@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -190,6 +190,26 @@ function migrate(db: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_review_claim_active_ticket_branch
       ON review_authorization_claims(ticket_id, branch) WHERE active = 1;
+    CREATE TABLE IF NOT EXISTS workflow_snapshots (
+      sha256 TEXT PRIMARY KEY,
+      raw BLOB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workflow_events (
+      run_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 1),
+      predecessor TEXT,
+      sha256 TEXT NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (run_id, revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS workflow_events_no_update BEFORE UPDATE ON workflow_events
+      BEGIN SELECT RAISE(ABORT, 'workflow events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS workflow_events_no_delete BEFORE DELETE ON workflow_events
+      BEGIN SELECT RAISE(ABORT, 'workflow events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS workflow_snapshots_no_update BEFORE UPDATE ON workflow_snapshots
+      BEGIN SELECT RAISE(ABORT, 'workflow snapshots are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS workflow_snapshots_no_delete BEFORE DELETE ON workflow_snapshots
+      BEGIN SELECT RAISE(ABORT, 'workflow snapshots are immutable'); END;
     CREATE TABLE IF NOT EXISTS evaluator_ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       target_deployment_id TEXT NOT NULL,

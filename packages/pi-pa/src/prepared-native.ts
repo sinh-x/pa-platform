@@ -8,7 +8,7 @@ import {
   parsePreparationContract, parseReviewMatrix, parseReviewEvidenceJson, parseSourceVersion, parseExecutionCustody, preparationIdentity, ProtectedWorkflowStore,
   readNativePreparationRetry, readReviewEvidenceFile, requireTicketLinkedBranch, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   workflowDigest, workflowError, workflowObject, workflowPath, workflowSha, workflowText, workflowTimestamp, loadRepoEntry,
-  readProcessFingerprint, TicketStore, type PreparedReceipt, type PreparationContract, type SourceVersion, type Ticket, type ProcessFingerprint,
+  readProcessFingerprint, TicketStore, JsonWorkflowError, adoptedWorkflow, withExistingWorkflowJournal, type PreparedReceipt, type PreparationContract, type SourceVersion, type Ticket, type ProcessFingerprint,
 } from "@pa-platform/pa-core";
 import type { PiPreparationCaller } from "./pi-extension/prepared-workflow.js";
 
@@ -282,6 +282,8 @@ export class PiPreparedNativeAuthority {
   }
   promoted(caller: PiPreparationCaller, reference: string, grantId: string): PreparationContract {
     const ticket = this.#ticket(caller.ticket);
+    const adopted = withExistingWorkflowJournal(journal => journal ? adoptedWorkflow(journal, caller.repoKey, caller.ticket) : null);
+    if (adopted || ticket.doc_refs.some(ref => ref.type === "workflow")) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", "optional-preparation-structured-route", "preparation-owner");
     if (!ticket.doc_refs.some((ref) => ref.type === "requirements" && `requirements:${ref.path}` === reference)) throw workflowError();
     const req = readSource(sourcePath(this.aiUsageRoot, reference, "requirements")); const markdown = new TextDecoder("utf-8", { fatal: true }).decode(req);
     const revision = header(markdown, "Review Revision");

@@ -51,6 +51,12 @@ export class TicketStore {
     });
   }
 
+  /** Trusted service adapter seam. Serializes paired publication/queue with ALL ordinary ticket writers.
+   * Holding this mutex conveys no authority; the adapter must reauthenticate inside it. */
+  withWorkflowTransaction<T>(operation: () => T): T {
+    return this.withTransaction(operation);
+  }
+
   create(input: CreateTicketInput, actor = "pa-core"): Ticket {
     const { key, prefix } = resolveProject(input.project);
     return this.withTransaction(() => {

@@ -3,15 +3,18 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand } from "@pa-platform/pa-core";
+import { runCoreCommand, runWorkflowCommand } from "@pa-platform/pa-core";
 import { createDefaultPiHooks } from "./deploy.js";
 import { removePi, setupPi, statusPi } from "./setup.js";
 import { PiAdapter } from "./adapter.js";
 import { probePiNativeRegistryAddon, runPiManagedToolSmoke } from "./native-host.js";
 import { runReviewPreflightCommand } from "./review-preflight.js";
+import { piWorkflowReadHost } from "./workflow-host.js";
 import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./child-reconciliation.js";
 
-if (process.argv[2] === "template") {
+if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
+  process.exitCode = runWorkflowCommand(process.argv[2], process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) }, piWorkflowReadHost());
+} else if (process.argv[2] === "template") {
   // Template --version selects a resource revision, not the global PPA version.
   // This read-only route must not construct deployment hooks or workflow stores.
   process.exitCode = await runCoreCommand(process.argv.slice(2), { binaryName: "ppa" });
@@ -40,7 +43,7 @@ if (process.argv[2] === "template") {
   ).then(() => 0).catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); return 1; });
 } else {
 process.exitCode = await runCoreCommand(process.argv.slice(2), { hooks: createDefaultPiHooks(), binaryName: "ppa" });
-if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write(`\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n${CHILD_RECONCILIATION_USAGE}\n`);
+if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write(`\nPi-only: workflow list|show|validate|preflight|status|next; decision show|verify (read-only).\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n${CHILD_RECONCILIATION_USAGE}\n`);
 }
 
 function runTeardownSmoke(args: string[]): void {

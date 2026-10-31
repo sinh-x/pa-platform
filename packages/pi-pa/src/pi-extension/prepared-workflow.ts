@@ -8,7 +8,7 @@ import {
   requireTicketLinkedBranch, TicketStore, withPreparedTicketCapacity, withVacantPreparationWorktree,
   PA_PI_EXECUTION_MODE_ENV, parsePreparationContract, parsePreparedReceipt, preparationIdentity,
   processIsWithinFingerprintLineage, publishNativePreparationRetry, queryDeploymentStatus,
-  readProcessFingerprint, resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest,
+  readProcessFingerprint, resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest, parseReviewEvidenceJson,
   executionFailure, executionWorkflowError, workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
   type ExecutionHolder, type ExecutionState, type ExecutionCommand, type ExecutionOperationKind, type ExecutionFailure,
   type ExecutionRecovery, type ExecutionRecoveryInventory, type PhaseReport, type PhaseReportReceipt,
@@ -585,6 +585,13 @@ function executionToolName(call: PiToolCall): string {
   return name.startsWith("functions.") ? name.slice("functions.".length) : name;
 }
 function readOnlyExecutionCall(name: string, input: Record<string, unknown>): boolean {
+  if (name === "pa_workflow" || name === "pa_decision") {
+    if (Object.keys(input).length !== 1 || typeof input.request !== "string" || Buffer.byteLength(input.request) > 65_536) return false;
+    try {
+      const r = parseReviewEvidenceJson(Buffer.from(input.request), "workflow.read-tool") as { action?: unknown };
+      return (name === "pa_workflow" ? ["list", "show", "validate", "preflight", "status", "next"] : ["show", "verify"]).includes(String(r.action));
+    } catch { return false; }
+  }
   if (["read", "grep", "glob", "find", "ls", "pa_registry", "pa_status", "pa_bulletin", "pa_template", "todo", "question"].includes(name)) return true;
   return name === "pa_ticket" && ["read", "show", "list"].includes(String(input.action));
 }

@@ -56,6 +56,9 @@ export interface SpawnOpts {
   sessionId?: string;
   /** Receives the direct runtime child PID as soon as launch establishes it. */
   onPid?: (pid: number) => void;
+  /** Trusted foreground Pi admission callback, while the observed child is an
+   * inert exec gate. Must finish synchronously before ANY runtime code starts. */
+  beforeRuntimeStart?: (pid: number) => void;
   /** Token-authenticated repository ownership transferred to a background supervisor. */
   repositoryLease?: RuntimeRepositoryLeaseHandoff;
   /** Token-authenticated borrowed authority transferred without parent ownership. */

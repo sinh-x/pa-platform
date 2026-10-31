@@ -203,7 +203,7 @@ test("4/4 editor selections preserve non-editor modules and register no unselect
         createPiSessionLifecycle(() => { registryCloses += 1; }),
         createPiPaModules(selection.factories),
       );
-      assert.deepEqual([...host.tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"], `${selection.name}: PA tools`);
+      assert.deepEqual([...host.tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"], `${selection.name}: PA tools`);
       assert.deepEqual(host.shortcuts, ["alt+i", "alt+g"], `${selection.name}: context shortcuts`);
       assert.equal(host.commands.has("vimmode"), selection.vim, `${selection.name}: Vim command selection`);
       for (const command of ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"]) {
@@ -318,7 +318,7 @@ test("print and JSON hosts load the composition without opening TUI-only compone
       assert.ok(contextCommand);
       await contextCommand.handler("ticket PAP-225", context);
       assert.deepEqual(context.ui.notifications.at(-1), ["PA ticket interaction is unavailable outside TUI mode.", "warning"]);
-      assert.deepEqual([...host.tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"]);
+      assert.deepEqual([...host.tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"]);
       const safety = await host.dispatch("tool_call", { toolName: "bash", input: { command: "rm -rf build" } }, context);
       assert.ok(safety.some((result) => Boolean(result && typeof result === "object" && "block" in result)));
       await host.dispatch("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
