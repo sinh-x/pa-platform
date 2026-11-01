@@ -1,14 +1,14 @@
 import { isDeepStrictEqual as equal } from "node:util";
 import {
   JsonWorkflowError, replayWorkflow, requireDecision, assertRetainedConfigIdentity, readExecutionState, readExecutionOperations, parseExecutionBinding, parseSourceVersion,
-  queryReadonlyDeploymentEvents, queryReadonlyDeploymentStatus, workflowDigest, workflowObject, loadRepoEntry, parseReviewMatrixPlan, withPreparedTicketCapacity, withExecutionWorktreeAdmission,
+  queryReadonlyDeploymentEvents, queryReadonlyDeploymentStatus, workflowDigest, workflowObject, parseReviewMatrixPlan, withPreparedTicketCapacity, withExecutionWorktreeAdmission,
   type RegistryWorkflowJournal, type WorkflowCaller, type WorkflowHost, type WorkflowEffectOwner, type EffectIntent, type EffectObservation,
   type ExecutionCommand, type ExecutionBinding, type ExecutionState, type ExecutionOperationRecord, type SourceVersion, type ProtectedWorkflowStore,
 } from "@pa-platform/pa-core";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
 import { NativeExecutionEvidence, type NativeProcessResult } from "./native-execution-evidence.js";
 import { ProjectCommandContract } from "./project-command-contract.js";
-import { structuredLaunchNote } from "./workflow-consumers.js";
+import { structuredLaunchNote, taskRequiredCommands } from "./workflow-consumers.js";
 import type { NativeToolResult, NativeIntent, NativeScopeSnapshot } from "./execution-native.js";
 
 function blocked(): never { throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", "source-native-result", "execution-owner"); }
@@ -108,9 +108,9 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
         if (native.restartLaunch || native.pendingRestart || native.operation || ["settling", "uncertain-blocked"].includes(native.custody.state)) blocked();
         if (phase.sequence !== native.sequence) continue;
         if (!native.plan || native.plan.phaseId !== intent.stepId || native.custody.state !== "idle" || native.operation || native.originalFailure || native.recoveryPending || native.candidateSha !== phase.candidateSha) blocked();
-        const registration = loadRepoEntry(binding.repoKey)?.projectCommands;
-        if (!registration || descriptor.projectCommandsRegistrationSha256 !== workflowDigest(JSON.stringify(registration)) || phase.projectCommands.registrationSha256 !== descriptor.projectCommandsRegistrationSha256) blocked();
-        const commands = ProjectCommandContract.inspectWorktree(binding.repoKey, binding.repoRoot, binding.worktreeRoot);
+        const registration = ProjectCommandContract.registrationIdentity(binding.repoKey, binding.repoRoot);
+        if (!registration || descriptor.projectCommandsRegistrationSha256 !== registration || phase.projectCommands.registrationSha256 !== descriptor.projectCommandsRegistrationSha256) blocked();
+        const commands = ProjectCommandContract.inspectWorktree(binding.repoKey, binding.repoRoot, binding.worktreeRoot, taskRequiredCommands(state));
         if (!commands || commands.sha256 !== phase.projectCommands.sha256) blocked();
         const checks = native.plan.checks.map(name => { const check = commands.checks.find(c => c.id === name || c.command === name); if (!check) return blocked(); return { id: check.id, command: check.command, inputsSha256: commands.inputIdentity(check) }; });
         if (!equal(checks, phase.projectCommands.checks) || !equal(checks.map(c => c.id), commands.checks.map(c => c.id))) blocked();
@@ -149,14 +149,14 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
     verify: (intent, result) => {
       try {
         if (!verified || !nativeReader || !equal(intent, verified.intent) || !equal(result, verified.result)) return false;
-        stateFor(intent);
+        const { state } = stateFor(intent);
         const store = authority.execution(); if (!store) return false;
         const evidence = new NativeExecutionEvidence(store, authority.evidenceRoot(), readonlyLocks), proof = verified;
         const native = readExecutionState(store, proof.binding);
         if (native.sequence !== proof.phase.sequence || !equal(nativeReader.captureNativeScope(proof.binding.worktreeRoot), proof.snapshot)) return false;
-        const commands = ProjectCommandContract.inspectWorktree(proof.binding.repoKey, proof.binding.repoRoot, proof.binding.worktreeRoot);
-        const registration = loadRepoEntry(proof.binding.repoKey)?.projectCommands;
-        if (!commands || !registration || workflowDigest(JSON.stringify(registration)) !== proof.phase.projectCommands.registrationSha256 || commands.sha256 !== proof.phase.projectCommands.sha256) return false;
+        const commands = ProjectCommandContract.inspectWorktree(proof.binding.repoKey, proof.binding.repoRoot, proof.binding.worktreeRoot, taskRequiredCommands(state));
+        const registration = ProjectCommandContract.registrationIdentity(proof.binding.repoKey, proof.binding.repoRoot);
+        if (!commands || !registration || registration !== proof.phase.projectCommands.registrationSha256 || commands.sha256 !== proof.phase.projectCommands.sha256) return false;
         const checks = native.plan!.checks.map(name => { const check = commands.checks.find(c => c.id === name || c.command === name); if (!check) return blocked(); return { id: check.id, command: check.command, inputsSha256: commands.inputIdentity(check) }; });
         if (!equal(checks, proof.phase.projectCommands.checks)) return false;
         verifyChecks(store, evidence, proof.binding, native, proof.phase, checks);

@@ -77,6 +77,16 @@ export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, t
     return baseline;
   });
 }
+/** Exact required set from the authenticated, approved task subject, never the
+ * agent's phase-plan subset or the entire reusable catalogue. Data only. */
+export function taskRequiredCommands(state: WorkflowState): readonly string[] {
+  const matrix = parseReviewMatrixPlan(readCanonicalWorkflowArtifact(state.subject.requirements.ref), state.subject.matrix.ref).matrix;
+  const commands = state.subject.scope.checks.map(ref => {
+    const command = matrix.commands.find(command => command.id === ref.commandId); if (!command) return deny(); return command.command;
+  });
+  if (new Set(commands).size !== commands.length) return deny();
+  return Object.freeze(commands);
+}
 /** Fresh authority at every source/check/phase boundary. Native custody remains a separate necessary gate. */
 export function authorizePiStructuredWork(repoKey: string, repoRoot: string, ticket: string, branch: string, permission: PackagePermission, plan?: { paths: readonly string[]; checks: readonly string[]; requirements?: readonly string[] }, authority?: StructuredTaskBaseline["authority"]): WorkflowState | null {
   return withExistingWorkflowJournal(journal => {
@@ -98,6 +108,7 @@ export function authorizePiStructuredWork(repoKey: string, repoRoot: string, tic
       if (!profile) return deny();
       const allowed = scope.checks.map(ref => matrix.commands.find(c => c.id === ref.commandId)!);
       if (plan.checks.some(name => !allowed.some(c => c && profile.checks.some(p => (p.id === name || p.command === name) && p.command === c.command)))) return deny();
+      if (profile.source === "catalogue" && JSON.stringify(plan.checks.map(name => profile.checks.find(p => p.id === name || p.command === name)?.command)) !== JSON.stringify(taskRequiredCommands(state))) return deny();
     }
     return state;
   });
