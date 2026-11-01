@@ -61,7 +61,12 @@ export function selectedTemplates(): TemplateSelection {
   const registrySha256 = utf8(read(join(runtimeRoot, ".pa-template-registry.sha"), 65, immutablePins)).trimEnd();
   if (!/^[0-9a-f]{40}$/.test(configRevision) || !/^[0-9a-f]{64}$/.test(registrySha256)) reject("TEMPLATE_PAIR", "selection", "exact runtime-owned config and registry pins required");
   const root = getPlatformHomeDir();
-  if (getTeamsDir() !== join(root, "teams") || realpathSync(getTeamsDir()) !== getTeamsDir() || selectedConfigHead(root) !== configRevision) reject("TEMPLATE_PAIR", "selection", "selected physical config/team root and Git HEAD must match the runtime pin");
+  try {
+    if (getTeamsDir() !== join(root, "teams") || realpathSync(getTeamsDir()) !== getTeamsDir() || selectedConfigHead(root) !== configRevision) reject("TEMPLATE_PAIR", "selection", "selected physical config/team root and Git HEAD must match the runtime pin");
+  } catch (error) {
+    if (error instanceof TemplateError) throw error;
+    reject("TEMPLATE_PAIR", "selection", "selected physical config/team identity cannot be proved");
+  }
   return { root, configRevision, registrySha256 };
 }
 export function loadTemplateRegistry(selection?: TemplateSelection): LoadedTemplates {

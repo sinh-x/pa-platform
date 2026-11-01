@@ -15,11 +15,24 @@ in CI. Core tests run serially so the existing 500 ms dashboard p95 assertion is
 not measured against other concurrent test files; its threshold is unchanged.
 
 The shared code runner prints explicit inventories of deferred manual integration
-files: Pi ordinary local-development, project-command-contract, prepared-native
-and pi-deploy suites, plus core artifact manifest/render/session suites. These
-mixed native/deployment and immutable review-renderer suites need a qualified
-runtime; they are neither passing tests nor hidden skips in the code-only lane. All other source test files are included by discovery, and a
-stale manual inventory fails. `corepack pnpm test` still runs the complete suite
+files: Pi ordinary local-development, project-command-contract, prepared-native,
+pi-deploy and the full workflow-runtime entry, plus core artifact manifest/render/session
+suites. These native/deployment and immutable review-renderer cases need a qualified
+runtime; they are neither passing tests nor hidden skips in the code-only lane.
+
+PAP-273 integrates the retained `2d4de24` portable/native split with the native
+cases kept directly in the original full entry. Its explicit portable replacement
+is `pi-workflow-code-cases.ts`: public read/decision transport, publication/queue,
+revocation, coordinator and bootstrap cases still run in code-only CI. The full
+`pi-workflow-runtime.test.ts` imports those portable cases and unconditionally
+registers all 16 native baseline/materialization, matrix, source and restart cases.
+It remains the local/installed-verifier matrix entry. The helper is not named
+`*.test.ts`, so the full suite does not discover it a second time. No test-name
+filter, environment-dependent skip, weakened executable allowlist or unconfined
+fallback selects this boundary. The code runner prints both entries; missing,
+stale or ambiguous replacement inventory fails. All other source test files are
+included automatically by discovery, including new code tests.
+`corepack pnpm test` still runs the complete suite
 in the supported environment as a **separate manual integration gate**. Installed
 smoke and independent review/UAT also remain separate. Green code-only CI does
 not replace any of these results or certify runtime acceptance. Existing optional

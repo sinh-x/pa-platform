@@ -4,7 +4,8 @@ import {
   createTicketWorkflowOwners, getAiUsageDir, getDb, RegistryWorkflowJournal, JsonWorkflowService, JsonWorkflowError,
   loadTemplateRegistry, produceWorkflowSubject, loadSelectedWorkflows, readCanonicalWorkflowArtifact, readReviewEvidenceFile,
   packageDecision, adoptedWorkflow, TicketStore, resolveTrustedTicketMutationContext, observeReadonlyRepositoryTicketSlot,
-  type WorkflowHost, type WorkflowObservations, type WorkflowReadHost, type ReviewBundle, type JsonWorkflowEvidenceRef,
+  workflowTemplateError, TemplateError,
+  type WorkflowRepository, type WorkflowHost, type WorkflowObservations, type WorkflowReadHost, type ReviewBundle, type JsonWorkflowEvidenceRef,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { createPiSourceWorkflowOwner } from "./workflow-source.js";
@@ -24,11 +25,23 @@ function sourceBytes(subject: ReviewBundle | undefined, ref: JsonWorkflowEvidenc
     catch { return null; }
   }
 }
-export function piWorkflowObservations(subject?: ReviewBundle): WorkflowObservations {
-  let profile: WorkflowObservations["projectProfile"] = "missing", producer: WorkflowObservations["producerContract"] = "missing";
-  if (subject) { try { profile = ProjectCommandContract.inspect(subject.repository.key, subject.repository.root) ? "supported" : "missing"; } catch { profile = "unsupported"; } }
-  try { if (loadTemplateRegistry().registry.entries.some(e => e.id === "review-bundle" && e.validation.kind === "review-bundle" && e.capabilities.render && e.capabilities.validate)) producer = "supported"; } catch { /* missing pair is a blocker, never fallback */ }
-  return { capabilities: new Set(["operator.foreground", "artifact.paired-publication", "ticket.queue", "execution.scoped-local", "validation.matrix"]), projectProfile: profile, producerContract: producer, readEvidence: ref => sourceBytes(subject, ref) };
+export function piWorkflowObservations(subject?: ReviewBundle, repository?: WorkflowRepository): WorkflowObservations {
+  if (subject && repository && (subject.repository.key !== repository.key || subject.repository.root !== repository.root)) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "ticket-repository", "repository-owner");
+  const repo = repository ?? subject?.repository;
+  let profile: WorkflowObservations["projectProfile"] = "uninspected", producer: WorkflowObservations["producerContract"] = "missing";
+  let producerFailure: JsonWorkflowError | undefined;
+  if (repo) { try { profile = ProjectCommandContract.inspect(repo.key, repo.root) ? "supported" : "missing"; } catch { profile = "unsupported"; } }
+  try {
+    const entry = loadTemplateRegistry().registry.entries.find(e => e.id === "review-bundle" && e.validation.kind === "review-bundle");
+    if (entry) {
+      producer = entry.capabilities.render && entry.capabilities.validate ? "supported" : "unsupported";
+      if (producer === "unsupported") producerFailure = workflowTemplateError("TEMPLATE_CAPABILITY");
+    }
+  } catch (error) {
+    producer = "unsupported";
+    producerFailure = workflowTemplateError(error instanceof TemplateError ? error.code : undefined);
+  }
+  return { capabilities: new Set(["operator.foreground", "artifact.paired-publication", "ticket.queue", "execution.scoped-local", "validation.matrix"]), projectProfile: profile, producerContract: producer, ...(producerFailure ? { producerFailure } : {}), readEvidence: ref => sourceBytes(subject, ref) };
 }
 export function piWorkflowReadHost(): WorkflowReadHost { return { observations: piWorkflowObservations, operations: new Set(["publication.pair", "ticket.queue", "source.local", "check.matrix"]) }; }
 

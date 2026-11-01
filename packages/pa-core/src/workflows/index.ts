@@ -22,6 +22,7 @@ export { createTicketWorkflowOwners } from "./ticket-owner.js";
 export { adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable } from "./catalog.js";
 export { workflowDecisionReference, structuredReviewArtifact } from "./review.js";
 export { workflowReadService, workflowFailure, readTicketWorkflow, workflowPrimerView } from "./public.js";
-export type { WorkflowReadHost, WorkflowPrimerView } from "./public.js";
+export type { WorkflowReadHost, WorkflowPrimerView, WorkflowRepository, WorkflowReadContext } from "./public.js";
+export { workflowTemplateError } from "./template-diagnostics.js";
 export { runWorkflowCommand } from "../cli/commands/workflow.js";
 export { validateWorkflowPair } from "./paired.js";

@@ -31,5 +31,9 @@ test("mandatory native case accounting rejects omitted, skipped, cancelled, fail
   for (const mutate of [e => e.splice(0, 1), e => { e[0].data.skip = "unsupported"; }, e => { e[0].type = "test:fail"; }, e => e.pop(), e => { e.at(-1).data.counts.cancelled = 1; }, e => { e.at(-1).data.counts.passed++; }]) {
     const e = events(); mutate(e); assert.throws(() => accountCases(e));
   }
+  for (const id of ["startup-stage-separation", "startup-causal-diagnostics"]) for (const name of CASE_ANCHORS[id]) {
+    const omitted = events().filter(event => event.data.name !== name);
+    assert.throws(() => accountCases(omitted), error => error.code === "WORKFLOW_REQUIRED_CASE_OMITTED" && error.gate === id);
+  }
   assert.equal(accountCases(events()).cases.length, Object.keys(CASE_ANCHORS).length);
 });

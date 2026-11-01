@@ -55,7 +55,8 @@ export interface ReviewBundle {
   requestedPermissions: PackagePermission[];
 }
 export interface CommandReference { matrixSource: string; matrixSha256: string; commandId: string }
-export type WorkflowErrorCode = "WORKFLOW_CONTRACT" | "WORKFLOW_SOURCE" | "WORKFLOW_DISABLED" | "WORKFLOW_CAPABILITY" | "WORKFLOW_CONFLICT" | "WORKFLOW_AUTHORITY" | "WORKFLOW_UNCERTAIN";
+export type WorkflowTemplateCause = "TEMPLATE_PAIR" | "TEMPLATE_CAPABILITY" | "TEMPLATE_CONSUMER_REQUIRED" | "TEMPLATE_CONTEXT" | "TEMPLATE_VERSION" | "TEMPLATE_DIGEST" | "TEMPLATE_IO" | "TEMPLATE_PATH" | "TEMPLATE_INVENTORY" | "TEMPLATE_SELECTOR" | "TEMPLATE_REJECTED";
+export type WorkflowErrorCode = WorkflowTemplateCause | "WORKFLOW_CONTRACT" | "WORKFLOW_SOURCE" | "WORKFLOW_DISABLED" | "WORKFLOW_CAPABILITY" | "WORKFLOW_CONFLICT" | "WORKFLOW_AUTHORITY" | "WORKFLOW_UNCERTAIN";
 export class JsonWorkflowError extends Error {
   constructor(readonly code: WorkflowErrorCode, readonly gateId = "contract", readonly correctionOwner = "workflow-contract-owner") {
     super(`Condition: JSON workflow blocked\nSource: ${gateId}\nReason: ${code}\nCorrection: ${correctionOwner} must supply supported matching evidence; preserve retained state\nResume Action: rerun observational preflight; never infer authority or use legacy fallback`);

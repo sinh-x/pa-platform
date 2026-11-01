@@ -98,13 +98,16 @@ export function safeDiagnostic(error) {
   return { code, gateId: error instanceof QualificationBlocked ? error.gate : "qualification", diagnostic: `Condition: ${code}\nSource: exact installed workflow qualification\nReason: a required candidate, selected pair, native case or unchanged-state proof is unavailable.\nCorrection: reconcile the missing prerequisite through its owner; do not install, enable, skip cases or import outcomes to bypass it.\nResume Action: rerun the unchanged verifier against the exact supported candidate and selected pair.` };
 }
 export const REQUIRED_TEST_FILES = Object.freeze([
-  "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts",
+  "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts", "packages/pa-core/src/__tests__/workflow-startup.test.ts",
+  "packages/pi-pa/src/__tests__/workflow-startup.test.ts",
   "packages/pa-core/src/__tests__/execution-custody.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-runtime.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-decision.test.ts", "packages/pi-pa/src/__tests__/pi-execution-custody.test.ts", "packages/pi-pa/src/__tests__/native-execution-evidence.test.ts",
 ]);
 // Exact native test events, not caller report flags. Every anchor is mandatory;
 // omission/rename requires a reviewed verifier change, never silent skipping.
 export const CASE_ANCHORS = Object.freeze({
   "static-zero-effects": ["preflight reports independent missing prerequisites without executing any effect/probe"],
+  "startup-stage-separation": ["requirements admission/revision defers missing execution profile without inventing effect authority", "source.local request fails closed at its own boundary with no intent or effect for missing execution contract", "check.matrix request fails closed at its own boundary with no intent or effect for unsupported execution contract", "native observations distinguish uninspected, registered missing, supported and unsupported before a subject exists"],
+  "startup-causal-diagnostics": ["fresh status/next expose selected-without-run and authenticated pre-subject repository context", "producer preserves selected-pair and capability causes instead of erasing them as WORKFLOW_SOURCE", "fresh native read and CLI service projections agree on later execution blockers and true pair failure"],
   "structured-decision": ["synthetic UI fixture displays exact subject/permissions; outcome and principal are not model inputs", "evidence mutation during the native dialog cannot mint a decision"],
   "package-effects": ["actual ticket publication/queue owners publish exact pair once and preserve counters and audit on replay", "default Pi launcher and native execution owner consume the structured grant and reread revocation"],
   "publication-interruption": ["interruption after first member resumes only the absent member using the SAME durable intent", "conflicting bytes, symlinks and foreign primary evidence are preserved, never overwritten or queued"],

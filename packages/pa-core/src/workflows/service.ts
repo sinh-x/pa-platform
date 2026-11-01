@@ -5,7 +5,7 @@ import { produceWorkflowSubject } from "./producer.js";
 import { RegistryWorkflowJournal, type WorkflowJournalEntry } from "../registry/workflows.js";
 import { array, digest, evidenceRef, ID, integer, workflowTicket, literal, object, oneOf, PACKAGE_PERMISSIONS, parseReviewBundle, reject, JsonWorkflowError, SHA256, strictJson, STEP_OUTCOMES, text, unique, type EvidenceRef, type PackagePermission, type ReviewBundle, type StepOutcome, type WorkflowDefinition } from "./contracts.js";
 import { evaluatePredicate, parseWorkflowDefinition } from "./definition.js";
-import { preflightWorkflow, preflightPinnedWorkflow, type WorkflowObservations } from "./preflight.js";
+import { preflightWorkflow, preflightPinnedWorkflow, projectExecutionPrerequisites, type WorkflowObservations, type WorkflowPreflight } from "./preflight.js";
 import { subjectRevisionReason, type WorkflowAttempt } from "./revisions.js";
 import { selectNewWorkflow, type WorkflowSelection } from "./selected.js";
 
@@ -137,7 +137,10 @@ export function requireDecision(state: WorkflowState, id: string, permissions: r
     || permissions.some(p => !decision.permissions.includes(p))) reject("WORKFLOW_AUTHORITY");
   return decision;
 }
-export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySet<string>) {
+function requiresProjectCommands(step: WorkflowDefinition["steps"][number]): boolean {
+  return step.effects.some(effect => effect === "source.scoped" || effect === "check.scoped" || effect === "git.local");
+}
+export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySet<string>, observations?: Pick<WorkflowObservations, "projectProfile">) {
   const blocked: { stepId: string; code: "WORKFLOW_AUTHORITY" | "WORKFLOW_CAPABILITY" }[] = [];
   const eligible = eligibleSteps(state).filter(id => {
     const step = state.definition.steps.find(s => s.id === id)!;
@@ -145,10 +148,16 @@ export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySe
     if (!state.decisions.some(d => d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId) && step.authorization.every(p => d.permissions.includes(p)))) {
       blocked.push({ stepId: id, code: "WORKFLOW_AUTHORITY" }); return false;
     }
-    if (!operations.has(step.operation.id)) { blocked.push({ stepId: id, code: "WORKFLOW_CAPABILITY" }); return false; }
+    if (!operations.has(step.operation.id) || (requiresProjectCommands(step) && observations?.projectProfile !== "supported")) { blocked.push({ stepId: id, code: "WORKFLOW_CAPABILITY" }); return false; }
     return true;
   });
   return { runId: state.runId, revision: state.revision, eligible, reconcile: state.pending, blocked };
+}
+function requireStaticCompatibility(report: WorkflowPreflight): void {
+  if (report.status === "static-compatible") return;
+  const blocked = report.gates.find(g => g.outcome === "blocked");
+  if (!blocked || blocked.code === "WORKFLOW_STATIC_COMPATIBLE" || blocked.code === "WORKFLOW_LIVE_DEFERRED") throw new JsonWorkflowError("WORKFLOW_CAPABILITY", "preflight", "runtime-owner");
+  throw new JsonWorkflowError(blocked.code, blocked.gateId, blocked.correctionOwner);
 }
 export class JsonWorkflowService {
   constructor(private readonly journal: RegistryWorkflowJournal, private readonly host: WorkflowHost) {}
@@ -157,7 +166,7 @@ export class JsonWorkflowService {
     const caller = parseCaller(this.host.authenticate()); assertSubjectCaller(state, caller, true, this.host.continues); return caller;
   }
   next(runId: string): { runId: string; revision: number; eligible: string[]; reconcile: EffectIntent[]; blocked: { stepId: string; code: "WORKFLOW_AUTHORITY" | "WORKFLOW_CAPABILITY" }[] } {
-    return projectWorkflowNext(this.status(runId), new Set(this.host.owners.keys()));
+    return projectWorkflowNext(this.status(runId), new Set(this.host.owners.keys()), this.host.observations());
   }
   admitProduced(selection: WorkflowSelection, request: Uint8Array, templateHost: TemplateHost): WorkflowState {
     const caller = parseCaller(this.host.authenticate());
@@ -173,10 +182,7 @@ export class JsonWorkflowService {
     if (originalCaller && JSON.stringify(caller) !== JSON.stringify(originalCaller)) reject("WORKFLOW_AUTHORITY");
     const selected = selectNewWorkflow(selection, caller.team, caller.mode);
     const report = preflightWorkflow(selection, caller.team, caller.mode, this.host.observations(), subject);
-    if (report.status !== "static-compatible") {
-      const blocked = report.gates.find(g => g.outcome === "blocked");
-      throw new JsonWorkflowError("WORKFLOW_CAPABILITY", blocked?.gateId ?? "preflight", blocked?.correctionOwner ?? "runtime-owner");
-    }
+    requireStaticCompatibility(report);
     const runId = `wf-${randomUUID()}`;
     const state = { subject, caller } as WorkflowState; assertSubjectCaller(state, caller, false);
     const evidence = readWorkflowEvidence(subject, this.host.observations().readEvidence);
@@ -207,10 +213,7 @@ export class JsonWorkflowService {
     if (state.revision !== expectedRevision) reject("WORKFLOW_CONFLICT");
     const subject = parseReviewBundle(rawSubject), reason = subjectRevisionReason(state, subject);
     const report = preflightPinnedWorkflow({ definition: state.definition, sha256: state.subject.workflow.sha256, configRevision: state.configRevision }, this.host.observations(), subject);
-    if (report.status !== "static-compatible") {
-      const blocked = report.gates.find(g => g.outcome === "blocked")!;
-      throw new JsonWorkflowError(blocked.code === "WORKFLOW_SOURCE" || blocked.code === "WORKFLOW_AUTHORITY" ? blocked.code : "WORKFLOW_CAPABILITY", blocked.gateId, blocked.correctionOwner);
-    }
+    requireStaticCompatibility(report);
     const evidence = readWorkflowEvidence(subject, this.host.observations().readEvidence);
     this.journal.append(state.runId, expectedRevision, entries => {
       const current = replayWorkflow(this.journal, state.runId, entries);
@@ -251,6 +254,10 @@ export class JsonWorkflowService {
     if (state.revision !== expectedRevision || !eligibleSteps(state).includes(stepId)) reject("WORKFLOW_CONFLICT");
     const step = state.definition.steps.find(s => s.id === stepId)!; if (step.kind === "decision") reject("WORKFLOW_AUTHORITY");
     requireDecision(state, decisionId, step.authorization);
+    if (requiresProjectCommands(step)) {
+      const blocked = projectExecutionPrerequisites(this.host.observations())[0];
+      if (blocked) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", blocked.gateId, blocked.correctionOwner);
+    }
     const owner = this.host.owners.get(step.operation.id); if (!owner) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", step.operation.id, step.owner);
     const intent: EffectIntent = { intentId: `intent-${randomUUID()}`, runId, stepId, owner: step.owner, decisionId, subjectSha256: state.subjectSha256 };
     owner.admit(caller, state.subject, intent);
