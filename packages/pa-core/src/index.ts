@@ -14,6 +14,7 @@ export * from "./repos.js";
 export * from "./project-command-catalogue.js";
 export * from "./project-command-catalogue-files.js";
 export * from "./repo-setup.js";
+export { inspectApprovedProjectCatalogue, RepoOperatorError, type ApprovedProjectCatalogue } from "./repo-contract-authority.js";
 export * from "./readonly-helper-context.js";
 export * from "./interactive.js";
 export * from "./registry/index.js";
