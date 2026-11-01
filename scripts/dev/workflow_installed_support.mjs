@@ -53,6 +53,14 @@ export function provenance(installed, candidate) {
   if (value.schemaVersion !== "pa-review-runtime/v1" || value.packageName !== "pa-platform" || value.sourceSha !== candidate || !/^[a-f0-9]{40}$/.test(value.configSha)) block("WORKFLOW_INSTALLED_CANDIDATE_MISMATCH");
   return { ...value, sha256: digest(Buffer.from(raw)) };
 }
+export function verifyBuildPins(root, installed, metadata) {
+  const configSha = physicalFile(join(root, '.pa-platform-config.sha'), 64).toString().trim();
+  const registrySha256 = physicalFile(join(root, '.pa-template-registry.sha'), 80).toString().trim();
+  if (!/^[a-f0-9]{40}$/.test(configSha) || !/^[a-f0-9]{64}$/.test(registrySha256) || metadata.configSha !== configSha
+    || physicalFile(join(installed.share, '.pa-platform-config.sha'), 64, true).toString().trim() !== configSha
+    || physicalFile(join(installed.share, '.pa-template-registry.sha'), 80, true).toString().trim() !== registrySha256) block('WORKFLOW_BUILD_PROVENANCE_MISMATCH');
+  return { configSha, registrySha256 };
+}
 export function implementationFiles(root) {
   const result = [];
   function walk(directory) {
@@ -99,7 +107,7 @@ export function safeDiagnostic(error) {
 }
 export const REQUIRED_TEST_FILES = Object.freeze([
   "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts", "packages/pa-core/src/__tests__/workflow-startup.test.ts",
-  "packages/pi-pa/src/__tests__/workflow-startup.test.ts",
+  "packages/pi-pa/src/__tests__/workflow-startup.test.ts", "packages/pa-core/src/__tests__/selected-config-compatibility.test.ts", "packages/pa-core/src/__tests__/workflow-resources.test.ts", "packages/pi-pa/src/__tests__/workflow-config.test.ts",
   "packages/pa-core/src/__tests__/execution-custody.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-runtime.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-decision.test.ts", "packages/pi-pa/src/__tests__/pi-execution-custody.test.ts", "packages/pi-pa/src/__tests__/native-execution-evidence.test.ts",
 ]);
 // Exact native test events, not caller report flags. Every anchor is mandatory;
@@ -108,6 +116,8 @@ export const CASE_ANCHORS = Object.freeze({
   "static-zero-effects": ["preflight reports independent missing prerequisites without executing any effect/probe"],
   "startup-stage-separation": ["requirements admission/revision defers missing execution profile without inventing effect authority", "source.local request fails closed at its own boundary with no intent or effect for missing execution contract", "check.matrix request fails closed at its own boundary with no intent or effect for unsupported execution contract", "native observations distinguish uninspected, registered missing, supported and unsupported before a subject exists"],
   "startup-causal-diagnostics": ["fresh status/next expose selected-without-run and authenticated pre-subject repository context", "producer preserves selected-pair and capability causes instead of erasing them as WORKFLOW_SOURCE", "fresh native read and CLI service projections agree on later execution blockers and true pair failure"],
+  "compatible-resource-selection": ["one runtime supports multiple committed compatible config and registry revisions without package-pin edits", "committed source reads do not run selected Git monitors, hooks, replacements or ambient Git configuration"],
+  "retained-config-continuation": ["native resource owner retains exact committed templates/instructions and uses them across compatible config advances", "default native template host and planner retain the exact run config after compatible selected changes", "legacy native continuation is readable but cannot acquire current templates or planner instructions"],
   "structured-decision": ["synthetic UI fixture displays exact subject/permissions; outcome and principal are not model inputs", "evidence mutation during the native dialog cannot mint a decision"],
   "package-effects": ["actual ticket publication/queue owners publish exact pair once and preserve counters and audit on replay", "default Pi launcher and native execution owner consume the structured grant and reread revocation"],
   "publication-interruption": ["interruption after first member resumes only the absent member using the SAME durable intent", "conflicting bytes, symlinks and foreign primary evidence are preserved, never overwritten or queued"],

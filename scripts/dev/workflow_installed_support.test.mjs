@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { accountCases, CASE_ANCHORS, discoverInstalled, parseArguments, provenance, QualificationBlocked } from "./workflow_installed_support.mjs";
+import { accountCases, CASE_ANCHORS, discoverInstalled, parseArguments, provenance, QualificationBlocked, verifyBuildPins } from "./workflow_installed_support.mjs";
 const sha = "a".repeat(40);
 for (const args of [[], ["--selected-installed"], ["--selected-installed", "--require-candidate", "HEAD", "--require-paired-config"], ["--selected-installed", "--require-candidate", sha, "--require-paired-config", "--binary", "sentinel"], ["--require-candidate", sha, "--selected-installed", "--require-paired-config"]]) test(`installed workflow strict arguments reject shape ${args.length}`, () => assert.throws(() => parseArguments(args), QualificationBlocked));
 test("installed workflow exact arguments accept only fixed matrix contract", () => assert.equal(parseArguments(["--selected-installed", "--require-candidate", sha, "--require-paired-config"]), sha));
@@ -23,6 +23,19 @@ test("provenance rejects duplicate keys, escaped fields, wrong source and unvers
     writeFileSync(path, JSON.stringify(value)); assert.equal(provenance({ share: root }, sha).sourceSha, sha);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+test("package build provenance remains exact and separate from compatible selected config identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap273-build-pins-")), share = join(root, "installed"); mkdirSync(share);
+  try {
+    for (const folder of [root, share]) {
+      writeFileSync(join(folder, ".pa-platform-config.sha"), sha + "\n");
+      writeFileSync(join(folder, ".pa-template-registry.sha"), "b".repeat(64) + "\n");
+    }
+    assert.deepEqual(verifyBuildPins(root, { share }, { configSha: sha }), { configSha: sha, registrySha256: "b".repeat(64) });
+    assert.throws(() => verifyBuildPins(root, { share }, { configSha: "c".repeat(40) }), QualificationBlocked);
+    writeFileSync(join(share, ".pa-template-registry.sha"), "c".repeat(64) + "\n");
+    assert.throws(() => verifyBuildPins(root, { share }, { configSha: sha }), QualificationBlocked);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 function events() {
   const names = [...new Set(Object.values(CASE_ANCHORS).flat())];
   return [...names.map(name => ({ type: "test:pass", data: { name, details: { type: "test" } } })), { type: "test:summary", data: { success: true, counts: { passed: names.length, failed: 0, cancelled: 0, skipped: 0, todo: 0 } } }];
@@ -31,7 +44,7 @@ test("mandatory native case accounting rejects omitted, skipped, cancelled, fail
   for (const mutate of [e => e.splice(0, 1), e => { e[0].data.skip = "unsupported"; }, e => { e[0].type = "test:fail"; }, e => e.pop(), e => { e.at(-1).data.counts.cancelled = 1; }, e => { e.at(-1).data.counts.passed++; }]) {
     const e = events(); mutate(e); assert.throws(() => accountCases(e));
   }
-  for (const id of ["startup-stage-separation", "startup-causal-diagnostics"]) for (const name of CASE_ANCHORS[id]) {
+  for (const id of ["startup-stage-separation", "startup-causal-diagnostics", "compatible-resource-selection", "retained-config-continuation"]) for (const name of CASE_ANCHORS[id]) {
     const omitted = events().filter(event => event.data.name !== name);
     assert.throws(() => accountCases(omitted), error => error.code === "WORKFLOW_REQUIRED_CASE_OMITTED" && error.gate === id);
   }

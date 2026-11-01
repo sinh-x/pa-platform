@@ -1,7 +1,7 @@
 import {
   adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable, structuredTaskBaseline, requireDecision,
   authorizeStructuredConsumer, replayWorkflow, readWorkflowEvidence, readCanonicalWorkflowArtifact, parseReviewMatrixPlan, TicketStore, requireTicketLinkedBranch,
-  JsonWorkflowError, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
+  JsonWorkflowError, assertRetainedConfigIdentity, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
 
@@ -54,6 +54,7 @@ export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, t
     const state = journal ? adoptedWorkflow(journal, repoKey, ticketId) : null;
     const store = new TicketStore(); assertWorkflowMarkerAvailable(repoKey, ticketId, state !== null, store);
     if (!state || !journal) return null;
+    assertRetainedConfigIdentity(state);
     // Actual files/status alone cannot skip PAPC dependencies or an unsettled owner intent.
     for (const operation of ["publication.pair", "ticket.queue"]) {
       const steps = state.definition.steps.filter(step => step.operation.id === operation);
@@ -83,6 +84,7 @@ export function authorizePiStructuredWork(repoKey: string, repoRoot: string, tic
     assertWorkflowMarkerAvailable(repoKey, ticket, state !== null);
     if (!state || !journal) { if (authority) return deny(); return null; }
     if (!authority) return deny(); // an already-running legacy lineage cannot inherit a later v1 grant
+    assertRetainedConfigIdentity(state);
     if (authority.runId !== state.runId || authority.subjectSha256 !== state.subjectSha256 || authority.decisionId !== packageDecision(state)) return deny();
     const source = new TicketStore().get(ticket)!.doc_refs.filter(r => r.type === "requirements" && r.primary);
     if (source.length !== 1) return deny();

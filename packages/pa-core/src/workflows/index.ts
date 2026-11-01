@@ -26,3 +26,5 @@ export type { WorkflowReadHost, WorkflowPrimerView, WorkflowRepository, Workflow
 export { workflowTemplateError } from "./template-diagnostics.js";
 export { runWorkflowCommand } from "../cli/commands/workflow.js";
 export { validateWorkflowPair } from "./paired.js";
+export { captureWorkflowResources, parseWorkflowResources, requireWorkflowResources, retainedTemplateHost, retainedWorkflowSelection, retainedWorkflowTeam, assertRetainedConfigIdentity, materializeWorkflowResources } from "./resources.js";
+export type { WorkflowResources, CapturedWorkflowResources } from "./resources.js";

@@ -27,7 +27,7 @@ export async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Pro
   try { await run(await setup(f, amendment, source, matrix)); } finally { closeDb(); f.close(); process.env = env; }
 }
 async function setup(f: ReturnType<typeof workflowRuntimeFixture>, amendment = false, source = false, matrix: boolean | "failure" = false) {
-  Object.assign(process.env, { PA_AI_USAGE_HOME: f.root, PA_REGISTRY_DB: join(f.root, "registry.db"), PA_PLATFORM_CONFIG: join(f.root, "config") });
+  Object.assign(process.env, { PA_AI_USAGE_HOME: f.root, PA_REGISTRY_DB: join(f.root, "registry.db"), PA_PLATFORM_CONFIG: join(f.root, "config"), PA_PLATFORM_HOME: f.root, PA_PLATFORM_TEAMS: join(f.root, "teams"), PA_PLATFORM_SKILLS: join(f.root, "skills/global") });
   const repo = join(f.root, "repo"), checkout = join(f.root, "checkout"); mkdirSync(repo); mkdirSync(join(f.root, "config")); mkdirSync(join(f.root, "tickets"));
   const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git(["init", "-q", "-b", "develop"]); git(["config", "user.name", "Synthetic fixture"]); git(["config", "user.email", "fixture@example.invalid"]); git(["config", "commit.gpgsign", "false"]); git(["config", "core.hooksPath", "/dev/null"]);
@@ -75,7 +75,7 @@ async function setup(f: ReturnType<typeof workflowRuntimeFixture>, amendment = f
       verification: [{ id: "validation.native", version: "v1", inputs: ["package", "decision"] }], transitions: { passed: "completed", failed: "blocked", unknown: "blocked" }, failurePolicy: { strategy: "reconcile", correctionOwner: "validation" } });
   }
   const definition = bytes(d); f.bundle.workflow.sha256 = digest(definition);
-  f.selection = { ...f.selection, definitions: f.selection.definitions.map(row => ({ ...row, raw: definition, sha256: digest(definition) })) };
+  f.selection = { ...f.selection, configRoot: f.root, definitions: f.selection.definitions.map(row => ({ ...row, configRoot: f.root, raw: definition, sha256: digest(definition) })) };
   const owners = createTicketWorkflowOwners(f.journal, new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true }), f.root, f.host.authenticate);
   for (const [id, owner] of owners) (f.host.owners as Map<string, typeof owner>).set(id, owner);
   const nativeAuthority = new PiPreparedNativeAuthority({ root: join(f.root, "native-authority"), aiUsageRoot: f.root });

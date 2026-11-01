@@ -1,6 +1,6 @@
 import { isDeepStrictEqual as equal } from "node:util";
 import {
-  JsonWorkflowError, replayWorkflow, requireDecision, readExecutionState, readExecutionOperations, parseExecutionBinding, parseSourceVersion,
+  JsonWorkflowError, replayWorkflow, requireDecision, assertRetainedConfigIdentity, readExecutionState, readExecutionOperations, parseExecutionBinding, parseSourceVersion,
   queryReadonlyDeploymentEvents, queryReadonlyDeploymentStatus, workflowDigest, workflowObject, loadRepoEntry, parseReviewMatrixPlan, withPreparedTicketCapacity, withExecutionWorktreeAdmission,
   type RegistryWorkflowJournal, type WorkflowCaller, type WorkflowHost, type WorkflowEffectOwner, type EffectIntent, type EffectObservation,
   type ExecutionCommand, type ExecutionBinding, type ExecutionState, type ExecutionOperationRecord, type SourceVersion, type ProtectedWorkflowStore,
@@ -142,7 +142,7 @@ export function createPiSourceWorkflowOwner(journal: RegistryWorkflowJournal, au
     admit: (caller, subject, intent) => {
       const { state, step } = stateFor(intent), current = authenticate();
       if ((!equal(state.caller, current) && !continues?.(state.caller, current)) || !equal(current, caller) || !equal(subject, state.subject) || current.team !== "requirements" || current.mode !== "analyze") blocked();
-      requireDecision(state, intent.decisionId, step.authorization);
+      requireDecision(state, intent.decisionId, step.authorization); assertRetainedConfigIdentity(state);
     },
     observe,
     execute: async () => ({ state: "pending" }), // interactive native owner, never an auto-spawn/script port

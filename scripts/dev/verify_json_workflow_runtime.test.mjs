@@ -14,7 +14,7 @@ for (const args of [[], ["--selected-installed", "--require-candidate", "HEAD", 
   const r = spawnSync(process.execPath, [driver, ...args], { encoding: "utf8" });
   assert.equal(r.status, 1); assert.equal(r.stderr, ""); const result = JSON.parse(r.stdout);
   assert.equal(result.status, "blocked"); assert.equal(result.installationPerformed, false); assert.equal(result.enablementPerformed, false); assert.equal(result.humanApproval, false);
-  assert.equal(result.cases.length, 19); assert.ok(!result.cases.some(row => row.status === "passed")); assert.ok(!r.stdout.includes("PRIVATE-SENTINEL"));
+  assert.equal(result.cases.length, 21); assert.ok(!result.cases.some(row => row.status === "passed")); assert.ok(!r.stdout.includes("PRIVATE-SENTINEL"));
   assert.ok(result.diagnostic.length < 2000); assert.equal(git(root, "status", "--porcelain=v2", "--untracked-files=all"), before);
 });
 

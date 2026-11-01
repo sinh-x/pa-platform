@@ -12,7 +12,8 @@ import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreeme
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { resolvePiStructuredBaseline, structuredLaunchNote } from "./workflow-consumers.js";
 import { selectPiStructuredResume, type PiStructuredResume } from "./workflow-resume.js";
-import { readTicketWorkflow, workflowPrimerView, type StructuredTaskBaseline } from "@pa-platform/pa-core";
+import { readTicketWorkflow, workflowPrimerView, JsonWorkflowError, type StructuredTaskBaseline } from "@pa-platform/pa-core";
+import { pinnedPiWorkflowConfig } from "./workflow-config.js";
 import { assertNativePreparedChildLaunchSupported, ORDINARY_NATIVE_EXECUTION_START } from "./execution-native.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
@@ -707,7 +708,11 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
   return {
     readOnlyHelperContext: createPiReadonlyHelperCapability({ treehouse: dependencies.treehouse, getProcessFingerprint: dependencies.getProcessFingerprint }),
     deployPreflight: (request) => {
-      const team = loadTeamConfig(request.team);
+      if (request.team === "requirements" && request.mode === "review-auto") {
+        const { report } = (dependencies.reviewPreflight ?? inspectReviewPreflight)({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
+        if (report.status !== "compatible") return { reason: formatReviewPreflight(report) };
+      }
+      const team = pinnedPiWorkflowConfig(request)?.team ?? loadTeamConfig(request.team);
       let mode: ReturnType<typeof resolveDeployMode>;
       try {
         mode = resolveDeployMode(team, request.mode);
@@ -744,12 +749,21 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
+  // A retained-config lookup must not precede protected review's existing
+  // incompatible/legacy authority gate (including its zero-allocation promise).
+  if (request.team === "requirements" && request.mode === "review-auto") {
+    const { report } = (dependencies.reviewPreflight ?? inspectReviewPreflight)({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
+    if (report.status !== "compatible") return { status: "failed", team: request.team, mode: request.mode, reason: formatReviewPreflight(report) };
+  }
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
   let team: TeamConfig;
+  let pinnedConfig: ReturnType<typeof pinnedPiWorkflowConfig> = null;
+  let pinnedConfigRoot: string | undefined;
   let mode: ReturnType<typeof resolveDeployMode>;
   try {
-    team = loadTeamConfig(request.team);
+    pinnedConfig = pinnedPiWorkflowConfig(request);
+    team = pinnedConfig?.team ?? loadTeamConfig(request.team);
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
     mode = resolveDeployMode(team, request.mode);
     assertDeployResumeMode(team, request.resume);
@@ -1042,6 +1056,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       planningRequest = requestWithoutRepo;
       }
     }
+    pinnedConfigRoot = pinnedConfig?.materialize(deployDir);
     plan = resolveExecutionPlan({
       request: { ...planningRequest, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
       teamConfig: team,
@@ -1053,6 +1068,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       environment: requestedEnvironment,
       timeoutSeconds: timeout.timeout,
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
+      ...(pinnedConfigRoot ? { skillsDir: join(pinnedConfigRoot, "skills/global") } : {}),
       cwd: planningCwd,
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
@@ -1108,7 +1124,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   }
   const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId = staticReviewAuthorizationId): void => {
     const pinned = !currentPlan.rogue_one && currentPlan.ticket && (structuredBaseline || (currentPlan.team === "requirements" && currentPlan.mode === "analyze")) ? readTicketWorkflow(currentPlan.ticket) : null;
-    const primer = generatePrimer({ runtime: "pi", ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    if (pinned && !pinnedConfig) throw new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "workflow-owner");
+    if (pinnedConfig) { pinnedConfig.reread(); pinnedConfigRoot = pinnedConfig.materialize(deployDir); }
+    const primer = generatePrimer({ runtime: "pi", ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
       : primer;

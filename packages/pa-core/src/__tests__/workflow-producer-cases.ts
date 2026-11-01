@@ -9,6 +9,7 @@ import { reviewBundleTemplateConsumer } from "../workflows/producer.js";
 import { bytes, fixtureEvidence } from "./workflow-fixtures.js";
 import { workflowRuntimeFixture } from "./workflow-runtime-fixture.js";
 import { templateFixture } from "./template-fixture.js";
+import { workflowResourceFixture } from "./workflow-resource-fixture.js";
 
 function fixture() {
   const f = workflowRuntimeFixture(), t = templateFixture();
@@ -17,6 +18,7 @@ function fixture() {
   entry.bindings = { bundle: { type: "json", required: true } }; entry.validation = { kind: "review-bundle", sections: [] };
   t.registry.entries.push(entry); writeFileSync(join(t.root, entry.source.path), "{{bundle}}\n");
   const templates = t.save();
+  f.host.resources = (selection, subject, caller) => workflowResourceFixture(selection, subject, caller, templates);
   f.selection = { ...f.selection, configRoot: t.root, definitions: f.selection.definitions.map(d => ({ ...d, configRoot: t.root })) };
   const request = () => bytes({ action: "render", id: "review-bundle", version: "1", bindings: { bundle: f.bundle } });
   return { ...f, t, templates, request, close: () => { f.close(); t.dispose(); } };
