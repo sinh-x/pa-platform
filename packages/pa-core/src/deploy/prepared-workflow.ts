@@ -158,6 +158,18 @@ const EXECUTION_DIAGNOSTICS = Object.freeze({
     correction: "project developer/runtime owner: preserve the index, commit and original check evidence; reconcile content and rerun affected checks without resetting history",
     resumeAction: "continue only with native current-content/index/tree proof; never relabel pre-change results as a passing new candidate",
   }),
+  EXECUTION_PROJECT_SOURCE_CONFLICT: Object.freeze({
+    stage: "project-command-source-selection",
+    reason: "local catalogue and legacy registration coexist, or a linked checkout supplies administrative command data; no source was selected",
+    correction: "operator/project-command owner: preserve both sources and reconcile explicit registered-primary adoption through the native approval owner; never remove evidence to force legacy fallback",
+    resumeAction: "continue reporting; retry dependent execution only after source selection is explicitly resolved",
+  }),
+  EXECUTION_PROJECT_APPROVAL_REQUIRED: Object.freeze({
+    stage: "project-command-approval",
+    reason: "a repo-local catalogue candidate exists but no supported native operator approval/adoption owner has admitted it; candidate bytes confer no execution permission",
+    correction: "operator/runtime owner: complete the native approval and execution-consumption delivery; do not invent approval flags or use a self-granting repository file",
+    resumeAction: "continue discovery/drafting; dependent execution remains blocked until its actual owner validates approved bytes and task scope",
+  }),
   EXECUTION_PROJECT_CONTRACT_REQUIRED: Object.freeze({
     stage: "project-command-admission",
     reason: "ordinary source work requires a configuration-pinned project command/effect contract; missing registration is not legacy host-shell permission",

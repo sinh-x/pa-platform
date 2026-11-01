@@ -84,5 +84,9 @@ test('portable workflow entry runs with an untrusted Node path while native exec
     assert.equal(result.status, 0, result.stderr + result.stdout);
     assert.match(result.stdout, /# fail 0\b/); assert.match(result.stdout, /# skipped 0\b/);
     assert.doesNotMatch(result.stdout, /# Subtest: (?:check\.matrix|structured baseline drives actual materialization|foreground default launcher retains failed-check)/);
+    const catalogue = spawnSync(node, ['--import=tsx', '--test', '--test-reporter=tap', 'packages/pi-pa/src/__tests__/project-command-source.test.ts'], { cwd: root, env, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+    assert.equal(catalogue.status, 0, catalogue.stderr + catalogue.stdout);
+    assert.match(catalogue.stdout, /# tests 7\b/); assert.match(catalogue.stdout, /# fail 0\b/); assert.match(catalogue.stdout, /# skipped 0\b/);
+    assert.doesNotMatch(catalogue.stdout, /# Subtest: (?:a running legacy contract|legacy v1 remains exact)/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

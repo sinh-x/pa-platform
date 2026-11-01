@@ -11,6 +11,8 @@ export * from "./config.js";
 export * from "./timers.js";
 export * from "./yaml-parser.js";
 export * from "./repos.js";
+export * from "./project-command-catalogue.js";
+export * from "./project-command-catalogue-files.js";
 export * from "./readonly-helper-context.js";
 export * from "./interactive.js";
 export * from "./registry/index.js";

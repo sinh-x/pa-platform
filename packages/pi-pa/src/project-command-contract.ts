@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { executionFailure, findSensitiveMatch, loadRepoEntry, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, workflowObject, workflowSha, type RepoEntry } from "@pa-platform/pa-core";
+import { executionFailure, findSensitiveMatch, inspectLocalProjectCommandCatalogue, PROJECT_COMMAND_CATALOGUE_PATH, loadRepoEntry, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, workflowObject, workflowSha, type RepoEntry } from "@pa-platform/pa-core";
 
 export interface ProjectCheck {
   readonly id: string;
@@ -49,6 +49,20 @@ function read(root: string, relative: string): Uint8Array {
     if (findSensitiveMatch("content", Buffer.from(bytes).toString("utf8"))) throw invalid();
     return bytes;
   } catch { throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID"); }
+}
+/** Phase-3 candidates are never an execution source. Approval/adoption belongs
+ * to the future native operator owner; coexistence cannot silently pick legacy.
+ * A linked checkout cannot substitute its own administrative catalogue either. */
+function assertLegacySource(repoKey: string, repoRoot: string, worktreeRoot: string, legacy: boolean): void {
+  let local: ReturnType<typeof inspectLocalProjectCommandCatalogue>;
+  try { local = inspectLocalProjectCommandCatalogue(repoKey, repoRoot); } catch { throw invalid(); }
+  if (worktreeRoot !== repoRoot) {
+    let present = false;
+    try { lstatSync(join(worktreeRoot, PROJECT_COMMAND_CATALOGUE_PATH)); present = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw invalid(); }
+    if (present) throw executionFailure("EXECUTION_PROJECT_SOURCE_CONFLICT");
+  }
+  if (local) throw executionFailure(legacy ? "EXECUTION_PROJECT_SOURCE_CONFLICT" : "EXECUTION_PROJECT_APPROVAL_REQUIRED");
 }
 function count(value: unknown, maximum: number): number {
   if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > maximum) throw invalid();
@@ -109,6 +123,7 @@ export class ProjectCommandContract {
   static inspect(repoKey: string, repoRoot: string): { sha256: string; checks: readonly ProjectCheck[] } | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || realpathSync(repoRoot) !== repoRoot) throw invalid();
+    assertLegacySource(repoKey, repoRoot, repoRoot, repo.projectCommands !== undefined);
     if (!repo.projectCommands) return null;
     const observed = new ProjectCommandContract(repoKey, repoRoot, repoRoot, repo.projectCommands, true);
     return { sha256: observed.sha256, checks: observed.checks };
@@ -118,6 +133,7 @@ export class ProjectCommandContract {
   static inspectWorktree(repoKey: string, repoRoot: string, worktreeRoot: string): { sha256: string; checks: readonly ProjectCheck[]; inputIdentity(check: ProjectCheck): string } | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();
+    assertLegacySource(repoKey, repoRoot, worktreeRoot, repo.projectCommands !== undefined);
     if (!repo.projectCommands) return null;
     const observed = new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands, true);
     return { sha256: observed.sha256, checks: observed.checks, inputIdentity: check => observed.inputIdentity(check) };
@@ -125,9 +141,11 @@ export class ProjectCommandContract {
   static resolve(repoKey: string, repoRoot: string, worktreeRoot: string): ProjectCommandContract | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();
+    assertLegacySource(repoKey, repoRoot, worktreeRoot, repo.projectCommands !== undefined);
     return repo.projectCommands === undefined ? null : new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands);
   }
   assertCurrent(): void {
+    assertLegacySource(this.repoKey, this.repoRoot, this.worktreeRoot, true);
     const repo = loadRepoEntry(this.repoKey);
     if (repo?.path !== this.repoRoot || repo.projectCommands?.manifest !== this.#pin.manifest || repo.projectCommands.sha256 !== this.#pin.sha256
       || workflowDigest(read(this.worktreeRoot, this.#pin.manifest)) !== this.sha256) throw invalid();
