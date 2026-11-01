@@ -815,6 +815,28 @@ export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: 
   } finally { db.close(); }
 }
 
+/** Strict raw ticketless administrative launch observation. Public correlation
+ * projections deliberately omit malformed historical fields; that omission must
+ * NEVER turn malformed custody into an eligible setup actor. No writes/migration.
+ */
+export function queryReadonlyRepoSetupLaunch(deployId: string): DeploymentStatus {
+  const db = openReadonlyRegistryDatabase(true);
+  try {
+    const current = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
+    const starts = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started'").all(deployId) as Record<string, unknown>[];
+    if (!current || starts.length !== 1 || current.status !== "running") throw new Error("setup requires one live immutable launch");
+    const absent = ["ticket_id", "parent_deployment_id", "builder_authority", "repository_slot", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
+      "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit", "review_checkout", "ticket_worktree_selection", "resumed_from_deployment_id"];
+    for (const row of [current, starts[0]!]) {
+      if (row.team !== "repo-setup" || row.mode !== "setup" || row.runtime !== "pi" || row.binary !== "ppa" || row.invocation_channel !== "cli"
+        || (row.rogue_one !== null && row.rogue_one !== undefined && row.rogue_one !== 0)
+        || absent.some(key => row[key] !== null && row[key] !== undefined && row[key] !== "")) throw new Error("setup launch has conflicting or malformed authority");
+    }
+    for (const key of ["repo", "repo_root", "worktree_root"]) if (current[key] !== starts[0]![key]) throw new Error("setup launch repository binding changed");
+    return deploymentFromRow(current);
+  } finally { db.close(); }
+}
+
 /** Resume inspection must not allocate, initialize or migrate registry state. */
 export function queryReadonlyDeploymentStatus(deployId: string): DeploymentStatus | null {
   if (!existsSync(getRegistryDbPath())) return null;

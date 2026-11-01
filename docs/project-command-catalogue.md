@@ -108,7 +108,12 @@ own phase-3A increment; installation and activation were not performed.
 
 ## Remaining phase 3 and phase 4
 
-Next: implement the bounded ticketless repo-setup native admission/writer and its
+**Continuation:** `repo-setup-candidates.md` records the subsequent phase-3B
+source writer/Pi route and current verification. The following paragraph is the
+historical phase-3A handoff, not a claim that the subsequent writer is absent.
+Operator approval/execution/installed acceptance remain outstanding.
+
+Next at this checkpoint: implement the bounded ticketless repo-setup native admission/writer and its
 actual public route, deployment identity, immutable candidate reference, exact
 allowlisted writes, concurrency/exclusion and failure contracts. Reuse existing
 repository-capacity/worktree owners. Ordinary `repo-setup` team classification is

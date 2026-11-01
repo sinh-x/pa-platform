@@ -9,6 +9,7 @@ import { boundJson } from "./tool-result.js";
 import { createPaTicketTool } from "./ticket-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
+import { registerRepoSetupModule } from "./repo-setup.js";
 export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
 import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
@@ -198,6 +199,7 @@ export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
   registerPaToolsModule,
   registerTemplateModule,
   registerJsonWorkflowModule,
+  registerRepoSetupModule,
   registerQuestionModule,
   registerTodoModule,
   registerContextUiModule,
