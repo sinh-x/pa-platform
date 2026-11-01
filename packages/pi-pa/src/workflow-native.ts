@@ -43,7 +43,7 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
     if (context.mode !== "tui" || !context.ui?.select) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "native-foreground", "operator");
     const before = authenticate();
     const view = JSON.stringify({ action: request.action, runId: request.runId, expectedRevision: request.revision, subjectSha256: request.subjectSha256,
-      ...(request.decisionId ? { decisionId: request.decisionId } : {}), subject: request.subject }, null, 2);
+      ...(request.decisionId ? { decisionId: request.decisionId } : {}), subject: request.subject, ...(request.resources ? { resources: request.resources } : {}) }, null, 2);
     // Never truncate an authority view. Oversized decision requests must be reduced by the producer, not silently hidden.
     if (Buffer.byteLength(view, "utf8") > MAX_WORKFLOW_RECORD_BYTES) throw new JsonWorkflowError("WORKFLOW_CONTRACT", "decision-request-size", "package-owner");
     const choices = request.action === "revoke" ? ["Revoke this exact decision", "Cancel"] : CHOICES;

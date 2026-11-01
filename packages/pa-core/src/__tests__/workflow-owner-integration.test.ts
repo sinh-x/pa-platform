@@ -22,7 +22,8 @@ test("preflight reports independent missing prerequisites without executing any 
   const before = structuredClone(counters);
   const result = preflightWorkflow(selection(), "builder", "orchestrator", { capabilities: new Set(), projectProfile: "missing", producerContract: "missing", readEvidence: () => { throw new Error("protected-sentinel"); } }, bundle());
   assert.equal(result.status, "blocked"); assert.equal(result.executionAdmitted, false);
-  assert.ok(result.gates.some(g => g.gateId === "project-command-contract-required"));
+  assert.ok(result.executionPrerequisites.some(g => g.gateId === "project-command-contract-required" && g.outcome === "blocked"));
+  assert.ok(!result.gates.some(g => g.gateId === "project-command-contract-required"));
   assert.ok(result.gates.some(g => g.gateId === "shared-producer-contract-required"));
   assert.ok(result.gates.some(g => g.gateId === "subject-evidence"));
   assert.deepEqual(counters, before);

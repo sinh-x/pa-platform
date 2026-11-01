@@ -158,9 +158,41 @@ const EXECUTION_DIAGNOSTICS = Object.freeze({
     correction: "project developer/runtime owner: preserve the index, commit and original check evidence; reconcile content and rerun affected checks without resetting history",
     resumeAction: "continue only with native current-content/index/tree proof; never relabel pre-change results as a passing new candidate",
   }),
+  EXECUTION_PROJECT_SOURCE_CONFLICT: Object.freeze({
+    stage: "project-command-source-selection",
+    reason: "local catalogue and legacy registration coexist, or a linked checkout supplies administrative command data; no source was selected",
+    correction: "operator/project-command owner: preserve both sources and reconcile explicit registered-primary adoption through the native approval owner; never remove evidence to force legacy fallback",
+    resumeAction: "continue reporting; retry dependent execution only after source selection is explicitly resolved",
+  }),
+  EXECUTION_PROJECT_APPROVAL_REQUIRED: Object.freeze({
+    stage: "project-command-approval",
+    reason: "a repo-local catalogue candidate exists without active native operator approval; candidate bytes confer no execution permission",
+    correction: "operator: inspect and approve the exact catalogue through repo-setup outside managed agents; do not invent approval flags or a self-granting repository file",
+    resumeAction: "continue discovery/drafting; dependent execution remains blocked until its actual owner validates approved bytes and task scope",
+  }),
+  EXECUTION_PROJECT_APPROVAL_REVOKED: Object.freeze({
+    stage: "project-command-approval", reason: "native catalogue approval was revoked or invalidated by credential reset; historical evidence remains retained",
+    correction: "operator: review and reapprove exact catalogue bytes outside agents if still intended; never reuse revoked authority",
+    resumeAction: "preserve the current lineage and evidence; changed approval identity requires separately authenticated execution admission",
+  }),
+  EXECUTION_PROJECT_APPROVAL_STALE: Object.freeze({
+    stage: "project-command-approval", reason: "current catalogue bytes are missing or differ from the native approved digest",
+    correction: "operator/project owner: preserve old evidence and review the changed file set; do not update a hash to impersonate old approval",
+    resumeAction: "continue reporting; resume execution only with exact approved inputs and the correct admission identity",
+  }),
+  EXECUTION_PROJECT_APPROVAL_UNCERTAIN: Object.freeze({
+    stage: "project-command-approval", reason: "protected native catalogue approval or credential evidence is malformed, insecure or unavailable",
+    correction: "operator/runtime owner: preserve and reconcile native evidence; no legacy fallback or guessed approval is supported",
+    resumeAction: "retry only after the original evidence owner resolves uncertainty",
+  }),
+  EXECUTION_PROJECT_TASK_REQUIRED: Object.freeze({
+    stage: "project-command-task-scope", reason: "a reusable catalogue does not supply an authenticated nonempty task-required check set",
+    correction: "task/workflow owner: bind genuine approved matrix checks to the exact subject; never adopt the agent's phase-plan subset as task authority",
+    resumeAction: "continue discovery/reporting; execution remains blocked until exact task authority is present",
+  }),
   EXECUTION_PROJECT_CONTRACT_REQUIRED: Object.freeze({
     stage: "project-command-admission",
-    reason: "ordinary source work requires a configuration-pinned project command/effect contract; missing registration is not legacy host-shell permission",
+    reason: "ordinary source work requires a pinned legacy contract or natively approved repo-local catalogue with task authority; missing registration is not host-shell permission",
     correction: "project command/configuration owner: provide the supported scoped command profile and prerequisites; retain existing work and do not manufacture readiness or disable safety checks",
     resumeAction: "continue source work only with the admitted validated contract; authenticated startup and own partial reporting remain available",
   }),

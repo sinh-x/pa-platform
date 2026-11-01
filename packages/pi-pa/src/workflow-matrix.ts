@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpat
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
-  JsonWorkflowError, RegistryWorkflowJournal, getDb, getDeployPaths, replayWorkflow, requireDecision,
+  JsonWorkflowError, RegistryWorkflowJournal, getDb, getDeployPaths, replayWorkflow, requireDecision, assertRetainedConfigIdentity,
   parseReviewMatrixPlan, parseReviewObjective, parseSourceVersion, parseValidationHandoff, readValidationLedger, assertValidationAuthority,
   readWorkflowEvidence, readCanonicalWorkflowArtifact,
   queryReadonlyDeploymentEvents, queryReviewAuthorizationClaim,
@@ -152,7 +152,7 @@ export function createPiMatrixWorkflowOwner(journal: RegistryWorkflowJournal, au
       const state = replayWorkflow(journal, intent.runId), step = state.definition.steps.find(s => s.id === intent.stepId), current = authenticate();
       if (!step || step.operation.id !== "check.matrix" || step.owner !== "validation" || intent.owner !== "validation" || intent.subjectSha256 !== state.subjectSha256
         || !equal(subject, state.subject) || !equal(caller, current) || (!equal(current, state.caller) && !continues?.(state.caller, current))) blocked();
-      requireDecision(state, intent.decisionId, step.authorization);
+      requireDecision(state, intent.decisionId, step.authorization); assertRetainedConfigIdentity(state);
     },
     async observe(intent) {
       verified = null;

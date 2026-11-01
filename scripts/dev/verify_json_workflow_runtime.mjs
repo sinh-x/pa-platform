@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { accountCases, block, CASE_ANCHORS, cleanEnvironment, committedRead, digest, discoverInstalled, exactCheckout, git, gitBytes, parseArguments, physicalFile,
-  provenance, safeDiagnostic, verifyModules } from "./workflow_installed_support.mjs";
+  provenance, safeDiagnostic, verifyModules, verifyBuildPins } from "./workflow_installed_support.mjs";
 import { createHarness, runHarness } from "./workflow_installed_harness.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../.."), scriptRoot = dirname(fileURLToPath(import.meta.url));
 const ids = ["installed-identity", "installed-entry-points", "paired-handoffs", "selected-procedure", ...Object.keys(CASE_ANCHORS), "isolation-accounting"];
@@ -22,10 +22,9 @@ try {
   if (physicalFile(join(installed.share, "pnpm-lock.yaml"), 2_097_152, true).compare(physicalFile(join(root, "pnpm-lock.yaml"), 2_097_152))) block("WORKFLOW_LOCKFILE_MISMATCH");
   const platformPaths = await import(pathToFileURL(join(installed.share, "packages/pa-core/dist/paths.js")).href);
   const registry = await import(pathToFileURL(join(installed.share, "packages/pa-core/dist/templates/registry.js")).href);
-  selection = registry.selectedTemplates(); exactCheckout(selection.root, metadata.configSha, "CONFIG");
-  if (platformPaths.getTeamsDir() !== join(selection.root, "teams") || selection.configRevision !== metadata.configSha
-    || physicalFile(join(root, ".pa-platform-config.sha"), 64).toString().trim() !== selection.configRevision
-    || physicalFile(join(root, ".pa-template-registry.sha"), 80).toString().trim() !== selection.registrySha256) block("WORKFLOW_SELECTED_PAIR_MISMATCH");
+  const buildPins = verifyBuildPins(root, installed, metadata);
+  selection = registry.selectedTemplates(); exactCheckout(selection.root, selection.configRevision, "CONFIG");
+  if (platformPaths.getTeamsDir() !== join(selection.root, "teams")) block("WORKFLOW_SELECTED_PAIR_MISMATCH");
   const originalResources = new Map();
   const configRead = path => { const bytes = committedRead(selection.root, selection.configRevision, path); originalResources.set(path, digest(bytes)); return bytes; };
   const manifest = JSON.parse(configRead("workflows/manifest.json")), fixtures = JSON.parse(configRead("workflows/fixtures-v1.json")), template = JSON.parse(configRead("contracts/templates-v1.json"));
@@ -37,7 +36,7 @@ try {
   const piBinding = join(installed.share, "native-addons/pi-node-24/better_sqlite3.node");
   identity = { ...installed, ...metadata, node: { executable: realpathSync(process.execPath), version: process.versions.node, abi: process.versions.modules },
     bindings: { core: { path: coreBinding, sha256: digest(physicalFile(coreBinding, 32 * 1024 * 1024, true)) }, pi: { path: piBinding, sha256: digest(physicalFile(piBinding, 32 * 1024 * 1024, true)) } } };
-  passed([{ id: "installed-identity", status: "passed", observations: Object.keys(modules).length, sourceSha, configSha: selection.configRevision, registrySha256: selection.registrySha256 }]);
+  passed([{ id: "installed-identity", status: "passed", observations: Object.keys(modules).length, sourceSha, buildPins, configSha: selection.configRevision, registrySha256: selection.registrySha256 }]);
   const temporary = realpathSync(tmpdir());
   if ([root, selection.root].some(path => { const r = relative(path, temporary); return !r || (!r.startsWith("..") && !r.startsWith("/")); })) block("WORKFLOW_DISPOSABLE_ROOT_REQUIRED");
   evidenceRoot = mkdtempSync(join(temporary, "pa-workflow-installed-"));
@@ -60,7 +59,7 @@ try {
   run = runHarness({ directory, harness, env: environment, reporter: join(scriptRoot, "workflow_test_reporter.mjs"), evidenceRoot }); passed(run.cases);
   for (const [path, sha256] of Object.entries(entry.resources)) if (digest(committedRead(selection.root, selection.configRevision, path)) !== sha256) block("WORKFLOW_SELECTED_RESOURCE_DRIFT");
   for (const [path, sha256] of originalResources) if (digest(committedRead(selection.root, selection.configRevision, path)) !== sha256) block("WORKFLOW_SELECTED_RESOURCE_DRIFT");
-  exactCheckout(root, sourceSha, "RUNTIME"); exactCheckout(selection.root, metadata.configSha, "CONFIG");
+  exactCheckout(root, sourceSha, "RUNTIME"); exactCheckout(selection.root, selection.configRevision, "CONFIG");
   if (JSON.stringify(verifyModules(root, installed)) !== JSON.stringify(modules) || discoverInstalled().physical !== installed.physical || provenance(installed, sourceSha).sha256 !== metadata.sha256) block("WORKFLOW_INSTALLED_IDENTITY_DRIFT");
   const imports = physicalFile(audit, 32 * 1024 * 1024).toString("utf8").trim().split("\n").map(line => JSON.parse(line));
   const actualModules = new Set(imports.map(row => row.path));

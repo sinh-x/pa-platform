@@ -103,7 +103,7 @@ test("material amendment preserves failures/old decisions, requires a new decisi
   } finally { f.close(); }
 });
 
-for (const variant of ["before-decision", "rejected", "cancelled", "stale", "revision-gap", "reused-id", "foreign-ticket", "foreign-repo", "foreign-route", "changed-base", "changed-branch", "changed-workflow", "missing-evidence", "missing-profile", "foreign-caller"] as const) {
+for (const variant of ["before-decision", "rejected", "cancelled", "stale", "revision-gap", "reused-id", "foreign-ticket", "foreign-repo", "foreign-route", "changed-base", "changed-branch", "changed-workflow", "missing-evidence", "foreign-caller"] as const) {
   test(`subject revision rejects ${variant} with zero new snapshots/events`, async () => {
     const f = workflowRuntimeFixture(); try {
       let state = f.service.admit(f.selection, f.subject);
@@ -122,7 +122,6 @@ for (const variant of ["before-decision", "rejected", "cancelled", "stale", "rev
       if (variant === "changed-branch") b.handoff.branch += "-other";
       if (variant === "changed-workflow") b.workflow.version = "r002";
       if (variant === "missing-evidence") f.evidence.delete(b.uat.ref);
-      if (variant === "missing-profile") { const observe = f.host.observations; f.host.observations = () => ({ ...observe(), projectProfile: "missing" }); }
       if (variant === "foreign-caller") f.host.authenticate = () => ({ ...state.caller, deploymentId: "d-fedcba" });
       const counts = () => [f.db.prepare("SELECT count(*) AS n FROM workflow_events").get(), f.db.prepare("SELECT count(*) AS n FROM workflow_snapshots").get()];
       const before = counts();

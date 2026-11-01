@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { verifyBuildPins } from "./workflow_installed_support.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 let mode;
 function blocked(code, source = "paired-template-owner") {
@@ -91,7 +92,7 @@ try {
     assert.equal(typeof consumer.parseReviewBundle, "function");
     host.reviewBundleConsumer = { schemaVersion: "pa-review-bundle/v1", validate: consumer.parseReviewBundle };
   }
-  const modulePaths = ["packages/pa-core/dist/index.js", "packages/pa-core/dist/templates/service.js", "packages/pa-core/dist/templates/schema.js", "packages/pa-core/dist/templates/registry.js", "packages/pa-core/dist/templates/documents.js", "packages/pa-core/dist/templates/document-profiles.js", "packages/pa-core/dist/templates/reference.js", "packages/pa-core/dist/templates/binding-contracts.js", "packages/pa-core/dist/templates/workflow-producers.js", "packages/pa-core/dist/tickets/producer-contract.js", "packages/pa-core/dist/tickets/materialization.js", "packages/pa-core/dist/tickets/validate.js", "packages/pa-core/dist/cli/commands/template.js", "packages/pa-core/dist/validation/review-contract.js", "packages/pa-core/dist/primer/index.js", "packages/pi-pa/dist/cli.js", "packages/pi-pa/dist/adapter.js", "packages/pi-pa/dist/pi-extension/template-tool.js", "packages/pi-pa/dist/pi-extension/index.js"];
+  const modulePaths = ["packages/pa-core/dist/index.js", "packages/pa-core/dist/templates/service.js", "packages/pa-core/dist/templates/schema.js", "packages/pa-core/dist/templates/registry.js", "packages/pa-core/dist/selected-config-source.js", "packages/pa-core/dist/workflows/resources.js", "packages/pi-pa/dist/workflow-config.js", "packages/pi-pa/dist/workflow-host.js", "packages/pa-core/dist/templates/documents.js", "packages/pa-core/dist/templates/document-profiles.js", "packages/pa-core/dist/templates/reference.js", "packages/pa-core/dist/templates/binding-contracts.js", "packages/pa-core/dist/templates/workflow-producers.js", "packages/pa-core/dist/tickets/producer-contract.js", "packages/pa-core/dist/tickets/materialization.js", "packages/pa-core/dist/tickets/validate.js", "packages/pa-core/dist/cli/commands/template.js", "packages/pa-core/dist/validation/review-contract.js", "packages/pa-core/dist/primer/index.js", "packages/pi-pa/dist/cli.js", "packages/pi-pa/dist/adapter.js", "packages/pi-pa/dist/pi-extension/template-tool.js", "packages/pi-pa/dist/pi-extension/index.js"];
   if (host.reviewBundleConsumer) modulePaths.push("packages/pa-core/dist/workflows/contracts.js", "packages/pa-core/dist/workflows/producer.js");
   const candidateModules = Object.fromEntries(modulePaths.map(path => [path, schema.digest(readReviewEvidenceFile(join(root, path), 1_048_576, "candidate.module"))]));
   let installed;
@@ -105,15 +106,15 @@ try {
     if (!match) blocked("TEMPLATE_INSTALLED_PROVENANCE_REQUIRED");
     const share = join(match[1], "share/pa-platform");
     const provenance = schema.object(schema.strictJson(readReviewEvidenceFile(join(share, "review-runtime-provenance.json"), 65536, "installed.provenance")), ["schemaVersion", "sourceSha", "configSha", "packageName", "packageVersion", "objectiveSchema", "matrixSchema"]);
-    assert.equal(provenance.schemaVersion, "pa-review-runtime/v1"); assert.equal(provenance.packageName, "pa-platform"); assert.equal(provenance.sourceSha, git(root, "rev-parse", "HEAD")); assert.equal(provenance.configSha, selection.configRevision);
+    assert.equal(provenance.schemaVersion, "pa-review-runtime/v1"); assert.equal(provenance.packageName, "pa-platform"); assert.equal(provenance.sourceSha, git(root, "rev-parse", "HEAD"));
+    const buildPins = verifyBuildPins(root, { share }, provenance);
     for (const [path, sha256] of Object.entries(candidateModules)) assert.equal(schema.digest(readReviewEvidenceFile(join(share, path), 1_048_576, "installed.module")), sha256, "installed module bytes differ from the built candidate");
-    assert.equal(schema.utf8(readReviewEvidenceFile(join(share, ".pa-template-registry.sha"), 65, "installed.registryPin")).trimEnd(), selection.registrySha256);
     const native = await import(pathToFileURL(join(share, "packages/pi-pa/dist/pi-extension/template-tool.js")));
     if (host.reviewBundleConsumer) {
       const consumer = await import(pathToFileURL(join(share, "packages/pa-core/dist/workflows/contracts.js")));
       assert.equal(typeof consumer.parseReviewBundle, "function"); host.reviewBundleConsumer.validate = consumer.parseReviewBundle;
     }
-    installed = { binary, createTemplateModule: native.createTemplateModule, share, sourceSha: provenance.sourceSha, binarySha256: schema.digest(readReviewEvidenceFile(physical, 1_048_576, "installed.binary")) };
+    installed = { binary, createTemplateModule: native.createTemplateModule, share, buildPins, sourceSha: provenance.sourceSha, binarySha256: schema.digest(readReviewEvidenceFile(physical, 1_048_576, "installed.binary")) };
   }
   const invokeCli = async (argv, body, fixtureHost) => {
     if (installed) {
@@ -167,7 +168,7 @@ try {
   assert.equal(git(selection.root, "status", "--porcelain=v2", "--untracked-files=all"), "");
   git(selection.root, "merge-base", "--is-ancestor", selection.configRevision, "refs/remotes/origin/develop");
   for (const [relative, sha256] of observed) assert.equal(schema.digest(readReviewEvidenceFile(join(selection.root, relative), 1_048_576, "paired.reread")), sha256);
-  console.log(JSON.stringify({ schemaVersion: "pa-template-qualification/v1", mode, status: "passed", selection, comparisons, negativeCases, mergeObservation: "selected revision is an ancestor of cached origin/develop; no live remote query or merge authority claim", evidenceClass: mode === "paired-config" ? "source-built-selected-pair-not-independent-review-or-UAT" : "selected-installed-disposable-not-human-UAT", instructionCoverage: "selected committed generated-primer reference/context parity; policy behavior still requires companion tests", consumers: consumerRows.size, resources: observed.size, runtime: { kind: installed ? "selected-installed" : "source-built", moduleSha256: candidateModules, ...(installed ? { moduleRoot: installed.share, packageRoot: dirname(dirname(installed.share)), sourceSha: installed.sourceSha, binarySha256: installed.binarySha256 } : {}) } }));
+  console.log(JSON.stringify({ schemaVersion: "pa-template-qualification/v1", mode, status: "passed", selection, comparisons, negativeCases, mergeObservation: "selected revision is an ancestor of cached origin/develop; no live remote query or merge authority claim", evidenceClass: mode === "paired-config" ? "source-built-selected-pair-not-independent-review-or-UAT" : "selected-installed-disposable-not-human-UAT", instructionCoverage: "selected committed generated-primer reference/context parity; policy behavior still requires companion tests", consumers: consumerRows.size, resources: observed.size, runtime: { kind: installed ? "selected-installed" : "source-built", moduleSha256: candidateModules, ...(installed ? { moduleRoot: installed.share, packageRoot: dirname(dirname(installed.share)), buildPins: installed.buildPins, sourceSha: installed.sourceSha, binarySha256: installed.binarySha256 } : {}) } }));
 } catch (error) {
   console.log(JSON.stringify({ schemaVersion: "pa-template-qualification/v1", mode: mode ?? "invalid", status: "blocked", diagnostic: `Condition: TEMPLATE_QUALIFICATION_BLOCKED\nSource: ${error.source ?? "runtime-config-qualification"}\nReason: ${typeof error.code === "string" && /^TEMPLATE_[A-Z_]+$/.test(error.code) ? error.code : "required exact pair, producer, installed selection or fixture proof is unavailable"}\nCorrection: Runtime/config owner must deliver all required paired resources and supported consumers; do not install or infer authority.\nResume Action: Reconcile the first missing prerequisite and rerun qualification.`, writes: 0, installation: false, humanUat: false }));
   process.exitCode = 1;

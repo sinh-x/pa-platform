@@ -77,3 +77,21 @@ test("PAP-268 changed registration cannot upgrade or retarget a running command 
   const contract = f.resolve(); f.manifest.checks[0]!.environment.PROJECT_MODE = "different"; f.save();
   assert.throws(() => contract.program(contract.checks[0]!), /EXECUTION_PROJECT_CONTRACT_INVALID/);
 }));
+
+// Mandatory native cases remain in this full/manual entry, not the portable
+// source-observation suite. They require the real trusted executable/confinement.
+test("a running legacy contract rejects a subsequently introduced local candidate before program generation", () => fixture(f => {
+  const contract = f.resolve(), parent = join(f.repo, ".pa"); mkdirSync(parent, { mode: 0o700 });
+  writeFileSync(join(parent, "project-commands.json"), JSON.stringify({ schemaVersion: "project-command-catalogue/v1", repository: { key: "fixture", root: f.repo },
+    effects: ["project-read", "isolated-temp-write"], commands: f.manifest.checks }), { mode: 0o600 });
+  assert.throws(() => contract.assertCurrent(), /EXECUTION_PROJECT_SOURCE_CONFLICT/);
+  assert.throws(() => contract.program(contract.checks[0]!), /EXECUTION_PROJECT_SOURCE_CONFLICT/);
+}));
+
+test("legacy v1 remains exact and all-contract checks remain intact when no local candidate exists", () => fixture(f => {
+  f.manifest.checks.push({ ...f.manifest.checks[0]!, id: "lint", argv: ["test.cjs", "lint"] }); f.save();
+  mkdirSync(join(f.repo, ".pa"), { mode: 0o755 }); // unrelated, no command candidate
+  const contract = f.resolve(); assert.deepEqual(contract.checks.map(check => check.id), ["test", "lint"]);
+  assert.ok(contract.program(contract.checks[0]!).argv.includes("--unshare-all"));
+  assert.ok(contract.program(contract.checks[1]!).argv.includes("--clearenv"));
+}));

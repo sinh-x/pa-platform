@@ -13,7 +13,7 @@ export interface TemplateConsumerPort {
   schemaVersion: "pa-review-bundle/v1";
   validate: (raw: Uint8Array) => unknown;
 }
-export interface TemplateHost { selection?: TemplateSelection; team?: string; mode?: string; reviewBundleConsumer?: TemplateConsumerPort }
+export interface TemplateHost { selection?: TemplateSelection; resources?: ReadonlyMap<string, Uint8Array>; team?: string; mode?: string; reviewBundleConsumer?: TemplateConsumerPort }
 export type TemplateResult = { schemaVersion: "pa-template-result/v1"; unsigned: true; ok: boolean; operation: string; [key: string]: unknown };
 export const TEMPLATE_LIMITATIONS = "Structural drafts only: no human decision, authenticated native facts, readiness, custody, publication or executed UAT is certified.";
 export const MAX_TEMPLATE_RESULT_BYTES = 50 * 1024;
@@ -46,7 +46,7 @@ export function templateService(input: Uint8Array | string | Row, host: Template
     const action = request.action;
     if (typeof action !== "string" || !["list", "show", "render", "validate"].includes(action)) reject("TEMPLATE_ACTION", "request", "supported action required");
     object(request, action === "list" ? ["action"] : action === "show" ? ["action", "id", "version"] : action === "render" ? ["action", "id", "version", "bindings"] : ["action", "id", "version", "bindings", "candidate"]);
-    const loaded = loadTemplateRegistry(host.selection);
+    const loaded = loadTemplateRegistry(host.selection, host.resources);
     sensitive(JSON.stringify(loaded.registry));
     const base = { schemaVersion: "pa-template-result/v1" as const, unsigned: true as const, ok: true, operation: action as string, registry: { schemaVersion: loaded.registry.schemaVersion, runtimeContract: loaded.registry.runtimeContract, ...loaded.identity }, limitations: TEMPLATE_LIMITATIONS };
     let result: TemplateResult;

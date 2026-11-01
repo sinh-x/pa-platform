@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { executionFailure, findSensitiveMatch, loadRepoEntry, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, workflowObject, workflowSha, type RepoEntry } from "@pa-platform/pa-core";
+import { executionFailure, findSensitiveMatch, inspectLocalProjectCommandCatalogue, inspectApprovedProjectCatalogue, selectCatalogueTaskChecks, type ApprovedProjectCatalogue, RepoOperatorError, PROJECT_COMMAND_CATALOGUE_PATH, loadRepoEntry, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, workflowObject, workflowSha, type RepoEntry } from "@pa-platform/pa-core";
 
 export interface ProjectCheck {
   readonly id: string;
@@ -50,6 +50,33 @@ function read(root: string, relative: string): Uint8Array {
     return bytes;
   } catch { throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID"); }
 }
+/** Native fixture seam only; no tool/CLI request can choose an approval reader. */
+export interface ProjectCommandSourceHost { readApproved: typeof inspectApprovedProjectCatalogue }
+const nativeSource: ProjectCommandSourceHost = { readApproved: inspectApprovedProjectCatalogue };
+function commandSource(repoKey: string, repoRoot: string, worktreeRoot: string, legacy: boolean, host = nativeSource): ApprovedProjectCatalogue | null {
+  let local: ReturnType<typeof inspectLocalProjectCommandCatalogue>;
+  try { local = inspectLocalProjectCommandCatalogue(repoKey, repoRoot); } catch { throw invalid(); }
+  if (worktreeRoot !== repoRoot) {
+    let present = false;
+    try { lstatSync(join(worktreeRoot, PROJECT_COMMAND_CATALOGUE_PATH)); present = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw invalid(); }
+    if (present) throw executionFailure("EXECUTION_PROJECT_SOURCE_CONFLICT");
+  }
+  if (local && legacy) throw executionFailure("EXECUTION_PROJECT_SOURCE_CONFLICT");
+  let approved: ApprovedProjectCatalogue | null;
+  try { approved = host.readApproved(repoKey, repoRoot); } catch (error) {
+    if (error instanceof RepoOperatorError) {
+      if (error.code === "REPO_APPROVAL_REVOKED") throw executionFailure("EXECUTION_PROJECT_APPROVAL_REVOKED");
+      if (error.code === "REPO_APPROVAL_STALE") throw executionFailure("EXECUTION_PROJECT_APPROVAL_STALE");
+      if (error.code === "REPO_APPROVAL_CONFLICT") throw executionFailure("EXECUTION_PROJECT_SOURCE_CONFLICT");
+      if (error.code === "REPO_AUTHORITY_IO") throw executionFailure("EXECUTION_PROJECT_APPROVAL_UNCERTAIN");
+    }
+    throw executionFailure("EXECUTION_PROJECT_APPROVAL_REQUIRED");
+  }
+  if (local && !approved) throw executionFailure("EXECUTION_PROJECT_APPROVAL_REQUIRED");
+  if (approved && (!local || approved.catalogue.sha256 !== local.sha256 || legacy)) throw executionFailure("EXECUTION_PROJECT_SOURCE_CONFLICT");
+  return approved;
+}
 function count(value: unknown, maximum: number): number {
   if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > maximum) throw invalid();
   return Number(value);
@@ -63,9 +90,20 @@ const quoted = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 export class ProjectCommandContract {
   readonly sha256: string;
   readonly checks: readonly ProjectCheck[];
-  readonly #pin: NonNullable<RepoEntry["projectCommands"]>;
+  readonly #pin: NonNullable<RepoEntry["projectCommands"]> | null;
+  readonly #local: ApprovedProjectCatalogue | null;
+  readonly #host: ProjectCommandSourceHost;
   readonly #bwrap: string;
-  private constructor(readonly repoKey: string, readonly repoRoot: string, readonly worktreeRoot: string, pin: NonNullable<RepoEntry["projectCommands"]>, observational = false) {
+  private constructor(readonly repoKey: string, readonly repoRoot: string, readonly worktreeRoot: string, pin: NonNullable<RepoEntry["projectCommands"]> | null, observational = false, local: ApprovedProjectCatalogue | null = null, required?: readonly string[], host = nativeSource) {
+    this.#local = local; this.#host = host;
+    if (local) {
+      if (!required?.length) throw executionFailure("EXECUTION_PROJECT_TASK_REQUIRED");
+      if (pin) throw invalid();
+      this.#pin = null;
+      this.checks = Object.freeze(selectCatalogueTaskChecks(local.catalogue, required).map(check => Object.freeze({ ...check, executable: installedExecutable(check.executable) })));
+      this.sha256 = local.catalogue.sha256;
+    } else {
+    if (!pin) throw invalid();
     const rawPin = object(pin, ["manifest", "sha256"]);
     this.#pin = Object.freeze({ manifest: path(rawPin.manifest), sha256: sha(rawPin.sha256) });
     const bytes = read(worktreeRoot, this.#pin.manifest);
@@ -99,37 +137,53 @@ export class ProjectCommandContract {
         environment: Object.freeze(environment), readPaths, prerequisites: Object.freeze(prerequisites), timeoutSeconds: count(row.timeoutSeconds, 1800), maximumOutputBytes: count(row.maximumOutputBytes, 16 * 1024 * 1024) });
     }));
     if (new Set(this.checks.map((check) => check.id)).size !== this.checks.length || new Set(this.checks.map((check) => check.command)).size !== this.checks.length) throw invalid();
-    this.sha256 = workflowDigest(bytes); this.#bwrap = observational ? "" : bubblewrap(); this.assertCurrent();
+    this.sha256 = workflowDigest(bytes);
+    }
+    this.#bwrap = observational ? "" : bubblewrap(); this.assertCurrent();
     if (observational) return; // no namespace/tool/project-command probe at static preflight
     // A fixed native capability probe, not a project check or guessed pass. It
     // must succeed before admitting project dispatch; raw failure is not public.
     try { execFileSync(this.#bwrap, [...this.#sandbox(), "--", installedExecutable(realpathSync(process.execPath)), "--version"], { env: {}, timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }); }
     catch { throw executionFailure("EXECUTION_PROJECT_PREREQUISITE"); }
   }
-  static inspect(repoKey: string, repoRoot: string): { sha256: string; checks: readonly ProjectCheck[] } | null {
+  static registrationIdentity(repoKey: string, repoRoot: string, host = nativeSource): string | null {
+    const repo = loadRepoEntry(repoKey); if (!repo || repo.path !== repoRoot) throw invalid();
+    const local = commandSource(repoKey, repoRoot, repoRoot, repo.projectCommands !== undefined, host);
+    return local ? workflowDigest(JSON.stringify({ source: "catalogue/v1", sha256: local.catalogue.sha256, approvalSha256: local.approvalSha256 }))
+      : repo.projectCommands ? workflowDigest(JSON.stringify(repo.projectCommands)) : null;
+  }
+  static inspect(repoKey: string, repoRoot: string, host = nativeSource): { sha256: string; checks: readonly ProjectCheck[]; source: "legacy" | "catalogue" } | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || realpathSync(repoRoot) !== repoRoot) throw invalid();
+    const local = commandSource(repoKey, repoRoot, repoRoot, repo.projectCommands !== undefined, host);
+    if (local) return { sha256: local.catalogue.sha256, checks: local.catalogue.commands, source: "catalogue" };
     if (!repo.projectCommands) return null;
     const observed = new ProjectCommandContract(repoKey, repoRoot, repoRoot, repo.projectCommands, true);
-    return { sha256: observed.sha256, checks: observed.checks };
+    return { sha256: observed.sha256, checks: observed.checks, source: "legacy" };
   }
   /** Result verification only: validate the exact current command/input bytes
    * without namespace probes or constructing a dispatch program. */
-  static inspectWorktree(repoKey: string, repoRoot: string, worktreeRoot: string): { sha256: string; checks: readonly ProjectCheck[]; inputIdentity(check: ProjectCheck): string } | null {
+  static inspectWorktree(repoKey: string, repoRoot: string, worktreeRoot: string, required?: readonly string[], host = nativeSource): { sha256: string; checks: readonly ProjectCheck[]; inputIdentity(check: ProjectCheck): string } | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();
-    if (!repo.projectCommands) return null;
-    const observed = new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands, true);
+    const local = commandSource(repoKey, repoRoot, worktreeRoot, repo.projectCommands !== undefined, host);
+    if (!repo.projectCommands && !local) return null;
+    const observed = new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands ?? null, true, local, required, host);
     return { sha256: observed.sha256, checks: observed.checks, inputIdentity: check => observed.inputIdentity(check) };
   }
-  static resolve(repoKey: string, repoRoot: string, worktreeRoot: string): ProjectCommandContract | null {
+  static resolve(repoKey: string, repoRoot: string, worktreeRoot: string, required?: readonly string[], host = nativeSource): ProjectCommandContract | null {
     const repo = loadRepoEntry(repoKey);
     if (!repo || repo.path !== repoRoot || repoRoot === worktreeRoot || realpathSync(repoRoot) !== repoRoot || realpathSync(worktreeRoot) !== worktreeRoot) throw invalid();
-    return repo.projectCommands === undefined ? null : new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands);
+    const local = commandSource(repoKey, repoRoot, worktreeRoot, repo.projectCommands !== undefined, host);
+    return !repo.projectCommands && !local ? null : new ProjectCommandContract(repoKey, repoRoot, worktreeRoot, repo.projectCommands ?? null, false, local, required, host);
   }
   assertCurrent(): void {
     const repo = loadRepoEntry(this.repoKey);
-    if (repo?.path !== this.repoRoot || repo.projectCommands?.manifest !== this.#pin.manifest || repo.projectCommands.sha256 !== this.#pin.sha256
+    const local = commandSource(this.repoKey, this.repoRoot, this.worktreeRoot, repo?.projectCommands !== undefined, this.#host);
+    if (repo?.path !== this.repoRoot) throw invalid();
+    if (this.#local) {
+      if (!local || local.approvalSha256 !== this.#local.approvalSha256 || local.catalogue.sha256 !== this.sha256 || this.#pin) throw invalid();
+    } else if (local || !this.#pin || repo.projectCommands?.manifest !== this.#pin.manifest || repo.projectCommands.sha256 !== this.#pin.sha256
       || workflowDigest(read(this.worktreeRoot, this.#pin.manifest)) !== this.sha256) throw invalid();
     for (const check of this.checks) {
       for (const source of check.prerequisites) if (workflowDigest(read(this.worktreeRoot, source.path)) !== source.sha256) throw invalid();

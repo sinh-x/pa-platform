@@ -1730,6 +1730,9 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
 
       process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = capability;
       process.env["PA_DEPLOYMENT_ID"] = parentDeploymentId;
+      // Requirements startup authenticates the ticket's registered repository,
+      // even when it has no admitted workflow or project-command registration.
+      writeFileSync(join(root, "tickets/PAP-191.json"), JSON.stringify({ id: "PAP-191", project: "pa-platform", title: "Requirements startup fixture" }));
       let requirementsSpawns = 0;
       const requirements = await deployWithPi(
         { team: "requirements", mode: "analyze", ticket: "PAP-191", background: true },

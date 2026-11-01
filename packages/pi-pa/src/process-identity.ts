@@ -73,6 +73,7 @@ export function readPiProcessIdentity(deploymentId: string, deploymentDirectory:
 export function recordPiReadonlyRoleProcessIdentity(env: NodeJS.ProcessEnv, deploymentId: string, deploymentDirectory: string, pid: number): void {
   if ((env["PA_TEAM"] === "builder" && ["orchestrator", "implement", "worker"].includes(env["PA_MODE"] ?? ""))
     || (env["PA_TEAM"] === "requirements" && env["PA_MODE"] === "review-auto")
+    || (env["PA_TEAM"] === "repo-setup" && env["PA_MODE"] === "setup")
     || env["PA_TEAM"] === "rogue-one") {
     recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
   }

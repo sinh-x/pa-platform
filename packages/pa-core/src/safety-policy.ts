@@ -172,6 +172,15 @@ export function classifyShellCommand(command: string, options: SafetyPolicyOptio
   let hasOutput = false;
 
   for (const source of sources) {
+    const words = tokenizeShell(source);
+    for (let index = 0; index < words.length; index++) {
+      if (!isShellCommandStart(words, index)) continue;
+      const resolved = resolveBoundedCommand(words, index, new Set(["ppa", "pa-core"]));
+      const cursor = resolved.commandIndex;
+      if (cursor !== undefined && words[cursor + 1]?.value === "repo-setup" && ["approve", "revoke", "credential"].includes(words[cursor + 2]?.value ?? "")) {
+        return deny("protected-path", "write", "Repository contract approval and credential administration are operator-only; run outside managed agents.");
+      }
+    }
     const deletion = classifyDeletion(source, options.trashExecutable ?? "pa");
     if (deletion) return deletion;
     if (FORCE_PUSH.test(source)) {
@@ -358,7 +367,7 @@ function findProtectedShellPath(source: string, cwd?: string, depth = 0): string
   return undefined;
 }
 
-function resolveBoundedCommand(words: ShellWord[], start: number): BoundedCommandResolution {
+function resolveBoundedCommand(words: ShellWord[], start: number, commands = BARE_PATH_OPERAND_COMMANDS): BoundedCommandResolution {
   let cursor = skipLeadingAssignments(words, start);
 
   while (cursor < words.length && !isShellCommandBoundary(words[cursor])) {
@@ -398,7 +407,7 @@ function resolveBoundedCommand(words: ShellWord[], start: number): BoundedComman
   }
 
   const command = words[cursor];
-  if (command && !command.operator && BARE_PATH_OPERAND_COMMANDS.has(basename(command.value))) {
+  if (command && !command.operator && commands.has(basename(command.value))) {
     return { commandIndex: cursor };
   }
   return {};

@@ -15,6 +15,7 @@ import registerPiPaExtension, {
 } from "../pi-extension/index.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
 import { BUNDLED_EDITOR_FACTORIES } from "../pi-extension/bundled-editors.js";
+import { registerRepoSetupModule } from "../pi-extension/repo-setup.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
 test("Pi setup is confirmation-gated and idempotent for local settings", async () => {
@@ -79,7 +80,8 @@ test("trusted entrypoint registers only selected editors while preserving attrib
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 8);
+  assert.equal(PI_PA_MODULES.length, 9);
+  assert.ok(PI_PA_MODULES.includes(registerRepoSetupModule), "the bounded setup module is registered, but inactive for the ordinary fixture role");
   const expectedEditorCommands = BUNDLED_EDITOR_FACTORIES.flatMap((factory) => {
     if (factory.startsWith("pi-vimmode@")) return ["vimmode"];
     if (factory.startsWith("proper-base@")) return ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"];

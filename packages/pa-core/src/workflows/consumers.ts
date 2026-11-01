@@ -5,6 +5,7 @@ import { RegistryWorkflowJournal } from "../registry/workflows.js";
 import { digest, reject, type PackagePermission, type ReviewBundle } from "./contracts.js";
 import { replayWorkflow, requireDecision, type WorkflowState } from "./service.js";
 import { readWorkflowEvidence } from "./evidence.js";
+import { requireWorkflowResources } from "./resources.js";
 
 export interface StructuredTaskBaseline {
   readonly schemaVersion: "structured-task-baseline/v1";
@@ -20,7 +21,7 @@ export interface StructuredConsumerContext {
 /** Structured-route only. Missing/corrupt/revoked authority is a hard denial, never a call to a legacy prose reader. */
 export function authorizeStructuredConsumer(journal: RegistryWorkflowJournal, runId: string, decisionId: string, context: StructuredConsumerContext, permissions: readonly PackagePermission[], read: (ref: string) => Uint8Array = readCanonicalWorkflowArtifact): WorkflowState {
   const state = replayWorkflow(journal, runId); const subject = state.subject;
-  requireDecision(state, decisionId, permissions);
+  requireDecision(state, decisionId, permissions); requireWorkflowResources(state);
   if (subject.repository.key !== context.repoKey || subject.repository.root !== context.repoRoot || subject.ticket !== context.ticket
     || subject.handoff.branch !== context.branch || subject.route.team !== context.team || subject.route.mode !== context.mode
     || subject.requirements.ref !== context.primaryRequirementsRef) reject("WORKFLOW_AUTHORITY");

@@ -53,6 +53,14 @@ export function provenance(installed, candidate) {
   if (value.schemaVersion !== "pa-review-runtime/v1" || value.packageName !== "pa-platform" || value.sourceSha !== candidate || !/^[a-f0-9]{40}$/.test(value.configSha)) block("WORKFLOW_INSTALLED_CANDIDATE_MISMATCH");
   return { ...value, sha256: digest(Buffer.from(raw)) };
 }
+export function verifyBuildPins(root, installed, metadata) {
+  const configSha = physicalFile(join(root, '.pa-platform-config.sha'), 64).toString().trim();
+  const registrySha256 = physicalFile(join(root, '.pa-template-registry.sha'), 80).toString().trim();
+  if (!/^[a-f0-9]{40}$/.test(configSha) || !/^[a-f0-9]{64}$/.test(registrySha256) || metadata.configSha !== configSha
+    || physicalFile(join(installed.share, '.pa-platform-config.sha'), 64, true).toString().trim() !== configSha
+    || physicalFile(join(installed.share, '.pa-template-registry.sha'), 80, true).toString().trim() !== registrySha256) block('WORKFLOW_BUILD_PROVENANCE_MISMATCH');
+  return { configSha, registrySha256 };
+}
 export function implementationFiles(root) {
   const result = [];
   function walk(directory) {
@@ -98,13 +106,30 @@ export function safeDiagnostic(error) {
   return { code, gateId: error instanceof QualificationBlocked ? error.gate : "qualification", diagnostic: `Condition: ${code}\nSource: exact installed workflow qualification\nReason: a required candidate, selected pair, native case or unchanged-state proof is unavailable.\nCorrection: reconcile the missing prerequisite through its owner; do not install, enable, skip cases or import outcomes to bypass it.\nResume Action: rerun the unchanged verifier against the exact supported candidate and selected pair.` };
 }
 export const REQUIRED_TEST_FILES = Object.freeze([
-  "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts",
+  "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts", "packages/pa-core/src/__tests__/workflow-startup.test.ts",
+  "packages/pi-pa/src/__tests__/workflow-startup.test.ts", "packages/pa-core/src/__tests__/selected-config-compatibility.test.ts", "packages/pa-core/src/__tests__/workflow-resources.test.ts", "packages/pi-pa/src/__tests__/workflow-config.test.ts",
+  "packages/pa-core/src/__tests__/project-command-catalogue.test.ts", "packages/pa-core/src/__tests__/project-command-catalogue-files.test.ts",
+  "packages/pi-pa/src/__tests__/project-command-source.test.ts", "packages/pi-pa/src/__tests__/project-command-contract.test.ts",
+  "packages/pa-core/src/__tests__/repo-setup.test.ts", "packages/pi-pa/src/__tests__/repo-setup-native.test.ts",
+  "packages/pa-core/src/__tests__/repo-contract-authority.test.ts", "packages/pa-core/src/__tests__/operator-terminal.test.ts",
+  "packages/pi-pa/src/__tests__/project-command-catalogue-execution.test.ts",
   "packages/pa-core/src/__tests__/execution-custody.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-runtime.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-decision.test.ts", "packages/pi-pa/src/__tests__/pi-execution-custody.test.ts", "packages/pi-pa/src/__tests__/native-execution-evidence.test.ts",
 ]);
 // Exact native test events, not caller report flags. Every anchor is mandatory;
 // omission/rename requires a reviewed verifier change, never silent skipping.
 export const CASE_ANCHORS = Object.freeze({
   "static-zero-effects": ["preflight reports independent missing prerequisites without executing any effect/probe"],
+  "startup-stage-separation": ["requirements admission/revision defers missing execution profile without inventing effect authority", "source.local request fails closed at its own boundary with no intent or effect for missing execution contract", "check.matrix request fails closed at its own boundary with no intent or effect for unsupported execution contract", "native observations distinguish uninspected, registered missing, supported and unsupported before a subject exists"],
+  "startup-causal-diagnostics": ["fresh status/next expose selected-without-run and authenticated pre-subject repository context", "producer preserves selected-pair and capability causes instead of erasing them as WORKFLOW_SOURCE", "fresh native read and CLI service projections agree on later execution blockers and true pair failure"],
+  "compatible-resource-selection": ["one runtime supports multiple committed compatible config and registry revisions without package-pin edits", "committed source reads do not run selected Git monitors, hooks, replacements or ambient Git configuration"],
+  "retained-config-continuation": ["native resource owner retains exact committed templates/instructions and uses them across compatible config advances", "default native template host and planner retain the exact run config after compatible selected changes", "legacy native continuation is readable but cannot acquire current templates or planner instructions"],
+  "catalogue-task-scope": ["catalogue is static immutable data with an exact raw-byte identity, not executable or approval evidence", "catalogue semantics require every exact task check but not every catalogue member"],
+  "catalogue-source-selection": ["local catalogue absence is a read-only observation and never bootstraps directories or approvals", "unapproved local catalogue never admits a profile or command, including with no available confinement executable", "legacy/local conflict rejects before command or confinement admission rather than selecting legacy", "a running legacy contract rejects a subsequently introduced local candidate before program generation", "legacy v1 remains exact and all-contract checks remain intact when no local candidate exists"],
+  "repo-setup-candidate-writer": ["repo setup stages only fixed candidate bytes with exact CAS reference and no approval/execution or Git/source changes", "repo setup refuses retained capacity and forged/expired owners without reclaiming evidence", "repo setup reauthenticates before publication and retains uncertain staged bytes on lost native actor"],
+  "repo-setup-native-admission": ["repo setup native tool authenticates actual registry/process and stages only an unapproved fixed-path catalogue", "repo setup native host rejects environment-only role, changed registry bindings, child/custody/rogue identity and stale process", "repo setup native host refuses overlapping live/uncertain foreground deployment rather than forcing terminal state", "repo setup route is ticketless Pi CLI primary-only and cannot become builder/OpenCode/API/background/override launch", "repo setup managed-agent guard denies shell/editor/approval/workflow/child/wrapper tools, including malformed framing"],
+  "repo-operator-approval": ["operator owner uses protected native hash evidence and exact local-exclude effect, never a task execution grant", "operator approval rechecks displayed candidate and exclude bytes before issuance; tracked source/negations cannot be repaired into authority", "operator CLI displays exact native candidate, requires fresh hidden-secret transport, rejects caller flags and clears returned secret buffers", "native hidden terminal transport disables echo before prompting, restores TTY and does not reuse a prior secret"],
+  "repo-operator-revocation": ["normal credential rotation preserves approvals; revocation and forgotten-password reset retain history and deny new consumption until reapproval", "reset racing final native approval publication invalidates the old epoch without deleting its historical issuance", "one machine credential reset invalidates every repository approval, never only the selected project", "default native operator origin rejects managed contexts before reading or creating credential storage"],
+  "repo-catalogue-execution": ["native catalogue executes every selected task check, not unused catalogue members, under unchanged real confinement", "native catalogue resolution refuses absent/empty/duplicate/outsider task scope and cannot run a catalogue without native approval", "native catalogue revocation/reset/drift invalidates a running contract before another dispatch without legacy fallback", "native catalogue binds selected prerequisite bytes and cannot use a linked administrative substitute"],
   "structured-decision": ["synthetic UI fixture displays exact subject/permissions; outcome and principal are not model inputs", "evidence mutation during the native dialog cannot mint a decision"],
   "package-effects": ["actual ticket publication/queue owners publish exact pair once and preserve counters and audit on replay", "default Pi launcher and native execution owner consume the structured grant and reread revocation"],
   "publication-interruption": ["interruption after first member resumes only the absent member using the SAME durable intent", "conflicting bytes, symlinks and foreign primary evidence are preserved, never overwritten or queued"],

@@ -1,7 +1,7 @@
 import {
   adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable, structuredTaskBaseline, requireDecision,
   authorizeStructuredConsumer, replayWorkflow, readWorkflowEvidence, readCanonicalWorkflowArtifact, parseReviewMatrixPlan, TicketStore, requireTicketLinkedBranch,
-  JsonWorkflowError, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
+  JsonWorkflowError, assertRetainedConfigIdentity, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
 
@@ -54,6 +54,7 @@ export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, t
     const state = journal ? adoptedWorkflow(journal, repoKey, ticketId) : null;
     const store = new TicketStore(); assertWorkflowMarkerAvailable(repoKey, ticketId, state !== null, store);
     if (!state || !journal) return null;
+    assertRetainedConfigIdentity(state);
     // Actual files/status alone cannot skip PAPC dependencies or an unsettled owner intent.
     for (const operation of ["publication.pair", "ticket.queue"]) {
       const steps = state.definition.steps.filter(step => step.operation.id === operation);
@@ -76,6 +77,16 @@ export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, t
     return baseline;
   });
 }
+/** Exact required set from the authenticated, approved task subject, never the
+ * agent's phase-plan subset or the entire reusable catalogue. Data only. */
+export function taskRequiredCommands(state: WorkflowState): readonly string[] {
+  const matrix = parseReviewMatrixPlan(readCanonicalWorkflowArtifact(state.subject.requirements.ref), state.subject.matrix.ref).matrix;
+  const commands = state.subject.scope.checks.map(ref => {
+    const command = matrix.commands.find(command => command.id === ref.commandId); if (!command) return deny(); return command.command;
+  });
+  if (new Set(commands).size !== commands.length) return deny();
+  return Object.freeze(commands);
+}
 /** Fresh authority at every source/check/phase boundary. Native custody remains a separate necessary gate. */
 export function authorizePiStructuredWork(repoKey: string, repoRoot: string, ticket: string, branch: string, permission: PackagePermission, plan?: { paths: readonly string[]; checks: readonly string[]; requirements?: readonly string[] }, authority?: StructuredTaskBaseline["authority"]): WorkflowState | null {
   return withExistingWorkflowJournal(journal => {
@@ -83,6 +94,7 @@ export function authorizePiStructuredWork(repoKey: string, repoRoot: string, tic
     assertWorkflowMarkerAvailable(repoKey, ticket, state !== null);
     if (!state || !journal) { if (authority) return deny(); return null; }
     if (!authority) return deny(); // an already-running legacy lineage cannot inherit a later v1 grant
+    assertRetainedConfigIdentity(state);
     if (authority.runId !== state.runId || authority.subjectSha256 !== state.subjectSha256 || authority.decisionId !== packageDecision(state)) return deny();
     const source = new TicketStore().get(ticket)!.doc_refs.filter(r => r.type === "requirements" && r.primary);
     if (source.length !== 1) return deny();
@@ -96,6 +108,7 @@ export function authorizePiStructuredWork(repoKey: string, repoRoot: string, tic
       if (!profile) return deny();
       const allowed = scope.checks.map(ref => matrix.commands.find(c => c.id === ref.commandId)!);
       if (plan.checks.some(name => !allowed.some(c => c && profile.checks.some(p => (p.id === name || p.command === name) && p.command === c.command)))) return deny();
+      if (profile.source === "catalogue" && JSON.stringify(plan.checks.map(name => profile.checks.find(p => p.id === name || p.command === name)?.command)) !== JSON.stringify(taskRequiredCommands(state))) return deny();
     }
     return state;
   });

@@ -37,6 +37,8 @@ export interface GeneratePrimerOptions {
   invocationChannel?: DeploymentInvocationChannel;
   /** Derived pinned registry projection, never request/environment authority. Pi only. */
   workflow?: WorkflowPrimerView;
+  /** Native verified projection of the original journal resources, not a selector. */
+  configResourceRoot?: string;
 }
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
@@ -67,6 +69,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       "## JSON Workflow (pinned)",
       `Run: ${options.workflow.runId}; definition: ${options.workflow.workflowId}/${options.workflow.version}; raw SHA-256: ${options.workflow.sha256}; config: ${options.workflow.configRevision}.`,
       `Next owner: ${options.workflow.nextOwner}. Next action: ${options.workflow.nextAction}.`,
+      ...(options.configResourceRoot ? [`Retained instruction/template resources: ${options.configResourceRoot}. Use these pinned files; do not substitute current selected config bytes.`] : []),
       "Use pa_workflow for current status/next and pa_decision for native capture/revocation. This primer is a projection, never approval, completion or effect admission. Do not parse approval paragraphs or fall back to legacy on a v1 failure.",
       "",
     ] : []),
