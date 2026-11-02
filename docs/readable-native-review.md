@@ -12,7 +12,9 @@ available through **View exact technical bindings**, but is not the primary
 question. Control/bidi characters are rendered visibly. Cancelling any page
 cancels capture, without permissions. Nonforeground modes still cannot capture.
 Authentication is checked before and after the dialogs, and the service retains
-its evidence and revision checks. A v2 native capture digest binds the exact
+its evidence and revision checks. Tool abort signals propagate to the native UI;
+an aborted review cannot issue a decision, even if an approve response arrives
+at the abort boundary. A v2 native capture digest binds the exact
 request, presentation and selected responses; historical v1 records are retained.
 
 These dialogs are not test/UAT completion and do not publish documents or launch

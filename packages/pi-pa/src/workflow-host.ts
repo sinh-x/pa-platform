@@ -66,7 +66,7 @@ export function piRetainedTemplateHost(): TemplateHost {
 export type PiWorkflowMutation = { action: "admit"; producer: string } | { action: "revise"; revision: number; producer: string } | { action: "request-step"; revision: number; stepId: string }
   | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "recover"; revision: number; decisionId: string; subjectSha256: string } | { action: "revoke"; revision: number; decisionId: string };
 /** Foreground mutation host. Public JSON never supplies a caller, callback, selected config, effect owner or outcome. */
-export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiWorkflowContext): Promise<Record<string, unknown>> {
+export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiWorkflowContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const authenticate = () => authenticatePiWorkflowCaller(context);
   const caller = authenticate(), journal = new RegistryWorkflowJournal(getDb()), continues = createPiWorkflowContinuation(authenticate);
   let state = adoptedWorkflow(journal, caller.repoKey, caller.ticket);
@@ -83,7 +83,7 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
     subject = produceWorkflowSubject(selection, Buffer.from(request.producer), { ...(request.action === "revise" ? pinnedTemplates : {}), team: caller.team, mode: caller.mode }).subject;
   }
   const store = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
-  const host: WorkflowHost = { authenticate, resources: captureWorkflowResources, observations: () => piWorkflowObservations(subject, undefined, pinnedTemplates), capture: createPiWorkflowCapture(context, authenticate),
+  const host: WorkflowHost = { authenticate, resources: captureWorkflowResources, observations: () => piWorkflowObservations(subject, undefined, pinnedTemplates), capture: createPiWorkflowCapture(context, authenticate, signal),
     owners: new Map([...createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), ["source.local", createPiSourceWorkflowOwner(journal, authenticate, continues)] as const, ["check.matrix", createPiMatrixWorkflowOwner(journal, authenticate, continues)] as const]), continues, now: () => new Date().toISOString() };
   const service = new JsonWorkflowService(journal, host);
   let decision: unknown;

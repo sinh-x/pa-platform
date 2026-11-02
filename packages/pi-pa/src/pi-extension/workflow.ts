@@ -34,7 +34,7 @@ function tool(name: "workflow" | "decision", options: PiJsonWorkflowOptions, lif
           if (Object.keys(input).length !== 1 || typeof input.request !== "string" || Buffer.byteLength(input.request) > MAX_WORKFLOW_RECORD_BYTES) return denied();
           const parsed = parseWorkflowRequest(input.request), request = mutation(parsed, name);
           if (request && _signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-request", "operator");
-          if (request) result = await (options.mutate ?? mutatePiWorkflow)(request, context as PiWorkflowContext);
+          if (request) result = await (options.mutate ?? mutatePiWorkflow)(request, context as PiWorkflowContext, _signal);
           else {
             const row = parsed as Record<string, unknown>;
             if (name === "decision") row.action = `decision-${row.action as string}`;

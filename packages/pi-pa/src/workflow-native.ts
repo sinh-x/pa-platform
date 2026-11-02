@@ -51,9 +51,10 @@ function pages(lines: string[]): string[] {
  * pages before the decision. Exact JSON is optional technical detail, never the
  * primary question. Capture evidence binds both source bytes and presentation.
  */
-export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate: () => WorkflowCaller = () => authenticatePiWorkflowCaller(context)): WorkflowHost["capture"] {
+export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate: () => WorkflowCaller = () => authenticatePiWorkflowCaller(context), signal?: AbortSignal): WorkflowHost["capture"] {
   return async request => {
     if (context.mode !== "tui" || !context.ui?.select) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "native-foreground", "operator");
+    if (signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-native-request", "operator");
     const before = authenticate(), subject = request.subject;
     const recovering = request.action !== "revoke" && Boolean(request.decisionId);
     const raw = JSON.stringify(request, null, 2);
@@ -80,7 +81,9 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
     ]);
     const technical = pages(raw.split("\n")), transcript: { title: string; selected: string | null }[] = [];
     const select = async (title: string, choices: string[]) => {
-      const selected = await context.ui!.select(title, choices);
+      if (signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-native-request", "operator");
+      const selected = await context.ui!.select(title, choices, signal ? { signal } : undefined);
+      if (signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-native-request", "operator");
       transcript.push({ title, selected: choices.includes(selected ?? "") ? selected! : null }); return selected;
     };
     const readPages = async (label: string, content: string[]) => {
@@ -98,6 +101,7 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
       }
     }
     const after = authenticate();
+    if (signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-native-request", "operator");
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new JsonWorkflowError("WORKFLOW_CONFLICT", "stale-native-caller", "launcher-owner");
     const outcome = request.action === "revoke" ? selected === "Revoke this exact decision" ? "approved" : "cancelled"
       : selected === CHOICES[0] ? "approved" : selected === CHOICES[1] ? "rejected" : selected === CHOICES[2] ? "changes-requested" : "cancelled";

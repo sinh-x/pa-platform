@@ -83,6 +83,12 @@ test("default native mutation host recovers a cancelled package through supporte
     appendRegistryEvent({ deployment_id: id, team: "requirements", mode: "analyze", event: "started", runtime: "pi", binary: "ppa", invocation_channel: "cli", timestamp: new Date().toISOString(), pid: process.pid,
       repo: f.state.subject.repository.root, repo_root: f.state.subject.repository.root, worktree_root: f.state.subject.repository.root, ticket_id: "EX-1", resumed_from_deployment_id: "d-abcdef" });
     f.approve();
+    const abort = new AbortController(), select = f.context.ui!.select;
+    f.context.ui!.select = async (title, choices, options) => {
+      const answer = await select(title, choices, options); if (choices[0]?.startsWith("Approve")) abort.abort(); return answer;
+    };
+    await assert.rejects(mutatePiWorkflow({ action: "recover", revision: 2, decisionId: cancelled.decisionId, subjectSha256: f.state.subjectSha256 }, f.context, abort.signal), /cancelled-native-request/);
+    assert.equal(f.service.status(f.state.runId).revision, 2); f.context.ui!.select = select;
     const result = await mutatePiWorkflow({ action: "recover", revision: 2, decisionId: cancelled.decisionId, subjectSha256: f.state.subjectSha256 }, f.context);
     assert.equal(result.ok, true); const state = f.service.status(f.state.runId);
     assert.equal(state.revision, 3); assert.deepEqual(state.resources, f.state.resources); assert.equal(state.configRevision, f.state.configRevision);

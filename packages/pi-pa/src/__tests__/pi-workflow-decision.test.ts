@@ -64,6 +64,17 @@ test("cancelled recovery explicitly presents the prior decision and requires a n
   assert.equal(cancelled.outcome, "cancelled");
 });
 
+test("aborted native review cannot issue authority before opening or after a final approve response", async () => {
+  const before = new AbortController(); before.abort();
+  await assert.rejects(createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async () => { assert.fail("must not open aborted review"); } } }, () => caller, before.signal)(request), /cancelled-native-request/);
+  const during = new AbortController();
+  await assert.rejects(createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async (_title, choices, options) => {
+    assert.equal(options?.signal, during.signal);
+    if (choices[0]?.startsWith("Approve")) during.abort();
+    return choices[0];
+  } } }, () => caller, during.signal)(request), /cancelled-native-request/);
+});
+
 test("oversized native requests are refused, not truncated into a partial approval", async () => {
   const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async () => { throw new Error("must not open"); } } }, () => caller);
   await assert.rejects(capture({ ...request, subject: { ...subject, scope: { ...subject.scope, files: ["x".repeat(65_536)] } } }), /WORKFLOW_CONTRACT/);
