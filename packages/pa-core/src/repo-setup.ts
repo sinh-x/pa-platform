@@ -42,6 +42,15 @@ function parseReference(value: unknown, repository: CatalogueRepository): RepoSe
     || typeof row.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(row.sha256)) return fail("SETUP_REQUEST");
   return reference(repository, row.sha256);
 }
+function runtimeObservation() {
+  let nodeExecutable: string | null = null;
+  try {
+    const executable = realpathSync(process.execPath), stat = lstatSync(executable);
+    if (/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/node$/.test(executable) && stat.isFile() && stat.uid === 0 && !(stat.mode & 0o222)) nodeExecutable = executable;
+  } catch { /* No guessed executable or PATH lookup fallback. */ }
+  return { schemaVersion: "repo-setup-runtime/v1", nodeExecutable, nodeVersion: process.versions.node, modulesAbi: process.versions.modules,
+    platform: process.platform, architecture: process.arch, projectCompatibility: "unproven" };
+}
 function snapshot(stat: Stats): string { return [stat.dev, stat.ino, stat.mode, stat.uid, stat.nlink, stat.size, stat.mtimeMs, stat.ctimeMs].join(":"); }
 function syncDirectory(path: string): void {
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -129,7 +138,7 @@ export function repoSetupService(request: string, host: RepoSetupHost): Record<s
             return { ok: true, observation, executionReady: false };
           }
           const current = source(repository, worktrees);
-          if (action === "inspect") return { ok: true, state: current ? "candidate-unapproved" : "missing", candidate: current, executionReady: false };
+          if (action === "inspect") return { ok: true, state: current ? "candidate-unapproved" : "missing", candidate: current, runtime: runtimeObservation(), executionReady: false };
           if (!same(current, expected)) return fail("SETUP_STALE");
           const catalogue = parseProjectCommandCatalogue(bytes!, repository);
           verifyRepoSetupPrerequisites(repository, catalogue);

@@ -54,6 +54,10 @@ test("repo setup stages only fixed candidate bytes with exact CAS reference and 
 
 test("repo setup native discovery/read/search/observe is bounded and never stages or executes", () => fixture(f => {
   const head = f.git("rev-parse", "HEAD"), index = readFileSync(join(f.repo, ".git", "index"));
+  const inspection = f.request({ action: "inspect" });
+  const runtime = inspection.runtime as { nodeExecutable: string | null; nodeVersion: string; modulesAbi: string; projectCompatibility: string };
+  assert.equal(runtime.nodeVersion, process.versions.node); assert.equal(runtime.modulesAbi, process.versions.modules); assert.equal(runtime.projectCompatibility, "unproven");
+  if (runtime.nodeExecutable !== null) { assert.match(runtime.nodeExecutable, /^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/node$/); assert.equal(lstatSync(runtime.nodeExecutable).mode & 0o222, 0); }
   const discovery = f.request({ action: "discover", path: "." });
   assert.equal(discovery.ok, true); assert.ok(JSON.stringify(discovery).includes("test.cjs"));
   assert.equal(JSON.stringify(discovery).includes('".git"'), false);

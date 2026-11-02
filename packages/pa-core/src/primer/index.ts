@@ -506,7 +506,7 @@ const REPO_SETUP_TOOL_REFERENCE = [
   '- {"action":"discover","path":"."} lists a bounded directory; descend with repository-relative paths.',
   '- {"action":"read","path":"package.json"} reads a bounded UTF-8 file; search adds action=search and a literal query.',
   '- {"action":"observe","paths":["package.json"]} returns native SHA256 input observations. Never invent hashes.',
-  '- {"action":"inspect"} reads the current candidate reference.',
+  '- {"action":"inspect"} reads the candidate reference and native Node executable/version/ABI observation. A null executable or incompatible project requirement is a blocker, not permission to guess or probe a command.',
   '- {"action":"stage","expected":null,"candidate":"<raw catalogue JSON>"} stages only the fixed candidate; updating requires the exact previous reference. Prerequisite hashes are rechecked.',
   "These discovery operations are registered by the runtime itself; generic read/search tool availability is not assumed. Linux descriptor confinement, owned non-symlink files, sensitive filtering and finite input/output limits apply.",
 ].join("\n");

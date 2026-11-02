@@ -20,6 +20,14 @@ in `repo-contract-approval.md` and `repo-catalogue-execution.md`.
 {"action":"observe","paths":["package.json","package-lock.json"]}
 ```
 
+`inspect` also returns `runtime={schemaVersion:"repo-setup-runtime/v1",
+nodeExecutable,nodeVersion,modulesAbi,platform,architecture,projectCompatibility:
+"unproven"}`. The executable is the current process's observed root-owned,
+nonwritable Nix-store Node binary or null; no PATH lookup, command probe or
+arbitrary executable resolution occurs. It is host information, **not project
+compatibility**, approval or execution admission. Null/incompatible hosts must
+be reported as blockers rather than guessed store paths or shell probing.
+
 These operations are implemented by the **registered native tool**, not an assumed
 builtin grep/glob executable. `discover` lists one directory, sorted, with at most
 512 scanned entries; descend explicitly. `read` returns UTF-8 text at most 32768

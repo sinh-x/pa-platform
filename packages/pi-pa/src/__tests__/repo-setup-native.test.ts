@@ -63,10 +63,11 @@ test("fresh Pi SDK setup session exposes native discovery without assuming built
   try {
     assert.deepEqual(extensionsResult.errors, []); assert.deepEqual(session.getActiveToolNames(), ["pa_repo_setup"]);
     const tool = session.agent.state.tools.find(tool => tool.name === "pa_repo_setup")!; assert.ok(tool);
-    for (const request of [{ action: "discover", path: "." }, { action: "read", path: "test.cjs" }, { action: "search", path: "test.cjs", query: "prerequisite" }, { action: "observe", paths: ["test.cjs"] }]) {
+    for (const request of [{ action: "inspect" }, { action: "discover", path: "." }, { action: "read", path: "test.cjs" }, { action: "search", path: "test.cjs", query: "prerequisite" }, { action: "observe", paths: ["test.cjs"] }]) {
       const result = await tool.execute("fresh-sdk", { request: JSON.stringify(request) });
       const value = JSON.parse(result.content.filter(c => c.type === "text").map(c => c.text).join(""));
       assert.equal(value.ok, true, request.action); assert.equal(value.executionReady, false);
+      if (request.action === "inspect") { assert.equal(value.runtime.nodeVersion, process.versions.node); assert.equal(value.runtime.projectCompatibility, "unproven"); }
     }
     assert.equal(existsSync(f.file), false);
     const primer = generatePrimer({ runtime: "pi", teamConfig: { name: "repo-setup", description: "Fixture", objective: "Candidate-only setup", agents: [], deploy_modes: [{ id: "setup", label: "Setup", require_ticket: false }] }, mode: "setup" });
