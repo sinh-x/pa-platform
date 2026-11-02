@@ -1,7 +1,7 @@
 import {
   adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable, structuredTaskBaseline, requireDecision,
   authorizeStructuredConsumer, replayWorkflow, readWorkflowEvidence, readCanonicalWorkflowArtifact, parseReviewMatrixPlan, TicketStore, requireTicketLinkedBranch,
-  JsonWorkflowError, assertRetainedConfigIdentity, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
+  JsonWorkflowError, assertRetainedConfigIdentity, workflowPackageReview, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
 
@@ -48,6 +48,35 @@ export function parseStructuredLaunchNote(note: string | undefined): StructuredT
   if (!match) return deny();
   return { runId: match[1]!, decisionId: match[2]!, subjectSha256: match[3]! };
 }
+/** Diagnostic projection only; no admission, branch linking or checkout effect. */
+export function structuredLaunchReadiness(state: WorkflowState, branchLinked: boolean) {
+  const packageReview = workflowPackageReview(state), blockers: string[] = [];
+  if (!packageReview.approved) blockers.push(`package approval is ${packageReview.outcome}; operator/workflow owner must resolve the exact retained decision`);
+  for (const operation of ["publication.pair", "ticket.queue"]) {
+    const steps = state.definition.steps.filter(step => step.operation.id === operation);
+    if (steps.length !== 1 || state.outcomes[steps[0]!.id] !== "completed" || state.pending.some(intent => intent.owner === "tickets")) blockers.push(`${operation} is incomplete; tickets owner must complete/reconcile the existing workflow step`);
+  }
+  if (!branchLinked) blockers.push("linked branch is missing or invalid; repair only through the owning workflow, not as a substitute for package approval/publication");
+  return { packageReview, blockers };
+}
+export function assertPiStructuredLaunchPrerequisites(repoKey: string, repoRoot: string, ticketId: string, branchLinked: boolean): void {
+  withExistingWorkflowJournal(journal => {
+    const state = journal ? adoptedWorkflow(journal, repoKey, ticketId) : null;
+    if (!state) return;
+    if (state.subject.repository.key !== repoKey || state.subject.repository.root !== repoRoot) return deny();
+    const report = structuredLaunchReadiness(state, branchLinked);
+    if (!report.blockers.length) return;
+    let profile = "uninspected";
+    try { profile = ProjectCommandContract.inspect(repoKey, repoRoot) ? "supported" : "missing"; } catch { profile = "unsupported"; }
+    const error = new JsonWorkflowError("WORKFLOW_AUTHORITY", "structured-launch-readiness", "workflow-owner");
+    error.message = ["Condition: structured builder launch blocked", "Source: retained native workflow and ticket branch evidence", `Reason: WORKFLOW_AUTHORITY; ${report.blockers.join("; ")}`,
+      `Separate later execution prerequisite: project-command profile ${profile}; this does not block safe document drafting/review.`,
+      `Correction: ${report.packageReview.recovery?.nextAction ?? "Complete the exact native package approval/publication/queue gates through their existing owners."}`,
+      "Resume Action: inspect pa_workflow status/next; preserve the admitted run. Queue status or a manual branch link does not establish readiness."].join("\n");
+    throw error;
+  });
+}
+
 /** Automatic adoption is sticky in registry + ticket; malformed/revoked v1 never enters legacy prose readers. */
 export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, ticketId: string): StructuredTaskBaseline | null {
   return withExistingWorkflowJournal(journal => {

@@ -12,7 +12,7 @@ import { createTicketWorkflowOwners, TicketStore, appendRegistryEvent, closeDb, 
 import { workflowRuntimeFixture } from "../../../pa-core/src/__tests__/workflow-runtime-fixture.js";
 import { bytes } from "../../../pa-core/src/__tests__/workflow-fixtures.js";
 import { digest } from "../../../pa-core/src/workflows/contracts.js";
-import { resolvePiStructuredBaseline, structuredLaunchNote } from "../workflow-consumers.js";
+import { assertPiStructuredLaunchPrerequisites, resolvePiStructuredBaseline, structuredLaunchNote, structuredLaunchReadiness } from "../workflow-consumers.js";
 import { createPiWorkflowContinuation } from "../workflow-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { createJsonWorkflowModule } from "../pi-extension/workflow.js";
@@ -128,6 +128,18 @@ test("native public read tools match core JSON and reject outcome/actor/result/u
   const primer = generatePrimer({ runtime: "pi", teamConfig: { name: "requirements", description: "Synthetic", objective: "Synthetic", agents: [] }, workflow: view });
   assert.ok(primer.includes(f.state.runId)); assert.ok(primer.includes(f.bundle.workflow.sha256)); assert.ok(primer.includes("projection, never approval"));
 }));
+test("structured launch diagnostics separate cancelled package/publication/queue, missing branch and later command prerequisites", () => fixture(async f => {
+  const state = structuredClone(f.state); state.decisions.at(-1)!.outcome = "cancelled"; state.decisions.at(-1)!.permissions = [];
+  state.outcomes = { approve: "cancelled" }; state.attempts.at(-1)!.outcomes = state.outcomes;
+  const report = structuredLaunchReadiness(state, false);
+  assert.equal(report.packageReview.outcome, "cancelled"); assert.equal(report.packageReview.recovery?.available, true);
+  assert.ok(report.blockers.some(b => b.includes("package approval is cancelled"))); assert.ok(report.blockers.some(b => b.includes("publication.pair")));
+  assert.ok(report.blockers.some(b => b.includes("ticket.queue"))); assert.ok(report.blockers.some(b => b.includes("linked branch")));
+  assert.deepEqual(structuredLaunchReadiness(f.state, true).blockers, []);
+  assert.doesNotThrow(() => assertPiStructuredLaunchPrerequisites("example", f.repo, "EX-1", true));
+  assert.throws(() => assertPiStructuredLaunchPrerequisites("example", f.repo, "EX-1", false), /manual branch link does not establish readiness/);
+}));
+
 test("protected review consumes issued native locator with no paragraph authority and cannot downgrade after revoke", () => fixture(async f => {
   const locator = workflowDecisionReference(f.state, f.authority.decisionId);
   const artifact = structuredReviewArtifact("example", "EX-1", f.bundle.matrix.ref, locator)!;

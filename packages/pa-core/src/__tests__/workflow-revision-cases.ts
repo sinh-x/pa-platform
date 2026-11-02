@@ -108,7 +108,15 @@ test("explicit cancelled recovery preserves exact run/resources/history and capt
     const capture = f.host.capture; f.host.capture = async r => ({ ...await capture(r), outcome: "cancelled" });
     const run = f.service.admit(f.selection, f.subject), cancelled = await f.service.decide(run.runId, 1, "approve");
     const before = f.journal.read(run.runId);
-    assert.deepEqual(f.service.next(run.runId).eligible, []); assert.deepEqual(cancelled.permissions, []);
+    const next = f.service.next(run.runId);
+    assert.deepEqual(next.eligible, []); assert.deepEqual(cancelled.permissions, []);
+    assert.equal(next.packageReview.outcome, "cancelled"); assert.equal(next.packageReview.recovery?.available, true);
+    assert.match(next.nextAction!, /operator explicitly/); assert.equal(next.nextOwner, "operator");
+    assert.deepEqual(next.packageReview.recovery?.request, { action: "recover", revision: 2, decisionId: cancelled.decisionId, subjectSha256: run.subjectSha256 });
+    assert.deepEqual(next.blocked, [{ stepId: "approve", code: "WORKFLOW_AUTHORITY" }]);
+    const read = workflowReadService(JSON.stringify({ action: "status", ticket: run.subject.ticket }), { state: () => f.service.status(run.runId) });
+    assert.equal((read.result as { packageReview: { outcome: string } }).packageReview.outcome, "cancelled");
+    assert.equal(workflowPrimerView(f.service.status(run.runId)).nextOwner, "operator");
     await assert.rejects(f.service.decide(run.runId, 2, "approve"), /WORKFLOW_CONFLICT/);
     f.host.capture = async r => { assert.equal(r.action, "recover"); assert.equal(r.decisionId, cancelled.decisionId); assert.equal(r.subjectSha256, run.subjectSha256); return capture(r); };
     const decision = await f.service.recoverCancelled(run.runId, 2, cancelled.decisionId, run.subjectSha256);
@@ -163,6 +171,8 @@ test("repeated cancellation stays permissionless, refuses stale predecessors and
     await assert.rejects(f.service.recoverCancelled(run.runId, state.revision, first.decisionId, run.subjectSha256), /WORKFLOW_CONFLICT/);
     await assert.rejects(f.service.recoverCancelled(run.runId, state.revision, decision.decisionId, run.subjectSha256), /WORKFLOW_CONFLICT/);
     assert.throws(() => packageDecision(state), /WORKFLOW_AUTHORITY/);
+    assert.equal(f.service.next(run.runId).packageReview.recovery?.available, false);
+    assert.equal(f.service.next(run.runId).nextOwner, "workflow-owner");
   } finally { f.close(); }
 });
 

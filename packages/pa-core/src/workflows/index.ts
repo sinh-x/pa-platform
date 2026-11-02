@@ -10,7 +10,7 @@ export { queryWorkflow } from "./queries.js";
 export type { WorkflowReadRequest } from "./queries.js";
 export { renderWorkflowGate } from "./presentation.js";
 export type { WorkflowGateResult } from "./presentation.js";
-export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision, projectWorkflowNext } from "./service.js";
+export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision, projectWorkflowNext, workflowPackageReview } from "./service.js";
 export type { WorkflowCaller, WorkflowDecision, WorkflowHost, WorkflowState, WorkflowEffectOwner, EffectIntent, EffectObservation } from "./service.js";
 export type { WorkflowAttempt } from "./revisions.js";
 export { RegistryWorkflowJournal } from "../registry/workflows.js";

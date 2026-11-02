@@ -163,6 +163,17 @@ export function requireDecision(state: WorkflowState, id: string, permissions: r
 function requiresProjectCommands(step: WorkflowDefinition["steps"][number]): boolean {
   return step.effects.some(effect => effect === "source.scoped" || effect === "check.scoped" || effect === "git.local");
 }
+export function workflowPackageReview(state: WorkflowState) {
+  const decision = state.decisions.filter(d => d.subjectSha256 === state.subjectSha256).at(-1);
+  const cancelled = recoverableCancelledDecision(state);
+  const outcome = decision ? state.revoked.includes(decision.decisionId) ? "revoked" : decision.outcome : "not-captured";
+  const recovery = outcome === "cancelled" ? cancelled ? {
+    available: true, correctionOwner: "operator", nextAction: "Ask the operator explicitly through pa_decision recover in the original authenticated foreground requirements coordinator or its supported continuation; never auto-retry.",
+    request: { action: "recover", revision: state.revision, decisionId: cancelled.decisionId, subjectSha256: state.subjectSha256 },
+  } : { available: false, correctionOwner: "workflow-owner", nextAction: "Cancellation retained. Recovery bounds/resources/state do not permit recapture; preserve history and ask the workflow owner. Do not create a duplicate run or fabricate a subject revision." } : null;
+  return { outcome, decisionId: decision?.decisionId ?? null, approved: outcome === "approved", recovery };
+}
+
 export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySet<string>, observations?: Pick<WorkflowObservations, "projectProfile">) {
   const blocked: { stepId: string; code: "WORKFLOW_AUTHORITY" | "WORKFLOW_CAPABILITY" | "WORKFLOW_SOURCE" }[] = [];
   const eligible = eligibleSteps(state).filter(id => {
@@ -175,7 +186,13 @@ export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySe
     if (!operations.has(step.operation.id) || (requiresProjectCommands(step) && observations?.projectProfile !== "supported")) { blocked.push({ stepId: id, code: "WORKFLOW_CAPABILITY" }); return false; }
     return true;
   });
-  return { runId: state.runId, revision: state.revision, eligible, reconcile: state.pending, blocked };
+  const packageReview = workflowPackageReview(state);
+  if (packageReview.outcome === "cancelled") {
+    const decision = state.decisions.find(d => d.decisionId === packageReview.decisionId)!;
+    blocked.push({ stepId: decision.stepId, code: "WORKFLOW_AUTHORITY" });
+  }
+  return { runId: state.runId, revision: state.revision, eligible, reconcile: state.pending, blocked, packageReview,
+    ...(packageReview.recovery ? { nextAction: packageReview.recovery.nextAction, nextOwner: packageReview.recovery.correctionOwner } : {}) };
 }
 function requireStaticCompatibility(report: WorkflowPreflight): void {
   if (report.status === "static-compatible") return;
@@ -189,7 +206,7 @@ export class JsonWorkflowService {
   private caller(state: WorkflowState): WorkflowCaller {
     const caller = parseCaller(this.host.authenticate()); assertSubjectCaller(state, caller, true, this.host.continues); return caller;
   }
-  next(runId: string): { runId: string; revision: number; eligible: string[]; reconcile: EffectIntent[]; blocked: { stepId: string; code: "WORKFLOW_AUTHORITY" | "WORKFLOW_CAPABILITY" | "WORKFLOW_SOURCE" }[] } {
+  next(runId: string): ReturnType<typeof projectWorkflowNext> {
     return projectWorkflowNext(this.status(runId), new Set(this.host.owners.keys()), this.host.observations());
   }
   admitProduced(selection: WorkflowSelection, request: Uint8Array, templateHost: TemplateHost): WorkflowState {

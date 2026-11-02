@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, resolveOrdinaryTaskBaseline, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
-import { resolvePiStructuredBaseline, structuredLaunchNote } from "./workflow-consumers.js";
+import { assertPiStructuredLaunchPrerequisites, resolvePiStructuredBaseline, structuredLaunchNote } from "./workflow-consumers.js";
 import { selectPiStructuredResume, type PiStructuredResume } from "./workflow-resume.js";
 import { readTicketWorkflow, workflowPrimerView, JsonWorkflowError, type StructuredTaskBaseline } from "@pa-platform/pa-core";
 import { pinnedPiWorkflowConfig } from "./workflow-config.js";
@@ -936,7 +936,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const initialRepository = parent ? invocationRepository : selectorRepository;
       const ticket = new TicketStore().get(ticketId);
       if (!ticket) throw new Error(`Condition: Treehouse ticket checkout admission. Source: durable ticket store. Reason: ticket ${ticketId} does not exist. Correction: restore the exact ticket and linked-branch evidence. Resume Action: retry before Treehouse acquisition.`);
-      requireTicketLinkedBranch(ticket, initialRepository.repoKey);
+      let linkedBranchFailure: unknown;
+      try { requireTicketLinkedBranch(ticket, initialRepository.repoKey); } catch (error) { linkedBranchFailure = error; }
+      assertPiStructuredLaunchPrerequisites(initialRepository.repoKey, initialRepository.repoRoot, ticketId, linkedBranchFailure === undefined);
+      if (linkedBranchFailure) throw linkedBranchFailure;
       structuredBaseline = resolvePiStructuredBaseline(initialRepository.repoKey, initialRepository.repoRoot, ticketId);
       if (structuredBaseline && (builderMode !== "orchestrator" || team.deploy_modes?.some(entry => entry.id === "implement"))) throw new Error("structured workflow requires the supported direct orchestrator owner; no split-mode fallback");
       if (builderMode === "orchestrator" && !request.resume && !structuredBaseline) {

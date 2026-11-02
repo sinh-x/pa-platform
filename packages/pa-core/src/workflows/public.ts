@@ -9,13 +9,16 @@ import { queryWorkflow } from "./queries.js";
 import { preflightWorkflow, preflightPinnedWorkflow, projectExecutionPrerequisites, unavailableWorkflowObservations } from "./preflight.js";
 import type { WorkflowObservations, WorkflowPreflight } from "./preflight.js";
 import { loadSelectedWorkflows, type WorkflowSelection } from "./selected.js";
-import { eligibleSteps, projectWorkflowNext, type WorkflowState } from "./service.js";
+import { eligibleSteps, projectWorkflowNext, workflowPackageReview, type WorkflowState } from "./service.js";
 import { readCanonicalWorkflowArtifact } from "./consumers.js";
 import { readWorkflowEvidence } from "./evidence.js";
 import { gate } from "./presentation.js";
 
 export interface WorkflowPrimerView { runId: string; workflowId: string; version: string; sha256: string; configRevision: string; nextOwner: string; nextAction: string }
 export function workflowPrimerView(state: WorkflowState): WorkflowPrimerView {
+  const recovery = workflowPackageReview(state).recovery;
+  if (recovery) return { runId: state.runId, workflowId: state.definition.workflowId, version: state.definition.version, sha256: state.subject.workflow.sha256, configRevision: state.configRevision,
+    nextOwner: recovery.correctionOwner, nextAction: recovery.nextAction };
   const pending = state.pending[0], id = pending?.stepId ?? eligibleSteps(state)[0], step = state.definition.steps.find(s => s.id === id);
   const revoked = step && step.kind !== "decision" && !state.decisions.some(d => d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId) && step.authorization.every(p => d.permissions.includes(p)));
   return { runId: state.runId, workflowId: state.definition.workflowId, version: state.definition.version, sha256: state.subject.workflow.sha256, configRevision: state.configRevision,
@@ -91,7 +94,7 @@ export function workflowReadService(input: Uint8Array | string, host: WorkflowRe
         if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE", "admitted-run", "workflow-owner");
         if (action === "status") {
           const observations = observe();
-          result = { ...state, runState: "admitted", resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations) };
+          result = { ...state, runState: "admitted", packageReview: workflowPackageReview(state), resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations) };
         } else if (action === "next") {
           const observations = observe();
           result = { ...projectWorkflowNext(state, host.operations ?? new Set(), observations), runState: "admitted", resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations), effectsAdmitted: false };

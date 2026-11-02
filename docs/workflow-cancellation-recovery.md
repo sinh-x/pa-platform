@@ -39,6 +39,21 @@ fail closed. Older runtimes reject the new event rather than guessing its meanin
 install the new runtime before using recovery, and do not downgrade an affected
 run to an unaware runtime.
 
+## Actionable projections
+
+Status/next now distinguish `runState=admitted` from `packageReview.outcome` and
+its approval boolean. A cancelled package exposes an explicit operator-owned
+`recovery` request, or an unavailable recovery with workflow-owner guidance when
+bounds/resources do not permit it. Next/primer no longer project cancellation as
+an unexplained empty eligible list. These requests are diagnostic data, never
+approval or automatic recapture.
+
+Builder launch inspects adopted package/publication/queue gates before returning
+branch-only repair advice. Its diagnostic lists missing branch evidence alongside
+those gates and names the separate project-command execution prerequisite. A
+manual link or queue-only status is not a complete readiness repair. Observing
+these blockers performs no workflow effect or checkout acquisition.
+
 ## LM-101 continuity
 
 Retain the existing d-076ff1 run, cancellation and r001 pair. After operator
