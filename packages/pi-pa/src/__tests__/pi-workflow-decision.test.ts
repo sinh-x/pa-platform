@@ -13,12 +13,14 @@ const subject: ReviewBundle = { schemaVersion: "pa-review-bundle/v1", subjectId:
   requestedPermissions: ["artifact.publish-pair", "ticket.queue.advance", "source.edit-scoped", "check.execute-scoped", "repair.same-scope", "git.commit-local"] };
 const request = { action: "package" as const, runId: "wf-synthetic", revision: 1, subject, subjectSha256: "f".repeat(64) };
 test("synthetic UI fixture displays exact subject/permissions; outcome and principal are not model inputs", async () => {
-  let reads = 0; let view = "";
-  const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async (title, choices) => { view = title; return choices[0]; } } }, () => { reads++; return caller; });
+  let reads = 0; const views: string[] = [];
+  const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async (title, choices) => { views.push(title); return choices[0]; } } }, () => { reads++; return caller; });
   const result = await capture(request);
   assert.equal(reads, 2); assert.equal(result.outcome, "approved"); assert.match(result.principal, /^local-uid:/);
-  const displayed = JSON.parse(view); assert.deepEqual(displayed.subject, subject); assert.equal(displayed.subjectSha256, request.subjectSha256);
-  assert.match(result.evidence.ref, /^native-workflow-capture:/);
+  const displayed = views.join("\n"); assert.match(displayed, /review the exact implementation plan/); assert.doesNotMatch(displayed, /"schemaVersion"/);
+  for (const value of [subject.requirements.ref, subject.uat.ref, subject.handoff.baseSha, subject.handoff.branch, request.subjectSha256, ...subject.scope.files, ...subject.requestedPermissions, ...subject.scope.excludedEffects]) assert.ok(displayed.includes(value), value);
+  for (const view of views.slice(0, -1)) { assert.ok(view.split("\n").length <= 10); assert.ok(view.split("\n").slice(1).every(line => line.length <= 72)); }
+  assert.match(result.evidence.ref, /^native-workflow-capture:/); assert.equal(result.evidence.version, "v2");
 });
 test("nonforeground, stale caller, cancellation and explicit named revoke stay distinct", async () => {
   for (const mode of ["rpc", "json", "print"] as const) await assert.rejects(createPiWorkflowCapture({ mode, cwd: "/canonical/example" }, () => caller)(request), /WORKFLOW_AUTHORITY/);
@@ -27,9 +29,31 @@ test("nonforeground, stale caller, cancellation and explicit named revoke stay d
   await assert.rejects(stale(request), /WORKFLOW_CONFLICT/);
   const cancelled = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async () => undefined } }, () => caller);
   assert.equal((await cancelled(request)).outcome, "cancelled");
-  const revoke = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async (title, choices) => { assert.match(title, /decision-original/); return choices[0]; } } }, () => caller);
+  const revokeViews: string[] = [];
+  const revoke = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async (title, choices) => { revokeViews.push(title); return choices[0]; } } }, () => caller);
   assert.equal((await revoke({ ...request, action: "revoke", decisionId: "decision-original" })).outcome, "approved");
+  assert.match(revokeViews.join("\n"), /decision-original/);
 });
+test("review cannot approve before every scope page, technical details are optional, and final outcomes stay distinct", async () => {
+  for (const [choice, outcome] of [["Reject exact package", "rejected"], ["Request changes", "changes-requested"], ["Cancel", "cancelled"]] as const) {
+    let pages = 0;
+    const result = await createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async (_title, choices) => {
+      if (choices.includes("Continue review")) { pages++; assert.equal(choices.some(c => c.startsWith("Approve")), false); return "Continue review"; }
+      return choice;
+    } } }, () => caller)(request);
+    assert.ok(pages > 1); assert.equal(result.outcome, outcome);
+  }
+  let technical = false, finalQuestions = 0;
+  const result = await createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async (title, choices) => {
+    if (choices.includes("Continue review")) { if (title.startsWith("Technical bindings")) technical = true; return "Continue review"; }
+    return finalQuestions++ === 0 ? "View exact technical bindings" : choices[0];
+  } } }, () => caller)(request);
+  assert.equal(result.outcome, "approved"); assert.equal(technical, true); assert.equal(finalQuestions, 2);
+  let calls = 0;
+  const cancelled = await createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async () => { calls++; return "Cancel"; } } }, () => caller)(request);
+  assert.equal(cancelled.outcome, "cancelled"); assert.equal(calls, 1);
+});
+
 test("oversized native requests are refused, not truncated into a partial approval", async () => {
   const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async () => { throw new Error("must not open"); } } }, () => caller);
   await assert.rejects(capture({ ...request, subject: { ...subject, scope: { ...subject.scope, files: ["x".repeat(65_536)] } } }), /WORKFLOW_CONTRACT/);
