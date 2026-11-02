@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { runCoreCommand } from "../cli/core-command.js";
 import { templateService } from "../templates/service.js";
-import { parseReviewBundle } from "../workflows/contracts.js";
+import { parseReviewBundle, WORKFLOW_INPUT_RULES, type WorkflowInputField } from "../workflows/contracts.js";
 import { reviewBundleTemplateConsumer } from "../workflows/producer.js";
 import { reviewBundleFixture } from "./review-bundle-template-fixture.js";
 
@@ -27,6 +27,26 @@ for (const kind of ["fresh", "amendment"] as const) for (const ticket of ["FIX-7
       assert.deepEqual(parseReviewBundle(Buffer.from(canonical.candidate as string)), f.bundle);
     }
     assert.deepEqual([readFileSync(join(f.root, "contracts/templates-v1.json")), readFileSync(join(f.root, "skills/templates/review-bundle.md"))], before);
+  } finally { f.dispose(); }
+});
+
+test("consumer field diagnostics identify safe rules without echoing invalid values", () => {
+  const f = reviewBundleFixture(); try {
+    const cases: [WorkflowInputField, (b: typeof f.bundle) => void][] = [
+      ["subjectId", b => { b.subjectId = "LM-101-PRIVATE-SENTINEL"; }], ["revision", b => { b.revision = 0; }],
+      ["workflow.id", b => { b.workflow.id = "INVALID"; }], ["workflow.version", b => { b.workflow.version = "R001"; }],
+      ["workflow.sha256", b => { b.workflow.sha256 = "PRIVATE-SENTINEL"; }], ["repository.key", b => { b.repository.key = "UPPERCASE"; }],
+      ["handoff.baseSha", b => { b.handoff.baseSha = "B".repeat(40); }],
+    ];
+    for (const [field, mutate] of cases) {
+      const bundle = structuredClone(f.bundle); mutate(bundle);
+      const result = templateService({ ...f.request, bindings: { bundle } }, { selection: f.selection, reviewBundleConsumer: reviewBundleTemplateConsumer });
+      assert.equal(result.ok, false); assert.equal(result.code, "TEMPLATE_BINDING");
+      assert.deepEqual(result.inputDiagnostic, { field, rule: WORKFLOW_INPUT_RULES[field] });
+      assert.match(result.diagnostic as string, /producer-owner/); assert.equal(JSON.stringify(result).includes("PRIVATE-SENTINEL"), false);
+    }
+    const good = templateService(f.request, { selection: f.selection, reviewBundleConsumer: reviewBundleTemplateConsumer });
+    assert.equal(good.ok, true); assert.equal(good.inputDiagnostic, undefined);
   } finally { f.dispose(); }
 });
 

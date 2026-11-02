@@ -42,6 +42,21 @@ stale, unknown and pending states retain their existing authority/evidence rules
 
 ## Causal diagnostics
 
+### Follow-up: safe producer-field errors
+
+The shared review-bundle parser now labels invalid `subjectId`, `revision`,
+`workflow.id/version/sha256`, `repository.key` and `handoff.baseSha` with bounded
+`inputDiagnostic={field,rule}` metadata. For example an uppercase subject ID
+requires `^[a-z][a-z0-9.-]{0,127}$`: it is an unsigned **producer input error**,
+not a missing runtime capability. Template results use `TEMPLATE_BINDING`;
+workflow production preserves `WORKFLOW_CONTRACT`, the exact review-bundle field
+gate and `producer-owner`. Neither rejected values nor parser exceptions are
+included. Unknown errors remain redacted. Validation has not been relaxed and
+correcting an identifier issues no authority or artifact-byte change.
+
+The remaining text records the earlier source increment; compatibility/catalogue
+and later recovery changes have their own documents.
+
 Template-pair, resource, capability, context, version and missing-consumer failures
 are mapped to bounded native cause codes and owning gates, not a misleading
 missing-producer report. `TEMPLATE_PAIR` survives registry observation, producer

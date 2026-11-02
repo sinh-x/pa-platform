@@ -63,6 +63,24 @@ export class JsonWorkflowError extends Error {
     this.name = "JsonWorkflowError";
   }
 }
+export const WORKFLOW_INPUT_RULES = Object.freeze({
+  subjectId: "lowercase identifier: ^[a-z][a-z0-9.-]{0,127}$",
+  revision: "positive safe integer",
+  "workflow.id": "lowercase identifier: ^[a-z][a-z0-9.-]{0,127}$",
+  "workflow.version": "lowercase identifier: ^[a-z][a-z0-9.-]{0,127}$",
+  "workflow.sha256": "64 lowercase hexadecimal characters",
+  "repository.key": "lowercase identifier: ^[a-z][a-z0-9.-]{0,127}$",
+  "handoff.baseSha": "40 lowercase hexadecimal characters",
+});
+export type WorkflowInputField = keyof typeof WORKFLOW_INPUT_RULES;
+export class WorkflowInputError extends JsonWorkflowError {
+  readonly inputDiagnostic: { field: WorkflowInputField; rule: string };
+  constructor(field: WorkflowInputField) {
+    super("WORKFLOW_CONTRACT", `review-bundle.${field}`, "producer-owner");
+    this.inputDiagnostic = { field, rule: WORKFLOW_INPUT_RULES[field] };
+    this.message = `Condition: invalid workflow producer input\nSource: review-bundle.${field}\nReason: field requires ${WORKFLOW_INPUT_RULES[field]}\nCorrection: producer-owner must correct this unsigned input; no runtime capability or permission is implied\nResume Action: render and validate the corrected exact package before requesting admission`;
+  }
+}
 export function reject(code: WorkflowErrorCode = "WORKFLOW_CONTRACT"): never { throw new JsonWorkflowError(code); }
 export type Row = Record<string, unknown>;
 export function object(value: unknown, required: readonly string[], optional: readonly string[] = []): Row {
@@ -117,6 +135,12 @@ export function commandReference(value: unknown): CommandReference {
   const r = object(value, ["matrixSource", "matrixSha256", "commandId"]);
   return { matrixSource: text(r.matrixSource, /^requirements:agent-teams\/requirements\/artifacts\/.+\.md$/), matrixSha256: text(r.matrixSha256, SHA256), commandId: text(r.commandId, ID) };
 }
+function inputText(value: unknown, field: WorkflowInputField, pattern: RegExp): string {
+  try { return text(value, pattern); } catch { throw new WorkflowInputError(field); }
+}
+function inputRevision(value: unknown): number {
+  try { return integer(value); } catch { throw new WorkflowInputError("revision"); }
+}
 export function parseReviewBundle(input: Uint8Array): ReviewBundle {
   const r = object(strictJson(input), ["schemaVersion", "subjectId", "revision", "requirements", "uat", "matrix", "repository", "ticket", "route", "handoff", "workflow", "scope", "requestedPermissions"]);
   literal(r.schemaVersion, "pa-review-bundle/v1");
@@ -126,7 +150,7 @@ export function parseReviewBundle(input: Uint8Array): ReviewBundle {
   const ticket = workflowTicket(r.ticket);
   const branch = text(h.branch, /^feature\/[A-Z][A-Z0-9]*-[0-9]+-[a-zA-Z0-9][a-zA-Z0-9._/-]*$/);
   if (!branch.startsWith(`feature/${ticket}-`) || branch.includes("..") || branch.includes("//") || branch.endsWith("/") || branch.split("/").some(p => p.endsWith(".lock") || p.endsWith("."))) reject();
-  const baseSha = text(h.baseSha, GIT_SHA);
+  const baseSha = inputText(h.baseSha, "handoff.baseSha", GIT_SHA);
   const handoff: ReviewBundle["handoff"] = fresh ? { type: literal(h.type, "fresh"), baseSha, branch, branchAction: literal(h.branchAction, "create") }
     : { type: literal(h.type, "amendment"), baseSha, branch, featureSha: text(h.featureSha, GIT_SHA), branchAction: literal(h.branchAction, "reuse") };
   const w = object(r.workflow, ["id", "version", "sha256"]);
@@ -141,10 +165,10 @@ export function parseReviewBundle(input: Uint8Array): ReviewBundle {
   const checks = array(s.checks, commandReference); unique(checks.map(c => c.commandId));
   if (checks.some(c => c.matrixSource !== matrix.ref || c.matrixSha256 !== matrix.sha256)) reject();
   return {
-    schemaVersion: "pa-review-bundle/v1", subjectId: text(r.subjectId, ID), revision: integer(r.revision),
+    schemaVersion: "pa-review-bundle/v1", subjectId: inputText(r.subjectId, "subjectId", ID), revision: inputRevision(r.revision),
     requirements, uat, matrix,
-    repository: { key: text(repository.key, ID), root }, ticket, route: { team: text(route.team, ID), mode: text(route.mode, ID) }, handoff,
-    workflow: { id: text(w.id, ID), version: text(w.version, ID), sha256: text(w.sha256, SHA256) },
+    repository: { key: inputText(repository.key, "repository.key", ID), root }, ticket, route: { team: text(route.team, ID), mode: text(route.mode, ID) }, handoff,
+    workflow: { id: inputText(w.id, "workflow.id", ID), version: inputText(w.version, "workflow.version", ID), sha256: inputText(w.sha256, "workflow.sha256", SHA256) },
     scope: { requirements: unique(array(s.requirements, v => text(v, /^FR-[0-9]+$/))), acceptanceCriteria: unique(array(s.acceptanceCriteria, v => text(v, /^AC-[0-9]+$/))),
       files: unique(array(s.files, relativePath)), directories: unique(array(s.directories, relativePath)), newPaths: unique(array(s.newPaths, relativePath)), checks,
       excludedEffects: unique(array(s.excludedEffects, v => text(v, ID))) },

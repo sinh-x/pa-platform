@@ -4,7 +4,7 @@ import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { loadRepoEntry } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { adoptedWorkflow, withExistingWorkflowJournal } from "./catalog.js";
-import { JsonWorkflowError, MAX_WORKFLOW_RECORD_BYTES, object, strictJson, parseWorkflowRequest, workflowTicket, text, ID, type ReviewBundle } from "./contracts.js";
+import { JsonWorkflowError, WorkflowInputError, MAX_WORKFLOW_RECORD_BYTES, object, strictJson, parseWorkflowRequest, workflowTicket, text, ID, type ReviewBundle } from "./contracts.js";
 import { queryWorkflow } from "./queries.js";
 import { preflightWorkflow, preflightPinnedWorkflow, projectExecutionPrerequisites, unavailableWorkflowObservations } from "./preflight.js";
 import type { WorkflowObservations, WorkflowPreflight } from "./preflight.js";
@@ -37,7 +37,7 @@ export interface WorkflowReadHost {
 }
 export const workflowFailure = (error: unknown) => {
   const e = error instanceof JsonWorkflowError ? error : new JsonWorkflowError("WORKFLOW_SOURCE");
-  return { schemaVersion: "pa-workflow-result/v1", ok: false, code: e.code, gateId: e.gateId, correctionOwner: e.correctionOwner, diagnostic: e.message, nextAction: gate(e.code, e.gateId, "blocked", e.correctionOwner).nextAction, executionAdmitted: false };
+  return { schemaVersion: "pa-workflow-result/v1", ok: false, code: e.code, gateId: e.gateId, correctionOwner: e.correctionOwner, diagnostic: e.message, ...(e instanceof WorkflowInputError ? { inputDiagnostic: e.inputDiagnostic } : {}), nextAction: e instanceof WorkflowInputError ? "Correct the named unsigned producer field, render and validate again; this is not a missing runtime capability." : gate(e.code, e.gateId, "blocked", e.correctionOwner).nextAction, executionAdmitted: false };
 };
 /** No TicketStore constructor, database migration, process probe, authority import or writes. */
 export function readTicketWorkflowContext(ticket: string): WorkflowReadContext {

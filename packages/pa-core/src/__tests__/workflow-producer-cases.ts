@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { runTemplateCommand } from "../cli/commands/template.js";
 import { digest, JsonWorkflowError } from "../workflows/contracts.js";
 import { templateService } from "../templates/service.js";
+import { workflowFailure } from "../workflows/public.js";
 import { reviewBundleTemplateConsumer } from "../workflows/producer.js";
 import { bytes, fixtureEvidence } from "./workflow-fixtures.js";
 import { workflowRuntimeFixture } from "./workflow-runtime-fixture.js";
@@ -42,6 +43,25 @@ test("actual shared producer retains exact candidate, provenance and artifact/ma
     assert.equal(code, 0); assert.equal(JSON.parse(output[0]!).candidate, rendered.candidate);
   } finally { f.close(); }
 });
+test("uppercase subjectId is a safe causal producer error, not missing runtime capability or an admission write", () => {
+  const f = fixture(); try {
+    const original = f.bundle.subjectId, requirements = f.bundle.requirements.sha256, uat = f.bundle.uat.sha256, matrix = f.bundle.matrix.sha256;
+    f.bundle.subjectId = "LM-101-PRIVATE-SENTINEL";
+    let failed = false;
+    try { f.service.admitProduced(f.selection, f.request(), { selection: f.templates }); }
+    catch (error) {
+      failed = true; const result = workflowFailure(error);
+      assert.equal(result.code, "WORKFLOW_CONTRACT"); assert.equal(result.gateId, "review-bundle.subjectId"); assert.equal(result.correctionOwner, "producer-owner");
+      assert.equal((result.inputDiagnostic as { field: string }).field, "subjectId"); assert.equal(JSON.stringify(result).includes("PRIVATE-SENTINEL"), false);
+    }
+    assert.equal(failed, true); assert.deepEqual(f.journal.runs(f.bundle.repository.key, f.bundle.ticket), []);
+    f.bundle.subjectId = original;
+    const run = f.service.admitProduced(f.selection, f.request(), { selection: f.templates });
+    assert.deepEqual([run.subject.requirements.sha256, run.subject.uat.sha256, run.subject.matrix.sha256], [requirements, uat, matrix]);
+    assert.deepEqual(run.decisions, []);
+  } finally { f.close(); }
+});
+
 test("producer mismatch, injected receipts, malformed bundles and bad referenced evidence cause zero admission writes", () => {
   const f = fixture(); try {
     const host = { selection: f.templates };

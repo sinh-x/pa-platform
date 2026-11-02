@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { WorkflowInputError } from "../workflows/contracts.js";
 import { ProducerContractError } from "../tickets/producer-contract.js";
 import { isCanonicalTicketId } from "../tickets/validate.js";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
@@ -28,6 +29,7 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(ordered(value));
 }
 export function templateFailure(error: unknown): TemplateResult {
+  if (error instanceof WorkflowInputError) return { schemaVersion: "pa-template-result/v1", unsigned: true, ok: false, operation: "rejected", code: "TEMPLATE_BINDING", diagnostic: error.message, inputDiagnostic: error.inputDiagnostic, limitations: TEMPLATE_LIMITATIONS };
   const e = error instanceof TemplateError ? error : error instanceof ProducerContractError
     ? new TemplateError("TEMPLATE_PRODUCER", "workflow-producer", "complete typed producer contract is missing, conflicting or malformed")
     : error instanceof ReviewContractError ? new TemplateError(`TEMPLATE_CONSUMER_${error.code.replace("REVIEW_", "")}`, `review-consumer.${error.diagnostic.source}`,  "producer does not satisfy the actual supported finite review contract")
