@@ -54,6 +54,16 @@ test("review cannot approve before every scope page, technical details are optio
   assert.equal(cancelled.outcome, "cancelled"); assert.equal(calls, 1);
 });
 
+test("cancelled recovery explicitly presents the prior decision and requires a new foreground response", async () => {
+  const views: string[] = [];
+  const capture = createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async (title, choices) => { views.push(title); return choices[0]; } } }, () => caller);
+  const recovered = await capture({ ...request, action: "recover", revision: 2, decisionId: "decision-cancelled" });
+  assert.equal(recovered.outcome, "approved"); assert.match(views[0]!, /Resume cancelled/); assert.match(views.join("\n"), /decision-cancelled/);
+  assert.match(views.join("\n"), /Previous cancellation stays\s+in history/);
+  const cancelled = await createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async () => undefined } }, () => caller)({ ...request, action: "recover", decisionId: "decision-cancelled" });
+  assert.equal(cancelled.outcome, "cancelled");
+});
+
 test("oversized native requests are refused, not truncated into a partial approval", async () => {
   const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async () => { throw new Error("must not open"); } } }, () => caller);
   await assert.rejects(capture({ ...request, subject: { ...subject, scope: { ...subject.scope, files: ["x".repeat(65_536)] } } }), /WORKFLOW_CONTRACT/);

@@ -103,6 +103,69 @@ test("material amendment preserves failures/old decisions, requires a new decisi
   } finally { f.close(); }
 });
 
+test("explicit cancelled recovery preserves exact run/resources/history and captures a fresh decision without effects", async () => {
+  const f = workflowRuntimeFixture(); try {
+    const capture = f.host.capture; f.host.capture = async r => ({ ...await capture(r), outcome: "cancelled" });
+    const run = f.service.admit(f.selection, f.subject), cancelled = await f.service.decide(run.runId, 1, "approve");
+    const before = f.journal.read(run.runId);
+    assert.deepEqual(f.service.next(run.runId).eligible, []); assert.deepEqual(cancelled.permissions, []);
+    await assert.rejects(f.service.decide(run.runId, 2, "approve"), /WORKFLOW_CONFLICT/);
+    f.host.capture = async r => { assert.equal(r.action, "recover"); assert.equal(r.decisionId, cancelled.decisionId); assert.equal(r.subjectSha256, run.subjectSha256); return capture(r); };
+    const decision = await f.service.recoverCancelled(run.runId, 2, cancelled.decisionId, run.subjectSha256);
+    const state = f.service.status(run.runId);
+    assert.equal(decision.outcome, "approved"); assert.equal(state.revision, 3); assert.equal(state.subjectSha256, run.subjectSha256);
+    assert.deepEqual(state.resources, run.resources); assert.equal(state.attempts.length, 1); assert.equal(state.decisions.length, 2);
+    assert.deepEqual(state.decisions[0], cancelled); assert.equal(packageDecision(state), decision.decisionId);
+    assert.deepEqual(f.journal.read(run.runId).slice(0, before.length), before); assert.equal(f.journal.read(run.runId)[2]!.event.type, "decision-recovered");
+    assert.equal(f.journal.runs(run.subject.repository.key, run.subject.ticket).length, 1); assert.equal(state.pending.length, 0); assert.equal(state.outcomes.publish, undefined);
+    await assert.rejects(f.service.recoverCancelled(run.runId, 3, cancelled.decisionId, run.subjectSha256), /WORKFLOW_CONFLICT/);
+  } finally { f.close(); }
+});
+
+for (const variant of ["stale", "subject", "foreign-decision", "foreign-caller", "changed-evidence", "revoked", "rejected", "approved", "changes-requested", "concurrent", "caller-drift", "evidence-drift"] as const) {
+  test(`cancelled recovery rejects ${variant} without replaying effects`, async () => {
+    const f = workflowRuntimeFixture(); try {
+      const capture = f.host.capture;
+      f.host.capture = async r => ({ ...await capture(r), outcome: variant === "rejected" ? "rejected" : variant === "approved" ? "approved" : variant === "changes-requested" ? "changes-requested" : "cancelled" });
+      const run = f.service.admit(f.selection, f.subject), cancelled = await f.service.decide(run.runId, 1, "approve");
+      f.host.capture = capture;
+      if (variant === "revoked") await f.service.revoke(run.runId, 2, cancelled.decisionId);
+      if (variant === "changed-evidence") f.evidence.set(run.subject.uat.ref, Buffer.from("changed"));
+      if (variant === "foreign-caller") f.host.authenticate = () => ({ ...run.caller, deploymentId: "d-fedcba" });
+      if (variant === "concurrent") f.host.capture = async r => {
+        f.host.capture = capture; await f.service.recoverCancelled(run.runId, 2, cancelled.decisionId, run.subjectSha256); return capture(r);
+      };
+      if (variant === "caller-drift" || variant === "evidence-drift") f.host.capture = async r => {
+        if (variant === "caller-drift") f.host.authenticate = () => ({ ...run.caller, identitySha256: "b".repeat(64) });
+        else f.evidence.set(run.subject.uat.ref, Buffer.from("changed after dialog"));
+        return capture(r);
+      };
+      const before = f.journal.read(run.runId);
+      await assert.rejects(f.service.recoverCancelled(run.runId, variant === "stale" ? 1 : variant === "revoked" ? 3 : 2,
+        variant === "foreign-decision" ? "decision-foreign" : cancelled.decisionId, variant === "subject" ? "f".repeat(64) : run.subjectSha256), /WORKFLOW_/);
+      const state = f.service.status(run.runId); assert.equal(state.pending.length, 0); assert.equal(state.outcomes.publish, undefined);
+      assert.deepEqual(f.journal.read(run.runId).slice(0, before.length), before);
+      assert.equal(state.decisions.length, variant === "concurrent" ? 2 : 1);
+    } finally { f.close(); }
+  });
+}
+
+test("repeated cancellation stays permissionless, refuses stale predecessors and bounds recovery attempts", async () => {
+  const f = workflowRuntimeFixture(); try {
+    const capture = f.host.capture; f.host.capture = async r => ({ ...await capture(r), outcome: "cancelled" });
+    const run = f.service.admit(f.selection, f.subject); let decision = await f.service.decide(run.runId, 1, "approve");
+    const first = decision;
+    for (let i = 0; i < 15; i++) {
+      const state = f.service.status(run.runId); decision = await f.service.recoverCancelled(run.runId, state.revision, decision.decisionId, run.subjectSha256);
+      assert.deepEqual(decision.permissions, []); assert.equal(decision.outcome, "cancelled");
+    }
+    const state = f.service.status(run.runId); assert.equal(state.decisions.length, 16); assert.deepEqual(state.decisions[0], first);
+    await assert.rejects(f.service.recoverCancelled(run.runId, state.revision, first.decisionId, run.subjectSha256), /WORKFLOW_CONFLICT/);
+    await assert.rejects(f.service.recoverCancelled(run.runId, state.revision, decision.decisionId, run.subjectSha256), /WORKFLOW_CONFLICT/);
+    assert.throws(() => packageDecision(state), /WORKFLOW_AUTHORITY/);
+  } finally { f.close(); }
+});
+
 for (const variant of ["before-decision", "rejected", "cancelled", "stale", "revision-gap", "reused-id", "foreign-ticket", "foreign-repo", "foreign-route", "changed-base", "changed-branch", "changed-workflow", "missing-evidence", "foreign-caller"] as const) {
   test(`subject revision rejects ${variant} with zero new snapshots/events`, async () => {
     const f = workflowRuntimeFixture(); try {

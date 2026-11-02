@@ -115,6 +115,15 @@ test("native public read tools match core JSON and reject outcome/actor/result/u
     const rejected = await tools.get("pa_workflow")!.execute("synthetic", { request: JSON.stringify(request) }, undefined, undefined, {}); assert.equal(rejected.isError, true);
   }
   assert.equal(mutations, 1);
+  const recover = { action: "recover", revision: f.state.revision, decisionId: f.authority.decisionId, subjectSha256: f.state.subjectSha256 };
+  const recovery = await tools.get("pa_decision")!.execute("synthetic-recovery-transport-only", { request: JSON.stringify(recover) }, undefined, undefined, {});
+  assert.deepEqual(JSON.parse(recovery.content[0]!.text).request, recover); assert.equal(mutations, 2);
+  for (const request of [{ ...recover, subjectSha256: "invalid" }, { ...recover, revision: 0 }, { ...recover, outcome: "approved" }, { ...recover, actor: "operator" }, { ...recover, permissions: [] }, { ...recover, runId: f.state.runId }]) {
+    const rejected = await tools.get("pa_decision")!.execute("synthetic", { request: JSON.stringify(request) }, undefined, undefined, {}); assert.equal(rejected.isError, true);
+  }
+  const aborted = new AbortController(); aborted.abort();
+  assert.equal((await tools.get("pa_decision")!.execute("synthetic", { request: JSON.stringify(recover) }, aborted.signal, undefined, {})).isError, true);
+  assert.equal(mutations, 2);
   const view = workflowPrimerView(f.state);
   const primer = generatePrimer({ runtime: "pi", teamConfig: { name: "requirements", description: "Synthetic", objective: "Synthetic", agents: [] }, workflow: view });
   assert.ok(primer.includes(f.state.runId)); assert.ok(primer.includes(f.bundle.workflow.sha256)); assert.ok(primer.includes("projection, never approval"));

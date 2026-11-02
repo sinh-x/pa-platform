@@ -64,7 +64,7 @@ export function piRetainedTemplateHost(): TemplateHost {
 }
 
 export type PiWorkflowMutation = { action: "admit"; producer: string } | { action: "revise"; revision: number; producer: string } | { action: "request-step"; revision: number; stepId: string }
-  | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "revoke"; revision: number; decisionId: string };
+  | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "recover"; revision: number; decisionId: string; subjectSha256: string } | { action: "revoke"; revision: number; decisionId: string };
 /** Foreground mutation host. Public JSON never supplies a caller, callback, selected config, effect owner or outcome. */
 export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiWorkflowContext): Promise<Record<string, unknown>> {
   const authenticate = () => authenticatePiWorkflowCaller(context);
@@ -96,6 +96,7 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
     if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE");
     if (request.action === "revise") state = service.reviseProduced(state.runId, request.revision, selection!, Buffer.from(request.producer), {});
     else if (request.action === "capture") decision = await service.decide(state.runId, request.revision, request.stepId);
+    else if (request.action === "recover") decision = await service.recoverCancelled(state.runId, request.revision, request.decisionId, request.subjectSha256);
     else if (request.action === "revoke") await service.revoke(state.runId, request.revision, request.decisionId);
     else if (request.action === "request-step") await service.requestStep(state.runId, request.revision, request.stepId, packageDecision(state));
     else await service.reconcile(state.runId, request.revision, request.intentId);
