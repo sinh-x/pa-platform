@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { accountCases, block, committedRead, digest, REQUIRED_TEST_FILES, trackedSource } from "./workflow_installed_support.mjs";
+import { accountCases, block, committedRead, digest, physicalFile, REQUIRED_TEST_FILES, trackedSource } from "./workflow_installed_support.mjs";
 
 /** Qualification test CODE is pinned source; every implementation import is a
  * one-line bridge to the exact verified installed module. No implementation
@@ -39,8 +39,14 @@ export async function createHarness({ sourceRoot, sourceSha, moduleRoot, directo
   for (const required of REQUIRED_TEST_FILES) if (!observed[required]) block("WORKFLOW_DRIVER_MISSING", "drivers");
   mkdirSync(join(directory, "node_modules/@pa-platform"), { recursive: true, mode: 0o700 });
   for (const name of ["pa-core", "pi-pa"]) symlinkSync(join(moduleRoot, `packages/${name}`), join(directory, `node_modules/@pa-platform/${name}`), "dir");
+  // The fresh setup-session case must use the selected adapter's actual SDK,
+  // not a source-checkout dependency fallback. This also works in loader units
+  // where moduleRoot explicitly names their built product fixture.
+  const sdk = realpathSync(join(moduleRoot, "packages/pi-pa/node_modules/@earendil-works/pi-coding-agent"));
+  mkdirSync(join(directory, "node_modules/@earendil-works"), { recursive: true, mode: 0o700 });
+  symlinkSync(sdk, join(directory, "node_modules/@earendil-works/pi-coding-agent"), "dir");
   const tsx = dirname(require.resolve("tsx/package.json")); symlinkSync(realpathSync(tsx), join(directory, "node_modules/tsx"), "dir");
-  return { observed, bridges, compiler: { typescript: ts.version, tsx: realpathSync(tsx) }, tests: REQUIRED_TEST_FILES.map(path => join(directory, path.replace(/\.ts$/, ".js"))) };
+  return { observed, bridges, compiler: { typescript: ts.version, tsx: realpathSync(tsx), piSdk: { path: sdk, packageSha256: digest(physicalFile(join(sdk, "package.json"), 65536, true)) } }, tests: REQUIRED_TEST_FILES.map(path => join(directory, path.replace(/\.ts$/, ".js"))) };
 }
 export function runHarness({ directory, harness, node = process.execPath, env, reporter, evidenceRoot }) {
   const result = spawnSync(node, ["--test", "--test-concurrency=1", `--test-reporter=${reporter}`, ...harness.tests], {

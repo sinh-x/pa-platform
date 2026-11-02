@@ -5,11 +5,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { appendRegistryEvent, closeDb, getDb, resolveExecutionPlan, type DeployRequest } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDb, generatePrimer, resolveExecutionPlan, type DeployRequest } from "@pa-platform/pa-core";
 import { mutatePiRepoSetup } from "../repo-setup-native.js";
 import { recordPiReadonlyRoleProcessIdentity } from "../process-identity.js";
 import { createPaRepoSetupTool, registerRepoSetupModule, repoSetupToolAllowed } from "../pi-extension/repo-setup.js";
-import type { PiToolDefinition } from "../pi-extension/index.js";
+import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 
 function fixture(run: (f: { root: string; repo: string; dir: string; file: string; identity: string; candidate: string; request(value: unknown): Record<string, unknown> }) => void | Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "pap273-setup-native-")), old = process.env, cwd = process.cwd(); closeDb();
@@ -48,6 +48,31 @@ test("repo setup native tool authenticates actual registry/process and stages on
   const result = await tools[0]!.execute("fixture", { request: JSON.stringify({ action: "stage", expected: null, candidate: f.candidate }) }, undefined, undefined, { cwd: f.repo });
   assert.equal(result.isError, false); const value = JSON.parse(result.content[0]!.text); assert.equal(value.state, "candidate-unapproved"); assert.equal(value.executionReady, false);
   assert.equal(readFileSync(f.file, "utf8"), f.candidate); assert.equal(f.request({ action: "inspect" }).ok, true);
+}));
+
+test("fresh Pi SDK setup session exposes native discovery without assuming builtin read/search registration", () => fixture(async f => {
+  // Installed qualification explicitly resolves this dependency from the
+  // verified adapter closure; the harness never borrows the source SDK.
+  const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+  const agentDir = join(f.root, "sdk-agent"); mkdirSync(agentDir);
+  const settingsManager = SettingsManager.inMemory({});
+  const loader = new DefaultResourceLoader({ cwd: f.repo, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    extensionFactories: [pi => registerRepoSetupModule(pi as unknown as PiRuntime)] });
+  await loader.reload();
+  const { session, extensionsResult } = await createAgentSession({ cwd: f.repo, agentDir, resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(f.repo), tools: ["pa_repo_setup"] });
+  try {
+    assert.deepEqual(extensionsResult.errors, []); assert.deepEqual(session.getActiveToolNames(), ["pa_repo_setup"]);
+    const tool = session.agent.state.tools.find(tool => tool.name === "pa_repo_setup")!; assert.ok(tool);
+    for (const request of [{ action: "discover", path: "." }, { action: "read", path: "test.cjs" }, { action: "search", path: "test.cjs", query: "prerequisite" }, { action: "observe", paths: ["test.cjs"] }]) {
+      const result = await tool.execute("fresh-sdk", { request: JSON.stringify(request) });
+      const value = JSON.parse(result.content.filter(c => c.type === "text").map(c => c.text).join(""));
+      assert.equal(value.ok, true, request.action); assert.equal(value.executionReady, false);
+    }
+    assert.equal(existsSync(f.file), false);
+    const primer = generatePrimer({ runtime: "pi", teamConfig: { name: "repo-setup", description: "Fixture", objective: "Candidate-only setup", agents: [], deploy_modes: [{ id: "setup", label: "Setup", require_ticket: false }] }, mode: "setup" });
+    assert.match(primer, /"action":"observe"/); assert.match(primer, /runtime itself/);
+    assert.doesNotMatch(primer, /ppa registry complete|ppa registry update|Save session logs|ppa bulletin list/);
+  } finally { session.dispose(); }
 }));
 
 test("repo setup native host rejects environment-only role, changed registry bindings, child/custody/rogue identity and stale process", () => fixture(f => {

@@ -54,7 +54,7 @@ test('full local and installed workflow entry still registers all native groups 
   const calls = statements => statements.filter(ts.isExpressionStatement).map(s => s.expression).filter(ts.isCallExpression);
   const nativeCalls = calls(entry.statements);
   assert.deepEqual(nativeCalls.map(c => c.expression.getText(entry)), ['registerWorkflowMatrixCases', ...Array(7).fill('test')]);
-  assert.equal(calls(code.statements).filter(c => c.expression.getText(code) === 'test').length, 4);
+  assert.equal(calls(code.statements).filter(c => c.expression.getText(code) === 'test').length, 5);
   assert.equal(calls(code.statements).filter(c => c.expression.getText(code) === 'registerWorkflowMatrixCases').length, 0);
   assert.ok(entry.statements.some(s => ts.isImportDeclaration(s) && s.moduleSpecifier.text === './pi-workflow-code-cases.js'));
   assert.doesNotMatch(entry.getText(entry), /test\.(?:skip|todo)/);
