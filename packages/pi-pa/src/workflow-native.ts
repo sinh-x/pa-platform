@@ -41,7 +41,14 @@ const TECHNICAL = "View exact technical bindings";
 const visible = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 function pages(lines: string[]): string[] {
   const wrapped = lines.flatMap(line => {
-    const text = visible(line); return text.match(/.{1,72}/gu) ?? [""];
+    const text = Array.from(visible(line)), result: string[] = [];
+    for (let start = 0; start < text.length;) {
+      let end = Math.min(start + 72, text.length);
+      if (end < text.length) { const space = text.lastIndexOf(" ", end); if (space >= start + 24) end = space; }
+      result.push(text.slice(start, end).join("")); start = end;
+      if (text[start] === " ") start++;
+    }
+    return result.length ? result : [""];
   });
   const result: string[] = [];
   for (let index = 0; index < wrapped.length; index += 9) result.push(wrapped.slice(index, index + 9).join("\n"));
@@ -60,8 +67,10 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
     const raw = JSON.stringify(request, null, 2);
     if (Buffer.byteLength(raw, "utf8") > MAX_WORKFLOW_RECORD_BYTES) throw new JsonWorkflowError("WORKFLOW_CONTRACT", "decision-request-size", "package-owner");
     const list = (title: string, values: readonly string[]) => [title, ...(values.length ? values.map(value => `- ${value}`) : ["- none"])];
+    const identifiers = (title: string, values: readonly string[]) => [`${title}: ${values.length ? values.join(", ") : "none"}`];
     const review = pages([
       `${subject.ticket}: review the exact implementation plan`,
+      `Plan: ${subject.subjectId.replace(/[-.]/g, " ")}`,
       recovering ? `Resume cancelled review ${request.decisionId}. Previous cancellation stays in history; only your fresh decision can grant permissions.`
         : request.action === "revoke" ? `Revoke decision ${request.decisionId}; this does not undo completed effects.` : "Approve, reject, request changes, or cancel this exact package.",
       "Approval is not a claim that tests or human UAT passed.",
@@ -70,14 +79,15 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
       `Branch: ${subject.handoff.branch} (${subject.handoff.branchAction})`,
       `Base: ${subject.handoff.baseSha}`,
       ...(subject.handoff.type === "amendment" ? [`Feature: ${subject.handoff.featureSha}`] : []),
-      ...(["requirements", "uat", "matrix"] as const).flatMap(kind => [`${kind}: ${subject[kind].version}`, subject[kind].ref, `SHA256: ${subject[kind].sha256}`]),
-      ...list("Requirements", subject.scope.requirements), ...list("Acceptance criteria", subject.scope.acceptanceCriteria),
+      ...(["requirements", "uat", "matrix"] as const).flatMap(kind => [`${kind}: ${subject[kind].version}`, subject[kind].ref]),
+      "Exact document/check hashes are bound by the subject SHA256; full bindings are available in technical details.",
+      ...identifiers("Requirements", subject.scope.requirements), ...identifiers("Acceptance criteria", subject.scope.acceptanceCriteria),
       ...list("Files", subject.scope.files), ...list("Directories", subject.scope.directories), ...list("New paths", subject.scope.newPaths),
-      ...list("Checks (exact matrix-bound command IDs)", subject.scope.checks.map(check => `${check.commandId}; ${check.matrixSource}; SHA256 ${check.matrixSha256}`)),
+      ...identifiers("Checks (IDs in the exact matrix above)", subject.scope.checks.map(check => check.commandId)),
       ...list("Requested permissions", subject.requestedPermissions), ...list("Excluded effects", subject.scope.excludedEffects),
       `Run: ${request.runId}; revision: ${request.revision}`, `Subject: ${subject.subjectId}; revision: ${subject.revision}`, `Subject SHA256: ${request.subjectSha256}`,
-      `Workflow: ${subject.workflow.id}/${subject.workflow.version}; SHA256 ${subject.workflow.sha256}`,
-      ...(request.resources ? [`Pinned config: ${request.resources.configRevision}`, `Registry SHA256: ${request.resources.registrySha256}`] : []),
+      `Workflow: ${subject.workflow.id}/${subject.workflow.version}`,
+      ...(request.resources ? [`Pinned config: ${request.resources.configRevision}`] : []),
     ]);
     const technical = pages(raw.split("\n")), transcript: { title: string; selected: string | null }[] = [];
     const select = async (title: string, choices: string[]) => {

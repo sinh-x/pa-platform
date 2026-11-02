@@ -75,6 +75,16 @@ test("aborted native review cannot issue authority before opening or after a fin
   } } }, () => caller, during.signal)(request), /cancelled-native-request/);
 });
 
+test("readable primary review lists every finite check without repeating raw matrix hashes", async () => {
+  const scope = { ...subject.scope, checks: Array.from({ length: 9 }, (_, i) => ({ matrixSource: subject.matrix.ref, matrixSha256: subject.matrix.sha256, commandId: `command-${i}` })) };
+  const views: string[] = [];
+  await createPiWorkflowCapture({ mode: "tui", cwd: caller.repoRoot, ui: { select: async (title, choices) => { views.push(title); return choices[0]; } } }, () => caller)({ ...request, subject: { ...subject, scope } });
+  const primary = views.join("\n");
+  for (const check of scope.checks) assert.ok(primary.includes(check.commandId));
+  assert.equal(primary.includes(subject.matrix.sha256), false); assert.ok(primary.includes(request.subjectSha256));
+  assert.ok(primary.includes(subject.matrix.ref)); assert.match(primary, /technical details/);
+});
+
 test("oversized native requests are refused, not truncated into a partial approval", async () => {
   const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async () => { throw new Error("must not open"); } } }, () => caller);
   await assert.rejects(capture({ ...request, subject: { ...subject, scope: { ...subject.scope, files: ["x".repeat(65_536)] } } }), /WORKFLOW_CONTRACT/);
