@@ -65,10 +65,23 @@ test("default native template host and planner retain the exact run config after
   } finally { f.close(); }
 });
 
-test("default native mutation host recovers the retained cancelled package after compatible config advance without publication", async () => {
+test("default native mutation host recovers a cancelled package through supported continuation and compatible config advance without publication", async () => {
   const f = fixture(false, true); try {
     const cancelled = await f.service.decide(f.state.runId, 1, "approve"); assert.equal(cancelled.outcome, "cancelled");
     f.config.write("skills/requirements/analyst.md", "# New instructions\nCURRENT ONLY\n"); f.config.commit();
+    // Registry/process/session authentication is real; terminal predecessor and
+    // same-process successor lifecycle are disposable fixtures, not live resume.
+    appendRegistryEvent({ deployment_id: "d-abcdef", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "partial" });
+    const unrelated = "d-aabbcc", unrelatedDir = join(f.root, "deployments", unrelated); mkdirSync(unrelatedDir);
+    Object.assign(process.env, { PA_DEPLOYMENT_ID: unrelated, PA_DEPLOYMENT_DIR: unrelatedDir });
+    appendRegistryEvent({ deployment_id: unrelated, team: "requirements", mode: "analyze", event: "started", runtime: "pi", binary: "ppa", invocation_channel: "cli", timestamp: new Date().toISOString(), pid: process.pid,
+      repo: f.state.subject.repository.root, repo_root: f.state.subject.repository.root, worktree_root: f.state.subject.repository.root, ticket_id: "EX-1" });
+    await assert.rejects(mutatePiWorkflow({ action: "recover", revision: 2, decisionId: cancelled.decisionId, subjectSha256: f.state.subjectSha256 }, f.context), /WORKFLOW_AUTHORITY/);
+    assert.equal(f.service.status(f.state.runId).revision, 2);
+    const id = "d-fedcba", dir = join(f.root, "deployments", id); mkdirSync(dir);
+    Object.assign(process.env, { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir });
+    appendRegistryEvent({ deployment_id: id, team: "requirements", mode: "analyze", event: "started", runtime: "pi", binary: "ppa", invocation_channel: "cli", timestamp: new Date().toISOString(), pid: process.pid,
+      repo: f.state.subject.repository.root, repo_root: f.state.subject.repository.root, worktree_root: f.state.subject.repository.root, ticket_id: "EX-1", resumed_from_deployment_id: "d-abcdef" });
     f.approve();
     const result = await mutatePiWorkflow({ action: "recover", revision: 2, decisionId: cancelled.decisionId, subjectSha256: f.state.subjectSha256 }, f.context);
     assert.equal(result.ok, true); const state = f.service.status(f.state.runId);
