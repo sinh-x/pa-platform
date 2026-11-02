@@ -6,7 +6,7 @@ import type { PiExtensionModule, PiToolDefinition, PiToolCall } from "./index.js
 export function createPaRepoSetupTool(): PiToolDefinition {
   return {
     name: "pa_repo_setup", label: "PA Repository Setup", executionMode: "sequential",
-    description: "Inspect or stage a bounded, unapproved command catalogue at the registered primary repository's fixed .pa/project-commands.json. Raw JSON actions: inspect; stage with expected=null or the exact prior candidate reference and candidate=raw catalogue JSON string. Requires the authenticated ticketless repo-setup/setup Pi deployment. No caller roots, paths, grants, approval, credentials, ignore/Git/source edits, command execution or execution readiness.",
+    description: "Bounded repository onboarding for the authenticated ticketless repo-setup/setup Pi deployment. Raw JSON actions: discover with path=repository-relative directory or '.'; read with path=relative file; search with path and literal query; observe with paths=[relative prerequisite files] returns native SHA256/provenance; inspect; stage with expected=null or exact prior candidate reference and candidate=raw catalogue JSON string. Stage rechecks prerequisite hashes. Discovery is Linux descriptor-confined, owned non-symlink files only, bounded and sensitive-filtered. No caller roots, grants, approval, credentials, Git/source edits, command execution or execution readiness.",
     parameters: Type.Object({ request: Type.String({ maxLength: MAX_REPO_SETUP_REQUEST_BYTES }) }, { additionalProperties: false }),
     execute: async (_id, input, signal, _update, context) => {
       const result = signal?.aborted ? { ok: false, error: { code: "SETUP_REQUEST" }, executionReady: false } : mutatePiRepoSetup(input, context);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,8 +26,10 @@ function fixture(run: (f: { root: string; repo: string; dir: string; file: strin
       appendRegistryEvent({ deployment_id: "d-123abc", team: "repo-setup", mode: "setup", runtime: "pi", binary: "ppa", invocation_channel: "cli", event: "started", timestamp: new Date().toISOString(),
         pid: process.pid, repo, repo_root: repo, worktree_root: repo });
       recordPiReadonlyRoleProcessIdentity(process.env, "d-123abc", dir, process.pid);
+      writeFileSync(join(repo, "test.cjs"), "// prerequisite\n");
+      const prerequisiteSha = createHash("sha256").update("// prerequisite\n").digest("hex");
       const candidate = JSON.stringify({ schemaVersion: "project-command-catalogue/v1", repository: { key: "example", root: repo }, effects: ["project-read", "isolated-temp-write"], commands: [
-        { id: "unit", executable: "/nix/store/nonexistent-fixture/bin/node", argv: ["test.cjs"], environment: {}, readPaths: [], prerequisites: [{ path: "test.cjs", sha256: "a".repeat(64) }], timeoutSeconds: 60, maximumOutputBytes: 1024 },
+        { id: "unit", executable: "/nix/store/nonexistent-fixture/bin/node", argv: ["test.cjs"], environment: {}, readPaths: [], prerequisites: [{ path: "test.cjs", sha256: prerequisiteSha }], timeoutSeconds: 60, maximumOutputBytes: 1024 },
       ] });
       await run({ root, repo, dir, file: join(repo, ".pa", "project-commands.json"), identity: join(dir, "pi-process-identity.json"), candidate,
         request: value => mutatePiRepoSetup({ request: JSON.stringify(value) }, { cwd: repo }) });
@@ -38,6 +41,10 @@ const code = (result: Record<string, unknown>) => (result.error as { code: strin
 test("repo setup native tool authenticates actual registry/process and stages only an unapproved fixed-path catalogue", () => fixture(async f => {
   const tools: PiToolDefinition[] = []; registerRepoSetupModule({ registerTool: tool => tools.push(tool as PiToolDefinition) });
   assert.deepEqual(tools.map(tool => tool.name), ["pa_repo_setup"]); assert.ok(existsSync(f.identity));
+  for (const request of [{ action: "discover", path: "." }, { action: "read", path: "test.cjs" }, { action: "search", path: "test.cjs", query: "prerequisite" }, { action: "observe", paths: ["test.cjs"] }]) {
+    const observation = await tools[0]!.execute("fresh-discovery", { request: JSON.stringify(request) }, undefined, undefined, { cwd: f.repo });
+    assert.equal(observation.isError, false, request.action); assert.equal(existsSync(f.file), false);
+  }
   const result = await tools[0]!.execute("fixture", { request: JSON.stringify({ action: "stage", expected: null, candidate: f.candidate }) }, undefined, undefined, { cwd: f.repo });
   assert.equal(result.isError, false); const value = JSON.parse(result.content[0]!.text); assert.equal(value.state, "candidate-unapproved"); assert.equal(value.executionReady, false);
   assert.equal(readFileSync(f.file, "utf8"), f.candidate); assert.equal(f.request({ action: "inspect" }).ok, true);

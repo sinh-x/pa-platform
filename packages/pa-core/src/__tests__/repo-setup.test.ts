@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,8 +23,10 @@ function fixture(run: (f: { root: string; repo: string; file: string; config: st
     git("add", "existing.txt"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Fixture");
     writeFileSync(join(repo, "unrelated.txt"), "preserve untracked\n");
     const host = { authenticate: () => ({ key: "example", root: repo }) };
+    writeFileSync(join(repo, "test.cjs"), "// prerequisite\n");
+    const prerequisiteSha = createHash("sha256").update("// prerequisite\n").digest("hex");
     const candidate = JSON.stringify({ schemaVersion: "project-command-catalogue/v1", repository: { key: "example", root: repo }, effects: ["project-read", "isolated-temp-write"], commands: [
-      { id: "unit", executable: "/nix/store/not-present/bin/node", argv: ["test.cjs"], environment: {}, readPaths: [], prerequisites: [{ path: "test.cjs", sha256: "a".repeat(64) }], timeoutSeconds: 60, maximumOutputBytes: 1024 },
+      { id: "unit", executable: "/nix/store/not-present/bin/node", argv: ["test.cjs"], environment: {}, readPaths: [], prerequisites: [{ path: "test.cjs", sha256: prerequisiteSha }], timeoutSeconds: 60, maximumOutputBytes: 1024 },
     ] });
     run({ root, repo, file: join(repo, ".pa", "project-commands.json"), config, host, candidate, git, request: value => repoSetupService(JSON.stringify(value), host) });
   } finally { process.env = old; rmSync(root, { force: true, recursive: true }); }
@@ -47,6 +50,53 @@ test("repo setup stages only fixed candidate bytes with exact CAS reference and 
   assert.equal(readFileSync(join(f.repo, "unrelated.txt"), "utf8"), "preserve untracked\n");
   assert.equal(readFileSync(join(f.repo, "existing.txt"), "utf8"), "unrelated content\n");
   assert.deepEqual(readdirSync(join(f.repo, ".pa")), ["project-commands.json"]); assert.deepEqual(readFileSync(join(f.repo, ".git", "info", "exclude")), exclude);
+}));
+
+test("repo setup native discovery/read/search/observe is bounded and never stages or executes", () => fixture(f => {
+  const head = f.git("rev-parse", "HEAD"), index = readFileSync(join(f.repo, ".git", "index"));
+  const discovery = f.request({ action: "discover", path: "." });
+  assert.equal(discovery.ok, true); assert.ok(JSON.stringify(discovery).includes("test.cjs"));
+  assert.equal(JSON.stringify(discovery).includes('".git"'), false);
+  assert.equal((f.request({ action: "read", path: "test.cjs" }).observation as { text: string }).text, "// prerequisite\n");
+  assert.deepEqual((f.request({ action: "search", path: "test.cjs", query: "prerequisite" }).observation as { matches: unknown[] }).matches, [{ line: 1, text: "// prerequisite" }]);
+  const observed = f.request({ action: "observe", paths: ["test.cjs"] });
+  assert.equal(observed.ok, true); assert.equal(observed.executionReady, false);
+  const manifest = observed.observation as { schemaVersion: string; files: { sha256: string; sizeBytes: number }[] };
+  assert.equal(manifest.schemaVersion, "repo-setup-inputs/v1"); assert.equal(manifest.files[0]!.sha256, createHash("sha256").update("// prerequisite\n").digest("hex"));
+  assert.equal(manifest.files[0]!.sizeBytes, 16);
+  assert.equal(existsSync(join(f.repo, ".pa")), false); assert.equal(f.git("rev-parse", "HEAD"), head); assert.deepEqual(readFileSync(join(f.repo, ".git", "index")), index);
+}));
+
+for (const variant of ["traversal", "absolute", "git", "secret-name", "secret-content", "symlink", "parent-symlink", "hard-link", "writable", "directory", "oversize", "duplicates", "too-many", "control", "unknown-field"] as const) {
+  test(`repo setup input observation rejects ${variant} without leaking bytes`, () => fixture(f => {
+    let path = "test.cjs"; let request: unknown;
+    if (variant === "traversal") path = "../test.cjs";
+    if (variant === "absolute") path = join(f.repo, path);
+    if (variant === "git") path = ".git/config";
+    if (variant === "secret-name") { path = ".env"; writeFileSync(join(f.repo, path), "PRIVATE-SENTINEL"); }
+    if (variant === "secret-content") writeFileSync(join(f.repo, path), "-----BEGIN RSA PRIVATE KEY-----\nPRIVATE-SENTINEL");
+    if (variant === "symlink") { symlinkSync(join(f.repo, path), join(f.repo, "alias")); path = "alias"; }
+    if (variant === "parent-symlink") { symlinkSync(f.repo, join(f.repo, "alias")); path = "alias/test.cjs"; }
+    if (variant === "hard-link") linkSync(join(f.repo, path), join(f.root, "linked"));
+    if (variant === "writable") chmodSync(join(f.repo, path), 0o666);
+    if (variant === "directory") { mkdirSync(join(f.repo, "directory")); path = "directory"; }
+    if (variant === "oversize") writeFileSync(join(f.repo, path), Buffer.alloc(1_048_577));
+    if (variant === "control") path = "bad\u001bpath";
+    request = { action: "observe", paths: variant === "duplicates" ? [path, path] : variant === "too-many" ? Array.from({ length: 129 }, (_, i) => `p${i}`) : [path], ...(variant === "unknown-field" ? { root: f.repo } : {}) };
+    const result = f.request(request); assert.equal(result.ok, false); assert.equal(JSON.stringify(result).includes("PRIVATE-SENTINEL"), false); assert.equal(existsSync(join(f.repo, ".pa")), false);
+  }));
+}
+
+test("staging rejects prerequisite drift and never accepts an invented digest", () => fixture(f => {
+  writeFileSync(join(f.repo, "test.cjs"), "changed\n");
+  assert.equal(code(f.request({ action: "stage", expected: null, candidate: f.candidate })), "SETUP_STALE");
+  assert.equal(existsSync(f.file), false);
+  writeFileSync(join(f.repo, "test.cjs"), "// prerequisite\n"); let calls = 0;
+  const result = repoSetupService(JSON.stringify({ action: "stage", expected: null, candidate: f.candidate }), { authenticate() {
+    if (++calls === 3) writeFileSync(join(f.repo, "test.cjs"), "changed during staging\n");
+    return { key: "example", root: f.repo };
+  } });
+  assert.equal(code(result), "SETUP_STALE"); assert.equal(existsSync(f.file), false);
 }));
 
 test("repo setup parser rejects duplicate/unknown fields, oversized/sensitive/malformed candidates and caller grants before any administrative write", () => fixture(f => {

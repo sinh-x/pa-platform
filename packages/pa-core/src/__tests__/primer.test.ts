@@ -86,6 +86,14 @@ function assertNoLegacyPaCliExamples(primer: string): void {
   assert.doesNotMatch(primer, /\bpa (deploy|bulletin|status|ticket|registry|report|daily|idea|serve|health|teams|requirements|search|create|update|list|remove-timer)\b/);
 }
 
+test("repo-setup primer projects registered native discovery and runtime-owned lifecycle without shell/log/registry instructions", () => {
+  const setup = parseTeamYamlContent(`name: repo-setup\ndescription: Candidate-only setup\nobjective: Discover and stage an unapproved catalogue.\nagents: []\ndeploy_modes:\n  - id: setup\n    label: Setup\n    require_ticket: false\n`);
+  const primer = generatePrimer({ runtime: "pi", teamConfig: setup, mode: "setup", toolReference: { markdown: "FORBIDDEN_GENERIC_TOOL_GUIDE" } as never });
+  assert.match(primer, /pa_repo_setup/); assert.match(primer, /"action":"observe"/); assert.match(primer, /"action":"discover"/);
+  assert.match(primer, /independent real operator terminal/); assert.match(primer, /Session\/registry terminal handling belongs to the runtime/);
+  assert.doesNotMatch(primer, /FORBIDDEN_GENERIC_TOOL_GUIDE|ppa bulletin list|ppa registry complete|ppa registry update|Save session logs/);
+});
+
 const team = parseTeamYamlContent(`
 name: requirements
 description: Requirements team

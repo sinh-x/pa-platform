@@ -8,10 +8,11 @@ import { workflowObject } from "./deploy/prepared-workflow.js";
 import { inspectLocalProjectCommandCatalogue } from "./project-command-catalogue-files.js";
 import { MAX_PROJECT_COMMAND_CATALOGUE_BYTES, parseProjectCommandCatalogue, PROJECT_COMMAND_CATALOGUE_PATH, type CatalogueRepository } from "./project-command-catalogue.js";
 import { loadRepoEntry, resolveRepoExecutionPath } from "./repos.js";
+import { discoverRepoSetupInputs, observeRepoSetupInputs, readRepoSetupInput, RepoSetupInputError, verifyRepoSetupPrerequisites } from "./repo-setup-inputs.js";
 import { parseReviewEvidenceJson, readReviewEvidenceFile } from "./validation/review-contract.js";
 
 export const MAX_REPO_SETUP_REQUEST_BYTES = 256 * 1024;
-export type RepoSetupErrorCode = "SETUP_REQUEST" | "SETUP_ACTOR" | "SETUP_REPOSITORY" | "SETUP_BUSY" | "SETUP_SOURCE_CONFLICT" | "SETUP_TRACKED" | "SETUP_CANDIDATE" | "SETUP_STALE" | "SETUP_IO";
+export type RepoSetupErrorCode = "SETUP_REQUEST" | "SETUP_ACTOR" | "SETUP_REPOSITORY" | "SETUP_BUSY" | "SETUP_SOURCE_CONFLICT" | "SETUP_TRACKED" | "SETUP_CANDIDATE" | "SETUP_STALE" | "SETUP_INPUT" | "SETUP_IO";
 export class RepoSetupError extends Error {
   constructor(readonly code: RepoSetupErrorCode) { super(`Repository setup rejected: ${code}`); }
 }
@@ -95,8 +96,9 @@ export function repoSetupService(request: string, host: RepoSetupHost): Record<s
     try { parsed = parseReviewEvidenceJson(Buffer.from(request), "repository setup"); } catch { return fail("SETUP_REQUEST"); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fail("SETUP_REQUEST");
     const action = (parsed as Record<string, unknown>).action;
-    const row = object(parsed, action === "inspect" ? ["action"] : ["action", "expected", "candidate"]);
-    if (action !== "inspect" && action !== "stage") return fail("SETUP_REQUEST");
+    const fields: Record<string, string[]> = { inspect: ["action"], stage: ["action", "expected", "candidate"], observe: ["action", "paths"], discover: ["action", "path"], read: ["action", "path"], search: ["action", "path", "query"] };
+    if (typeof action !== "string" || !Object.hasOwn(fields, action)) return fail("SETUP_REQUEST");
+    const row = object(parsed, fields[action]!);
     const repository = authenticate(host);
     const expected = action === "stage" ? parseReference(row.expected, repository) : null;
     let bytes: Buffer | undefined;
@@ -110,9 +112,27 @@ export function repoSetupService(request: string, host: RepoSetupHost): Record<s
       return withPreparedTicketCapacity({ canonicalRepoKey: repository.key, canonicalRepoRoot: repository.root }, capacity =>
         withVacantRepositorySetup(repository.root, capacity, worktrees => {
           entered = true; authenticate(host, repository); gitUntracked(repository);
+          if (["observe", "discover", "read", "search"].includes(action)) {
+            let observation: unknown;
+            if (action === "observe") observation = observeRepoSetupInputs(repository, row.paths);
+            else if (action === "discover") observation = discoverRepoSetupInputs(repository, row.path);
+            else {
+              const file = readRepoSetupInput(repository, row.path);
+              if (action === "read") observation = file;
+              else {
+                if (typeof row.query !== "string" || !row.query.length || row.query.length > 128 || /[\u0000-\u001f\u007f]/.test(row.query)) return fail("SETUP_REQUEST");
+                observation = { path: file.path, sha256: file.sha256, matches: file.text.split("\n").flatMap((text, index) => text.includes(row.query as string) ? [{ line: index + 1, text }] : []) };
+              }
+            }
+            authenticate(host, repository);
+            if (Buffer.byteLength(JSON.stringify(observation)) > 48 * 1024) return fail("SETUP_INPUT");
+            return { ok: true, observation, executionReady: false };
+          }
           const current = source(repository, worktrees);
           if (action === "inspect") return { ok: true, state: current ? "candidate-unapproved" : "missing", candidate: current, executionReady: false };
           if (!same(current, expected)) return fail("SETUP_STALE");
+          const catalogue = parseProjectCommandCatalogue(bytes!, repository);
+          verifyRepoSetupPrerequisites(repository, catalogue);
           const file = join(repository.root, PROJECT_COMMAND_CATALOGUE_PATH), parent = dirname(file);
           const rootStat = lstatSync(repository.root), fileIdentity = current ? snapshot(lstatSync(file)) : null;
           try { mkdirSync(parent, { mode: 0o700 }); syncDirectory(repository.root); }
@@ -126,6 +146,7 @@ export function repoSetupService(request: string, host: RepoSetupHost): Record<s
           // registration, bytes, index and physical parents immediately before
           // publication. Never chmod/repair/adopt an existing insecure object.
           authenticate(host, repository); gitUntracked(repository);
+          verifyRepoSetupPrerequisites(repository, catalogue);
           if (lstatSync(repository.root).dev !== rootStat.dev || lstatSync(repository.root).ino !== rootStat.ino
             || realpathSync(parent) !== parent || lstatSync(parent).ino !== parentStat.ino || lstatSync(parent).dev !== parentStat.dev) return fail("SETUP_IO");
           const observed = inspectLocalProjectCommandCatalogue(repository.key, repository.root);
@@ -145,7 +166,7 @@ export function repoSetupService(request: string, host: RepoSetupHost): Record<s
           authenticate(host, repository); gitUntracked(repository);
           return { ok: true, state: "candidate-unapproved", candidate: written, executionReady: false };
         }));
-    } catch (error) { if (error instanceof RepoSetupError) throw error; return fail(entered ? "SETUP_IO" : "SETUP_BUSY"); }
+    } catch (error) { if (error instanceof RepoSetupError) throw error; if (error instanceof RepoSetupInputError) return fail(error.code); return fail(entered ? "SETUP_IO" : "SETUP_BUSY"); }
   } catch (error) {
     return { ok: false, error: { code: error instanceof RepoSetupError ? error.code : "SETUP_IO" }, executionReady: false };
   }

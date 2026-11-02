@@ -6,6 +6,46 @@ completion, operator approval, installed availability, execution readiness or
 requirements/UAT acceptance.** Phase 3A's static schema and legacy/local conflict
 rules remain in `project-command-catalogue.md`.
 
+## Runtime follow-up: native discovery and prerequisite observations
+
+The phase-3B status below is historical. Later approval/execution phases are documented
+in `repo-contract-approval.md` and `repo-catalogue-execution.md`.
+
+`pa_repo_setup` now also accepts these exact requests (no additional fields):
+
+```json
+{"action":"discover","path":"."}
+{"action":"read","path":"package.json"}
+{"action":"search","path":"package.json","query":"scripts"}
+{"action":"observe","paths":["package.json","package-lock.json"]}
+```
+
+These operations are implemented by the **registered native tool**, not an assumed
+builtin grep/glob executable. `discover` lists one directory, sorted, with at most
+512 scanned entries; descend explicitly. `read` returns UTF-8 text at most 32768
+bytes; `search` matches a literal nonempty query of at most 128 characters in one
+such file. The complete observation response must fit 48 KiB or fails closed.
+`observe` returns `observation={schemaVersion:"repo-setup-inputs/v1",repository,
+files:[{path,sha256,sizeBytes}]}` with actual byte digests. It accepts 1–128 unique
+paths, at most 1 MiB per file / 8 MiB total, and rereads the batch to reject detected
+drift. Observations are point-in-time data, **not durable authority or approval**.
+
+Every component is opened relative to a retained Linux directory descriptor with
+no-follow; non-Linux hosts currently fail closed. Files/directories must be owned
+by the effective process user and not group/other writable. Symlinks, hard-linked
+files, nonregular inputs, `.git`/`.pa`, traversal, sensitive names/paths/content,
+read-time changes and changed physical parents reject. Errors never echo bytes.
+No Git provenance/cleanliness is inferred from a digest. Native authentication and
+existing vacancy/capacity owners apply; metadata mutex effects are unchanged.
+
+Staging now checks **all** prerequisite digests before temporary creation and
+again before publication. Conflicting hashes for the same path, missing inputs,
+unsupported paths/limits or changed bytes reject. Existing approval/execution
+revalidation remains independently required. The setup-specific generated primer
+uses native bulletin/discovery operations and runtime-owned terminal handling,
+not forbidden shell/session-log/registry commands. PAPC-073 must adopt these exact
+interfaces; this source delivery does not change its selected configuration.
+
 ## Companion interface (source only)
 
 The implemented route is **Pi/PPA CLI**, exact team `repo-setup`, mode `setup`,
