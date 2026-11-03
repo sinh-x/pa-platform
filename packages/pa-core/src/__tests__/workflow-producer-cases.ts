@@ -3,12 +3,14 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { runTemplateCommand } from "../cli/commands/template.js";
-import { digest } from "../workflows/contracts.js";
+import { digest, JsonWorkflowError } from "../workflows/contracts.js";
 import { templateService } from "../templates/service.js";
+import { workflowFailure } from "../workflows/public.js";
 import { reviewBundleTemplateConsumer } from "../workflows/producer.js";
 import { bytes, fixtureEvidence } from "./workflow-fixtures.js";
 import { workflowRuntimeFixture } from "./workflow-runtime-fixture.js";
 import { templateFixture } from "./template-fixture.js";
+import { workflowResourceFixture } from "./workflow-resource-fixture.js";
 
 function fixture() {
   const f = workflowRuntimeFixture(), t = templateFixture();
@@ -17,6 +19,7 @@ function fixture() {
   entry.bindings = { bundle: { type: "json", required: true } }; entry.validation = { kind: "review-bundle", sections: [] };
   t.registry.entries.push(entry); writeFileSync(join(t.root, entry.source.path), "{{bundle}}\n");
   const templates = t.save();
+  f.host.resources = (selection, subject, caller) => workflowResourceFixture(selection, subject, caller, templates);
   f.selection = { ...f.selection, configRoot: t.root, definitions: f.selection.definitions.map(d => ({ ...d, configRoot: t.root })) };
   const request = () => bytes({ action: "render", id: "review-bundle", version: "1", bindings: { bundle: f.bundle } });
   return { ...f, t, templates, request, close: () => { f.close(); t.dispose(); } };
@@ -40,11 +43,30 @@ test("actual shared producer retains exact candidate, provenance and artifact/ma
     assert.equal(code, 0); assert.equal(JSON.parse(output[0]!).candidate, rendered.candidate);
   } finally { f.close(); }
 });
+test("uppercase subjectId is a safe causal producer error, not missing runtime capability or an admission write", () => {
+  const f = fixture(); try {
+    const original = f.bundle.subjectId, requirements = f.bundle.requirements.sha256, uat = f.bundle.uat.sha256, matrix = f.bundle.matrix.sha256;
+    f.bundle.subjectId = "LM-101-PRIVATE-SENTINEL";
+    let failed = false;
+    try { f.service.admitProduced(f.selection, f.request(), { selection: f.templates }); }
+    catch (error) {
+      failed = true; const result = workflowFailure(error);
+      assert.equal(result.code, "WORKFLOW_CONTRACT"); assert.equal(result.gateId, "review-bundle.subjectId"); assert.equal(result.correctionOwner, "producer-owner");
+      assert.equal((result.inputDiagnostic as { field: string }).field, "subjectId"); assert.equal(JSON.stringify(result).includes("PRIVATE-SENTINEL"), false);
+    }
+    assert.equal(failed, true); assert.deepEqual(f.journal.runs(f.bundle.repository.key, f.bundle.ticket), []);
+    f.bundle.subjectId = original;
+    const run = f.service.admitProduced(f.selection, f.request(), { selection: f.templates });
+    assert.deepEqual([run.subject.requirements.sha256, run.subject.uat.sha256, run.subject.matrix.sha256], [requirements, uat, matrix]);
+    assert.deepEqual(run.decisions, []);
+  } finally { f.close(); }
+});
+
 test("producer mismatch, injected receipts, malformed bundles and bad referenced evidence cause zero admission writes", () => {
   const f = fixture(); try {
     const host = { selection: f.templates };
     const writes = () => (f.db.prepare("SELECT count(*) AS n FROM workflow_events").get() as { n: number }).n;
-    const reject = (request = f.request()) => { assert.throws(() => f.service.admitProduced(f.selection, request, host), /WORKFLOW_/); assert.equal(writes(), 0); };
+    const reject = (request = f.request()) => { assert.throws(() => f.service.admitProduced(f.selection, request, host), JsonWorkflowError); assert.equal(writes(), 0); };
     const good = f.request(); const parsed = JSON.parse(good.toString());
     reject(bytes({ ...parsed, producer: { approved: true } }));
     reject(bytes({ ...parsed, bindings: { bundle: { ...f.bundle, actor: "operator", approved: true } } }));
@@ -78,6 +100,15 @@ test("actual producer links revised candidate/provenance without re-enabling a d
     assert.equal(provenance.producer.candidateSha256, revised.subjectSha256);
     assert.equal(provenance.producer.registrySha256, f.templates.registrySha256);
     assert.equal(disabled.bindings[0]!.enabled, false);
+  } finally { f.close(); }
+});
+test("producer preserves selected-pair and capability causes instead of erasing them as WORKFLOW_SOURCE", () => {
+  const f = fixture(); try {
+    assert.throws(() => f.service.admitProduced(f.selection, f.request(), { selection: { ...f.templates, registrySha256: "b".repeat(64) } }), /TEMPLATE_PAIR/);
+    f.t.registry.entries.at(-1)!.capabilities.render = false;
+    const templates = f.t.save();
+    assert.throws(() => f.service.admitProduced(f.selection, f.request(), { selection: templates }), /TEMPLATE_CAPABILITY/);
+    assert.deepEqual(f.journal.runs(f.bundle.repository.key, f.bundle.ticket), []);
   } finally { f.close(); }
 });
 test("evidence mutation during the native dialog cannot mint a decision", async () => {

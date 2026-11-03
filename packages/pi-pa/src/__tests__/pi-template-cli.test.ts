@@ -84,6 +84,7 @@ test("actual built PPA entry handles template revisions and all sixteen producer
     assert.equal(readFileSync(join(stage, ".pa-template-registry.sha"), "utf8"), selection.registrySha256 + "\n");
     // Exercise the actual qualification driver in a disposable candidate layout.
     const driver = join(stage, "scripts/dev/verify_template_contracts.mjs"); mkdirSync(dirname(driver), { recursive: true }); cpSync(join(workspace, "scripts/dev/verify_template_contracts.mjs"), driver);
+    cpSync(join(workspace, "scripts/dev/workflow_installed_support.mjs"), join(stage, "scripts/dev/workflow_installed_support.mjs"));
     const marker = join(stage, "forbidden-fsmonitor-effect"), monitor = join(stage, "unsafe-monitor.sh"); writeFileSync(monitor, `#!/bin/sh\nprintf forbidden > '${marker}'\n`, { mode: 0o700 }); git("config", "core.fsmonitor", monitor);
     const qualify = (args: string[]) => spawnSync(process.execPath, [driver, ...args], { env: { ...env, PA_PLATFORM_HOME: f.root, PA_PLATFORM_TEAMS: join(f.root, "teams"), PA_PLATFORM_CONFIG: join(stage, "empty-config") }, encoding: "utf8", timeout: 90000, maxBuffer: 1_048_576 });
     const paired = qualify(["--mode", "paired-config"]); assert.equal(paired.status, 0, paired.stdout + paired.stderr); const qualified = JSON.parse(paired.stdout);
@@ -97,7 +98,7 @@ test("actual built PPA entry handles template revisions and all sixteen producer
       writeFileSync(path, mutated); entry.source.sha256 = createHash("sha256").update(mutated).digest("hex");
       const selected = f.save(); git("add", "contracts/templates-v1.json", "skills/templates"); git("commit", "-qm", "synthetic malformed document rule");
       const current = { ...selected, configRevision: git("rev-parse", "HEAD") };
-      writeFileSync(join(stage, ".pa-platform-config.sha"), current.configRevision + "\n"); writeFileSync(join(stage, ".pa-template-registry.sha"), current.registrySha256 + "\n");
+      // Same candidate and build-provenance pins across every compatible config revision.
       const rejectedCases = ["render", "validate"].map(action => {
         const body = { bindings: f.allBindings[c.id], ...(action === "validate" ? { candidate: "SECRET-SENTINEL" } : {}) };
         const request = { action, id: c.id, version: entry.revision, ...body }, expected = templateService(request, { selection: current });
@@ -113,10 +114,12 @@ test("actual built PPA entry handles template revisions and all sixteen producer
       writeFileSync(path, original); entry.source.sha256 = createHash("sha256").update(original).digest("hex");
     }
     const restored = f.save(); git("add", "contracts/templates-v1.json", "skills/templates"); git("commit", "-qm", "restore synthetic valid document sources");
-    writeFileSync(join(stage, ".pa-platform-config.sha"), git("rev-parse", "HEAD") + "\n"); writeFileSync(join(stage, ".pa-template-registry.sha"), restored.registrySha256 + "\n");
+    assert.equal(restored.registrySha256, selection.registrySha256);
     // An adopted instruction disappearing at a newly pinned clean revision is a
     // blocked required case, not a skipped consumer or a fallback formatter.
-    writeFileSync(join(f.root, "teams/builder/modes/orchestrator.md"), "# Missing template adoption\nNo source/approval effects.\n"); git("add", "teams"); git("commit", "-qm", "synthetic missing adoption"); git("update-ref", "refs/remotes/origin/develop", git("rev-parse", "HEAD")); writeFileSync(join(stage, ".pa-platform-config.sha"), git("rev-parse", "HEAD") + "\n");
+    writeFileSync(join(f.root, "teams/builder/modes/orchestrator.md"), "# Missing template adoption\nNo source/approval effects.\n"); git("add", "teams"); git("commit", "-qm", "synthetic missing adoption"); git("update-ref", "refs/remotes/origin/develop", git("rev-parse", "HEAD"));
     const rejected = qualify(["--mode", "paired-config"]); assert.equal(rejected.status, 1); assert.equal(JSON.parse(rejected.stdout).status, "blocked"); assert.equal(existsSync(marker), false);
+    assert.equal(readFileSync(join(stage, ".pa-platform-config.sha"), "utf8"), selection.configRevision + "\n");
+    assert.equal(readFileSync(join(stage, ".pa-template-registry.sha"), "utf8"), selection.registrySha256 + "\n");
   } finally { f.dispose(); rmSync(stage, { recursive: true, force: true }); }
 });

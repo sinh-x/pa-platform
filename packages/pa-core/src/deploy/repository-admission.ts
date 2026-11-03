@@ -553,6 +553,61 @@ export function withVacantPreparationWorktree<T>(canonicalRepoRoot: string, work
   });
 }
 
+/** Ticketless administrative writer exclusion, NOT role/approval authority.
+ * Native setup callers must authenticate their exact live deployment separately.
+ * Capacity -> primary slot -> sorted linked slots; retained/uncertain owners are
+ * never reclaimed, and every registered worktree is checked, not only the root.
+ */
+export function withVacantRepositorySetup<T>(canonicalRepoRoot: string, capacityOwner: PreparedTicketCapacityTransaction, operation: (worktrees: readonly string[]) => T): T {
+  return withPreparedRepositoryTicketOwner(capacityOwner, canonicalRepoRoot, () => {
+    if (capacityOwner.inventory().length) throw new Error("repo setup overlaps retained ticket capacity");
+    const root = assertCanonicalRoot(canonicalRepoRoot), primary = repositoryPhysicalGitDir(root);
+    if (primary !== join(root, ".git") || repositoryPhysicalGitCommonDir(root) !== primary) throw new Error("repo setup requires a primary physical Git directory");
+    const locations = () => {
+      const result = [{ root, gitDir: primary, mutexPath: join(primary, REPOSITORY_MUTATION_LEASE_FILE) }];
+      const directory = join(primary, "worktrees");
+      let names: string[];
+      try {
+        if (!lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) throw new Error("unsafe worktree inventory");
+        names = readdirSync(directory).sort();
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return result; throw error; }
+      if (names.length > 256) throw new Error("worktree inventory exceeds setup limit");
+      for (const name of names) {
+        const gitDir = join(directory, name);
+        if (!lstatSync(gitDir).isDirectory() || realpathSync(gitDir) !== gitDir) throw new Error("unsafe worktree metadata");
+        const backlink = new TextDecoder("utf-8", { fatal: true }).decode(readReviewEvidenceFile(join(gitDir, "gitdir"), 4096, "setup worktree identity")).trimEnd();
+        if (!isAbsolute(backlink) || resolve(backlink) !== backlink || !backlink.endsWith("/.git")) throw new Error("unsafe worktree backlink");
+        const worktree = resolve(backlink, "..");
+        if (repositoryPhysicalGitDir(worktree) !== gitDir || repositoryPhysicalGitCommonDir(worktree) !== primary) throw new Error("setup worktree identity conflicts");
+        result.push({ root: worktree, gitDir, mutexPath: join(gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR) });
+      }
+      return result;
+    };
+    // Primary admission blocks concurrent primary owners before inventory. The
+    // shared capacity owner blocks builder materialization during enumeration.
+    return withMutationMutex(join(primary, REPOSITORY_MUTATION_LEASE_FILE), () => {
+      const initial = locations();
+      const metadata = initial.map(item => repositoryMetadataIdentity(root, item.root, item.gitDir, primary));
+      const vacant = () => {
+        if (JSON.stringify(locations()) !== JSON.stringify(initial) || initial.some((item, i) => repositoryMetadataIdentity(root, item.root, item.gitDir, primary) !== metadata[i])) throw new Error("setup worktree inventory changed");
+        for (const item of initial) for (const name of [REPOSITORY_CHILD_SETTLEMENT_FILE, REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+          try { lstatSync(join(item.gitDir, name)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+          throw new Error("repo setup overlaps retained repository custody");
+        }
+      };
+      const locked = (index: number): T => {
+        if (index < initial.length) return withMutationMutex(initial[index]!.mutexPath, () => locked(index + 1));
+        vacant();
+        const result = operation(Object.freeze(initial.map(item => item.root)));
+        if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("repo setup callback must be synchronous");
+        vacant(); return result;
+      };
+      return locked(1);
+    });
+  });
+}
+
 export interface ExecutionWorktreeTransaction {
   /** Retained native direct owner only. The pending execution intent is the barrier. */
   handoffDirectOwner(expected: RepositoryMutationLease, source: NativeExecutionRestartSource): RepositoryMutationLease;

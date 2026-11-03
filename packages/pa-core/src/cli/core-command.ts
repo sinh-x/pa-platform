@@ -9,6 +9,7 @@ import { runBoardCommand } from "./commands/board.js";
 import { runTeamsCommand } from "./commands/teams.js";
 import { runReposCommand } from "./commands/repos.js";
 import { runRepositoryCommand } from "./commands/repository.js";
+import { runRepoSetupOperatorCommand, type RepoOperatorCliHost } from "./commands/repo-setup.js";
 import { runDeployCommand, STATUS_WAIT_OVERRIDE_ENV } from "./commands/deploy.js";
 import { runEvaluateCommand } from "./commands/evaluate.js";
 import { runTicketCommand } from "./commands/ticket.js";
@@ -43,6 +44,8 @@ export interface RunCoreCommandOptions {
   binaryName?: string;
   /** Trusted embedding/test seam; never populated from argv. */
   templateHost?: TemplateCliHost;
+  /** Trusted native test/embedding seam; never derived from argv/environment. */
+  repoOperatorHost?: RepoOperatorCliHost;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -59,6 +62,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     }
     if (command === "template" && opts.binaryName === "ppa") return runTemplateCommand(rest, io, opts.templateHost);
     if (command === "artifact") return runArtifactCommand(rest, io);
+    if (command === "repo-setup" && opts.binaryName !== "opa") return runRepoSetupOperatorCommand(rest, io, opts.repoOperatorHost);
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "repository") return runRepositoryCommand(rest, io, opts.hooks?.readOnlyHelperContext);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), {
@@ -126,6 +130,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout("  semantic            Semantic briefing");
   io.stdout("  repos               List registered repositories");
   io.stdout("  repository          Inspect or safely quarantine repository ownership evidence");
+  if (binaryName !== "opa") io.stdout("  repo-setup          Operator-only catalogue approval and credential lifecycle");
   io.stdout("");
   io.stdout("Run '<command> --help' for detailed usage of a specific command.");
 }

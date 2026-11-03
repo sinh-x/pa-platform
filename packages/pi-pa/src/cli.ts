@@ -3,21 +3,23 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand, runWorkflowCommand } from "@pa-platform/pa-core";
+import { runCoreCommand, runWorkflowCommand, templateFailure } from "@pa-platform/pa-core";
 import { createDefaultPiHooks } from "./deploy.js";
 import { removePi, setupPi, statusPi } from "./setup.js";
 import { PiAdapter } from "./adapter.js";
 import { probePiNativeRegistryAddon, runPiManagedToolSmoke } from "./native-host.js";
 import { runReviewPreflightCommand } from "./review-preflight.js";
-import { piWorkflowReadHost } from "./workflow-host.js";
+import { piWorkflowReadHost, piRetainedTemplateHost } from "./workflow-host.js";
 import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./child-reconciliation.js";
 
 if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   process.exitCode = runWorkflowCommand(process.argv[2], process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) }, piWorkflowReadHost());
 } else if (process.argv[2] === "template") {
   // Template --version selects a resource revision, not the global PPA version.
-  // This read-only route must not construct deployment hooks or workflow stores.
-  process.exitCode = await runCoreCommand(process.argv.slice(2), { binaryName: "ppa" });
+  // This route uses only existing read-only workflow journals, never deployment
+  // hooks, database migration or a caller-supplied run/resource override.
+  try { process.exitCode = await runCoreCommand(process.argv.slice(2), { binaryName: "ppa", templateHost: piRetainedTemplateHost() }); }
+  catch (error) { process.stdout.write(`${JSON.stringify(templateFailure(error))}\n`); process.exitCode = 1; }
 } else if (process.argv[2] === "pi" && process.argv[3] === "reconcile-child") {
   process.exitCode = runChildReconciliationCommand(process.argv.slice(4));
 } else if (process.argv.includes("--version") || process.argv.includes("-V")) {

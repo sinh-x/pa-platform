@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, getDeploymentEvents } from "../index.js";
+import { appendRegistryEvent, closeDb, emitPidEvent, emitStartedEvent, getDeploymentEvents, queryDeploymentStatus } from "../index.js";
 import { ensureTerminalRegistryMarker, OPA_WRAPPER_FALLBACK_SUMMARY } from "../deploy/events.js";
 
 function withTempRegistry(fn: () => void): void {
@@ -19,6 +19,18 @@ function withTempRegistry(fn: () => void): void {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test("started emitter preserves ordinary CLI and API channels without rogue-one authority", () => withTempRegistry(() => {
+  for (const invocationChannel of ["cli", "agent-api"] as const) {
+    const deploymentId = `d-${invocationChannel}`;
+    emitStartedEvent({ deploymentId, team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", invocationChannel });
+    emitPidEvent({ deploymentId, team: "requirements", pid: process.pid });
+    assert.equal(getDeploymentEvents(deploymentId)[0]!.invocation_channel, invocationChannel);
+    const projection = queryDeploymentStatus(deploymentId)!;
+    assert.equal(projection.invocation_channel, invocationChannel); assert.equal(projection.pid, process.pid);
+    assert.equal(Boolean(projection.rogue_one), false);
+  }
+}));
 
 test("ensureTerminalRegistryMarker writes fallback completed event when terminal marker is missing", () => {
   withTempRegistry(() => {

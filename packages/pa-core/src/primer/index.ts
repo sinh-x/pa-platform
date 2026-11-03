@@ -37,6 +37,8 @@ export interface GeneratePrimerOptions {
   invocationChannel?: DeploymentInvocationChannel;
   /** Derived pinned registry projection, never request/environment authority. Pi only. */
   workflow?: WorkflowPrimerView;
+  /** Native verified projection of the original journal resources, not a selector. */
+  configResourceRoot?: string;
 }
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
@@ -47,7 +49,8 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const skills = collectSkills(options.teamConfig, mode);
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime));
   const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
-  const toolReference = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime));
+  const setup = options.runtime === "pi" && options.teamConfig.name === "repo-setup" && mode?.id === "setup";
+  const toolReference = setup ? REPO_SETUP_TOOL_REFERENCE : demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime));
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
   const globalDocs = collectGlobalDocs(options.teamConfig, mode, repository?.repoKey);
@@ -67,6 +70,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       "## JSON Workflow (pinned)",
       `Run: ${options.workflow.runId}; definition: ${options.workflow.workflowId}/${options.workflow.version}; raw SHA-256: ${options.workflow.sha256}; config: ${options.workflow.configRevision}.`,
       `Next owner: ${options.workflow.nextOwner}. Next action: ${options.workflow.nextAction}.`,
+      ...(options.configResourceRoot ? [`Retained instruction/template resources: ${options.configResourceRoot}. Use these pinned files; do not substitute current selected config bytes.`] : []),
       "Use pa_workflow for current status/next and pa_decision for native capture/revocation. This primer is a projection, never approval, completion or effect admission. Do not parse approval paragraphs or fall back to legacy on a v1 failure.",
       "",
     ] : []),
@@ -76,7 +80,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `## Runtime Tools`,
     toolReference,
     ``,
-    renderActiveBulletins(options.runtime),
+    setup ? "## Active Bulletins\nBefore discovery, use pa_bulletin with action=list. Stop on a blocking bulletin; do not invoke a shell." : renderActiveBulletins(options.runtime),
     ``,
     `## Team`,
     demoteAuthoritativeAdditionalInstructionsHeading(options.teamConfig.description),
@@ -497,8 +501,25 @@ function isPlaceholderTemplate(body: string): boolean {
   return filledHeadings.length === 0;
 }
 
+const REPO_SETUP_TOOL_REFERENCE = [
+  "Use the registered pa_repo_setup tool with one strict JSON request string:",
+  '- {"action":"discover","path":"."} lists a bounded directory; descend with repository-relative paths.',
+  '- {"action":"read","path":"package.json"} reads a bounded UTF-8 file; search adds action=search and a literal query.',
+  '- {"action":"observe","paths":["package.json"]} returns native SHA256 input observations. Never invent hashes.',
+  '- {"action":"inspect"} reads the candidate reference and native Node executable/version/ABI observation. A null executable or incompatible project requirement is a blocker, not permission to guess or probe a command.',
+  '- {"action":"stage","expected":null,"candidate":"<raw catalogue JSON>"} stages only the fixed candidate; updating requires the exact previous reference. Prerequisite hashes are rechecked.',
+  "These discovery operations are registered by the runtime itself; generic read/search tool availability is not assumed. Linux descriptor confinement, owned non-symlink files, sensitive filtering and finite input/output limits apply.",
+].join("\n");
+
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
   assertSupportedRuntime(runtime);
+  if (runtime === "pi" && teamConfig.name === "repo-setup" && mode?.id === "setup") return [
+    "## Deployment Instructions",
+    "Ticketless, primary-root, candidate-only setup: discover, read/search, observe prerequisites, inspect, then stage using pa_repo_setup.",
+    "No Bash, generic writers, source/Git edits, child deployments, credentials, approval, execution, ticket mutation or manual lifecycle/registry commands. Never infer execution readiness from staging.",
+    "Report the exact candidate reference and blockers to the operator. Credential entry and catalogue approval belong to an independent real operator terminal; never request or handle its password.",
+    "On failure, stop and preserve evidence. Session/registry terminal handling belongs to the runtime; exit with the existing Pi controls when finished. Do not write session logs or complete/update registry state yourself.",
+  ].join("\n");
   const executionStyle = mode?.solo === true ? "solo"
     : mode?.solo === false ? "team"
     : (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";

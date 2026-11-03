@@ -22,7 +22,7 @@ import { environmentSecrets } from "./diagnostics.js";
 import { executionAdministration, runExecutionAdministration, type ExecutionAdministration, type ExecutionAdministrationIdentity } from "./native-execution-administration.js";
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { readPiForegroundCompletion } from "./terminal-status.js";
-import { authorizePiStructuredWork, parseStructuredLaunchNote, requirePiSourceIntent, retainedPiSourceIntent } from "./workflow-consumers.js";
+import { authorizePiStructuredWork, parseStructuredLaunchNote, requirePiSourceIntent, retainedPiSourceIntent, taskRequiredCommands } from "./workflow-consumers.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -420,7 +420,7 @@ export class NativeExecutionSession {
     try {
       const repo = loadRepoEntry(this.contract.repoKey);
       if (!repo || repo.path !== this.contract.repoRoot) throw workflowError();
-      return repo.projectCommands === undefined ? null : workflowDigest(JSON.stringify(repo.projectCommands));
+      return ProjectCommandContract.registrationIdentity(this.contract.repoKey, this.contract.repoRoot);
     } catch { return workflowDigest("invalid-current-project-command-registration"); }
   }
   #projectCommands(): ProjectCommandContract | null {
@@ -432,7 +432,10 @@ export class NativeExecutionSession {
       if (this.#ordinary) throw executionFailure("EXECUTION_PROJECT_CONTRACT_REQUIRED");
       return null; // separately admitted optional/prepared compatibility only
     }
-    this.#commands ??= ProjectCommandContract.resolve(this.contract.repoKey, this.contract.repoRoot, this.contract.worktreeRoot);
+    if (!this.#commands) {
+      const task = authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "source.edit-scoped", undefined, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
+      this.#commands = ProjectCommandContract.resolve(this.contract.repoKey, this.contract.repoRoot, this.contract.worktreeRoot, task ? taskRequiredCommands(task) : undefined);
+    }
     if (!this.#commands) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
     return this.#commands;
   }

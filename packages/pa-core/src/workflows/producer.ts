@@ -1,6 +1,7 @@
 import { templateService, type TemplateHost, type TemplateConsumerPort } from "../templates/service.js";
-import { digest, object, parseReviewBundle, reject, strictJson, MAX_WORKFLOW_RECORD_BYTES, type ReviewBundle } from "./contracts.js";
+import { digest, object, parseReviewBundle, reject, strictJson, MAX_WORKFLOW_RECORD_BYTES, WORKFLOW_INPUT_RULES, WorkflowInputError, type WorkflowInputField, type ReviewBundle } from "./contracts.js";
 import type { WorkflowSelection } from "./selected.js";
+import { workflowTemplateError } from "./template-diagnostics.js";
 
 /** Shared structural consumer; registration enables unsigned drafts only, not
  * workflow selection, capture or effects. Never a callback in public JSON. */
@@ -11,7 +12,13 @@ export function produceWorkflowSubject(selection: WorkflowSelection, request: Ui
   const input = object(strictJson(request, MAX_WORKFLOW_RECORD_BYTES), ["action", "id", "version", "bindings"]);
   if (input.action !== "render" || input.id !== "review-bundle") reject("WORKFLOW_SOURCE");
   const result = templateService(request, { ...host, reviewBundleConsumer: reviewBundleTemplateConsumer });
-  if (!result.ok || typeof result.candidate !== "string") reject("WORKFLOW_SOURCE");
+  if (!result.ok) {
+    const diagnostic = result.inputDiagnostic as { field?: unknown; rule?: unknown } | undefined;
+    if (result.code === "TEMPLATE_BINDING" && diagnostic && typeof diagnostic.field === "string" && Object.hasOwn(WORKFLOW_INPUT_RULES, diagnostic.field)
+      && diagnostic.rule === WORKFLOW_INPUT_RULES[diagnostic.field as WorkflowInputField]) throw new WorkflowInputError(diagnostic.field as WorkflowInputField);
+    throw workflowTemplateError(result.code);
+  }
+  if (typeof result.candidate !== "string") reject("WORKFLOW_SOURCE");
   const registry = result.registry as { root: string; configRevision: string };
   if (registry.root !== selection.configRoot || registry.configRevision !== selection.configRevision) reject("WORKFLOW_SOURCE");
   const raw = Buffer.from(result.candidate); const subject = parseReviewBundle(raw);

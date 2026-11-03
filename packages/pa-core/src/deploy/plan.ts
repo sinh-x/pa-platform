@@ -152,6 +152,16 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd(), {
     allowLinkedWorktreeCwd: options.runtime === "pi" && options.request.repo === undefined,
   });
+  // Setup is an administrative, ticketless primary-root route. It never
+  // borrows builder custody or receives a general source-write role. Actual
+  // candidate writes still require native process/registry authentication and
+  // the existing repository/capacity owners. OpenCode is not implemented yet.
+  if ((options.teamConfig.name === "repo-setup" || options.request.team === "repo-setup") && (options.teamConfig.name !== "repo-setup" || options.request.team !== "repo-setup" || options.runtime !== "pi" || modeName !== "setup"
+    || mode?.require_ticket || options.request.ticket || options.request.ticketWorktree || options.request.background || options.request.resume
+    || options.request.force || options.request.objective !== undefined || invocationChannel !== "cli" || repository.worktreeKind !== "primary"
+    || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout)) {
+    throw new Error("repo-setup requires the Pi/PPA CLI setup mode, registered primary root and canonical objective; ticket, builder/review custody, override, background, resume and force are unsupported");
+  }
   const skillsDir = options.skillsDir ?? getSkillsDir();
   const skills = (rogueOne ? [] : mode?.skills ?? []).map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
@@ -253,7 +263,11 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.treehouse ? { treehouse: Object.freeze({ ...options.treehouse }) } : {}),
     ...(options.ticketWorktreeSelection ? { ticketWorktreeSelection: Object.freeze({ ...options.ticketWorktreeSelection }) } : {}),
     ...(options.reviewCheckout ? { reviewCheckout: Object.freeze({ ...options.reviewCheckout }) } : {}),
-    ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
+    // Channel is launch evidence for every route, not a rogue-one capability.
+    // In particular, setup must retain the CLI owner's channel in its immutable
+    // started event; the native consumer must never infer it from a null row.
+    invocation_channel: invocationChannel,
+    ...(rogueOne ? { rogue_one: true as const } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: rogueOne

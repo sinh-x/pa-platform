@@ -1,0 +1,238 @@
+import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { dirname, join } from "node:path";
+import { withPreparedTicketCapacity } from "./deploy/ticket-concurrency.js";
+import { withVacantRepositorySetup } from "./deploy/repository-admission.js";
+import { workflowObject } from "./deploy/prepared-workflow.js";
+import { inspectLocalProjectCommandCatalogue } from "./project-command-catalogue-files.js";
+import { MAX_PROJECT_COMMAND_CATALOGUE_BYTES, parseProjectCommandCatalogue, PROJECT_COMMAND_CATALOGUE_PATH, type CatalogueRepository } from "./project-command-catalogue.js";
+import { loadRepoEntry, resolveRepoExecutionPath } from "./repos.js";
+import { discoverRepoSetupInputs, observeRepoSetupInputs, readRepoSetupInput, RepoSetupInputError, verifyRepoSetupPrerequisites } from "./repo-setup-inputs.js";
+import type { RegistryReadCause } from "./registry/db.js";
+import type { RepoSetupLaunchCause } from "./registry/index.js";
+import { parseReviewEvidenceJson, readReviewEvidenceFile } from "./validation/review-contract.js";
+
+export const MAX_REPO_SETUP_REQUEST_BYTES = 256 * 1024;
+export type RepoSetupErrorCode = "SETUP_REQUEST" | "SETUP_ACTOR" | "SETUP_REGISTRY" | "SETUP_REPOSITORY" | "SETUP_BUSY" | "SETUP_SOURCE_CONFLICT" | "SETUP_TRACKED" | "SETUP_CANDIDATE" | "SETUP_STALE" | "SETUP_INPUT" | "SETUP_IO";
+export type RepoSetupAdmissionCause = RegistryReadCause | RepoSetupLaunchCause | "context-invalid" | "context-mismatch" | "process-pid" | "process-unverified" | "repository-mismatch" | "overlap-active-or-uncertain";
+export class RepoSetupError extends Error {
+  constructor(readonly code: RepoSetupErrorCode, readonly admissionCause?: RepoSetupAdmissionCause) { super(`Repository setup rejected: ${code}`); }
+}
+// Static vocabulary only. No caller values, unknown field names, JSON, OS error
+// messages, paths or secrets can enter a stop diagnostic.
+const admissionDiagnostics: Record<RepoSetupAdmissionCause, readonly [stage: string, reason: string]> = {
+  "context-invalid": ["context", "Current foreground deployment identity or tool CWD is missing or invalid."],
+  "context-mismatch": ["context", "Managed environment disagrees with the authenticated launch."],
+  "registry-missing": ["registry", "The existing deployment registry is missing; no registry was initialized."],
+  "registry-unreadable": ["registry", "Existing registry evidence cannot be read or queried safely."],
+  "registry-unsafe": ["registry", "Registry evidence is not a regular unaliased file."],
+  "registry-over-limit": ["registry", "The checkpointed registry exceeds the existing 64 MiB read bound."],
+  "registry-unstable": ["registry", "A stable checkpoint or existing WAL coordination cannot be proven."],
+  "launch-missing": ["launch", "A current deployment and one immutable started event are required."],
+  "launch-ambiguous": ["launch", "More than one immutable started event exists."],
+  "launch-inactive": ["launch", "The setup deployment is not running."],
+  "launch-role": ["launch", "Immutable and current evidence must both name the exact setup role, Pi runtime and PPA binary."],
+  "launch-channel": ["launch", "Immutable and current evidence must both retain the authentic CLI invocation channel."],
+  "launch-custody": ["launch", "Ticket, child, resume, rogue-one or custody evidence conflicts with ticketless setup."],
+  "launch-root": ["repository", "Immutable and current launch repository bindings disagree."],
+  "process-pid": ["process", "The registry PID is not the current native process."],
+  "process-unverified": ["process", "The private launch incarnation is missing, unsafe, stale or differs from the current process."],
+  "repository-mismatch": ["repository", "The registered physical primary root, native CWD and launch roots must agree exactly."],
+  "overlap-active-or-uncertain": ["overlap", "Another live, dead or uncertain foreground deployment overlaps this root."],
+};
+const setupDiagnostics: Record<RepoSetupErrorCode, readonly [stage: string, reason: string]> = {
+  SETUP_REQUEST: ["request", "The request does not match the bounded supported setup grammar."],
+  SETUP_ACTOR: ["context", "Native setup actor evidence could not be authenticated."],
+  SETUP_REGISTRY: ["registry", "Existing registry evidence is unavailable."],
+  SETUP_REPOSITORY: ["repository", "Registered primary repository identity could not be proven."],
+  SETUP_BUSY: ["overlap", "Repository or capacity ownership is occupied or uncertain."],
+  SETUP_SOURCE_CONFLICT: ["candidate", "A legacy or linked command source conflicts with primary-root setup."],
+  SETUP_TRACKED: ["candidate", "Local administrative paths are tracked; setup cannot alter tracked source."],
+  SETUP_CANDIDATE: ["candidate", "Candidate bytes or existing administrative state are unsupported or unsafe."],
+  SETUP_STALE: ["candidate", "The exact candidate compare-and-swap reference no longer matches."],
+  SETUP_INPUT: ["input", "Confined input evidence is unavailable, unsafe, excessive or changed."],
+  SETUP_IO: ["candidate", "A safe candidate operation could not be completed; uncertain bytes must be preserved."],
+};
+export function repoSetupRejection(error: unknown): Record<string, unknown> {
+  const rejected = error instanceof RepoSetupError && Object.hasOwn(setupDiagnostics, error.code) ? error : new RepoSetupError("SETUP_IO");
+  const cause = rejected.admissionCause && Object.hasOwn(admissionDiagnostics, rejected.admissionCause) ? rejected.admissionCause : rejected.code;
+  const [stage, reason] = Object.hasOwn(admissionDiagnostics, cause) ? admissionDiagnostics[cause as RepoSetupAdmissionCause]! : setupDiagnostics[rejected.code];
+  const owner = stage === "registry" ? "Registry owner" : stage === "launch" || stage === "context" || stage === "process" ? "Runtime/launcher owner" : "Repository/operator owner";
+  const correction = stage === "registry"
+    ? "restore supported stable registry availability without cleanup, limit changes or historical rewrites."
+    : stage === "launch" || stage === "context" || stage === "process"
+      ? "reconcile authentic launch and current process evidence; never backfill a channel or fabricate an actor."
+      : "reconcile the exact repository, ownership or candidate prerequisite without forcing or approving it.";
+  const resume = stage === "registry" || stage === "launch" || stage === "context" || stage === "process" || stage === "repository" || stage === "overlap"
+    ? "After owner correction, resume the first unproven native discover/inspect through normal foreground setup; no unchanged retry loop."
+    : "After owner correction, reread native inputs/candidate and resume only the rejected operation with exact current evidence.";
+  const diagnostic = `Condition: repository setup rejected (${cause})\nSource: native setup ${stage}\nReason: ${reason}\nCorrection: ${owner}: ${correction}\nResume Action: ${resume}`;
+  return { ok: false, error: { code: rejected.code, cause, stage, diagnostic }, executionReady: false };
+}
+export interface RepoSetupCandidateReference {
+  readonly schemaVersion: "repo-setup-candidate/v1";
+  readonly repository: CatalogueRepository;
+  readonly path: typeof PROJECT_COMMAND_CATALOGUE_PATH;
+  readonly sha256: string;
+}
+/** Native embedding seam only. Never populated from tool/CLI request fields.
+ * Authentication must reobserve the registry, launch incarnation, primary root
+ * and managed role each time; a team name or environment alone is not authority.
+ */
+export interface RepoSetupHost { authenticate(): CatalogueRepository }
+const fail = (code: RepoSetupErrorCode): never => { throw new RepoSetupError(code); };
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
+  try { return workflowObject(value, fields); } catch { return fail("SETUP_REQUEST"); }
+}
+function reference(repository: CatalogueRepository, sha256: string): RepoSetupCandidateReference {
+  return Object.freeze({ schemaVersion: "repo-setup-candidate/v1", repository: Object.freeze({ ...repository }), path: PROJECT_COMMAND_CATALOGUE_PATH, sha256 });
+}
+function parseReference(value: unknown, repository: CatalogueRepository): RepoSetupCandidateReference | null {
+  if (value === null) return null;
+  const row = object(value, ["schemaVersion", "repository", "path", "sha256"]), repo = object(row.repository, ["key", "root"]);
+  if (row.schemaVersion !== "repo-setup-candidate/v1" || row.path !== PROJECT_COMMAND_CATALOGUE_PATH || repo.key !== repository.key || repo.root !== repository.root
+    || typeof row.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(row.sha256)) return fail("SETUP_REQUEST");
+  return reference(repository, row.sha256);
+}
+function runtimeObservation() {
+  let nodeExecutable: string | null = null;
+  try {
+    const executable = realpathSync(process.execPath), stat = lstatSync(executable);
+    if (/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/node$/.test(executable) && stat.isFile() && stat.uid === 0 && !(stat.mode & 0o222)) nodeExecutable = executable;
+  } catch { /* No guessed executable or PATH lookup fallback. */ }
+  return { schemaVersion: "repo-setup-runtime/v1", nodeExecutable, nodeVersion: process.versions.node, modulesAbi: process.versions.modules,
+    platform: process.platform, architecture: process.arch, projectCompatibility: "unproven" };
+}
+function snapshot(stat: Stats): string { return [stat.dev, stat.ino, stat.mode, stat.uid, stat.nlink, stat.size, stat.mtimeMs, stat.ctimeMs].join(":"); }
+function syncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+function authenticate(host: RepoSetupHost, expected?: CatalogueRepository): CatalogueRepository {
+  let actor: CatalogueRepository;
+  try { actor = host.authenticate(); }
+  catch (error) { if (error instanceof RepoSetupError) throw error; return fail("SETUP_ACTOR"); }
+  try {
+    const resolved = resolveRepoExecutionPath(actor.key);
+    if (resolved.repoKey !== actor.key || resolved.repoRoot !== actor.root || resolved.worktreeRoot !== actor.root || (expected && !same(actor, expected))) throw new RepoSetupError("SETUP_REPOSITORY", "repository-mismatch");
+    return Object.freeze({ key: actor.key, root: actor.root });
+  } catch { throw new RepoSetupError("SETUP_REPOSITORY", "repository-mismatch"); }
+}
+function gitUntracked(repository: CatalogueRepository): void {
+  // Metadata only; no status, hooks, filters, source scripts, index refresh or
+  // remote access. Caller environment cannot redirect the Git repository/index.
+  const env = Object.fromEntries(["PATH", "LANG", "LC_ALL"].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]));
+  try {
+    const tracked = execFileSync("git", ["--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "ls-files", "-z", "--", ".pa"], {
+      cwd: repository.root, env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
+      timeout: 5000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (tracked.length) fail("SETUP_TRACKED");
+  } catch (error) { if (error instanceof RepoSetupError) throw error; fail("SETUP_IO"); }
+}
+function source(repository: CatalogueRepository, worktrees: readonly string[]): RepoSetupCandidateReference | null {
+  if (loadRepoEntry(repository.key)?.projectCommands) return fail("SETUP_SOURCE_CONFLICT");
+  for (const root of worktrees.filter(root => root !== repository.root)) {
+    try { lstatSync(join(root, ".pa", "project-commands.json")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; return fail("SETUP_SOURCE_CONFLICT"); }
+    return fail("SETUP_SOURCE_CONFLICT");
+  }
+  try {
+    const parent = join(repository.root, ".pa");
+    try {
+      const stat = lstatSync(parent);
+      if (!stat.isDirectory() || realpathSync(parent) !== parent || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o700) return fail("SETUP_IO");
+      if (readdirSync(parent).some(name => /^\.pa-setup-.*\.tmp$/.test(name))) return fail("SETUP_IO");
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const current = inspectLocalProjectCommandCatalogue(repository.key, repository.root);
+    return current ? reference(repository, current.sha256) : null;
+  } catch (error) { if (error instanceof RepoSetupError) throw error; return fail("SETUP_CANDIDATE"); }
+}
+/** Only candidate data at one fixed path. No command probe, approval, ignore
+ * effect, credential, source/Git write, executable run or dispatch is provided.
+ * Uncertain temporary/publication state is retained for operator reconciliation.
+ */
+export function repoSetupService(request: string, host: RepoSetupHost): Record<string, unknown> {
+  try {
+    if (typeof request !== "string" || !request.length || Buffer.byteLength(request) > MAX_REPO_SETUP_REQUEST_BYTES) return fail("SETUP_REQUEST");
+    let parsed: unknown;
+    try { parsed = parseReviewEvidenceJson(Buffer.from(request), "repository setup"); } catch { return fail("SETUP_REQUEST"); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fail("SETUP_REQUEST");
+    const action = (parsed as Record<string, unknown>).action;
+    const fields: Record<string, string[]> = { inspect: ["action"], stage: ["action", "expected", "candidate"], observe: ["action", "paths"], discover: ["action", "path"], read: ["action", "path"], search: ["action", "path", "query"] };
+    if (typeof action !== "string" || !Object.hasOwn(fields, action)) return fail("SETUP_REQUEST");
+    const row = object(parsed, fields[action]!);
+    const repository = authenticate(host);
+    const expected = action === "stage" ? parseReference(row.expected, repository) : null;
+    let bytes: Buffer | undefined;
+    if (action === "stage") {
+      if (typeof row.candidate !== "string" || Buffer.byteLength(row.candidate) > MAX_PROJECT_COMMAND_CATALOGUE_BYTES) return fail("SETUP_REQUEST");
+      bytes = Buffer.from(row.candidate);
+      try { parseProjectCommandCatalogue(bytes, repository); } catch { return fail("SETUP_CANDIDATE"); }
+    }
+    let entered = false;
+    try {
+      return withPreparedTicketCapacity({ canonicalRepoKey: repository.key, canonicalRepoRoot: repository.root }, capacity =>
+        withVacantRepositorySetup(repository.root, capacity, worktrees => {
+          entered = true; authenticate(host, repository); gitUntracked(repository);
+          if (["observe", "discover", "read", "search"].includes(action)) {
+            let observation: unknown;
+            if (action === "observe") observation = observeRepoSetupInputs(repository, row.paths);
+            else if (action === "discover") observation = discoverRepoSetupInputs(repository, row.path);
+            else {
+              const file = readRepoSetupInput(repository, row.path);
+              if (action === "read") observation = file;
+              else {
+                if (typeof row.query !== "string" || !row.query.length || row.query.length > 128 || /[\u0000-\u001f\u007f]/.test(row.query)) return fail("SETUP_REQUEST");
+                observation = { path: file.path, sha256: file.sha256, matches: file.text.split("\n").flatMap((text, index) => text.includes(row.query as string) ? [{ line: index + 1, text }] : []) };
+              }
+            }
+            authenticate(host, repository);
+            if (Buffer.byteLength(JSON.stringify(observation)) > 48 * 1024) return fail("SETUP_INPUT");
+            return { ok: true, observation, executionReady: false };
+          }
+          const current = source(repository, worktrees);
+          if (action === "inspect") return { ok: true, state: current ? "candidate-unapproved" : "missing", candidate: current, runtime: runtimeObservation(), executionReady: false };
+          if (!same(current, expected)) return fail("SETUP_STALE");
+          const catalogue = parseProjectCommandCatalogue(bytes!, repository);
+          verifyRepoSetupPrerequisites(repository, catalogue);
+          const file = join(repository.root, PROJECT_COMMAND_CATALOGUE_PATH), parent = dirname(file);
+          const rootStat = lstatSync(repository.root), fileIdentity = current ? snapshot(lstatSync(file)) : null;
+          try { mkdirSync(parent, { mode: 0o700 }); syncDirectory(repository.root); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+          const parentStat = lstatSync(parent);
+          if (!parentStat.isDirectory() || realpathSync(parent) !== parent || parentStat.uid !== process.getuid?.() || (parentStat.mode & 0o7777) !== 0o700) return fail("SETUP_IO");
+          const temporary = join(parent, `.pa-setup-${randomUUID()}.tmp`);
+          const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+          try { writeFileSync(fd, bytes!); fsyncSync(fd); } finally { closeSync(fd); }
+          // All cooperating writers are still excluded. Reobserve authority,
+          // registration, bytes, index and physical parents immediately before
+          // publication. Never chmod/repair/adopt an existing insecure object.
+          authenticate(host, repository); gitUntracked(repository);
+          verifyRepoSetupPrerequisites(repository, catalogue);
+          if (lstatSync(repository.root).dev !== rootStat.dev || lstatSync(repository.root).ino !== rootStat.ino
+            || realpathSync(parent) !== parent || lstatSync(parent).ino !== parentStat.ino || lstatSync(parent).dev !== parentStat.dev) return fail("SETUP_IO");
+          const observed = inspectLocalProjectCommandCatalogue(repository.key, repository.root);
+          if (!same(observed ? reference(repository, observed.sha256) : null, expected)) return fail("SETUP_STALE");
+          const stagedStat = lstatSync(temporary);
+          if (!stagedStat.isFile() || stagedStat.nlink !== 1 || stagedStat.uid !== process.getuid?.() || (stagedStat.mode & 0o7777) !== 0o600
+            || !Buffer.from(readReviewEvidenceFile(temporary, MAX_PROJECT_COMMAND_CATALOGUE_BYTES, "setup staged candidate")).equals(bytes!)
+            || snapshot(lstatSync(temporary)) !== snapshot(stagedStat)) return fail("SETUP_IO");
+          if (expected === null) { linkSync(temporary, file); unlinkSync(temporary); }
+          else {
+            if (snapshot(lstatSync(file)) !== fileIdentity) return fail("SETUP_STALE");
+            renameSync(temporary, file);
+          }
+          syncDirectory(parent);
+          const written = source(repository, worktrees), digest = parseProjectCommandCatalogue(bytes!, repository).sha256;
+          if (!written || written.sha256 !== digest) return fail("SETUP_IO");
+          authenticate(host, repository); gitUntracked(repository);
+          return { ok: true, state: "candidate-unapproved", candidate: written, executionReady: false };
+        }));
+    } catch (error) { if (error instanceof RepoSetupError) throw error; if (error instanceof RepoSetupInputError) return fail(error.code); return fail(entered ? "SETUP_IO" : "SETUP_BUSY"); }
+  } catch (error) {
+    return repoSetupRejection(error);
+  }
+}

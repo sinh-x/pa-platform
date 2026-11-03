@@ -97,6 +97,7 @@ function isBlockedFilePath(filePath) {
     /secrets?.*\.(json|ya?ml)$/i,
     /[-_]token\.json$/i,
     /[-_]api[-_]?key\.json$/i,
+    /(^|\/)\.local\/share\/pa-platform\/prepared-autonomy(\/|$)/,
     /(^|\/)\.netrc$/,
     /(^|\/)\.npmrc$/,
     /(^|\/)\.pypirc$/,
@@ -138,6 +139,7 @@ function legacySafetyDecision(input, executable) {
     ? { allowed: false, reason: "Protected path access is not allowed: " + input.value, target: input.value }
     : { allowed: true }
   const command = input.value || ""
+  if (/\b(?:ppa|pa-core)\s+repo-setup\s+(?:credential|approve|revoke)\b/.test(command)) return { allowed: false, reason: "Repository contract approval and credential administration are operator-only; run outside managed agents." }
   const deletion = /(?:^|[\s;&|()])(?:command\s+|sudo\s+)*(?:rm|rmdir|unlink|shred)\b(?:\s+-[^\s]+)*\s+("[^"]+"|'[^']+'|[^\s;&|()<>]+)/i.exec(command)
   if (deletion) {
     const target = deletion[1] || "<target>"

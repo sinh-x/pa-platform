@@ -1,7 +1,7 @@
 import {
   adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable, structuredTaskBaseline, requireDecision,
   authorizeStructuredConsumer, replayWorkflow, readWorkflowEvidence, readCanonicalWorkflowArtifact, parseReviewMatrixPlan, TicketStore, requireTicketLinkedBranch,
-  JsonWorkflowError, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
+  JsonWorkflowError, assertRetainedConfigIdentity, workflowPackageReview, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
 
@@ -48,12 +48,42 @@ export function parseStructuredLaunchNote(note: string | undefined): StructuredT
   if (!match) return deny();
   return { runId: match[1]!, decisionId: match[2]!, subjectSha256: match[3]! };
 }
+/** Diagnostic projection only; no admission, branch linking or checkout effect. */
+export function structuredLaunchReadiness(state: WorkflowState, branchLinked: boolean) {
+  const packageReview = workflowPackageReview(state), blockers: string[] = [];
+  if (!packageReview.approved) blockers.push(`package approval is ${packageReview.outcome}; operator/workflow owner must resolve the exact retained decision`);
+  for (const operation of ["publication.pair", "ticket.queue"]) {
+    const steps = state.definition.steps.filter(step => step.operation.id === operation);
+    if (steps.length !== 1 || state.outcomes[steps[0]!.id] !== "completed" || state.pending.some(intent => intent.owner === "tickets")) blockers.push(`${operation} is incomplete; tickets owner must complete/reconcile the existing workflow step`);
+  }
+  if (!branchLinked) blockers.push("linked branch is missing or invalid; repair only through the owning workflow, not as a substitute for package approval/publication");
+  return { packageReview, blockers };
+}
+export function assertPiStructuredLaunchPrerequisites(repoKey: string, repoRoot: string, ticketId: string, branchLinked: boolean): void {
+  withExistingWorkflowJournal(journal => {
+    const state = journal ? adoptedWorkflow(journal, repoKey, ticketId) : null;
+    if (!state) return;
+    if (state.subject.repository.key !== repoKey || state.subject.repository.root !== repoRoot) return deny();
+    const report = structuredLaunchReadiness(state, branchLinked);
+    if (!report.blockers.length) return;
+    let profile = "uninspected";
+    try { profile = ProjectCommandContract.inspect(repoKey, repoRoot) ? "supported" : "missing"; } catch { profile = "unsupported"; }
+    const error = new JsonWorkflowError("WORKFLOW_AUTHORITY", "structured-launch-readiness", "workflow-owner");
+    error.message = ["Condition: structured builder launch blocked", "Source: retained native workflow and ticket branch evidence", `Reason: WORKFLOW_AUTHORITY; ${report.blockers.join("; ")}`,
+      `Separate later execution prerequisite: project-command profile ${profile}; this does not block safe document drafting/review.`,
+      `Correction: ${report.packageReview.recovery?.nextAction ?? "Complete the exact native package approval/publication/queue gates through their existing owners."}`,
+      "Resume Action: inspect pa_workflow status/next; preserve the admitted run. Queue status or a manual branch link does not establish readiness."].join("\n");
+    throw error;
+  });
+}
+
 /** Automatic adoption is sticky in registry + ticket; malformed/revoked v1 never enters legacy prose readers. */
 export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, ticketId: string): StructuredTaskBaseline | null {
   return withExistingWorkflowJournal(journal => {
     const state = journal ? adoptedWorkflow(journal, repoKey, ticketId) : null;
-    const store = new TicketStore(); assertWorkflowMarkerAvailable(repoKey, ticketId, state !== null, store);
+    const store = new TicketStore(); assertWorkflowMarkerAvailable(repoKey, ticketId, state !== null, store, state?.runId);
     if (!state || !journal) return null;
+    assertRetainedConfigIdentity(state);
     // Actual files/status alone cannot skip PAPC dependencies or an unsettled owner intent.
     for (const operation of ["publication.pair", "ticket.queue"]) {
       const steps = state.definition.steps.filter(step => step.operation.id === operation);
@@ -76,13 +106,24 @@ export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, t
     return baseline;
   });
 }
+/** Exact required set from the authenticated, approved task subject, never the
+ * agent's phase-plan subset or the entire reusable catalogue. Data only. */
+export function taskRequiredCommands(state: WorkflowState): readonly string[] {
+  const matrix = parseReviewMatrixPlan(readCanonicalWorkflowArtifact(state.subject.requirements.ref), state.subject.matrix.ref).matrix;
+  const commands = state.subject.scope.checks.map(ref => {
+    const command = matrix.commands.find(command => command.id === ref.commandId); if (!command) return deny(); return command.command;
+  });
+  if (new Set(commands).size !== commands.length) return deny();
+  return Object.freeze(commands);
+}
 /** Fresh authority at every source/check/phase boundary. Native custody remains a separate necessary gate. */
 export function authorizePiStructuredWork(repoKey: string, repoRoot: string, ticket: string, branch: string, permission: PackagePermission, plan?: { paths: readonly string[]; checks: readonly string[]; requirements?: readonly string[] }, authority?: StructuredTaskBaseline["authority"]): WorkflowState | null {
   return withExistingWorkflowJournal(journal => {
     const state = journal ? adoptedWorkflow(journal, repoKey, ticket) : null;
-    assertWorkflowMarkerAvailable(repoKey, ticket, state !== null);
+    assertWorkflowMarkerAvailable(repoKey, ticket, state !== null, undefined, state?.runId);
     if (!state || !journal) { if (authority) return deny(); return null; }
     if (!authority) return deny(); // an already-running legacy lineage cannot inherit a later v1 grant
+    assertRetainedConfigIdentity(state);
     if (authority.runId !== state.runId || authority.subjectSha256 !== state.subjectSha256 || authority.decisionId !== packageDecision(state)) return deny();
     const source = new TicketStore().get(ticket)!.doc_refs.filter(r => r.type === "requirements" && r.primary);
     if (source.length !== 1) return deny();
@@ -96,6 +137,7 @@ export function authorizePiStructuredWork(repoKey: string, repoRoot: string, tic
       if (!profile) return deny();
       const allowed = scope.checks.map(ref => matrix.commands.find(c => c.id === ref.commandId)!);
       if (plan.checks.some(name => !allowed.some(c => c && profile.checks.some(p => (p.id === name || p.command === name) && p.command === c.command)))) return deny();
+      if (profile.source === "catalogue" && JSON.stringify(plan.checks.map(name => profile.checks.find(p => p.id === name || p.command === name)?.command)) !== JSON.stringify(taskRequiredCommands(state))) return deny();
     }
     return state;
   });

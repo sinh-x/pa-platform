@@ -8,6 +8,9 @@ import { digest } from "../workflows/contracts.js";
 import { parseWorkflowDefinition } from "../workflows/definition.js";
 import type { WorkflowEffectOwner } from "../workflows/service.js";
 import { bytes } from "./workflow-fixtures.js";
+import { structuredTaskBaseline } from "../workflows/consumers.js";
+import { templateFixture } from "./template-fixture.js";
+import { workflowResourceFixture } from "./workflow-resource-fixture.js";
 import { workflowRuntimeFixture } from "./workflow-runtime-fixture.js";
 
 export function ticketOwnerFixture() {
@@ -51,6 +54,114 @@ test("actual ticket publication/queue owners publish exact pair once and preserv
     for (const table of ["deployments", "review_authorization_claims"]) assert.equal((f.db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n, 0);
   } finally { f.close(); }
 });
+test("recognized prequeued override converges the SAME intent and approved pair without recapture, republish or execution profile", async () => {
+  const f = fixture(); try {
+    const run = f.admit(), decision = await f.service.decide(run.runId, 1, "approve"), published = await f.service.requestStep(run.runId, 2, "publish", decision.decisionId);
+    f.store.update("EX-1", { status: "pending-implementation", assignee: "sinh" }, "operator-queue-only");
+    const real = f.owners.get("ticket.queue")!;
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", { ...real, execute: async () => { throw Error("injected before queue convergence"); } });
+    await assert.rejects(f.service.requestStep(run.runId, published.revision, "queue", decision.decisionId), /injected/);
+    const pending = f.service.status(run.runId), intent = pending.pending[0]!, inodes = [statSync(f.req).ino, statSync(f.uat).ino];
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", real);
+    const observations = f.host.observations; f.host.observations = () => ({ ...observations(), projectProfile: "missing" });
+    const settled = await f.service.reconcile(run.runId, pending.revision, intent.intentId);
+    assert.equal(settled.outcomes.queue, "completed"); assert.equal(settled.pending.length, 0);
+    assert.equal(f.store.get("EX-1")!.assignee, "builder/team-manager"); assert.equal(f.store.get("EX-1")!.status, "pending-implementation");
+    assert.deepEqual([statSync(f.req).ino, statSync(f.uat).ino], inodes); assert.equal(settled.subjectSha256, published.subjectSha256);
+    assert.deepEqual(settled.decisions, published.decisions); assert.equal(settled.attempts.length, 1);
+    assert.equal(f.journal.read(run.runId).filter(e => e.event.type === "intent" && (e.event.data.intent as { stepId: string }).stepId === "queue").length, 1);
+    const finalAudit = f.store.readAudit().at(-1)!; assert.deepEqual(finalAudit.changes.assignee, ["sinh", "builder/team-manager"]); assert.equal(finalAudit.changes.status, undefined);
+    assert.equal(f.store.readAudit().length, 4);
+  } finally { f.close(); }
+});
+
+for (const variant of ["foreign-owner", "advanced", "terminal", "unaudited", "revoked", "pair-drift", "stale", "partial-owner", "already-correct"] as const) {
+  test(`same-intent queue convergence handles ${variant} without duplicate approval/publication`, async () => {
+    const f = fixture(); try {
+      const run = f.admit(), decision = await f.service.decide(run.runId, 1, "approve"), published = await f.service.requestStep(run.runId, 2, "publish", decision.decisionId);
+      f.store.update("EX-1", { status: "pending-implementation", assignee: "sinh" }, "operator-queue-only");
+      const real = f.owners.get("ticket.queue")!;
+      (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", { ...real, execute: async () => { throw Error("injected"); } });
+      await assert.rejects(f.service.requestStep(run.runId, published.revision, "queue", decision.decisionId), /injected/);
+      (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", real);
+      let state = f.service.status(run.runId);
+      if (variant === "foreign-owner") f.store.update("EX-1", { assignee: "unrelated/team-manager" });
+      if (variant === "advanced" || variant === "terminal") f.store.update("EX-1", { status: variant === "advanced" ? "implementing" : "done" });
+      if (variant === "unaudited") writeFileSync(join(f.root, "tickets/audit.jsonl"), "");
+      if (variant === "pair-drift") writeFileSync(f.uat, "changed");
+      if (variant === "partial-owner") f.store.update("EX-1", { status: "requirement-review", assignee: "builder/team-manager" });
+      if (variant === "already-correct") f.store.update("EX-1", { assignee: "builder/team-manager" });
+      if (variant === "revoked" || variant === "already-correct") state = await f.service.revoke(run.runId, state.revision, decision.decisionId);
+      const before = f.store.readAudit().length;
+      const result = f.service.reconcile(run.runId, variant === "stale" ? state.revision - 1 : state.revision, state.pending[0]!.intentId);
+      if (variant === "already-correct" || variant === "partial-owner") {
+        assert.equal((await result).outcomes.queue, "completed"); assert.equal(f.store.readAudit().length, before + (variant === "partial-owner" ? 1 : 0));
+      } else { await assert.rejects(result, /WORKFLOW_/); assert.equal(f.store.readAudit().length, before); }
+      assert.deepEqual(f.service.status(run.runId).decisions, state.decisions);
+      assert.equal(f.service.status(run.runId).subjectSha256, published.subjectSha256);
+    } finally { f.close(); }
+  });
+}
+
+test("concurrent queue reconcilers retain one intent, one missing-field update and one settlement", async () => {
+  const f = fixture(); try {
+    const run = f.admit(), decision = await f.service.decide(run.runId, 1, "approve"), published = await f.service.requestStep(run.runId, 2, "publish", decision.decisionId);
+    f.store.update("EX-1", { status: "pending-implementation", assignee: "sinh" }); const real = f.owners.get("ticket.queue")!;
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", { ...real, execute: async () => { throw Error("injected"); } });
+    await assert.rejects(f.service.requestStep(run.runId, published.revision, "queue", decision.decisionId));
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", real); const pending = f.service.status(run.runId), intent = pending.pending[0]!;
+    const results = await Promise.allSettled(Array.from({ length: 16 }, () => f.service.reconcile(run.runId, pending.revision, intent.intentId)));
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    const state = f.service.status(run.runId); assert.equal(state.outcomes.queue, "completed"); assert.equal(state.pending.length, 0);
+    assert.equal(f.store.readAudit().filter(e => e.changes.assignee?.[1] === "builder/team-manager").length, 1);
+    assert.equal(f.journal.read(run.runId).filter(e => e.event.type === "result" && e.event.data.intentId === intent.intentId).length, 1);
+  } finally { f.close(); }
+});
+
+test("fresh queue-only coordinator adoption can settle only the retained authorized intent", async () => {
+  const f = fixture(); try {
+    const run = f.admit(), decision = await f.service.decide(run.runId, 1, "approve"), published = await f.service.requestStep(run.runId, 2, "publish", decision.decisionId);
+    f.store.update("EX-1", { status: "pending-implementation", assignee: "sinh" });
+    const real = f.owners.get("ticket.queue")!;
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", { ...real, execute: async () => { throw Error("injected"); } });
+    await assert.rejects(f.service.requestStep(run.runId, published.revision, "queue", decision.decisionId));
+    (f.host.owners as Map<string, WorkflowEffectOwner>).set("ticket.queue", real);
+    const pending = f.service.status(run.runId); f.host.authenticate = () => ({ ...run.caller, deploymentId: "d-fedcba", identitySha256: "b".repeat(64) }); f.host.assertInactive = () => {};
+    const capture = f.host.capture; f.host.capture = async request => {
+      assert.equal(request.succession?.purpose, "queue-reconcile"); assert.deepEqual(request.succession?.queueIntent, pending.pending[0]); return capture(request);
+    };
+    const adopted = await f.service.adoptCoordinator(run.runId, pending.revision, run.subjectSha256);
+    assert.equal(adopted.coordinatorQueueOnly, true);
+    await assert.rejects(f.service.revoke(run.runId, adopted.revision, decision.decisionId), /adopted-queue-intent-only/);
+    const settled = await f.service.reconcile(run.runId, adopted.revision, pending.pending[0]!.intentId);
+    assert.equal(settled.outcomes.queue, "completed"); assert.equal(settled.decisions.length, 1);
+    await assert.rejects(f.service.requestStep(run.runId, settled.revision, "publish", decision.decisionId), /adopted-queue-intent-only/);
+  } finally { f.close(); }
+});
+
+test("selected initial existing-branch producer publishes, queues and yields an exact reuse baseline without fabricated previous canonical source", async () => {
+  const f = fixture(), templates = templateFixture(); try {
+    const entry = structuredClone(templates.registry.entries[0]!); entry.id = "review-bundle";
+    entry.source = { path: "skills/templates/review-bundle.md", sha256: digest("{{bundle}}\n"), selector: null };
+    entry.bindings = { bundle: { type: "json", required: true } }; entry.validation = { kind: "review-bundle", sections: [] };
+    templates.registry.entries.push(entry); writeFileSync(join(templates.root, entry.source.path), "{{bundle}}\n"); const selected = templates.save();
+    f.bundle.handoff = { type: "amendment", baseSha: f.bundle.handoff.baseSha, branch: f.bundle.handoff.branch, featureSha: "c".repeat(40), branchAction: "reuse" };
+    f.selection = { ...f.selection, configRoot: templates.root, definitions: f.selection.definitions.map(d => ({ ...d, configRoot: templates.root })) };
+    f.host.resources = (selection, subject, caller) => workflowResourceFixture(selection, subject, caller, selected);
+    const run = f.service.admitProduced(f.selection, bytes({ action: "render", id: "review-bundle", version: "1", bindings: { bundle: f.bundle } }), { selection: selected });
+    assert.equal(run.attempts.length, 1); assert.equal(run.attempts[0]!.predecessor, null);
+    const decision = await f.service.decide(run.runId, 1, "approve"), published = await f.service.requestStep(run.runId, 2, "publish", decision.decisionId);
+    const queued = await f.service.requestStep(run.runId, published.revision, "queue", decision.decisionId);
+    assert.equal(queued.outcomes.queue, "completed");
+    const baseline = structuredTaskBaseline(f.journal, run.runId, decision.decisionId, { repoKey: run.subject.repository.key, repoRoot: run.subject.repository.root, ticket: "EX-1", branch: run.subject.handoff.branch, team: "builder", mode: "orchestrator", primaryRequirementsRef: run.subject.requirements.ref }, ref => readFileSync(ref.startsWith("requirements:") ? f.req : f.uat));
+    assert.deepEqual(baseline.handoff, f.bundle.handoff); assert.equal(baseline.handoff.branchAction, "reuse");
+    assert.equal(baseline.authority.runId, run.runId); assert.equal(baseline.baseSha, f.bundle.handoff.baseSha);
+    // Actual materialization still owns exact linked/checkout HEAD and custody;
+    // this typed baseline does not create/select/reset any Git branch.
+    assert.equal((f.db.prepare("SELECT count(*) AS n FROM deployments").get() as { n: number }).n, 0);
+  } finally { f.close(); templates.dispose(); }
+});
+
 test("32 concurrent publication requests produce one successor and exactly two audited attachments", async () => {
   const f = fixture(); try {
     const run = f.admit(), decision = await f.service.decide(run.runId, 1, "approve");

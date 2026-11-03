@@ -53,6 +53,14 @@ export function provenance(installed, candidate) {
   if (value.schemaVersion !== "pa-review-runtime/v1" || value.packageName !== "pa-platform" || value.sourceSha !== candidate || !/^[a-f0-9]{40}$/.test(value.configSha)) block("WORKFLOW_INSTALLED_CANDIDATE_MISMATCH");
   return { ...value, sha256: digest(Buffer.from(raw)) };
 }
+export function verifyBuildPins(root, installed, metadata) {
+  const configSha = physicalFile(join(root, '.pa-platform-config.sha'), 64).toString().trim();
+  const registrySha256 = physicalFile(join(root, '.pa-template-registry.sha'), 80).toString().trim();
+  if (!/^[a-f0-9]{40}$/.test(configSha) || !/^[a-f0-9]{64}$/.test(registrySha256) || metadata.configSha !== configSha
+    || physicalFile(join(installed.share, '.pa-platform-config.sha'), 64, true).toString().trim() !== configSha
+    || physicalFile(join(installed.share, '.pa-template-registry.sha'), 80, true).toString().trim() !== registrySha256) block('WORKFLOW_BUILD_PROVENANCE_MISMATCH');
+  return { configSha, registrySha256 };
+}
 export function implementationFiles(root) {
   const result = [];
   function walk(directory) {
@@ -98,13 +106,37 @@ export function safeDiagnostic(error) {
   return { code, gateId: error instanceof QualificationBlocked ? error.gate : "qualification", diagnostic: `Condition: ${code}\nSource: exact installed workflow qualification\nReason: a required candidate, selected pair, native case or unchanged-state proof is unavailable.\nCorrection: reconcile the missing prerequisite through its owner; do not install, enable, skip cases or import outcomes to bypass it.\nResume Action: rerun the unchanged verifier against the exact supported candidate and selected pair.` };
 }
 export const REQUIRED_TEST_FILES = Object.freeze([
-  "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts",
+  "packages/pa-core/src/__tests__/review-bundle-template.test.ts", "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts", "packages/pa-core/src/__tests__/workflow-startup.test.ts",
+  "packages/pi-pa/src/__tests__/workflow-startup.test.ts", "packages/pa-core/src/__tests__/selected-config-compatibility.test.ts", "packages/pa-core/src/__tests__/workflow-resources.test.ts", "packages/pi-pa/src/__tests__/workflow-config.test.ts",
+  "packages/pa-core/src/__tests__/workflow-adoption.test.ts",
+  "packages/pa-core/src/__tests__/project-command-catalogue.test.ts", "packages/pa-core/src/__tests__/project-command-catalogue-files.test.ts",
+  "packages/pi-pa/src/__tests__/project-command-source.test.ts", "packages/pi-pa/src/__tests__/project-command-contract.test.ts",
+  "packages/pa-core/src/__tests__/repo-setup.test.ts", "packages/pa-core/src/__tests__/deploy-events.test.ts", "packages/pi-pa/src/__tests__/repo-setup-native.test.ts",
+  "packages/pa-core/src/__tests__/repo-contract-authority.test.ts", "packages/pa-core/src/__tests__/operator-terminal.test.ts",
+  "packages/pi-pa/src/__tests__/project-command-catalogue-execution.test.ts",
   "packages/pa-core/src/__tests__/execution-custody.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-runtime.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-decision.test.ts", "packages/pi-pa/src/__tests__/pi-execution-custody.test.ts", "packages/pi-pa/src/__tests__/native-execution-evidence.test.ts",
 ]);
 // Exact native test events, not caller report flags. Every anchor is mandatory;
 // omission/rename requires a reviewed verifier change, never silent skipping.
 export const CASE_ANCHORS = Object.freeze({
   "static-zero-effects": ["preflight reports independent missing prerequisites without executing any effect/probe"],
+  "startup-stage-separation": ["requirements admission/revision defers missing execution profile without inventing effect authority", "source.local request fails closed at its own boundary with no intent or effect for missing execution contract", "check.matrix request fails closed at its own boundary with no intent or effect for unsupported execution contract", "native observations distinguish uninspected, registered missing, supported and unsupported before a subject exists"],
+  "startup-causal-diagnostics": ["fresh status/next expose selected-without-run and authenticated pre-subject repository context", "producer preserves selected-pair and capability causes instead of erasing them as WORKFLOW_SOURCE", "fresh native read and CLI service projections agree on later execution blockers and true pair failure"],
+  "compatible-resource-selection": ["one runtime supports multiple committed compatible config and registry revisions without package-pin edits", "committed source reads do not run selected Git monitors, hooks, replacements or ambient Git configuration"],
+  "retained-config-continuation": ["native resource owner retains exact committed templates/instructions and uses them across compatible config advances", "default native template host and planner retain the exact run config after compatible selected changes", "legacy native continuation is readable but cannot acquire current templates or planner instructions"],
+  "catalogue-task-scope": ["catalogue is static immutable data with an exact raw-byte identity, not executable or approval evidence", "catalogue semantics require every exact task check but not every catalogue member"],
+  "catalogue-source-selection": ["local catalogue absence is a read-only observation and never bootstraps directories or approvals", "unapproved local catalogue never admits a profile or command, including with no available confinement executable", "legacy/local conflict rejects before command or confinement admission rather than selecting legacy", "a running legacy contract rejects a subsequently introduced local candidate before program generation", "legacy v1 remains exact and all-contract checks remain intact when no local candidate exists"],
+  "repo-setup-candidate-writer": ["repo setup stages only fixed candidate bytes with exact CAS reference and no approval/execution or Git/source changes", "repo setup refuses retained capacity and forged/expired owners without reclaiming evidence", "repo setup reauthenticates before publication and retains uncertain staged bytes on lost native actor"],
+  "repo-setup-native-admission": ["repo setup native tool authenticates actual registry/process and stages only an unapproved fixed-path catalogue", "repo setup native host rejects environment-only role, changed registry bindings, child/custody/rogue identity and stale process", "repo setup native host refuses overlapping live/uncertain foreground deployment rather than forcing terminal state", "repo setup route is ticketless Pi CLI primary-only and cannot become builder/OpenCode/API/background/override launch", "repo setup managed-agent guard denies shell/editor/approval/workflow/child/wrapper tools, including malformed framing"],
+  "repo-operator-approval": ["operator owner uses protected native hash evidence and exact local-exclude effect, never a task execution grant", "operator approval rechecks displayed candidate and exclude bytes before issuance; tracked source/negations cannot be repaired into authority", "operator CLI displays exact native candidate, requires fresh hidden-secret transport, rejects caller flags and clears returned secret buffers", "native hidden terminal transport disables echo before prompting, restores TTY and does not reuse a prior secret"],
+  "repo-operator-revocation": ["normal credential rotation preserves approvals; revocation and forgotten-password reset retain history and deny new consumption until reapproval", "reset racing final native approval publication invalidates the old epoch without deleting its historical issuance", "one machine credential reset invalidates every repository approval, never only the selected project", "default native operator origin rejects managed contexts before reading or creating credential storage"],
+  "repo-catalogue-execution": ["native catalogue executes every selected task check, not unused catalogue members, under unchanged real confinement", "native catalogue resolution refuses absent/empty/duplicate/outsider task scope and cannot run a catalogue without native approval", "native catalogue revocation/reset/drift invalidates a running contract before another dispatch without legacy fallback", "native catalogue binds selected prerequisite bytes and cannot use a linked administrative substitute"],
+  "setup-input-observation": ["repo setup native discovery/read/search/observe is bounded and never stages or executes", "staging rejects prerequisite drift and never accepts an invented digest", "repo setup input observation rejects parent-symlink without leaking bytes", "repo setup input observation rejects oversize without leaking bytes"],
+  "fresh-setup-discovery": ["fresh Pi SDK setup session exposes native discovery without assuming builtin read/search registration"],
+  "readable-native-review": ["review cannot approve before every scope page, technical details are optional, and final outcomes stay distinct", "oversized native requests are refused, not truncated into a partial approval", "aborted native review cannot issue authority before opening or after a final approve response", "readable primary review lists every finite check without repeating raw matrix hashes"],
+  "cancelled-review-recovery": ["explicit cancelled recovery preserves exact run/resources/history and captures a fresh decision without effects", "cancelled recovery rejects concurrent without replaying effects", "cancelled recovery rejects changed-evidence without replaying effects", "repeated cancellation stays permissionless, refuses stale predecessors and bounds recovery attempts", "cancelled recovery explicitly presents the prior decision and requires a new foreground response", "default native mutation host recovers a cancelled package through supported continuation and compatible config advance without publication"],
+  "workflow-recovery-diagnostics": ["structured launch diagnostics separate cancelled package/publication/queue, missing branch and later command prerequisites"],
+  "producer-field-diagnostics": ["consumer field diagnostics identify safe rules without echoing invalid values", "uppercase subjectId is a safe causal producer error, not missing runtime capability or an admission write"],
   "structured-decision": ["synthetic UI fixture displays exact subject/permissions; outcome and principal are not model inputs", "evidence mutation during the native dialog cannot mint a decision"],
   "package-effects": ["actual ticket publication/queue owners publish exact pair once and preserve counters and audit on replay", "default Pi launcher and native execution owner consume the structured grant and reread revocation"],
   "publication-interruption": ["interruption after first member resumes only the absent member using the SAME durable intent", "conflicting bytes, symlinks and foreign primary evidence are preserved, never overwritten or queued"],
@@ -116,15 +148,73 @@ export const CASE_ANCHORS = Object.freeze({
   "revocation": ["revocation after partial publication prevents the absent member; completed native effects can still settle", "protected review consumes issued native locator with no paragraph authority and cannot downgrade after revoke"],
   "actual-cas": ["32 actual SQLite connections racing one revision accept exactly one append", "32 actual SQLite connections accept exactly one linked subject revision, retaining one run and all history"],
   "tamper-no-fallback": ["missing adopted registry cannot fall back to a ticket approval paragraph", "source operation proof rejects unissued payload despite a protected native-evidence envelope"],
+  "fresh-coordinator-adoption": ["fresh coordinator adoption preserves original caller, resources, decisions, attempts and journal prefix; package recovery remains separate", "overlapping fresh adoption has one CAS winner and stale explicit resume cannot recover", "four actual processes racing fresh coordinator adoption commit one exact successor", "interrupted adoption has no reservation/grant before commit and a lost reply is discovered without another transfer", "retained adoption discovery rejects foreign duplicate markers and ambiguous runs without a newest-run fallback", "adoption does not reset the sixteen-decision recovery bound"],
+  "fresh-native-adoption": ["fresh default foreground host adopts a dead coordinator without resume, then recovers the same package", "native adoption denies missing anchors, PID reuse, unsettled owners and live explicit resume descendants", "native adoption consent binds both coordinators and abort never becomes package approval"],
+  "same-intent-queue-convergence": ["recognized prequeued override converges the SAME intent and approved pair without recapture, republish or execution profile", "same-intent queue convergence handles foreign-owner without duplicate approval/publication", "same-intent queue convergence handles revoked without duplicate approval/publication", "same-intent queue convergence handles already-correct without duplicate approval/publication", "concurrent queue reconcilers retain one intent, one missing-field update and one settlement", "fresh queue-only coordinator adoption can settle only the retained authorized intent"],
+  "selected-existing-initial-handoff": ["selected initial existing-branch producer publishes, queues and yields an exact reuse baseline without fabricated previous canonical source", "amendment materialization reuses ONLY the exact retained feature and rejects changed HEAD without mutation"],
+  "issued-decision-read-diagnostics": ["read diagnostics distinguish structural adoption from caller rights and retain issued approval when artifacts are unavailable"],
+  "setup-launch-channel": ["started emitter preserves ordinary CLI and API channels without rogue-one authority", "normal default setup launch preserves channel through real planner/start/adapter child and native discovery", "normal explicit setup launch preserves channel through real planner/start/adapter child and native discovery"],
+  "setup-admission-diagnostics": ["setup rejection diagnostics are finite five-field messages for every stop and never echo arbitrary errors or fields", "setup admission diagnostics distinguish context launch process root and overlap without leaking inputs or allowing writes", ...["missing", "unreadable", "unsafe", "over-limit", "unstable"].map(cause => `setup registry ${cause} retains infrastructure cause and unchanged evidence without actor fallback`), "setup registry changing during protected read reports instability without exposing raw filesystem errors", "setup checkpoint at the unchanged 64 MiB boundary supports discovery without WAL allocation or history writes"],
 });
-export function accountCases(events) {
+const c = file => `packages/pa-core/src/__tests__/${file}.ts`, p = file => `packages/pi-pa/src/__tests__/${file}.ts`;
+// Canonical source OWNER per exact subcase, not just a count/name. These are
+// checked against the private harness root that owns the pinned test drivers.
+const owners = {
+  "static-zero-effects": [c("workflow-owner-integration.test")],
+  "startup-stage-separation": [c("workflow-startup.test"), c("workflow-startup.test"), c("workflow-startup.test"), p("workflow-startup.test")],
+  "startup-causal-diagnostics": [c("workflow-startup.test"), c("workflow-producer-cases"), p("workflow-startup.test")],
+  "compatible-resource-selection": Array(2).fill(c("selected-config-compatibility.test")),
+  "retained-config-continuation": [c("workflow-resources.test"), p("workflow-config.test"), p("workflow-config.test")],
+  "catalogue-task-scope": Array(2).fill(c("project-command-catalogue.test")),
+  "catalogue-source-selection": [c("project-command-catalogue-files.test"), p("project-command-source.test"), p("project-command-source.test"), p("project-command-contract.test"), p("project-command-contract.test")],
+  "repo-setup-candidate-writer": Array(3).fill(c("repo-setup.test")),
+  "repo-setup-native-admission": Array(5).fill(p("repo-setup-native.test")),
+  "repo-operator-approval": [...Array(3).fill(c("repo-contract-authority.test")), c("operator-terminal.test")],
+  "repo-operator-revocation": Array(4).fill(c("repo-contract-authority.test")),
+  "repo-catalogue-execution": Array(4).fill(p("project-command-catalogue-execution.test")),
+  "setup-input-observation": Array(4).fill(c("repo-setup.test")),
+  "fresh-setup-discovery": [p("repo-setup-native.test")],
+  "readable-native-review": Array(4).fill(p("pi-workflow-decision.test")),
+  "cancelled-review-recovery": [...Array(4).fill(c("workflow-revision-cases")), p("pi-workflow-decision.test"), p("workflow-config.test")],
+  "workflow-recovery-diagnostics": [p("pi-workflow-code-cases")],
+  "producer-field-diagnostics": [c("review-bundle-template.test"), c("workflow-producer-cases")],
+  "structured-decision": [p("pi-workflow-decision.test"), c("workflow-producer-cases")],
+  "package-effects": [c("workflow-ticket-owner-cases"), p("pi-workflow-runtime.test")],
+  "publication-interruption": Array(2).fill(c("workflow-ticket-owner-cases")),
+  "amendment": [c("workflow-amendment-owner-cases"), p("pi-workflow-runtime.test")],
+  "native-two-phases": [p("pi-workflow-runtime.test")],
+  "native-restart": [p("pi-workflow-runtime.test"), c("workflow-execution-restart-cases")],
+  "restart-interruption": Array(2).fill(c("workflow-native-handoff-cases")),
+  "native-matrix": Array(2).fill(p("pi-workflow-matrix-cases")),
+  "revocation": [c("workflow-ticket-owner-cases"), p("pi-workflow-code-cases")],
+  "actual-cas": [c("workflow-state.test"), c("workflow-revision-cases")],
+  "tamper-no-fallback": [p("pi-workflow-code-cases"), p("pi-workflow-operation-cases")],
+  "fresh-coordinator-adoption": Array(6).fill(c("workflow-adoption.test")),
+  "fresh-native-adoption": [p("workflow-config.test"), p("workflow-config.test"), p("pi-workflow-decision.test")],
+  "same-intent-queue-convergence": Array(6).fill(c("workflow-ticket-owner-cases")),
+  "selected-existing-initial-handoff": [c("workflow-ticket-owner-cases"), p("pi-workflow-runtime.test")],
+  "issued-decision-read-diagnostics": [c("workflow-adoption.test")],
+  "setup-launch-channel": [c("deploy-events.test"), ...Array(2).fill(p("repo-setup-native.test"))],
+  "setup-admission-diagnostics": [c("repo-setup.test"), ...Array(8).fill(p("repo-setup-native.test"))],
+};
+export const CASE_OWNERS = Object.freeze(Object.fromEntries(Object.entries(CASE_ANCHORS).flatMap(([id, names]) => {
+  if (owners[id]?.length !== names.length) throw new Error(`Missing canonical subcase owners: ${id}`);
+  return names.map((name, index) => [name, owners[id][index]]);
+})));
+export function accountCases(events, harnessRoot) {
   if (!Array.isArray(events) || !events.length) block("WORKFLOW_CASE_EVENTS_REQUIRED", "case-accounting");
   const passed = events.filter(event => event.type === "test:pass");
   if (events.some(event => event.type === "test:fail" || ((event.type === "test:pass" || event.type === "test:fail") && (event.data.skip || event.data.todo)))) block("WORKFLOW_REQUIRED_CASE_FAILED_OR_SKIPPED", "case-accounting");
   const names = new Set(passed.map(event => event.data.name)), cases = [];
   for (const [id, required] of Object.entries(CASE_ANCHORS)) {
     if (required.some(name => !names.has(name))) block("WORKFLOW_REQUIRED_CASE_OMITTED", id);
-    cases.push({ id, status: "passed", observations: required.length, testNames: required });
+    if (typeof harnessRoot !== "string" || !isAbsolute(harnessRoot)) block("WORKFLOW_CASE_OWNER_REQUIRED", id);
+    for (const name of required) {
+      const matches = passed.filter(event => event.data.name === name);
+      const expected = join(harnessRoot, CASE_OWNERS[name].replace(/\.ts$/, ".js"));
+      if (matches.length !== 1 || matches[0].data.file !== expected) block("WORKFLOW_CASE_OWNER_MISMATCH", id);
+    }
+    cases.push({ id, status: "passed", observations: required.length, testNames: required, owners: required.map(name => CASE_OWNERS[name]), lane: "exact-installed-native" });
   }
   const summary = events.filter(event => event.type === "test:summary" && event.data.file === undefined).at(-1)?.data;
   if (!summary || !summary.success || summary.counts?.failed || summary.counts?.cancelled || summary.counts?.skipped || summary.counts?.todo

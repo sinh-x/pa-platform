@@ -28,11 +28,18 @@ export function withExistingWorkflowJournal<T>(read: (journal: RegistryWorkflowJ
     return read(table ? new RegistryWorkflowJournal(db) : null);
   } finally { db.close(); }
 }
-export function assertWorkflowMarkerAvailable(repoKey: string, ticket: string, found: boolean, store = new TicketStore()): void {
+export function assertWorkflowMarkerReferences(refs: unknown, runId: string | null): void {
+  if (refs !== undefined && !Array.isArray(refs)) reject("WORKFLOW_UNCERTAIN");
+  const markers = (Array.isArray(refs) ? refs : []).filter(ref => ref && typeof ref === "object" && ref.type === "workflow");
+  if (!runId && markers.length) reject("WORKFLOW_UNCERTAIN");
+  if (markers.length > 1 || markers.some(ref => ref.path !== `registry-workflow:${runId}`)) reject("WORKFLOW_CONFLICT");
+}
+export function assertWorkflowMarkerAvailable(repoKey: string, ticket: string, found: boolean, store = new TicketStore(), runId?: string): void {
   const record = store.get(ticket);
   if (!found) {
     if (record?.doc_refs.some(ref => ref.type === "workflow")) reject("WORKFLOW_UNCERTAIN");
     return; // unselected legacy identity remains with its original owner
   }
   if (record?.project !== repoKey) reject("WORKFLOW_AUTHORITY");
+  if (runId) assertWorkflowMarkerReferences(record.doc_refs, runId);
 }

@@ -66,6 +66,7 @@ jobs:
         run: |
           printf '%s\n' 'Code-only checks do not certify sandbox/installed runtime integration.' >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' 'Manual gate: corepack pnpm test in the supported immutable sandbox toolchain; see docs/ordinary-local-development.md.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'All 16 native workflow integration cases remain mandatory locally via pi-workflow-runtime.test.ts; this lane uses its explicit portable entry, not skipped native tests.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check generated completions
         run: |
