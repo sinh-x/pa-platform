@@ -14,7 +14,9 @@ for (const args of [[], ["--selected-installed", "--require-candidate", "HEAD", 
   const r = spawnSync(process.execPath, [driver, ...args], { encoding: "utf8" });
   assert.equal(r.status, 1); assert.equal(r.stderr, ""); const result = JSON.parse(r.stdout);
   assert.equal(result.status, "blocked"); assert.equal(result.installationPerformed, false); assert.equal(result.enablementPerformed, false); assert.equal(result.humanApproval, false);
-  assert.equal(result.cases.length, 34); assert.ok(!result.cases.some(row => row.status === "passed")); assert.ok(!r.stdout.includes("PRIVATE-SENTINEL"));
+  assert.deepEqual(result.cases.map(row => row.id), ["installed-identity", "installed-entry-points", "paired-handoffs", "selected-procedure",
+    "static-zero-effects", "startup-stage-separation", "startup-causal-diagnostics", "compatible-resource-selection", "retained-config-continuation", "catalogue-task-scope", "catalogue-source-selection", "repo-setup-candidate-writer", "repo-setup-native-admission", "repo-operator-approval", "repo-operator-revocation", "repo-catalogue-execution", "setup-input-observation", "fresh-setup-discovery", "readable-native-review", "cancelled-review-recovery", "workflow-recovery-diagnostics", "producer-field-diagnostics", "structured-decision", "package-effects", "publication-interruption", "amendment", "native-two-phases", "native-restart", "restart-interruption", "native-matrix", "revocation", "actual-cas", "tamper-no-fallback",
+    "fresh-coordinator-adoption", "fresh-native-adoption", "same-intent-queue-convergence", "selected-existing-initial-handoff", "issued-decision-read-diagnostics", "isolation-accounting"]); assert.ok(!result.cases.some(row => row.status === "passed")); assert.ok(!r.stdout.includes("PRIVATE-SENTINEL"));
   assert.ok(result.diagnostic.length < 2000); assert.equal(git(root, "status", "--porcelain=v2", "--untracked-files=all"), before);
 });
 

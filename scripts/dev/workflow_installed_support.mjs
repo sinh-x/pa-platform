@@ -108,6 +108,7 @@ export function safeDiagnostic(error) {
 export const REQUIRED_TEST_FILES = Object.freeze([
   "packages/pa-core/src/__tests__/review-bundle-template.test.ts", "packages/pa-core/src/__tests__/workflow-contract.test.ts", "packages/pa-core/src/__tests__/workflow-state.test.ts", "packages/pa-core/src/__tests__/workflow-cli.test.ts", "packages/pa-core/src/__tests__/workflow-owner-integration.test.ts", "packages/pa-core/src/__tests__/workflow-startup.test.ts",
   "packages/pi-pa/src/__tests__/workflow-startup.test.ts", "packages/pa-core/src/__tests__/selected-config-compatibility.test.ts", "packages/pa-core/src/__tests__/workflow-resources.test.ts", "packages/pi-pa/src/__tests__/workflow-config.test.ts",
+  "packages/pa-core/src/__tests__/workflow-adoption.test.ts",
   "packages/pa-core/src/__tests__/project-command-catalogue.test.ts", "packages/pa-core/src/__tests__/project-command-catalogue-files.test.ts",
   "packages/pi-pa/src/__tests__/project-command-source.test.ts", "packages/pi-pa/src/__tests__/project-command-contract.test.ts",
   "packages/pa-core/src/__tests__/repo-setup.test.ts", "packages/pi-pa/src/__tests__/repo-setup-native.test.ts",
@@ -147,15 +148,69 @@ export const CASE_ANCHORS = Object.freeze({
   "revocation": ["revocation after partial publication prevents the absent member; completed native effects can still settle", "protected review consumes issued native locator with no paragraph authority and cannot downgrade after revoke"],
   "actual-cas": ["32 actual SQLite connections racing one revision accept exactly one append", "32 actual SQLite connections accept exactly one linked subject revision, retaining one run and all history"],
   "tamper-no-fallback": ["missing adopted registry cannot fall back to a ticket approval paragraph", "source operation proof rejects unissued payload despite a protected native-evidence envelope"],
+  "fresh-coordinator-adoption": ["fresh coordinator adoption preserves original caller, resources, decisions, attempts and journal prefix; package recovery remains separate", "overlapping fresh adoption has one CAS winner and stale explicit resume cannot recover", "four actual processes racing fresh coordinator adoption commit one exact successor", "interrupted adoption has no reservation/grant before commit and a lost reply is discovered without another transfer", "retained adoption discovery rejects foreign duplicate markers and ambiguous runs without a newest-run fallback", "adoption does not reset the sixteen-decision recovery bound"],
+  "fresh-native-adoption": ["fresh default foreground host adopts a dead coordinator without resume, then recovers the same package", "native adoption denies missing anchors, PID reuse, unsettled owners and live explicit resume descendants", "native adoption consent binds both coordinators and abort never becomes package approval"],
+  "same-intent-queue-convergence": ["recognized prequeued override converges the SAME intent and approved pair without recapture, republish or execution profile", "same-intent queue convergence handles foreign-owner without duplicate approval/publication", "same-intent queue convergence handles revoked without duplicate approval/publication", "same-intent queue convergence handles already-correct without duplicate approval/publication", "concurrent queue reconcilers retain one intent, one missing-field update and one settlement", "fresh queue-only coordinator adoption can settle only the retained authorized intent"],
+  "selected-existing-initial-handoff": ["selected initial existing-branch producer publishes, queues and yields an exact reuse baseline without fabricated previous canonical source", "amendment materialization reuses ONLY the exact retained feature and rejects changed HEAD without mutation"],
+  "issued-decision-read-diagnostics": ["read diagnostics distinguish structural adoption from caller rights and retain issued approval when artifacts are unavailable"],
 });
-export function accountCases(events) {
+const c = file => `packages/pa-core/src/__tests__/${file}.ts`, p = file => `packages/pi-pa/src/__tests__/${file}.ts`;
+// Canonical source OWNER per exact subcase, not just a count/name. These are
+// checked against the private harness root that owns the pinned test drivers.
+const owners = {
+  "static-zero-effects": [c("workflow-owner-integration.test")],
+  "startup-stage-separation": [c("workflow-startup.test"), c("workflow-startup.test"), c("workflow-startup.test"), p("workflow-startup.test")],
+  "startup-causal-diagnostics": [c("workflow-startup.test"), c("workflow-producer-cases"), p("workflow-startup.test")],
+  "compatible-resource-selection": Array(2).fill(c("selected-config-compatibility.test")),
+  "retained-config-continuation": [c("workflow-resources.test"), p("workflow-config.test"), p("workflow-config.test")],
+  "catalogue-task-scope": Array(2).fill(c("project-command-catalogue.test")),
+  "catalogue-source-selection": [c("project-command-catalogue-files.test"), p("project-command-source.test"), p("project-command-source.test"), p("project-command-contract.test"), p("project-command-contract.test")],
+  "repo-setup-candidate-writer": Array(3).fill(c("repo-setup.test")),
+  "repo-setup-native-admission": Array(5).fill(p("repo-setup-native.test")),
+  "repo-operator-approval": [...Array(3).fill(c("repo-contract-authority.test")), c("operator-terminal.test")],
+  "repo-operator-revocation": Array(4).fill(c("repo-contract-authority.test")),
+  "repo-catalogue-execution": Array(4).fill(p("project-command-catalogue-execution.test")),
+  "setup-input-observation": Array(4).fill(c("repo-setup.test")),
+  "fresh-setup-discovery": [p("repo-setup-native.test")],
+  "readable-native-review": Array(4).fill(p("pi-workflow-decision.test")),
+  "cancelled-review-recovery": [...Array(4).fill(c("workflow-revision-cases")), p("pi-workflow-decision.test"), p("workflow-config.test")],
+  "workflow-recovery-diagnostics": [p("pi-workflow-code-cases")],
+  "producer-field-diagnostics": [c("review-bundle-template.test"), c("workflow-producer-cases")],
+  "structured-decision": [p("pi-workflow-decision.test"), c("workflow-producer-cases")],
+  "package-effects": [c("workflow-ticket-owner-cases"), p("pi-workflow-runtime.test")],
+  "publication-interruption": Array(2).fill(c("workflow-ticket-owner-cases")),
+  "amendment": [c("workflow-amendment-owner-cases"), p("pi-workflow-runtime.test")],
+  "native-two-phases": [p("pi-workflow-runtime.test")],
+  "native-restart": [p("pi-workflow-runtime.test"), c("workflow-execution-restart-cases")],
+  "restart-interruption": Array(2).fill(c("workflow-native-handoff-cases")),
+  "native-matrix": Array(2).fill(p("pi-workflow-matrix-cases")),
+  "revocation": [c("workflow-ticket-owner-cases"), p("pi-workflow-code-cases")],
+  "actual-cas": [c("workflow-state.test"), c("workflow-revision-cases")],
+  "tamper-no-fallback": [p("pi-workflow-code-cases"), p("pi-workflow-operation-cases")],
+  "fresh-coordinator-adoption": Array(6).fill(c("workflow-adoption.test")),
+  "fresh-native-adoption": [p("workflow-config.test"), p("workflow-config.test"), p("pi-workflow-decision.test")],
+  "same-intent-queue-convergence": Array(6).fill(c("workflow-ticket-owner-cases")),
+  "selected-existing-initial-handoff": [c("workflow-ticket-owner-cases"), p("pi-workflow-runtime.test")],
+  "issued-decision-read-diagnostics": [c("workflow-adoption.test")],
+};
+export const CASE_OWNERS = Object.freeze(Object.fromEntries(Object.entries(CASE_ANCHORS).flatMap(([id, names]) => {
+  if (owners[id]?.length !== names.length) throw new Error(`Missing canonical subcase owners: ${id}`);
+  return names.map((name, index) => [name, owners[id][index]]);
+})));
+export function accountCases(events, harnessRoot) {
   if (!Array.isArray(events) || !events.length) block("WORKFLOW_CASE_EVENTS_REQUIRED", "case-accounting");
   const passed = events.filter(event => event.type === "test:pass");
   if (events.some(event => event.type === "test:fail" || ((event.type === "test:pass" || event.type === "test:fail") && (event.data.skip || event.data.todo)))) block("WORKFLOW_REQUIRED_CASE_FAILED_OR_SKIPPED", "case-accounting");
   const names = new Set(passed.map(event => event.data.name)), cases = [];
   for (const [id, required] of Object.entries(CASE_ANCHORS)) {
     if (required.some(name => !names.has(name))) block("WORKFLOW_REQUIRED_CASE_OMITTED", id);
-    cases.push({ id, status: "passed", observations: required.length, testNames: required });
+    if (typeof harnessRoot !== "string" || !isAbsolute(harnessRoot)) block("WORKFLOW_CASE_OWNER_REQUIRED", id);
+    for (const name of required) {
+      const matches = passed.filter(event => event.data.name === name);
+      const expected = join(harnessRoot, CASE_OWNERS[name].replace(/\.ts$/, ".js"));
+      if (matches.length !== 1 || matches[0].data.file !== expected) block("WORKFLOW_CASE_OWNER_MISMATCH", id);
+    }
+    cases.push({ id, status: "passed", observations: required.length, testNames: required, owners: required.map(name => CASE_OWNERS[name]), lane: "exact-installed-native" });
   }
   const summary = events.filter(event => event.type === "test:summary" && event.data.file === undefined).at(-1)?.data;
   if (!summary || !summary.success || summary.counts?.failed || summary.counts?.cancelled || summary.counts?.skipped || summary.counts?.todo

@@ -3,8 +3,10 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { accountCases, CASE_ANCHORS, discoverInstalled, parseArguments, provenance, QualificationBlocked, verifyBuildPins } from "./workflow_installed_support.mjs";
+import { accountCases as accountOwnedCases, CASE_ANCHORS, CASE_OWNERS, discoverInstalled, parseArguments, provenance, QualificationBlocked, verifyBuildPins } from "./workflow_installed_support.mjs";
 const sha = "a".repeat(40);
+const harness = "/private-qualification-harness";
+const accountCases = events => accountOwnedCases(events, harness);
 for (const args of [[], ["--selected-installed"], ["--selected-installed", "--require-candidate", "HEAD", "--require-paired-config"], ["--selected-installed", "--require-candidate", sha, "--require-paired-config", "--binary", "sentinel"], ["--require-candidate", sha, "--selected-installed", "--require-paired-config"]]) test(`installed workflow strict arguments reject shape ${args.length}`, () => assert.throws(() => parseArguments(args), QualificationBlocked));
 test("installed workflow exact arguments accept only fixed matrix contract", () => assert.equal(parseArguments(["--selected-installed", "--require-candidate", sha, "--require-paired-config"]), sha));
 test("an executable outside the Nix closure cannot masquerade as selected installed PPA", () => {
@@ -38,7 +40,7 @@ test("package build provenance remains exact and separate from compatible select
 });
 function events() {
   const names = [...new Set(Object.values(CASE_ANCHORS).flat())];
-  return [...names.map(name => ({ type: "test:pass", data: { name, details: { type: "test" } } })), { type: "test:summary", data: { success: true, counts: { passed: names.length, failed: 0, cancelled: 0, skipped: 0, todo: 0 } } }];
+  return [...names.map(name => ({ type: "test:pass", data: { name, file: join(harness, CASE_OWNERS[name].replace(/\.ts$/, ".js")), details: { type: "test" } } })), { type: "test:summary", data: { success: true, counts: { passed: names.length, failed: 0, cancelled: 0, skipped: 0, todo: 0 } } }];
 }
 test("mandatory native case accounting rejects omitted, skipped, cancelled, failed and summaryless cases", () => {
   for (const mutate of [e => e.splice(0, 1), e => { e[0].data.skip = "unsupported"; }, e => { e[0].type = "test:fail"; }, e => e.pop(), e => { e.at(-1).data.counts.cancelled = 1; }, e => { e.at(-1).data.counts.passed++; }]) {
@@ -49,4 +51,19 @@ test("mandatory native case accounting rejects omitted, skipped, cancelled, fail
     assert.throws(() => accountCases(omitted), error => error.code === "WORKFLOW_REQUIRED_CASE_OMITTED" && error.gate === id);
   }
   assert.equal(accountCases(events()).cases.length, Object.keys(CASE_ANCHORS).length);
+});
+test("mandatory inventory rejects same-count subcase substitution, source-owner swaps and foreign harness lanes", () => {
+  const original = events();
+  for (const mutate of [
+    e => { e[0].data.name = "different-subcase-same-count"; },
+    e => { e[0].data.file = e[1].data.file; },
+    e => { e[0].data.file = e[0].data.file.replace(harness, "/foreign-source-lane"); },
+    e => { e[0].data.file = undefined; },
+    e => { e.splice(1, 0, structuredClone(e[0])); e.at(-1).data.counts.passed++; },
+  ]) {
+    const modified = structuredClone(original); mutate(modified); assert.throws(() => accountCases(modified));
+  }
+  assert.throws(() => accountOwnedCases(original), error => error.code === "WORKFLOW_CASE_OWNER_REQUIRED");
+  const report = accountCases(original);
+  assert.ok(report.cases.every(row => row.lane === "exact-installed-native" && row.owners.length === row.testNames.length));
 });

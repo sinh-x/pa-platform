@@ -56,7 +56,7 @@ export function runHarness({ directory, harness, node = process.execPath, env, r
   if (result.error || result.signal || result.status !== 0 || result.stderr) block("WORKFLOW_INSTALLED_CASE_RUN_FAILED", "native-cases");
   let events;
   try { events = result.stdout.trim().split("\n").map(line => JSON.parse(line)); } catch { block("WORKFLOW_TEST_EVENT_FRAMING", "native-cases"); }
-  return { ...accountCases(events), exitCode: result.status, signal: result.signal, stderrSha256: digest(Buffer.from(result.stderr)),
+  return { ...accountCases(events, directory), exitCode: result.status, signal: result.signal, stderrSha256: digest(Buffer.from(result.stderr)),
     harnessSourceSha256: digest(Buffer.from(JSON.stringify(harness.observed))), implementationBridgesSha256: digest(Buffer.from(JSON.stringify(harness.bridges))),
     limitations: ["Native capture, original admission/provider and Treehouse seams are labelled fixtures, not human approval or live provider qualification.", "Test drivers are exact committed source; all product implementation modules resolve exclusively to the verified installed closure."] };
 }

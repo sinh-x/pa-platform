@@ -31,7 +31,14 @@ The private environment selects disposable HOME/config/AI/registry/Git resources
 
 ## Mandatory case inventory
 
-Every ID is required. The first/final identity/unchanged-state checks and installed public-entry drivers combine with exact pinned native-test anchors in `workflow_installed_support.mjs`:
+Every ID is required. The inventory now has **39 groups**, retaining all earlier
+34 and adding five v003 repair groups. Every exact subcase also has a canonical
+test-source owner; the verifier requires its event to originate in that exact
+file within the private installed-driver harness. Same-count replacement,
+owner/lane swaps, duplicate anchors and foreign harnesses reject. Names/counts
+alone are insufficient. The first/final identity/unchanged-state checks and
+installed public-entry drivers combine with exact pinned native-test anchors in
+`workflow_installed_support.mjs` (the original historical list follows):
 
 1. `installed-identity`: physical package/binary, exact source/config/registry, module/package/addon provenance.
 2. `installed-entry-points`: default public CLI/native list/show/validate/preflight/status/next/decision/template agreement and override rejection.
@@ -50,6 +57,21 @@ Every ID is required. The first/final identity/unchanged-state checks and instal
 15. `actual-cas`: actual 32-connection registry contention and retained linked subjects.
 16. `tamper-no-fallback`: unissued/foreign/unfinished/reused result and missing adopted authority reject.
 17. `isolation-accounting`: exact source/config/selection/imports unchanged, private native event accounting and complete mandatory inventory.
+
+PAP-273 also retains the startup-stage/causal diagnostics, compatible-resource,
+retained-config, catalogue/source/task-scope, bounded setup, operator lifecycle,
+native observation/discovery, readable review, cancelled recovery and safe
+producer-field groups added after that original list. The controlling full
+inventory is `CASE_ANCHORS` plus public identity/entry/isolation groups; the
+verifier regression asserts the exact complete ID list, not just 39.
+
+The five new groups are `fresh-coordinator-adoption`, `fresh-native-adoption`,
+`same-intent-queue-convergence`, `selected-existing-initial-handoff` and
+`issued-decision-read-diagnostics`. They include actual multiprocess CAS,
+process-incarnation liveness, no-resume default native host consent/recovery,
+queue conflicts/revocation/concurrency, truthful initial reuse without prior
+canonical source, and unavailable read evidence without loss of issued approval.
+They are mandatory even when an earlier 34-group candidate passed.
 
 Initial supported restart scope is FOREGROUND structured direct custody. Force/background structured continuation explicitly rejects before effects; optional prepared/other-adapter continuation is not silently widened. A missing capability cannot be skipped to obtain success.
 
