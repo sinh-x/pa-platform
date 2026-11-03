@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { openArtifactDirectory, readArtifactFileAt } from "../artifacts/manifest.js";
-import { digest, MAX_WORKFLOW_BYTES, reject, relativePath } from "../workflows/contracts.js";
+import { digest, MAX_WORKFLOW_BYTES, reject, relativePath, JsonWorkflowError } from "../workflows/contracts.js";
 import { TicketStore } from "./store.js";
 import type { Ticket } from "./types.js";
 
@@ -111,18 +111,37 @@ export class TicketPairPublication {
       if (this.observe(pair) !== "complete") reject("WORKFLOW_UNCERTAIN");
     });
   }
+  /** Recognize the existing administrative queue transition, not prose or a
+   * caller-authored grant. Native package/intent authority is STILL required at
+   * every new write. Any intervening status/foreign assignment stops repair. */
+  private recognizedQueueOverride(pair: TicketPublicationPair, ticket: Ticket): boolean {
+    if (ticket.status !== "pending-implementation" || !["", "sinh", "requirements/team-manager"].includes(ticket.assignee)) return false;
+    const audit = this.store.readAudit().filter(entry => entry.ticket_id === pair.ticket);
+    let transition = -1;
+    for (let index = 0; index < audit.length; index++) if (audit[index]!.changes.status) transition = index;
+    const entry = audit[transition], status = entry?.changes.status;
+    if (!entry || entry.action !== "updated" || !status || !["requirement-review", "pending-approval"].includes(String(status[0])) || status[1] !== "pending-implementation") return false;
+    for (const later of audit.slice(transition)) {
+      const assignment = later.changes.assignee;
+      if (assignment && (!["", "sinh", "requirements/team-manager"].includes(String(assignment[1])) || assignment[1] !== ticket.assignee)) return false;
+    }
+    const lastAssignment = audit.filter(row => row.changes.assignee).at(-1)?.changes.assignee;
+    return Boolean(lastAssignment && lastAssignment[1] === ticket.assignee);
+  }
   queue(pair: TicketPublicationPair, authorize: () => void): void {
     this.store.withWorkflowTransaction(() => {
       if (this.observe(pair) !== "complete") reject("WORKFLOW_UNCERTAIN");
       const ticket = this.ticket(pair);
       if (this.queueComplete(pair, ticket)) return;
-      if (!["requirement-review", "pending-approval"].includes(ticket.status)) reject("WORKFLOW_CONFLICT");
+      if (!["requirement-review", "pending-approval"].includes(ticket.status) && !this.recognizedQueueOverride(pair, ticket))
+        throw new JsonWorkflowError("WORKFLOW_CONFLICT", "queue-state-or-override-unproven", "tickets");
       authorize();
       if (this.observe(pair) !== "complete") reject("WORKFLOW_UNCERTAIN");
       const current = this.ticket(pair);
       if (current.status !== ticket.status || current.assignee !== ticket.assignee) reject("WORKFLOW_CONFLICT");
       // TicketStore retains lifecycle ownership checks and its authenticated context.
-      this.store.update(pair.ticket, { status: "pending-implementation", assignee: "builder/team-manager" }, "workflow/tickets");
+      this.store.update(pair.ticket, { ...(current.status === "pending-implementation" ? {} : { status: "pending-implementation" as const }),
+        ...(current.assignee === "builder/team-manager" ? {} : { assignee: "builder/team-manager" }) }, "workflow/tickets");
     });
   }
   queued(pair: TicketPublicationPair): boolean {

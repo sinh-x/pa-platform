@@ -14,9 +14,10 @@ The existing Pi `pa_decision` tool now accepts exactly:
 Use the values from current workflow status/next. The run is derived from the
 native caller's adopted repository/ticket; callers cannot supply a run, actor,
 outcome, permissions or replacement package. The foreground requirements caller
-must be the original authenticated owner or an existing registry-authenticated
-same-role continuation. Relaunching an unrelated deployment is not continuation
-authority. There is no shell/CLI approval workaround.
+must be the effective authenticated coordinator or an existing registry-authenticated
+same-role continuation. A fresh same-role deployment without `--resume` can first
+request explicit native adoption, as below; relaunching alone grants nothing.
+There is no shell/CLI approval workaround.
 
 Recovery is offered only for the latest unrevoked cancelled decision on the
 current subject, with retained resource closure, no pending intents or other
@@ -39,6 +40,37 @@ fail closed. Older runtimes reject the new event rather than guessing its meanin
 install the new runtime before using recovery, and do not downgrade an affected
 run to an unaware runtime.
 
+## Fresh foreground continuation without `--resume`
+
+Read status/next in the new authenticated `requirements/analyze` foreground
+session. `coordinatorContinuation` distinguishes structural eligibility from
+native caller eligibility; CLI without native session proof reports uninspected.
+When eligible, its exact request is:
+
+```json
+{"action":"adopt","revision":2,"subjectSha256":"<exact-current-64-lowercase-hex>"}
+```
+
+Send this through `pa_decision`, not a CLI/password or generic chat question.
+Native review binds both coordinators, run/revision, exact package and retained
+resources. Consent appends `coordinator-adopted` to the SAME journal; the original
+caller, cancellation, snapshots, attempts and bounds remain unchanged. It does
+not approve the package. Reread the incremented revision, then explicitly request
+`recover` and obtain the fresh native package decision. A queue-only adoption is
+instead restricted to reconciliation of the existing approved queue intent; it
+cannot request new steps, revoke, revise or acquire source/check authority.
+
+The previous effective coordinator AND its supported resume descendants must
+have terminal registry evidence plus a private launch-incarnation anchor and
+proven process absence. Live/staged completion, reused PIDs, different boot,
+missing anchors or unreadable process evidence fail closed. The launcher now
+records requirements/analyze anchors; do not manufacture historical anchors for
+older sessions. A nonowning auditor without a resume edge is not the coordinator.
+Proof is repeated after consent and inside final registry CAS. Competing claims
+have one winner; stale callers reread. A crash before commit leaves no reservation
+or grant; a lost reply after commit is resolved by reading existing succession,
+not another takeover. Old readers reject the new event: do not downgrade the run.
+
 ## Actionable projections
 
 Status/next now distinguish `runState=admitted` from `packageReview.outcome` and
@@ -56,10 +88,14 @@ these blockers performs no workflow effect or checkout acquisition.
 
 ## LM-101 continuity
 
-Retain the existing d-076ff1 run, cancellation and r001 pair. After operator
-installation, a supported requirements continuation may inspect status and request
-this recovery. The human must actually answer the native question. The earlier
-record-only answer remains intent, not issued authority. Only then may the normal
-publication/handoff owners run; the project-command profile remains a separate
-later execution prerequisite. No recovery, publication, installation or human UAT
-was performed by implementing this interface.
+The original d-076ff1 cancellation and r001 pair are historical continuity, not
+current mutation arguments. Later audit evidence reports the unchanged pair was
+approved/published and its queue intent remained pending. Reauthenticate the
+actual run before acting: an already-approved pair must not be recovered or
+approved again to fix infrastructure queueing. Use the existing authorized queue
+intent through its owner; only a recognized audited administrative prequeue can
+converge missing fields, without republish, new intent or builder launch. Exact
+already-complete effects settle without another write; revoked authority blocks
+new writes. Conflicting/advanced states stop, and execution/link/custody blockers
+remain separate. No live LM-101 effect, installation or human UAT was performed
+by this source implementation.
