@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getDb, openReadonlyRegistryDatabase } from "./db.js";
+import { getDb, openReadonlyRegistryDatabase, readonlyRegistryFailure } from "./db.js";
 import type { AssociateDeploymentTicketInput, AssociateDeploymentTicketResult, DeploymentStatus, EvaluatorResult, Rating, RegistryEvent, ReviewAuthorizationClaim, ReviewAuthorizationClaimInput, TicketAssociatedRegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
 import { getRegistryDbPath } from "../paths.js";
@@ -13,7 +13,7 @@ import { parseReviewObjective } from "../validation/review-contract.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
-export { closeDb, getDb, verifyRegistryNativeAddon, REGISTRY_NATIVE_BINDING_ENV, type RegistryNativeAddonEvidence } from "./db.js";
+export { closeDb, getDb, verifyRegistryNativeAddon, REGISTRY_NATIVE_BINDING_ENV, RegistryReadError, type RegistryReadCause, type RegistryNativeAddonEvidence } from "./db.js";
 
 export const PA_PI_EXECUTION_MODE_ENV = "PA_PI_EXECUTION_MODE";
 export const PI_FOREGROUND_COMPLETION_FILE = "pi-foreground-completion.json";
@@ -796,9 +796,10 @@ export function queryDeploymentStatuses(): DeploymentStatus[] {
 }
 
 /** Board observations in authenticated helper context must not migrate registry state. */
-export function queryReadonlyDeploymentStatuses(): DeploymentStatus[] {
-  const db = openReadonlyRegistryDatabase();
+export function queryReadonlyDeploymentStatuses(existingFilesOnly = false): DeploymentStatus[] {
+  const db = openReadonlyRegistryDatabase(existingFilesOnly);
   try { return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments").all() as Record<string, unknown>[]).map(deploymentFromRow)); }
+  catch (error) { if (existingFilesOnly) throw readonlyRegistryFailure(error); throw error; }
   finally { db.close(); }
 }
 
@@ -815,6 +816,11 @@ export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: 
   } finally { db.close(); }
 }
 
+export type RepoSetupLaunchCause = "launch-missing" | "launch-ambiguous" | "launch-inactive" | "launch-role" | "launch-channel" | "launch-custody" | "launch-root";
+export class RepoSetupLaunchError extends Error {
+  constructor(readonly reason: RepoSetupLaunchCause) { super(reason); }
+}
+
 /** Strict raw ticketless administrative launch observation. Public correlation
  * projections deliberately omit malformed historical fields; that omission must
  * NEVER turn malformed custody into an eligible setup actor. No writes/migration.
@@ -824,17 +830,21 @@ export function queryReadonlyRepoSetupLaunch(deployId: string): DeploymentStatus
   try {
     const current = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
     const starts = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started'").all(deployId) as Record<string, unknown>[];
-    if (!current || starts.length !== 1 || current.status !== "running") throw new Error("setup requires one live immutable launch");
+    if (!current || !starts.length) throw new RepoSetupLaunchError("launch-missing");
+    if (starts.length !== 1) throw new RepoSetupLaunchError("launch-ambiguous");
+    if (current.status !== "running") throw new RepoSetupLaunchError("launch-inactive");
     const absent = ["ticket_id", "parent_deployment_id", "builder_authority", "repository_slot", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
       "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit", "review_checkout", "ticket_worktree_selection", "resumed_from_deployment_id"];
     for (const row of [current, starts[0]!]) {
-      if (row.team !== "repo-setup" || row.mode !== "setup" || row.runtime !== "pi" || row.binary !== "ppa" || row.invocation_channel !== "cli"
-        || (row.rogue_one !== null && row.rogue_one !== undefined && row.rogue_one !== 0)
-        || absent.some(key => row[key] !== null && row[key] !== undefined && row[key] !== "")) throw new Error("setup launch has conflicting or malformed authority");
+      if (row.team !== "repo-setup" || row.mode !== "setup" || row.runtime !== "pi" || row.binary !== "ppa") throw new RepoSetupLaunchError("launch-role");
+      if (row.invocation_channel !== "cli") throw new RepoSetupLaunchError("launch-channel");
+      if ((row.rogue_one !== null && row.rogue_one !== undefined && row.rogue_one !== 0)
+        || absent.some(key => row[key] !== null && row[key] !== undefined && row[key] !== "")) throw new RepoSetupLaunchError("launch-custody");
     }
-    for (const key of ["repo", "repo_root", "worktree_root"]) if (current[key] !== starts[0]![key]) throw new Error("setup launch repository binding changed");
+    for (const key of ["repo", "repo_root", "worktree_root"]) if (current[key] !== starts[0]![key]) throw new RepoSetupLaunchError("launch-root");
     return deploymentFromRow(current);
-  } finally { db.close(); }
+  } catch (error) { if (error instanceof RepoSetupLaunchError) throw error; throw readonlyRegistryFailure(error); }
+  finally { db.close(); }
 }
 
 /** Resume inspection must not allocate, initialize or migrate registry state. */

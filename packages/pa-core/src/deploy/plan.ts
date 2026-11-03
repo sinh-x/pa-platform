@@ -263,7 +263,11 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.treehouse ? { treehouse: Object.freeze({ ...options.treehouse }) } : {}),
     ...(options.ticketWorktreeSelection ? { ticketWorktreeSelection: Object.freeze({ ...options.ticketWorktreeSelection }) } : {}),
     ...(options.reviewCheckout ? { reviewCheckout: Object.freeze({ ...options.reviewCheckout }) } : {}),
-    ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
+    // Channel is launch evidence for every route, not a rogue-one capability.
+    // In particular, setup must retain the CLI owner's channel in its immutable
+    // started event; the native consumer must never infer it from a null row.
+    invocation_channel: invocationChannel,
+    ...(rogueOne ? { rogue_one: true as const } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: rogueOne

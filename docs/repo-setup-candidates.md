@@ -103,6 +103,35 @@ historical correlation cannot disappear through a permissive public projection
 and become apparent ticketless authority. Active/dead/unknown matching foreground
 sessions block; none is forced terminal or silently reclaimed.
 
+### Setup launch and stop diagnostics (r006 repair)
+
+The ordinary planner retains its authenticated invocation channel for every route,
+including default/explicit `repo-setup/setup`; the launcher passes it unchanged to
+the immutable started event and current projection. CLI is not inferred from a
+missing historical value, environment hint or successful observation. Existing
+null-channel attempts remain invalid and are never backfilled.
+
+Rejected tool results retain `ok:false`, `executionReady:false` and the existing
+error code (infrastructure failures now use `SETUP_REGISTRY`). `error` additionally
+contains finite `cause`, `stage` and `diagnostic`. The diagnostic is at most 2000
+JavaScript characters with exactly five lines: Condition, Source, Reason,
+Correction and Resume Action. Only static owned vocabulary is emitted, never
+raw OS/SQLite/parser text, supplied field names, paths or secrets.
+
+Admission distinguishes context, immutable/current launch, PID/incarnation,
+registered primary root and live/dead/unknown overlap. Registry failures retain
+`registry-missing`, `registry-unreadable`, `registry-unsafe`, `registry-over-limit`
+or `registry-unstable` rather than an actor mismatch. Registry/launcher/operator
+owners are named by stage; stop unchanged retries and resume the first unproven
+native discover/inspect only after owner correction. These observations grant
+neither approval nor execution readiness.
+
+Both launch and overlap registry reads use existing-files-only readers: no
+initialization, migration or missing SQLite coordination-file allocation. The
+checkpointed no-WAL bound remains 64 MiB; unsafe/unstable/unavailable/over-limit
+evidence still rejects. No registry cleanup, limit expansion, historical rewrite,
+process substitution or actor/candidate guard bypass is provided.
+
 The writer reuses the existing lock order and owners:
 
 1. Canonical repository capacity mutex; any retained slot/reservation blocks.

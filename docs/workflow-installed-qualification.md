@@ -31,8 +31,8 @@ The private environment selects disposable HOME/config/AI/registry/Git resources
 
 ## Mandatory case inventory
 
-Every ID is required. The inventory now has **39 groups**, retaining all earlier
-34 and adding five v003 repair groups. Every exact subcase also has a canonical
+Every ID is required. The inventory now has **41 groups**, retaining all earlier
+39 and adding two r006 setup-repair groups. Every exact subcase also has a canonical
 test-source owner; the verifier requires its event to originate in that exact
 file within the private installed-driver harness. Same-count replacement,
 owner/lane swaps, duplicate anchors and foreign harnesses reject. Names/counts
@@ -63,15 +63,25 @@ retained-config, catalogue/source/task-scope, bounded setup, operator lifecycle,
 native observation/discovery, readable review, cancelled recovery and safe
 producer-field groups added after that original list. The controlling full
 inventory is `CASE_ANCHORS` plus public identity/entry/isolation groups; the
-verifier regression asserts the exact complete ID list, not just 39.
+verifier regression asserts the exact complete ID list, not just 41.
 
-The five new groups are `fresh-coordinator-adoption`, `fresh-native-adoption`,
+The five v003 groups are `fresh-coordinator-adoption`, `fresh-native-adoption`,
 `same-intent-queue-convergence`, `selected-existing-initial-handoff` and
 `issued-decision-read-diagnostics`. They include actual multiprocess CAS,
 process-incarnation liveness, no-resume default native host consent/recovery,
 queue conflicts/revocation/concurrency, truthful initial reuse without prior
 canonical source, and unavailable read evidence without loss of issued approval.
 They are mandatory even when an earlier 34-group candidate passed.
+
+The r006 groups are `setup-launch-channel` and `setup-admission-diagnostics`.
+They require ordinary default/explicit setup planning and immutable event emission
+through the production foreground adapter to a real child/native tool, with no
+injected channel or preauthorized actor. Terminal transport/version probes are
+labelled fixtures, not a real installed Pi/operator UAT. Diagnostics cover exact
+context/launch/process/root/overlap denials, missing/unreadable/unsafe/over-limit/
+unstable registry evidence, protected-read drift and the unchanged 64 MiB no-WAL
+boundary. All earlier groups and exact source-owner/lane identities remain
+mandatory; no previous result transfers to the new candidate.
 
 Initial supported restart scope is FOREGROUND structured direct custody. Force/background structured continuation explicitly rejects before effects; optional prepared/other-adapter continuation is not silently widened. A missing capability cannot be skipped to obtain success.
 

@@ -5,7 +5,7 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { repoSetupService, MAX_REPO_SETUP_REQUEST_BYTES, type RepoSetupCandidateReference, type RepoSetupHost } from "../repo-setup.js";
+import { repoSetupRejection, repoSetupService, RepoSetupError, MAX_REPO_SETUP_REQUEST_BYTES, type RepoSetupErrorCode, type RepoSetupCandidateReference, type RepoSetupHost } from "../repo-setup.js";
 import { withPreparedTicketCapacity } from "../deploy/ticket-concurrency.js";
 import { withVacantRepositorySetup } from "../deploy/repository-admission.js";
 
@@ -32,6 +32,19 @@ function fixture(run: (f: { root: string; repo: string; file: string; config: st
   } finally { process.env = old; rmSync(root, { force: true, recursive: true }); }
 }
 const code = (result: Record<string, unknown>) => (result.error as { code: string })?.code;
+
+test("setup rejection diagnostics are finite five-field messages for every stop and never echo arbitrary errors or fields", () => {
+  for (const code of ["SETUP_REQUEST", "SETUP_ACTOR", "SETUP_REGISTRY", "SETUP_REPOSITORY", "SETUP_BUSY", "SETUP_SOURCE_CONFLICT", "SETUP_TRACKED", "SETUP_CANDIDATE", "SETUP_STALE", "SETUP_INPUT", "SETUP_IO"] as RepoSetupErrorCode[]) {
+    const result = repoSetupRejection(new RepoSetupError(code));
+    const error = result.error as { code: string; diagnostic: string };
+    assert.equal(error.code, code); assert.equal(result.ok, false); assert.equal(result.executionReady, false);
+    assert.ok(error.diagnostic.length <= 2000); assert.equal(error.diagnostic.split("\n").length, 5);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(error.diagnostic.includes(field));
+  }
+  assert.doesNotMatch(JSON.stringify(repoSetupRejection(new Error("SECRET_SENTINEL OS error /private/path"))), /SECRET_SENTINEL|private\/path/);
+  const result = repoSetupService('{"action":"inspect","SECRET_SENTINEL":"secret"}', { authenticate() { throw Error("must not reach actor"); } });
+  assert.equal((result.error as { code: string }).code, "SETUP_REQUEST"); assert.doesNotMatch(JSON.stringify(result), /SECRET_SENTINEL|secret/);
+});
 
 test("repo setup stages only fixed candidate bytes with exact CAS reference and no approval/execution or Git/source changes", () => fixture(f => {
   const head = f.git("rev-parse", "HEAD"), index = readFileSync(join(f.repo, ".git", "index")), exclude = readFileSync(join(f.repo, ".git", "info", "exclude"));

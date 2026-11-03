@@ -111,7 +111,7 @@ export const REQUIRED_TEST_FILES = Object.freeze([
   "packages/pa-core/src/__tests__/workflow-adoption.test.ts",
   "packages/pa-core/src/__tests__/project-command-catalogue.test.ts", "packages/pa-core/src/__tests__/project-command-catalogue-files.test.ts",
   "packages/pi-pa/src/__tests__/project-command-source.test.ts", "packages/pi-pa/src/__tests__/project-command-contract.test.ts",
-  "packages/pa-core/src/__tests__/repo-setup.test.ts", "packages/pi-pa/src/__tests__/repo-setup-native.test.ts",
+  "packages/pa-core/src/__tests__/repo-setup.test.ts", "packages/pa-core/src/__tests__/deploy-events.test.ts", "packages/pi-pa/src/__tests__/repo-setup-native.test.ts",
   "packages/pa-core/src/__tests__/repo-contract-authority.test.ts", "packages/pa-core/src/__tests__/operator-terminal.test.ts",
   "packages/pi-pa/src/__tests__/project-command-catalogue-execution.test.ts",
   "packages/pa-core/src/__tests__/execution-custody.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-runtime.test.ts", "packages/pi-pa/src/__tests__/pi-workflow-decision.test.ts", "packages/pi-pa/src/__tests__/pi-execution-custody.test.ts", "packages/pi-pa/src/__tests__/native-execution-evidence.test.ts",
@@ -153,6 +153,8 @@ export const CASE_ANCHORS = Object.freeze({
   "same-intent-queue-convergence": ["recognized prequeued override converges the SAME intent and approved pair without recapture, republish or execution profile", "same-intent queue convergence handles foreign-owner without duplicate approval/publication", "same-intent queue convergence handles revoked without duplicate approval/publication", "same-intent queue convergence handles already-correct without duplicate approval/publication", "concurrent queue reconcilers retain one intent, one missing-field update and one settlement", "fresh queue-only coordinator adoption can settle only the retained authorized intent"],
   "selected-existing-initial-handoff": ["selected initial existing-branch producer publishes, queues and yields an exact reuse baseline without fabricated previous canonical source", "amendment materialization reuses ONLY the exact retained feature and rejects changed HEAD without mutation"],
   "issued-decision-read-diagnostics": ["read diagnostics distinguish structural adoption from caller rights and retain issued approval when artifacts are unavailable"],
+  "setup-launch-channel": ["started emitter preserves ordinary CLI and API channels without rogue-one authority", "normal default setup launch preserves channel through real planner/start/adapter child and native discovery", "normal explicit setup launch preserves channel through real planner/start/adapter child and native discovery"],
+  "setup-admission-diagnostics": ["setup rejection diagnostics are finite five-field messages for every stop and never echo arbitrary errors or fields", "setup admission diagnostics distinguish context launch process root and overlap without leaking inputs or allowing writes", ...["missing", "unreadable", "unsafe", "over-limit", "unstable"].map(cause => `setup registry ${cause} retains infrastructure cause and unchanged evidence without actor fallback`), "setup registry changing during protected read reports instability without exposing raw filesystem errors", "setup checkpoint at the unchanged 64 MiB boundary supports discovery without WAL allocation or history writes"],
 });
 const c = file => `packages/pa-core/src/__tests__/${file}.ts`, p = file => `packages/pi-pa/src/__tests__/${file}.ts`;
 // Canonical source OWNER per exact subcase, not just a count/name. These are
@@ -192,6 +194,8 @@ const owners = {
   "same-intent-queue-convergence": Array(6).fill(c("workflow-ticket-owner-cases")),
   "selected-existing-initial-handoff": [c("workflow-ticket-owner-cases"), p("pi-workflow-runtime.test")],
   "issued-decision-read-diagnostics": [c("workflow-adoption.test")],
+  "setup-launch-channel": [c("deploy-events.test"), ...Array(2).fill(p("repo-setup-native.test"))],
+  "setup-admission-diagnostics": [c("repo-setup.test"), ...Array(8).fill(p("repo-setup-native.test"))],
 };
 export const CASE_OWNERS = Object.freeze(Object.fromEntries(Object.entries(CASE_ANCHORS).flatMap(([id, names]) => {
   if (owners[id]?.length !== names.length) throw new Error(`Missing canonical subcase owners: ${id}`);

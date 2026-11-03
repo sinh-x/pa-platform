@@ -9,12 +9,66 @@ import { inspectLocalProjectCommandCatalogue } from "./project-command-catalogue
 import { MAX_PROJECT_COMMAND_CATALOGUE_BYTES, parseProjectCommandCatalogue, PROJECT_COMMAND_CATALOGUE_PATH, type CatalogueRepository } from "./project-command-catalogue.js";
 import { loadRepoEntry, resolveRepoExecutionPath } from "./repos.js";
 import { discoverRepoSetupInputs, observeRepoSetupInputs, readRepoSetupInput, RepoSetupInputError, verifyRepoSetupPrerequisites } from "./repo-setup-inputs.js";
+import type { RegistryReadCause } from "./registry/db.js";
+import type { RepoSetupLaunchCause } from "./registry/index.js";
 import { parseReviewEvidenceJson, readReviewEvidenceFile } from "./validation/review-contract.js";
 
 export const MAX_REPO_SETUP_REQUEST_BYTES = 256 * 1024;
-export type RepoSetupErrorCode = "SETUP_REQUEST" | "SETUP_ACTOR" | "SETUP_REPOSITORY" | "SETUP_BUSY" | "SETUP_SOURCE_CONFLICT" | "SETUP_TRACKED" | "SETUP_CANDIDATE" | "SETUP_STALE" | "SETUP_INPUT" | "SETUP_IO";
+export type RepoSetupErrorCode = "SETUP_REQUEST" | "SETUP_ACTOR" | "SETUP_REGISTRY" | "SETUP_REPOSITORY" | "SETUP_BUSY" | "SETUP_SOURCE_CONFLICT" | "SETUP_TRACKED" | "SETUP_CANDIDATE" | "SETUP_STALE" | "SETUP_INPUT" | "SETUP_IO";
+export type RepoSetupAdmissionCause = RegistryReadCause | RepoSetupLaunchCause | "context-invalid" | "context-mismatch" | "process-pid" | "process-unverified" | "repository-mismatch" | "overlap-active-or-uncertain";
 export class RepoSetupError extends Error {
-  constructor(readonly code: RepoSetupErrorCode) { super(`Repository setup rejected: ${code}`); }
+  constructor(readonly code: RepoSetupErrorCode, readonly admissionCause?: RepoSetupAdmissionCause) { super(`Repository setup rejected: ${code}`); }
+}
+// Static vocabulary only. No caller values, unknown field names, JSON, OS error
+// messages, paths or secrets can enter a stop diagnostic.
+const admissionDiagnostics: Record<RepoSetupAdmissionCause, readonly [stage: string, reason: string]> = {
+  "context-invalid": ["context", "Current foreground deployment identity or tool CWD is missing or invalid."],
+  "context-mismatch": ["context", "Managed environment disagrees with the authenticated launch."],
+  "registry-missing": ["registry", "The existing deployment registry is missing; no registry was initialized."],
+  "registry-unreadable": ["registry", "Existing registry evidence cannot be read or queried safely."],
+  "registry-unsafe": ["registry", "Registry evidence is not a regular unaliased file."],
+  "registry-over-limit": ["registry", "The checkpointed registry exceeds the existing 64 MiB read bound."],
+  "registry-unstable": ["registry", "A stable checkpoint or existing WAL coordination cannot be proven."],
+  "launch-missing": ["launch", "A current deployment and one immutable started event are required."],
+  "launch-ambiguous": ["launch", "More than one immutable started event exists."],
+  "launch-inactive": ["launch", "The setup deployment is not running."],
+  "launch-role": ["launch", "Immutable and current evidence must both name the exact setup role, Pi runtime and PPA binary."],
+  "launch-channel": ["launch", "Immutable and current evidence must both retain the authentic CLI invocation channel."],
+  "launch-custody": ["launch", "Ticket, child, resume, rogue-one or custody evidence conflicts with ticketless setup."],
+  "launch-root": ["repository", "Immutable and current launch repository bindings disagree."],
+  "process-pid": ["process", "The registry PID is not the current native process."],
+  "process-unverified": ["process", "The private launch incarnation is missing, unsafe, stale or differs from the current process."],
+  "repository-mismatch": ["repository", "The registered physical primary root, native CWD and launch roots must agree exactly."],
+  "overlap-active-or-uncertain": ["overlap", "Another live, dead or uncertain foreground deployment overlaps this root."],
+};
+const setupDiagnostics: Record<RepoSetupErrorCode, readonly [stage: string, reason: string]> = {
+  SETUP_REQUEST: ["request", "The request does not match the bounded supported setup grammar."],
+  SETUP_ACTOR: ["context", "Native setup actor evidence could not be authenticated."],
+  SETUP_REGISTRY: ["registry", "Existing registry evidence is unavailable."],
+  SETUP_REPOSITORY: ["repository", "Registered primary repository identity could not be proven."],
+  SETUP_BUSY: ["overlap", "Repository or capacity ownership is occupied or uncertain."],
+  SETUP_SOURCE_CONFLICT: ["candidate", "A legacy or linked command source conflicts with primary-root setup."],
+  SETUP_TRACKED: ["candidate", "Local administrative paths are tracked; setup cannot alter tracked source."],
+  SETUP_CANDIDATE: ["candidate", "Candidate bytes or existing administrative state are unsupported or unsafe."],
+  SETUP_STALE: ["candidate", "The exact candidate compare-and-swap reference no longer matches."],
+  SETUP_INPUT: ["input", "Confined input evidence is unavailable, unsafe, excessive or changed."],
+  SETUP_IO: ["candidate", "A safe candidate operation could not be completed; uncertain bytes must be preserved."],
+};
+export function repoSetupRejection(error: unknown): Record<string, unknown> {
+  const rejected = error instanceof RepoSetupError && Object.hasOwn(setupDiagnostics, error.code) ? error : new RepoSetupError("SETUP_IO");
+  const cause = rejected.admissionCause && Object.hasOwn(admissionDiagnostics, rejected.admissionCause) ? rejected.admissionCause : rejected.code;
+  const [stage, reason] = Object.hasOwn(admissionDiagnostics, cause) ? admissionDiagnostics[cause as RepoSetupAdmissionCause]! : setupDiagnostics[rejected.code];
+  const owner = stage === "registry" ? "Registry owner" : stage === "launch" || stage === "context" || stage === "process" ? "Runtime/launcher owner" : "Repository/operator owner";
+  const correction = stage === "registry"
+    ? "restore supported stable registry availability without cleanup, limit changes or historical rewrites."
+    : stage === "launch" || stage === "context" || stage === "process"
+      ? "reconcile authentic launch and current process evidence; never backfill a channel or fabricate an actor."
+      : "reconcile the exact repository, ownership or candidate prerequisite without forcing or approving it.";
+  const resume = stage === "registry" || stage === "launch" || stage === "context" || stage === "process" || stage === "repository" || stage === "overlap"
+    ? "After owner correction, resume the first unproven native discover/inspect through normal foreground setup; no unchanged retry loop."
+    : "After owner correction, reread native inputs/candidate and resume only the rejected operation with exact current evidence.";
+  const diagnostic = `Condition: repository setup rejected (${cause})\nSource: native setup ${stage}\nReason: ${reason}\nCorrection: ${owner}: ${correction}\nResume Action: ${resume}`;
+  return { ok: false, error: { code: rejected.code, cause, stage, diagnostic }, executionReady: false };
 }
 export interface RepoSetupCandidateReference {
   readonly schemaVersion: "repo-setup-candidate/v1";
@@ -57,12 +111,14 @@ function syncDirectory(path: string): void {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 function authenticate(host: RepoSetupHost, expected?: CatalogueRepository): CatalogueRepository {
+  let actor: CatalogueRepository;
+  try { actor = host.authenticate(); }
+  catch (error) { if (error instanceof RepoSetupError) throw error; return fail("SETUP_ACTOR"); }
   try {
-    const actor = host.authenticate();
     const resolved = resolveRepoExecutionPath(actor.key);
-    if (resolved.repoKey !== actor.key || resolved.repoRoot !== actor.root || resolved.worktreeRoot !== actor.root || (expected && !same(actor, expected))) return fail("SETUP_REPOSITORY");
+    if (resolved.repoKey !== actor.key || resolved.repoRoot !== actor.root || resolved.worktreeRoot !== actor.root || (expected && !same(actor, expected))) throw new RepoSetupError("SETUP_REPOSITORY", "repository-mismatch");
     return Object.freeze({ key: actor.key, root: actor.root });
-  } catch (error) { if (error instanceof RepoSetupError) throw error; return fail("SETUP_ACTOR"); }
+  } catch { throw new RepoSetupError("SETUP_REPOSITORY", "repository-mismatch"); }
 }
 function gitUntracked(repository: CatalogueRepository): void {
   // Metadata only; no status, hooks, filters, source scripts, index refresh or
@@ -177,6 +233,6 @@ export function repoSetupService(request: string, host: RepoSetupHost): Record<s
         }));
     } catch (error) { if (error instanceof RepoSetupError) throw error; if (error instanceof RepoSetupInputError) return fail(error.code); return fail(entered ? "SETUP_IO" : "SETUP_BUSY"); }
   } catch (error) {
-    return { ok: false, error: { code: error instanceof RepoSetupError ? error.code : "SETUP_IO" }, executionReady: false };
+    return repoSetupRejection(error);
   }
 }

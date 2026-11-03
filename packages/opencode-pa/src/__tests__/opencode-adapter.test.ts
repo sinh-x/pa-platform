@@ -1061,8 +1061,10 @@ test("opa dry-run objective-file preserves markdown table, fenced code markers, 
     assert.match(primer, /preserve backticks/);
     assert.match(primer, /Comparison checks: 2 < 3 and 5 > 4\./);
 
-    writeFileSync(join(root, "config", "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_DRY_RUN_PRIVATE_[0-9]+'", ""].join("\n"));
-    writeFileSync(objectiveFile, "contains FAKE_DRY_RUN_PRIVATE_123 only");
+    // Check both the marker and payload without confusing ordinary deployment
+    // IDs/timestamps (for example .123Z) with leaked sensitive input.
+    writeFileSync(join(root, "config", "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_DRY_RUN_PRIVATE_[A-Z_]+'", ""].join("\n"));
+    writeFileSync(objectiveFile, "contains FAKE_DRY_RUN_PRIVATE_UNIQUE_PRIVATE_PAYLOAD only");
     const blockedStdout: string[] = [];
     const blockedStderr: string[] = [];
     assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run"], {
@@ -1071,10 +1073,10 @@ test("opa dry-run objective-file preserves markdown table, fenced code markers, 
     }), 1);
     assert.deepEqual(blockedStdout, []);
     assert.match(blockedStderr.join("\n"), /Blocked sensitive content input/);
-    assert.doesNotMatch(blockedStderr.join("\n"), /FAKE_DRY_RUN_PRIVATE|123/);
+    assert.doesNotMatch(blockedStderr.join("\n"), /FAKE_DRY_RUN_PRIVATE|UNIQUE_PRIVATE_PAYLOAD/);
 
     for (const file of [join(root, "deployments", deployId, "primer.md")]) {
-      assert.doesNotMatch(readFileSync(file, "utf-8"), /FAKE_DRY_RUN_PRIVATE|123/);
+      assert.doesNotMatch(readFileSync(file, "utf-8"), /FAKE_DRY_RUN_PRIVATE|UNIQUE_PRIVATE_PAYLOAD/);
     }
   });
 });
