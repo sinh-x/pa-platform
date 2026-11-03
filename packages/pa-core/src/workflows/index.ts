@@ -10,7 +10,7 @@ export { queryWorkflow } from "./queries.js";
 export type { WorkflowReadRequest } from "./queries.js";
 export { renderWorkflowGate } from "./presentation.js";
 export type { WorkflowGateResult } from "./presentation.js";
-export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision, projectWorkflowNext, workflowPackageReview } from "./service.js";
+export { JsonWorkflowService, replayWorkflow, eligibleSteps, requireDecision, projectWorkflowNext, workflowPackageReview, workflowCoordinator, coordinatorAdoptionEligible } from "./service.js";
 export type { WorkflowCaller, WorkflowDecision, WorkflowHost, WorkflowState, WorkflowEffectOwner, EffectIntent, EffectObservation } from "./service.js";
 export type { WorkflowAttempt } from "./revisions.js";
 export { RegistryWorkflowJournal } from "../registry/workflows.js";
@@ -19,7 +19,7 @@ export type { StructuredTaskBaseline, StructuredConsumerContext } from "./consum
 export { reviewBundleTemplateConsumer, produceWorkflowSubject } from "./producer.js";
 export { readWorkflowEvidence } from "./evidence.js";
 export { createTicketWorkflowOwners } from "./ticket-owner.js";
-export { adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable } from "./catalog.js";
+export { adoptedWorkflow, packageDecision, withExistingWorkflowJournal, assertWorkflowMarkerAvailable, assertWorkflowMarkerReferences } from "./catalog.js";
 export { workflowDecisionReference, structuredReviewArtifact } from "./review.js";
 export { workflowReadService, workflowFailure, readTicketWorkflow, workflowPrimerView } from "./public.js";
 export type { WorkflowReadHost, WorkflowPrimerView, WorkflowRepository, WorkflowReadContext } from "./public.js";

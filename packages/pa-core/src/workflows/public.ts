@@ -3,13 +3,13 @@ import { getTicketsDir } from "../paths.js";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { loadRepoEntry } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { adoptedWorkflow, withExistingWorkflowJournal } from "./catalog.js";
+import { adoptedWorkflow, withExistingWorkflowJournal, assertWorkflowMarkerReferences } from "./catalog.js";
 import { JsonWorkflowError, WorkflowInputError, MAX_WORKFLOW_RECORD_BYTES, object, strictJson, parseWorkflowRequest, workflowTicket, text, ID, type ReviewBundle } from "./contracts.js";
 import { queryWorkflow } from "./queries.js";
 import { preflightWorkflow, preflightPinnedWorkflow, projectExecutionPrerequisites, unavailableWorkflowObservations } from "./preflight.js";
 import type { WorkflowObservations, WorkflowPreflight } from "./preflight.js";
 import { loadSelectedWorkflows, type WorkflowSelection } from "./selected.js";
-import { eligibleSteps, projectWorkflowNext, workflowPackageReview, type WorkflowState } from "./service.js";
+import { eligibleSteps, projectWorkflowNext, workflowPackageReview, workflowCoordinator, coordinatorAdoptionEligible, type WorkflowState } from "./service.js";
 import { readCanonicalWorkflowArtifact } from "./consumers.js";
 import { readWorkflowEvidence } from "./evidence.js";
 import { gate } from "./presentation.js";
@@ -34,6 +34,16 @@ export interface WorkflowReadHost {
   observations?(subject?: ReviewBundle, repository?: WorkflowRepository, state?: WorkflowState): WorkflowObservations;
   team?: string; mode?: string;
   operations?: ReadonlySet<string>;
+  /** Native observational caller eligibility only; no grant or public override. */
+  coordinatorCaller?(state: WorkflowState): Record<string, unknown>;
+}
+export function workflowCoordinatorView(state: WorkflowState, host: WorkflowReadHost = {}) {
+  const available = coordinatorAdoptionEligible(state);
+  return { original: state.caller.deploymentId, effective: workflowCoordinator(state).deploymentId,
+    scope: state.coordinatorQueueOnly ? "existing-queue-intent-only" : "retained-workflow",
+    adoption: { structurallyAvailable: available, ...(available ? { request: { action: "adopt", revision: state.revision, subjectSha256: state.subjectSha256 } } : {}),
+      requires: ["authenticated-foreground-same-role", "inactive-coordinator-incarnation-and-resume-lineage", "native-operator-consent", "exact-package-resource-CAS"], grantsPermissions: false },
+    caller: host.coordinatorCaller?.(state) ?? { status: "uninspected", correctionOwner: "native-foreground-coordinator", nextAction: "Inspect from an authenticated foreground requirements session; structural availability is not caller authority." } };
 }
 export const workflowFailure = (error: unknown) => {
   const e = error instanceof JsonWorkflowError ? error : new JsonWorkflowError("WORKFLOW_SOURCE");
@@ -50,7 +60,7 @@ export function readTicketWorkflowContext(ticket: string): WorkflowReadContext {
   const state = withExistingWorkflowJournal(journal => {
     const state = journal ? adoptedWorkflow(journal, repoKey, ticket) : null;
     if (state && (state.subject.repository.key !== repoKey || state.subject.repository.root !== repo.path)) throw new JsonWorkflowError("WORKFLOW_AUTHORITY");
-    if (!state && Array.isArray(row.doc_refs) && row.doc_refs.some((r: unknown) => r && typeof r === "object" && (r as Record<string, unknown>).type === "workflow")) throw new JsonWorkflowError("WORKFLOW_UNCERTAIN");
+    assertWorkflowMarkerReferences(row.doc_refs, state?.runId ?? null);
     return state;
   });
   return { repository, state };
@@ -94,16 +104,21 @@ export function workflowReadService(input: Uint8Array | string, host: WorkflowRe
         if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE", "admitted-run", "workflow-owner");
         if (action === "status") {
           const observations = observe();
-          result = { ...state, runState: "admitted", packageReview: workflowPackageReview(state), resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations) };
+          result = { ...state, runState: "admitted", packageReview: workflowPackageReview(state), coordinatorContinuation: workflowCoordinatorView(state, host), resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations) };
         } else if (action === "next") {
           const observations = observe();
-          result = { ...projectWorkflowNext(state, host.operations ?? new Set(), observations), runState: "admitted", resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations), effectsAdmitted: false };
+          result = { ...projectWorkflowNext(state, host.operations ?? new Set(), observations), coordinatorContinuation: workflowCoordinatorView(state, host), runState: "admitted", resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations), effectsAdmitted: false };
         } else {
           const id = text(r.id, ID), decision = state.decisions.find(d => d.decisionId === id);
           if (!decision) throw new JsonWorkflowError("WORKFLOW_AUTHORITY");
           const currentSubject = decision.subjectSha256 === state.subjectSha256;
-          if (action === "decision-verify" && currentSubject) readWorkflowEvidence(state.subject, ref => readCanonicalWorkflowArtifact(ref.ref));
-          result = { decision, issued: true, revoked: state.revoked.includes(id), currentSubject, approved: currentSubject && decision.outcome === "approved" && !state.revoked.includes(id) };
+          let evidenceState = "not-inspected";
+          if (action === "decision-verify" && currentSubject) {
+            try { readWorkflowEvidence(state.subject, ref => readCanonicalWorkflowArtifact(ref.ref)); evidenceState = "verified"; }
+            catch { evidenceState = "unavailable"; }
+          }
+          result = { decision, issued: true, revoked: state.revoked.includes(id), currentSubject, approved: currentSubject && decision.outcome === "approved" && !state.revoked.includes(id),
+            evidenceState, ...(evidenceState === "unavailable" ? { correctionOwner: "artifact-owner", nextAction: "Preserve the issued decision. Restore/inspect exact retained artifact bytes; read unavailability is not revocation or permission to execute." } : {}) };
         }
       }
     } else throw new JsonWorkflowError("WORKFLOW_CONTRACT");

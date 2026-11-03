@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +12,8 @@ import { authenticatePiWorkflowCaller, createPiWorkflowCapture, type PiWorkflowC
 import { mutatePiWorkflow, piRetainedTemplateHost, piWorkflowReadHost } from "../workflow-host.js";
 import { pinnedPiWorkflowConfig } from "../workflow-config.js";
 import { createPaTemplateTool } from "../pi-extension/template-tool.js";
+import { recordPiProcessIdentity } from "../process-identity.js";
+import { assertPiWorkflowCoordinatorInactive } from "../workflow-native.js";
 
 function fixture(legacy = false, native = false) {
   const env = process.env, cwd = process.cwd();
@@ -96,6 +99,63 @@ test("default native mutation host recovers a cancelled package through supporte
     assert.equal(state.decisions[1]!.captureEvidenceRef.version, "v2"); assert.equal(state.pending.length, 0); assert.equal(state.outcomes.publish, undefined);
     assert.equal(f.journal.runs(state.subject.repository.key, state.subject.ticket).length, 1);
   } finally { f.close(); }
+});
+
+test("fresh default foreground host adopts a dead coordinator without resume, then recovers the same package", async () => {
+  const f = fixture(); const child = spawn(process.execPath, ["-e", "process.stdin.resume();process.stdout.write('ready');"], { stdio: ["pipe", "pipe", "pipe"] });
+  try {
+    await once(child.stdout!, "data");
+    const repo = f.state.subject.repository.root, oldDir = join(f.root, "deployments/d-abcdef"); mkdirSync(oldDir, { recursive: true });
+    appendRegistryEvent({ deployment_id: "d-abcdef", team: "requirements", mode: "analyze", event: "started", runtime: "pi", binary: "ppa", timestamp: new Date().toISOString(), pid: child.pid!, repo, repo_root: repo, worktree_root: repo, ticket_id: "EX-1" });
+    assert.equal(recordPiProcessIdentity("d-abcdef", oldDir, child.pid!), true);
+    const capture = f.host.capture; f.host.capture = async r => ({ ...await capture(r), outcome: "cancelled" });
+    const cancelled = await f.service.decide(f.state.runId, 1, "approve");
+    appendRegistryEvent({ deployment_id: "d-abcdef", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "partial" });
+    assert.throws(() => assertPiWorkflowCoordinatorInactive(f.state.caller), /coordinator-live/);
+    execFileSync("git", ["init", "-q", "-b", "develop", repo]); process.chdir(repo);
+    const id = "d-fedcba", dir = join(f.root, "deployments", id); mkdirSync(dir);
+    Object.assign(process.env, { [PA_PI_EXECUTION_MODE_ENV]: "foreground", PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_REPO: repo, PA_WORKTREE_ROOT: repo });
+    appendRegistryEvent({ deployment_id: id, team: "requirements", mode: "analyze", event: "started", runtime: "pi", binary: "ppa", invocation_channel: "cli", timestamp: new Date().toISOString(), pid: process.pid, repo, repo_root: repo, worktree_root: repo, ticket_id: "EX-1" });
+    const adoption = { action: "adopt" as const, revision: 2, subjectSha256: f.state.subjectSha256 };
+    await assert.rejects(mutatePiWorkflow(adoption, f.context), /coordinator-live/);
+    const liveView = workflowReadService('{"action":"status","ticket":"EX-1"}', piWorkflowReadHost(f.context)) as any;
+    assert.equal(liveView.result.coordinatorContinuation.caller.status, "blocked"); assert.equal(liveView.result.coordinatorContinuation.caller.gateId, "coordinator-live");
+    const exited = once(child, "exit"); child.stdin!.end(); await exited;
+    const eligibleView = workflowReadService('{"action":"status","ticket":"EX-1"}', piWorkflowReadHost(f.context)) as any;
+    assert.equal(eligibleView.result.coordinatorContinuation.caller.status, "eligible-for-native-adoption-consent");
+    // Cancellation creates neither a succession nor a package decision.
+    assert.equal((await mutatePiWorkflow(adoption, f.context)).ok, true); assert.equal(f.service.status(f.state.runId).revision, 2);
+    f.approve(); const before = f.journal.read(f.state.runId);
+    const adopted = await mutatePiWorkflow(adoption, f.context); assert.equal(adopted.ok, true);
+    const state = f.service.status(f.state.runId); assert.equal(state.coordinator!.deploymentId, id); assert.deepEqual(state.caller, f.state.caller);
+    assert.deepEqual(f.journal.read(state.runId).slice(0, 2), before); assert.deepEqual(state.resources, f.state.resources);
+    const adoptedView = workflowReadService('{"action":"status","ticket":"EX-1"}', piWorkflowReadHost(f.context)) as any;
+    assert.equal(adoptedView.result.coordinatorContinuation.caller.status, "authenticated-coordinator");
+    const recovered = await mutatePiWorkflow({ action: "recover", revision: 3, decisionId: cancelled.decisionId, subjectSha256: state.subjectSha256 }, f.context);
+    assert.equal(recovered.ok, true); assert.equal(f.service.status(state.runId).decisions.at(-1)!.outcome, "approved");
+    assert.equal(f.journal.runs("example", "EX-1").length, 1); assert.equal(f.service.status(state.runId).pending.length, 0);
+  } finally { child.stdin?.end(); f.close(); }
+});
+
+test("native adoption denies missing anchors, PID reuse, unsettled owners and live explicit resume descendants", async () => {
+  const f = fixture(); const child = spawn(process.execPath, ["-e", "process.stdin.resume();process.stdout.write('ready');"], { stdio: ["pipe", "pipe", "pipe"] });
+  try {
+    await once(child.stdout!, "data"); const owner = f.state.caller, repo = owner.repoRoot, dir = join(f.root, "deployments", owner.deploymentId); mkdirSync(dir, { recursive: true });
+    appendRegistryEvent({ deployment_id: owner.deploymentId, team: owner.team, mode: owner.mode, event: "started", runtime: "pi", binary: "ppa", timestamp: new Date().toISOString(), pid: child.pid!, repo, repo_root: repo, worktree_root: repo, ticket_id: owner.ticket });
+    assert.throws(() => assertPiWorkflowCoordinatorInactive(owner), /coordinator-lifecycle-unsettled/);
+    appendRegistryEvent({ deployment_id: owner.deploymentId, team: owner.team, event: "completed", timestamp: new Date().toISOString(), status: "partial" });
+    assert.throws(() => assertPiWorkflowCoordinatorInactive(owner), /coordinator-liveness-unknown/);
+    recordPiProcessIdentity(owner.deploymentId, dir, child.pid!);
+    const path = join(dir, "pi-process-identity.json"), original = readFileSync(path, "utf8"), tampered = JSON.parse(original); tampered.processFingerprint.startTimeTicks = "0";
+    writeFileSync(path, JSON.stringify(tampered)); assert.throws(() => assertPiWorkflowCoordinatorInactive(owner), /coordinator-pid-reused/); writeFileSync(path, original);
+    const exited = once(child, "exit"); child.stdin!.end(); await exited;
+    assert.doesNotThrow(() => assertPiWorkflowCoordinatorInactive(owner));
+    // A live audit session without a resume edge is not the owning coordinator.
+    appendRegistryEvent({ deployment_id: "d-aabbcc", team: owner.team, mode: owner.mode, event: "started", runtime: "pi", binary: "ppa", timestamp: new Date().toISOString(), pid: process.pid, repo, repo_root: repo, worktree_root: repo, ticket_id: owner.ticket });
+    assert.doesNotThrow(() => assertPiWorkflowCoordinatorInactive(owner));
+    appendRegistryEvent({ deployment_id: "d-fedcba", team: owner.team, mode: owner.mode, event: "started", runtime: "pi", binary: "ppa", timestamp: new Date().toISOString(), pid: process.pid, repo, repo_root: repo, worktree_root: repo, ticket_id: owner.ticket, resumed_from_deployment_id: owner.deploymentId });
+    assert.throws(() => assertPiWorkflowCoordinatorInactive(owner), /coordinator-lifecycle-unsettled/);
+  } finally { child.stdin?.end(); f.close(); }
 });
 
 test("retained native selection denies changed physical root/unretained route instead of falling back", async () => {

@@ -85,6 +85,19 @@ test("readable primary review lists every finite check without repeating raw mat
   assert.ok(primary.includes(subject.matrix.ref)); assert.match(primary, /technical details/);
 });
 
+test("native adoption consent binds both coordinators and abort never becomes package approval", async () => {
+  const adoption = { ...request, action: "adopt" as const, succession: { previous: { ...caller, deploymentId: "d-fedcba" }, current: caller, purpose: "cancelled-review" as const } };
+  const views: string[] = [], context = { mode: "tui" as const, cwd: caller.repoRoot, ui: { select: async (title: string, choices: string[]) => { views.push(title); return choices[0]; } } };
+  const captured = await createPiWorkflowCapture(context, () => caller)(adoption);
+  assert.equal(captured.outcome, "approved"); const shown = views.join("\n");
+  for (const id of [caller.deploymentId, adoption.succession.previous.deploymentId, request.subjectSha256]) assert.ok(shown.includes(id));
+  assert.match(shown, /not package approval/); assert.match(shown, /Only cancelled review recovery/); assert.doesNotMatch(shown, /"succession"/);
+  const abort = new AbortController();
+  await assert.rejects(createPiWorkflowCapture({ ...context, ui: { select: async (_title, choices) => { if (choices[0] === "Continue this exact retained workflow") abort.abort(); return choices[0]; } } }, () => caller, abort.signal)(adoption), /cancelled-native-request/);
+  await assert.rejects(createPiWorkflowCapture(context, () => caller)({ ...adoption, succession: { ...adoption.succession, current: adoption.succession.previous } }), /coordinator-binding/);
+  const cancelled = await createPiWorkflowCapture({ ...context, ui: { select: async () => "Cancel" } }, () => caller)(adoption); assert.equal(cancelled.outcome, "cancelled");
+});
+
 test("oversized native requests are refused, not truncated into a partial approval", async () => {
   const capture = createPiWorkflowCapture({ mode: "tui", cwd: "/canonical/example", ui: { select: async () => { throw new Error("must not open"); } } }, () => caller);
   await assert.rejects(capture({ ...request, subject: { ...subject, scope: { ...subject.scope, files: ["x".repeat(65_536)] } } }), /WORKFLOW_CONTRACT/);

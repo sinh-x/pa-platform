@@ -3,7 +3,7 @@ import { TicketPairPublication, type TicketPublicationPair } from "../tickets/pa
 import type { TicketStore } from "../tickets/store.js";
 import type { RegistryWorkflowJournal } from "../registry/workflows.js";
 import { digest, parseReviewBundle, reject, type EvidenceRef, type PackagePermission } from "./contracts.js";
-import { replayWorkflow, requireDecision, type EffectIntent, type WorkflowCaller, type WorkflowEffectOwner, type WorkflowHost } from "./service.js";
+import { replayWorkflow, requireDecision, workflowCoordinator, type EffectIntent, type WorkflowCaller, type WorkflowEffectOwner, type WorkflowHost } from "./service.js";
 
 /** Concrete adapters to the existing ticket mutex/audit/lifecycle owner. No default registration or enablement. */
 export function createTicketWorkflowOwners(journal: RegistryWorkflowJournal, store: TicketStore, artifactRoot: string, authenticate: () => WorkflowCaller, continues?: WorkflowHost["continues"]): ReadonlyMap<string, WorkflowEffectOwner> {
@@ -32,8 +32,9 @@ export function createTicketWorkflowOwners(journal: RegistryWorkflowJournal, sto
   };
   const authority = (intent: EffectIntent, permission: PackagePermission, operation: string, pending = true): void => {
     const state = replayWorkflow(journal, intent.runId), caller = authenticate();
+    if (state.coordinatorQueueOnly && operation !== "ticket.queue") reject("WORKFLOW_AUTHORITY");
     const step = state.definition.steps.find(s => s.id === intent.stepId);
-    if ((!isDeepStrictEqual(caller, state.caller) && !continues?.(state.caller, caller)) || caller.repoKey !== state.subject.repository.key || caller.repoRoot !== state.subject.repository.root || caller.ticket !== state.subject.ticket
+    if ((!isDeepStrictEqual(caller, workflowCoordinator(state)) && !continues?.(workflowCoordinator(state), caller)) || caller.repoKey !== state.subject.repository.key || caller.repoRoot !== state.subject.repository.root || caller.ticket !== state.subject.ticket
       || caller.team !== "requirements" || caller.mode !== "analyze" || intent.owner !== "tickets" || intent.subjectSha256 !== state.subjectSha256
       || !step || step.operation.id !== operation || (pending && !state.pending.some(i => isDeepStrictEqual(i, intent)))) reject("WORKFLOW_AUTHORITY");
     requireDecision(state, intent.decisionId, [permission]);
@@ -58,7 +59,7 @@ export function createTicketWorkflowOwners(journal: RegistryWorkflowJournal, sto
       admit: (caller, subject, intent) => {
         authority(intent, permission, operation, false);
         const state = replayWorkflow(journal, intent.runId);
-        if ((!isDeepStrictEqual(caller, state.caller) && !continues?.(state.caller, caller)) || !isDeepStrictEqual(subject, state.subject)) reject("WORKFLOW_AUTHORITY");
+        if ((!isDeepStrictEqual(caller, workflowCoordinator(state)) && !continues?.(workflowCoordinator(state), caller)) || !isDeepStrictEqual(subject, state.subject)) reject("WORKFLOW_AUTHORITY");
         pair(intent);
       },
       observe,

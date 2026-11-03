@@ -3,7 +3,7 @@ import { join } from "node:path";
 import {
   createTicketWorkflowOwners, getAiUsageDir, getDb, RegistryWorkflowJournal, JsonWorkflowService, JsonWorkflowError,
   loadTemplateRegistry, produceWorkflowSubject, loadSelectedWorkflows, readCanonicalWorkflowArtifact, readReviewEvidenceFile,
-  packageDecision, adoptedWorkflow, TicketStore, resolveTrustedTicketMutationContext, observeReadonlyRepositoryTicketSlot,
+  packageDecision, adoptedWorkflow, assertWorkflowMarkerAvailable, TicketStore, resolveTrustedTicketMutationContext, observeReadonlyRepositoryTicketSlot,
   workflowTemplateError, TemplateError, captureWorkflowResources, retainedTemplateHost, retainedWorkflowSelection,
   assertRetainedConfigIdentity, withExistingWorkflowJournal, readTicketWorkflow,
   type TemplateHost,
@@ -12,7 +12,7 @@ import {
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { createPiSourceWorkflowOwner } from "./workflow-source.js";
 import { createPiMatrixWorkflowOwner } from "./workflow-matrix.js";
-import { authenticatePiWorkflowCaller, createPiWorkflowCapture, createPiWorkflowContinuation, type PiWorkflowContext } from "./workflow-native.js";
+import { authenticatePiWorkflowCaller, createPiWorkflowCapture, createPiWorkflowContinuation, assertPiWorkflowCoordinatorInactive, piWorkflowCoordinatorCaller, type PiWorkflowContext } from "./workflow-native.js";
 
 /** Exact preview location derives from the immutable subject, never directory discovery or a tool path override. */
 function sourceBytes(subject: ReviewBundle | undefined, ref: JsonWorkflowEvidenceRef): Uint8Array | null {
@@ -45,7 +45,7 @@ export function piWorkflowObservations(subject?: ReviewBundle, repository?: Work
   }
   return { capabilities: new Set(["operator.foreground", "artifact.paired-publication", "ticket.queue", "execution.scoped-local", "validation.matrix"]), projectProfile: profile, producerContract: producer, ...(producerFailure ? { producerFailure } : {}), readEvidence: ref => sourceBytes(subject, ref) };
 }
-export function piWorkflowReadHost(): WorkflowReadHost { return { observations: (subject, repository, state) => withExistingWorkflowJournal(journal => {
+export function piWorkflowReadHost(context?: PiWorkflowContext): WorkflowReadHost { return { ...(context?.mode === "tui" ? { coordinatorCaller: (state: Parameters<typeof piWorkflowCoordinatorCaller>[0]) => piWorkflowCoordinatorCaller(state, context) } : {}), observations: (subject, repository, state) => withExistingWorkflowJournal(journal => {
   if (!state) return piWorkflowObservations(subject, repository);
   if (!journal || !state.resources) return { ...piWorkflowObservations(subject, repository), producerContract: "unsupported", producerFailure: new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "config-runtime-owner") };
   return piWorkflowObservations(subject, repository, retainedTemplateHost(journal, state));
@@ -64,10 +64,11 @@ export function piRetainedTemplateHost(): TemplateHost {
 }
 
 export type PiWorkflowMutation = { action: "admit"; producer: string } | { action: "revise"; revision: number; producer: string } | { action: "request-step"; revision: number; stepId: string }
-  | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "recover"; revision: number; decisionId: string; subjectSha256: string } | { action: "revoke"; revision: number; decisionId: string };
+  | { action: "reconcile"; revision: number; intentId: string } | { action: "capture"; revision: number; stepId: string } | { action: "recover"; revision: number; decisionId: string; subjectSha256: string } | { action: "adopt"; revision: number; subjectSha256: string } | { action: "revoke"; revision: number; decisionId: string };
 /** Foreground mutation host. Public JSON never supplies a caller, callback, selected config, effect owner or outcome. */
 export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiWorkflowContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
-  const authenticate = () => authenticatePiWorkflowCaller(context);
+  let assertMarkers = () => {};
+  const authenticate = () => { const current = authenticatePiWorkflowCaller(context); assertMarkers(); return current; };
   const caller = authenticate(), journal = new RegistryWorkflowJournal(getDb()), continues = createPiWorkflowContinuation(authenticate);
   let state = adoptedWorkflow(journal, caller.repoKey, caller.ticket);
   let subject = state?.subject;
@@ -83,8 +84,10 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
     subject = produceWorkflowSubject(selection, Buffer.from(request.producer), { ...(request.action === "revise" ? pinnedTemplates : {}), team: caller.team, mode: caller.mode }).subject;
   }
   const store = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
+  assertMarkers = () => assertWorkflowMarkerAvailable(caller.repoKey, caller.ticket, Boolean(state), store, state?.runId);
+  assertMarkers();
   const host: WorkflowHost = { authenticate, resources: captureWorkflowResources, observations: () => piWorkflowObservations(subject, undefined, pinnedTemplates), capture: createPiWorkflowCapture(context, authenticate, signal),
-    owners: new Map([...createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), ["source.local", createPiSourceWorkflowOwner(journal, authenticate, continues)] as const, ["check.matrix", createPiMatrixWorkflowOwner(journal, authenticate, continues)] as const]), continues, now: () => new Date().toISOString() };
+    owners: new Map([...createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), ["source.local", createPiSourceWorkflowOwner(journal, authenticate, continues)] as const, ["check.matrix", createPiMatrixWorkflowOwner(journal, authenticate, continues)] as const]), continues, assertInactive: assertPiWorkflowCoordinatorInactive, now: () => new Date().toISOString() };
   const service = new JsonWorkflowService(journal, host);
   let decision: unknown;
   if (request.action === "admit") {
@@ -96,6 +99,7 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
     if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE");
     if (request.action === "revise") state = service.reviseProduced(state.runId, request.revision, selection!, Buffer.from(request.producer), {});
     else if (request.action === "capture") decision = await service.decide(state.runId, request.revision, request.stepId);
+    else if (request.action === "adopt") state = await service.adoptCoordinator(state.runId, request.revision, request.subjectSha256);
     else if (request.action === "recover") decision = await service.recoverCancelled(state.runId, request.revision, request.decisionId, request.subjectSha256);
     else if (request.action === "revoke") await service.revoke(state.runId, request.revision, request.decisionId);
     else if (request.action === "request-step") await service.requestStep(state.runId, request.revision, request.stepId, packageDecision(state));

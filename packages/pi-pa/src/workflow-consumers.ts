@@ -81,7 +81,7 @@ export function assertPiStructuredLaunchPrerequisites(repoKey: string, repoRoot:
 export function resolvePiStructuredBaseline(repoKey: string, repoRoot: string, ticketId: string): StructuredTaskBaseline | null {
   return withExistingWorkflowJournal(journal => {
     const state = journal ? adoptedWorkflow(journal, repoKey, ticketId) : null;
-    const store = new TicketStore(); assertWorkflowMarkerAvailable(repoKey, ticketId, state !== null, store);
+    const store = new TicketStore(); assertWorkflowMarkerAvailable(repoKey, ticketId, state !== null, store, state?.runId);
     if (!state || !journal) return null;
     assertRetainedConfigIdentity(state);
     // Actual files/status alone cannot skip PAPC dependencies or an unsettled owner intent.
@@ -120,7 +120,7 @@ export function taskRequiredCommands(state: WorkflowState): readonly string[] {
 export function authorizePiStructuredWork(repoKey: string, repoRoot: string, ticket: string, branch: string, permission: PackagePermission, plan?: { paths: readonly string[]; checks: readonly string[]; requirements?: readonly string[] }, authority?: StructuredTaskBaseline["authority"]): WorkflowState | null {
   return withExistingWorkflowJournal(journal => {
     const state = journal ? adoptedWorkflow(journal, repoKey, ticket) : null;
-    assertWorkflowMarkerAvailable(repoKey, ticket, state !== null);
+    assertWorkflowMarkerAvailable(repoKey, ticket, state !== null, undefined, state?.runId);
     if (!state || !journal) { if (authority) return deny(); return null; }
     if (!authority) return deny(); // an already-running legacy lineage cannot inherit a later v1 grant
     assertRetainedConfigIdentity(state);

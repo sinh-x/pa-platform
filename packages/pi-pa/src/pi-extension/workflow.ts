@@ -10,7 +10,7 @@ function mutation(input: unknown, tool: "workflow" | "decision"): PiWorkflowMuta
   if (!input || typeof input !== "object" || Array.isArray(input)) return denied();
   const r = input as Record<string, unknown>, action = r.action;
   if (typeof action !== "string") return denied();
-  const fields: Record<string, string[]> = tool === "workflow" ? { admit: ["producer"], revise: ["revision", "producer"], "request-step": ["revision", "stepId"], reconcile: ["revision", "intentId"] } : { capture: ["revision", "stepId"], recover: ["revision", "decisionId", "subjectSha256"], revoke: ["revision", "decisionId"] };
+  const fields: Record<string, string[]> = tool === "workflow" ? { admit: ["producer"], revise: ["revision", "producer"], "request-step": ["revision", "stepId"], reconcile: ["revision", "intentId"] } : { capture: ["revision", "stepId"], recover: ["revision", "decisionId", "subjectSha256"], adopt: ["revision", "subjectSha256"], revoke: ["revision", "decisionId"] };
   if (!Object.hasOwn(fields, action)) {
     if (tool === "workflow" ? ["list", "show", "validate", "preflight", "status", "next"].includes(action) : ["show", "verify"].includes(action)) return null;
     return denied();
@@ -25,7 +25,7 @@ function mutation(input: unknown, tool: "workflow" | "decision"): PiWorkflowMuta
 function tool(name: "workflow" | "decision", options: PiJsonWorkflowOptions, lifecycle?: PiSessionLifecycle): PiToolDefinition {
   return {
     name: `pa_${name}`, label: `PA ${name}`, executionMode: "sequential",
-    description: name === "workflow" ? "Read selected/pinned JSON workflows; request admission, an exact-revision linked subject attempt, or an eligible registered step/reconciliation. No completion, capability or arbitrary command override." : "Read/verify issued decisions or request exact-subject native foreground capture/revocation. Explicit cancelled-review recovery: action=recover, revision, decisionId and subjectSha256 from current status; preserves the same run/package and requires fresh operator review. Never accepts actor, outcome or permission grants.",
+    description: name === "workflow" ? "Read selected/pinned JSON workflows; request admission, an exact-revision linked subject attempt, or an eligible registered step/reconciliation. No completion, capability or arbitrary command override." : "Read/verify issued decisions or request exact-subject native foreground capture/revocation. Explicit cancelled-review recovery: action=recover, revision, decisionId and subjectSha256 from current status; preserves the same run/package and requires fresh operator review. A fresh authenticated same-role session can request action=adopt with revision and subjectSha256; native inactive-owner proof and explicit operator consent are required before recovery. Never accepts actor, outcome or permission grants.",
     parameters: Type.Object({ request: Type.String({ maxLength: MAX_WORKFLOW_RECORD_BYTES, description: "One strict JSON request document; duplicate keys, unknown fields and byte limits reject." }) }, { additionalProperties: false }),
     execute: async (_id, input, _signal, _update, context) => {
       const run = async (): Promise<PiToolResult> => {
@@ -38,7 +38,7 @@ function tool(name: "workflow" | "decision", options: PiJsonWorkflowOptions, lif
           else {
             const row = parsed as Record<string, unknown>;
             if (name === "decision") row.action = `decision-${row.action as string}`;
-            result = workflowReadService(JSON.stringify(row), options.readHost ?? piWorkflowReadHost());
+            result = workflowReadService(JSON.stringify(row), options.readHost ?? piWorkflowReadHost(context as PiWorkflowContext));
           }
         } catch (error) { result = workflowFailure(error); }
         if (Buffer.byteLength(JSON.stringify(result)) > 50 * 1024) result = workflowFailure(new JsonWorkflowError("WORKFLOW_CONTRACT"));

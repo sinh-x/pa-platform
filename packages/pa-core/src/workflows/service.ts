@@ -33,15 +33,17 @@ export interface WorkflowHost {
   observations(): WorkflowObservations;
   /** Native selected-source owner only; not a public receipt/hash import. */
   resources?(selection: WorkflowSelection, subject: ReviewBundle, caller: WorkflowCaller): CapturedWorkflowResources;
-  capture(request: { action: "package" | "revoke" | "recover"; runId: string; revision: number; subject: ReviewBundle; subjectSha256: string; decisionId?: string; resources?: WorkflowResources }): Promise<{ outcome: WorkflowDecision["outcome"]; principal: string; evidence: EvidenceRef }>;
+  capture(request: { action: "package" | "revoke" | "recover" | "adopt"; runId: string; revision: number; subject: ReviewBundle; subjectSha256: string; decisionId?: string; resources?: WorkflowResources; succession?: { previous: WorkflowCaller; current: WorkflowCaller; purpose: "cancelled-review" | "queue-reconcile"; queueIntent?: EffectIntent } }): Promise<{ outcome: WorkflowDecision["outcome"]; principal: string; evidence: EvidenceRef }>;
   owners: ReadonlyMap<string, WorkflowEffectOwner>;
   /** Runtime-authenticated registry/process continuation only; never a public flag. */
   continues?(original: WorkflowCaller, current: WorkflowCaller): boolean;
+  /** Native registry AND historical process-incarnation proof; absence/uncertainty rejects. */
+  assertInactive?(owner: WorkflowCaller): void;
   now(): string;
 }
 export interface WorkflowState {
   runId: string; revision: number; definition: WorkflowDefinition; subject: ReviewBundle; subjectSha256: string;
-  configRevision: string; resources?: WorkflowResources; caller: WorkflowCaller; decisions: WorkflowDecision[]; revoked: string[];
+  configRevision: string; resources?: WorkflowResources; caller: WorkflowCaller; coordinator?: WorkflowCaller; coordinatorQueueOnly?: boolean; decisions: WorkflowDecision[]; revoked: string[];
   outcomes: Record<string, StepOutcome>; pending: EffectIntent[]; attempts: WorkflowAttempt[];
 }
 function parseCaller(value: unknown): WorkflowCaller {
@@ -98,6 +100,15 @@ export function replayWorkflow(journal: RegistryWorkflowJournal, runId: string, 
       state.attempts.push({ attemptId, predecessor: previous.attemptId, subjectRef: subject.subjectId, subjectSha256, revision: entry.revision, reason: oneOf(r.reason, ["changes-requested", "material-amendment"]), outcomes: state.outcomes });
       readWorkflowEvidence(subject, ref => journal.snapshot(ref.sha256));
       if (r.producerSha256 !== undefined) verifyRetainedProducer(journal, state, r.producerSha256);
+    } else if (type === "coordinator-adopted") {
+      const r = object(data, ["previous", "current", "subjectSha256", "resourcesSha256", "captureEvidenceRef", "principal"]);
+      const previous = parseCaller(r.previous), current = parseCaller(r.current);
+      if (JSON.stringify(previous) !== JSON.stringify(workflowCoordinator(state)) || !coordinatorAdoptionEligible(state)
+        || current.deploymentId === previous.deploymentId || current.team !== previous.team || current.mode !== previous.mode
+        || r.subjectSha256 !== state.subjectSha256 || r.resourcesSha256 !== digest(JSON.stringify(requireWorkflowResources(state)))) reject("WORKFLOW_UNCERTAIN");
+      assertSubjectCaller(state, current, false); evidenceRef(r.captureEvidenceRef); text(r.principal);
+      state.coordinatorQueueOnly = !recoverableCancelledDecision(state);
+      state.coordinator = current;
     } else if (type === "decision" || type === "decision-recovered") {
       const r = object(data, type === "decision" ? ["record"] : ["record", "cancelledDecisionId"]); const d = parseDecision(r.record);
       const step = definition.steps.find(s => s.id === d.stepId);
@@ -129,10 +140,21 @@ export function replayWorkflow(journal: RegistryWorkflowJournal, runId: string, 
   }
   return state;
 }
+export function workflowCoordinator(state: WorkflowState): WorkflowCaller { return state.coordinator ?? state.caller; }
+/** Adoption cannot transfer in-flight source/check work or renew a package grant. */
+export function coordinatorAdoptionEligible(state: WorkflowState): boolean {
+  if (recoverableCancelledDecision(state)) return true;
+  return Boolean(state.resources && state.pending.length === 1 && state.pending.every(intent => {
+    const step = state.definition.steps.find(s => s.id === intent.stepId);
+    return step?.operation.id === "ticket.queue" && state.decisions.some(d => d.decisionId === intent.decisionId
+      && d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId));
+  }));
+}
 function assertSubjectCaller(state: WorkflowState, caller: WorkflowCaller, exactIdentity = true, continues?: WorkflowHost["continues"]): void {
+  const coordinator = workflowCoordinator(state);
   if (caller.repoKey !== state.subject.repository.key || caller.repoRoot !== state.subject.repository.root || caller.ticket !== state.subject.ticket
-    || (exactIdentity && (caller.team !== state.caller.team || caller.mode !== state.caller.mode
-      || ((caller.deploymentId !== state.caller.deploymentId || caller.identitySha256 !== state.caller.identitySha256) && !continues?.(state.caller, caller))))) reject("WORKFLOW_AUTHORITY");
+    || (exactIdentity && (caller.team !== coordinator.team || caller.mode !== coordinator.mode
+      || ((caller.deploymentId !== coordinator.deploymentId || caller.identitySha256 !== coordinator.identitySha256) && !continues?.(coordinator, caller))))) reject("WORKFLOW_AUTHORITY");
 }
 function verifyRetainedProducer(journal: RegistryWorkflowJournal, state: WorkflowState, producerSha256: unknown): void {
   const p = object(strictJson(journal.snapshot(text(producerSha256, SHA256))), ["schemaVersion", "unsigned", "requestSha256", "producer"]);
@@ -168,7 +190,7 @@ export function workflowPackageReview(state: WorkflowState) {
   const cancelled = recoverableCancelledDecision(state);
   const outcome = decision ? state.revoked.includes(decision.decisionId) ? "revoked" : decision.outcome : "not-captured";
   const recovery = outcome === "cancelled" ? cancelled ? {
-    available: true, correctionOwner: "operator", nextAction: "Ask the operator explicitly through pa_decision recover in the original authenticated foreground requirements coordinator or its supported continuation; never auto-retry.",
+    available: true, correctionOwner: "operator", nextAction: "Ask the operator explicitly through pa_decision recover in the authenticated foreground requirements coordinator or supported continuation. A fresh same-role session must first request native adoption with inactive-owner proof and operator consent; never auto-retry.",
     request: { action: "recover", revision: state.revision, decisionId: cancelled.decisionId, subjectSha256: state.subjectSha256 },
   } : { available: false, correctionOwner: "workflow-owner", nextAction: "Cancellation retained. Recovery bounds/resources/state do not permit recapture; preserve history and ask the workflow owner. Do not create a duplicate run or fabricate a subject revision." } : null;
   return { outcome, decisionId: decision?.decisionId ?? null, approved: outcome === "approved", recovery };
@@ -203,7 +225,8 @@ function requireStaticCompatibility(report: WorkflowPreflight): void {
 export class JsonWorkflowService {
   constructor(private readonly journal: RegistryWorkflowJournal, private readonly host: WorkflowHost) {}
   status(runId: string): WorkflowState { return replayWorkflow(this.journal, runId); }
-  private caller(state: WorkflowState): WorkflowCaller {
+  private caller(state: WorkflowState, queueSettlement = false): WorkflowCaller {
+    if (state.coordinatorQueueOnly && !queueSettlement) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "adopted-queue-intent-only", "coordinator-owner");
     const caller = parseCaller(this.host.authenticate()); assertSubjectCaller(state, caller, true, this.host.continues); return caller;
   }
   next(runId: string): ReturnType<typeof projectWorkflowNext> {
@@ -286,8 +309,33 @@ export class JsonWorkflowService {
     const issuedAt = this.host.now();
     const decision = parseDecision({ schemaVersion: "pa-decision/v1", decisionId: `decision-${randomUUID()}`, kind: "package", runId, stepId, subjectRef: state.subject.subjectId, subjectSha256: state.subjectSha256,
       outcome: capture.outcome, permissions: capture.outcome === "approved" ? state.subject.requestedPermissions : [], captureEvidenceRef: capture.evidence, principal: capture.principal, issuedAt });
-    this.journal.append(runId, expectedRevision, entries => { const current = replayWorkflow(this.journal, runId, entries); if (current.subjectSha256 !== state.subjectSha256 || !eligibleSteps(current).includes(stepId)) reject("WORKFLOW_CONFLICT"); return { eventId: `event-${randomUUID()}`, type: "decision", data: { record: decision } }; });
+    this.journal.append(runId, expectedRevision, entries => { const current = replayWorkflow(this.journal, runId, entries); this.caller(current); if (current.subjectSha256 !== state.subjectSha256 || !eligibleSteps(current).includes(stepId)) reject("WORKFLOW_CONFLICT"); return { eventId: `event-${randomUUID()}`, type: "decision", data: { record: decision } }; });
     return decision;
+  }
+  async adoptCoordinator(runId: string, expectedRevision: number, subjectSha256: string): Promise<WorkflowState> {
+    const state = this.status(runId), current = parseCaller(this.host.authenticate()), previous = workflowCoordinator(state);
+    const check = (s: WorkflowState) => {
+      assertSubjectCaller(s, current, false);
+      if (s.revision !== expectedRevision || s.subjectSha256 !== subjectSha256 || !coordinatorAdoptionEligible(s)
+        || JSON.stringify(workflowCoordinator(s)) !== JSON.stringify(previous)) reject("WORKFLOW_CONFLICT");
+      if (current.team !== previous.team || current.mode !== previous.mode || current.deploymentId === previous.deploymentId
+        || JSON.stringify(parseCaller(this.host.authenticate())) !== JSON.stringify(current)) reject("WORKFLOW_AUTHORITY");
+      if (!this.host.assertInactive) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", "coordinator-inactive-proof", "runtime-owner");
+      this.host.assertInactive(previous);
+      readWorkflowEvidence(s.subject, this.host.observations().readEvidence);
+    };
+    check(state);
+    const capture = await this.host.capture({ action: "adopt", runId, revision: expectedRevision, subject: structuredClone(state.subject), subjectSha256,
+      resources: structuredClone(requireWorkflowResources(state)), succession: { previous, current, purpose: recoverableCancelledDecision(state) ? "cancelled-review" : "queue-reconcile",
+        ...(state.pending[0] ? { queueIntent: structuredClone(state.pending[0]) } : {}) } });
+    check(this.status(runId));
+    if (capture.outcome !== "approved") return this.status(runId);
+    this.journal.append(runId, expectedRevision, entries => {
+      const s = replayWorkflow(this.journal, runId, entries); check(s);
+      return { eventId: `event-${randomUUID()}`, type: "coordinator-adopted", data: { previous, current, subjectSha256,
+        resourcesSha256: digest(JSON.stringify(requireWorkflowResources(s))), captureEvidenceRef: evidenceRef(capture.evidence), principal: text(capture.principal) } };
+    });
+    return this.status(runId);
   }
   async recoverCancelled(runId: string, expectedRevision: number, decisionId: string, subjectSha256: string): Promise<WorkflowDecision> {
     const state = this.status(runId), caller = this.caller(state); requireWorkflowResources(state);
@@ -315,7 +363,7 @@ export class JsonWorkflowService {
     const capture = await this.host.capture({ action: "revoke", runId, revision: expectedRevision, subject, subjectSha256: decision.subjectSha256, decisionId, ...(state.resources ? { resources: structuredClone(state.resources) } : {}) });
     if (capture.outcome !== "approved") return this.status(runId);
     this.caller(state);
-    this.journal.append(runId, expectedRevision, () => ({ eventId: `event-${randomUUID()}`, type: "revocation", data: { decisionId, captureEvidenceRef: evidenceRef(capture.evidence), principal: text(capture.principal) } }));
+    this.journal.append(runId, expectedRevision, entries => { this.caller(replayWorkflow(this.journal, runId, entries)); return { eventId: `event-${randomUUID()}`, type: "revocation", data: { decisionId, captureEvidenceRef: evidenceRef(capture.evidence), principal: text(capture.principal) } }; });
     return this.status(runId);
   }
   async requestStep(runId: string, expectedRevision: number, stepId: string, decisionId: string): Promise<WorkflowState> {
@@ -330,21 +378,23 @@ export class JsonWorkflowService {
     const owner = this.host.owners.get(step.operation.id); if (!owner) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", step.operation.id, step.owner);
     const intent: EffectIntent = { intentId: `intent-${randomUUID()}`, runId, stepId, owner: step.owner, decisionId, subjectSha256: state.subjectSha256 };
     owner.admit(caller, state.subject, intent);
-    this.journal.append(runId, expectedRevision, entries => { const current = replayWorkflow(this.journal, runId, entries); requireDecision(current, decisionId, step.authorization); return { eventId: `event-${randomUUID()}`, type: "intent", data: { intent } }; });
+    this.journal.append(runId, expectedRevision, entries => { const current = replayWorkflow(this.journal, runId, entries); this.caller(current); requireDecision(current, decisionId, step.authorization); return { eventId: `event-${randomUUID()}`, type: "intent", data: { intent } }; });
     return this.perform(intent, owner);
   }
   async reconcile(runId: string, expectedRevision: number, intentId: string): Promise<WorkflowState> {
-    const state = this.status(runId); this.caller(state);
-    const intent = state.pending.find(i => i.intentId === intentId); if (!intent || state.revision !== expectedRevision) reject("WORKFLOW_CONFLICT");
+    const state = this.status(runId);
+    const intent = state.pending.find(i => i.intentId === intentId);
+    this.caller(state, Boolean(intent && state.definition.steps.find(s => s.id === intent.stepId)?.operation.id === "ticket.queue")); if (!intent || state.revision !== expectedRevision) reject("WORKFLOW_CONFLICT");
     const step = state.definition.steps.find(s => s.id === intent.stepId)!; const owner = this.host.owners.get(step.operation.id); if (!owner) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", step.operation.id, step.owner);
-    this.journal.append(runId, expectedRevision, () => ({ eventId: `event-${randomUUID()}`, type: "reconcile", data: { intentId } }));
+    this.journal.append(runId, expectedRevision, entries => { this.caller(replayWorkflow(this.journal, runId, entries), step.operation.id === "ticket.queue"); return { eventId: `event-${randomUUID()}`, type: "reconcile", data: { intentId } }; });
     return this.perform(intent, owner);
   }
   private async perform(intent: EffectIntent, owner: WorkflowEffectOwner): Promise<WorkflowState> {
     let observed = await owner.observe(intent);
     if (observed.state === "absent") {
-      const state = this.status(intent.runId); const caller = this.caller(state);
+      const state = this.status(intent.runId);
       const step = state.definition.steps.find(s => s.id === intent.stepId)!;
+      const caller = this.caller(state, step.operation.id === "ticket.queue");
       // Revocation blocks NEW work, not settlement of an already proven effect.
       requireDecision(state, intent.decisionId, step.authorization); requireWorkflowResources(state);
       if (requiresProjectCommands(step)) {
@@ -363,7 +413,7 @@ export class JsonWorkflowService {
     const result = observed;
     const settle = () => {
       if (!owner.verify(intent, result)) throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", `effect.${intent.stepId}`, intent.owner);
-      const current = this.status(intent.runId);
+      const current = this.status(intent.runId); this.caller(current, current.definition.steps.find(s => s.id === intent.stepId)?.operation.id === "ticket.queue");
       if (!current.pending.some(i => i.intentId === intent.intentId)) return current;
       const step = current.definition.steps.find(s => s.id === intent.stepId)!;
       oneOf(result.outcome, STEP_OUTCOMES[step.kind]); if (!result.evidence.length) reject("WORKFLOW_UNCERTAIN");
