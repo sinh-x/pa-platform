@@ -16,6 +16,8 @@ For an explicitly approved worktree-only build label, update the same four manif
 
 The latest PAP-273 labelled trial is `0.1.154-pap273.4`, committed at `2f2deccfea37364dadc36be1e497db3f94efbbcb` across those same four manifests (superseding `.1`–`.3`). Its integration candidate restores plain `0.1.154` for the normal `develop` auto-patch flow; this does not change the installed trial or transfer its qualification. `packages/runtime-host` remains independently versioned. See `PAP-273-integration-status.md` for retained installed-provenance and UAT gaps.
 
+The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same four manifests for operator trial installation and PAPC development. This label does not resolve the retained full-suite timeout or establish installed-pair, foreground-agent, CI or human-UAT acceptance; see `PAP-277-qualification.md`. Use the clean version-label commit as the exact candidate SHA when building and verifying the trial.
+
 This prerelease suffix is an operator-readable label, not a release, tag, activation approval, or replacement for exact source/module provenance required by qualification. Do not run the manual release script to set it. Reconcile the worktree-only version before integration into the normal `develop` auto-patch flow. No lockfile or Nix dependency-hash refresh is needed for a version-only change.
 
 ## Manual Release
