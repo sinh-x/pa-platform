@@ -69,7 +69,8 @@ function appendActivity(event) {
   lastActivityKey = dedupeKey
   lastActivityAt = now
   mkdirSync(dirname(path), { recursive: true })
-  appendFileSync(path, JSON.stringify({ ts: nowUtc(), deploy_id: deploymentId(), ...event }) + "\n")
+  const safeEvent = JSON.parse(JSON.stringify(event), (_key, value) => typeof value === "string" ? maskSensitiveText(value) : value)
+  appendFileSync(path, JSON.stringify({ ts: nowUtc(), deploy_id: deploymentId(), ...safeEvent }) + "\n")
 }
 
 function sessionId(input) {
@@ -111,7 +112,8 @@ function toJavaScriptRegex(pattern) {
 }
 
 function maskSensitiveText(text) {
-  let result = text
+  const privateValues = Object.entries(process.env).filter(([key, value]) => /(?:token|secret|password|credential|api.?key|authorization)/i.test(key) && (value?.length || 0) >= 8).map(([, value]) => value)
+  let result = typeof paOperations.nativePublicText === "function" ? paOperations.nativePublicText(text, privateValues) : text
   for (const { label, pattern } of PATTERNS) {
     if (label === "FILE" || label.startsWith("JSON_")) continue
     try {

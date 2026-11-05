@@ -4,7 +4,7 @@ import { evaluateSafetyPolicy } from "../safety-policy.js";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { workflowDigest, type SourceVersion } from "../deploy/prepared-workflow.js";
-import { NativeExecutionEvidence, nativePublicText, runNativeExecutionProcess, type NativeProcessResult } from "./evidence.js";
+import { NativeExecutionEvidence, NativeProcessEvidenceError, nativePublicText, runNativeExecutionProcess, trustedNativeExecutable, type NativeProcessResult } from "./evidence.js";
 import { boundOperationOutput, OPERATION_RESULT_VERSION, parseOperationResult, serializeOperationResult, type OperationEvidence, type OperationFinding, type OperationJson, type OperationResult } from "./result.js";
 
 export const ADVISORY_RUNTIME_VERSION = "pa-advisory-runtime/v1" as const;
@@ -19,6 +19,9 @@ export interface AdvisoryOperationHost {
   privateValues: readonly string[];
   begin(operationId: string, command: string): SourceVersion;
   finish(operationId: string, result: SourceVersion, settled: boolean): void;
+  /** Native proven read-only diagnostics, never a caller-supplied bypass flag. */
+  beginObservation?(operationId: string, command: string): SourceVersion;
+  finishObservation?(operationId: string, result: SourceVersion, settled: boolean): void;
 }
 export function parseOperationRequest(input: string): OperationRequest {
   if (typeof input !== "string" || Buffer.byteLength(input) > 16_384 || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(input)) throw new Error("OPERATION_INPUT_INVALID");
@@ -67,6 +70,7 @@ export async function executeAdvisoryFile(host: AdvisoryOperationHost, kind: "wr
   catch { return { ...r, enforcement: "denied", outcome: "skipped", findings: [finding("OPERATION_WRITER_CONFLICT", "Conflicting or uncertain writer; independent diagnosis remains available.", "repository-owner")] }; }
   let value: unknown, failure = false;
   try { value = await invoke(files); } catch { failure = true; value = { error: "Native file invocation failed; no passing observation is inferred." }; }
+  try {
   const bytes = Buffer.from(JSON.stringify(value));
   const sink = host.evidence.sink(workflowDigest(`${id}:file-result`), "stdout");
   const complete = sink.write(bytes); const nativeValue = sink.close();
@@ -78,6 +82,10 @@ export async function executeAdvisoryFile(host: AdvisoryOperationHost, kind: "wr
   return parseOperationResult(serializeOperationResult({ ...r, observedAt: new Date().toISOString(), completion: signal?.aborted ? "cancelled" : failure || !settled ? "error" : "completed", outcome: signal?.aborted || failure || !settled ? "unknown" : "passed",
     findings: signal?.aborted || failure || !settled ? [finding(signal?.aborted ? "OPERATION_CANCELLED" : "OPERATION_FILE_UNPROVEN", "Native file invocation or settlement failed; original evidence remains retained.")] : [], evidence: [evidence],
     output: boundOperationOutput(nativePublicText(failure ? "File invocation failed; inspect retained native evidence." : `${kind} completed.`, host.privateValues), evidence), payload: { kind: "reference", evidence } }));
+  } catch {
+    const retained = proof(intent, source);
+    return { ...r, completion: signal?.aborted ? "cancelled" : "error", outcome: "unknown", evidence: [retained], payload: { kind: "reference", evidence: retained }, findings: [finding("OPERATION_RESULT_UNPROVEN", "Preserve this exact file operation; its result publication or settlement is unproven.", "repository-owner")] };
+  }
 }
 
 export async function executeOperation(rawRequest: string, runtime: "pi" | "opencode", host: AdvisoryOperationHost | null, signal?: AbortSignal): Promise<OperationResult> {
@@ -89,13 +97,26 @@ export async function executeOperation(rawRequest: string, runtime: "pi" | "open
   const decision = evaluateSafetyPolicy({ kind: "shell", value: request.command }, { cwd: host.cwd, trashExecutable: runtime === "pi" ? "ppa" : "opa" });
   if (!decision.allowed) return parseOperationResult(serializeOperationResult({ ...r, enforcement: "denied", outcome: "skipped", findings: [finding(`SAFETY_${decision.code.replaceAll("-", "_").toUpperCase()}`, "Protected operation denied before execution.", "security-owner")] }));
   if (signal?.aborted) return parseOperationResult(serializeOperationResult({ ...r, completion: "cancelled", outcome: "skipped", findings: [finding("OPERATION_CANCELLED", "Cancellation observed before execution.")] }));
+  // This is a security effect classification, not a command catalogue: all
+  // other safe commands still use ordinary local writer admission.
+  const diagnostic = host.beginObservation && host.finishObservation && ["pwd", "git status", "git status --short"].includes(request.command.trim());
+  const program = diagnostic ? request.command.trim() === "pwd"
+    ? { executable: trustedNativeExecutable("bash"), argv: ["--noprofile", "--norc", "-c", "pwd"], environment: {} }
+    : { executable: trustedNativeExecutable("git"), argv: ["--no-optional-locks", "--no-pager", "-c", "core.fsmonitor=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "status", "--ignore-submodules=all", ...(request.command.trim().endsWith("--short") ? ["--short"] : [])], environment: {} }
+    : undefined;
+  if (diagnostic) r.kind = "diagnostic.run";
   let intent: SourceVersion;
-  try { intent = host.begin(id, request.command); }
+  try { intent = diagnostic ? host.beginObservation!(id, request.command) : host.begin(id, request.command); }
   catch { return parseOperationResult(serializeOperationResult({ ...r, enforcement: "denied", outcome: "skipped", findings: [finding("OPERATION_WRITER_CONFLICT", "Native writer identity or conflicting effect is unresolved.", "repository-owner")] })); }
   let process: NativeProcessResult;
   try {
-    process = await runNativeExecutionProcess({ evidence: host.evidence, intent, command: request.command, cwd: host.cwd, timeoutSeconds: request.timeoutSeconds ?? 1200, signal });
-  } catch { return operationFailure("OPERATION_PROCESS_UNPROVEN"); } // begin remains unresolved; never duplicate an uncertain effect
+    process = await runNativeExecutionProcess({ evidence: host.evidence, intent, command: request.command, cwd: host.cwd, timeoutSeconds: request.timeoutSeconds ?? 1200, signal, ...(program ? { program } : {}) });
+  } catch (error) {
+    const retained = error instanceof NativeProcessEvidenceError ? proof(error.evidence, source) : proof(intent, source);
+    return parseOperationResult(serializeOperationResult({ ...r, observedAt: new Date().toISOString(), completion: "error", outcome: "unknown", evidence: [retained], payload: { kind: "reference", evidence: retained },
+      findings: [finding("OPERATION_PROCESS_UNPROVEN", "Native process completion is unproven; preserve this exact operation and its conflicting custody.", "process-owner")] }));
+  } // begin remains unresolved; never duplicate an uncertain effect
+  try {
   const completion = process.aborted ? "cancelled" : process.timedOut ? "timed-out" : "completed";
   const incomplete = completion !== "completed" || !process.groupSettled || process.outputLimitExceeded || process.exitCode === null;
   const outcome = incomplete ? "unknown" : process.exitCode === 0 ? "passed" : "failed";
@@ -108,7 +129,13 @@ export async function executeOperation(rawRequest: string, runtime: "pi" | "open
     findings: outcome === "passed" ? [] : [finding(incomplete ? "OPERATION_INCOMPLETE" : "CHECK_FAILED", incomplete ? "Actual execution was interrupted, limited or cleanup is unproven." : "The check completed with a nonzero child exit; inspect and repair under PAPC policy.")],
     process: { exitCode: process.exitCode, signal: process.signal, timedOut: process.timedOut, aborted: process.aborted, cleanup: process.groupSettled ? "settled" : "unknown" },
     evidence: [evidence], output: boundOperationOutput(output, evidence), payload: { kind: "inline", value: facts } };
-  try { host.finish(id, resultRef, process.groupSettled); }
+  try { if (diagnostic) host.finishObservation!(id, resultRef, process.groupSettled); else host.finish(id, resultRef, process.groupSettled); }
   catch { return { ...result, completion: "error", outcome: "unknown", findings: [finding("OPERATION_SETTLEMENT_UNPROVEN", "Process evidence is retained; conflicting effects require native reconciliation.", "repository-owner")] }; }
   return parseOperationResult(serializeOperationResult(result));
+  } catch {
+    const retained = proof(intent, source);
+    return { ...r, observedAt: new Date().toISOString(), completion: process.aborted ? "cancelled" : process.timedOut ? "timed-out" : "error", outcome: "unknown",
+      process: { exitCode: process.exitCode, signal: process.signal, timedOut: process.timedOut, aborted: process.aborted, cleanup: process.groupSettled ? "settled" : "unknown" },
+      evidence: [retained], payload: { kind: "reference", evidence: retained }, findings: [finding("OPERATION_RESULT_UNPROVEN", "Actual process facts are retained; result publication or settlement is unproven for this exact operation.", "process-owner")] };
+  }
 }

@@ -37,3 +37,16 @@ test("missing optional host/config is local unavailable; discovery and subsequen
   assert.equal((await executeOperation('{"action":"run","command":"pwd","passed":true}', "pi", null)).completion, "error");
   assert.equal((await executeOperation('{"action":"capabilities"}', "pi", null)).outcome, "passed");
 });
+test("interrupted native publication retains the exact begun operation ID and evidence, never a fresh failed-attempt identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap277-unproven-"));
+  try {
+    const evidence = new NativeExecutionEvidence(new ProtectedWorkflowStore(root), root, { repository: f => f(), worktree: f => f() });
+    const publish = evidence.publish.bind(evidence);
+    evidence.publish = (kind, value) => { if (kind === "process-frame") throw new Error("fixture publication interruption"); return publish(kind, value); };
+    let begun = "", finished = false;
+    const host: AdvisoryOperationHost = { runtime: "pi", cwd: root, evidence, privateValues: [], begin: (id, command) => { begun = id; return publish("test-intent", { id, command }); }, finish: () => { finished = true; } };
+    const observed = await executeOperation('{"action":"run","command":"exit 0"}', "pi", host);
+    assert.equal(observed.operationId, begun); assert.equal(observed.outcome, "unknown"); assert.equal(observed.completion, "error");
+    assert.equal(observed.evidence.length, 1); assert.equal(finished, false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

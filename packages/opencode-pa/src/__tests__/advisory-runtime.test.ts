@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE } from "../plugins/pa-safety-activity.js";
 import { tmpdir } from "node:os";
@@ -37,7 +37,7 @@ test("generated OpenCode hooks delegate shell to the shared public owner and kee
   try {
     Object.assign(process.env, { PA_DEPLOYMENT_ID: "d-123abc", PA_DEPLOYMENT_DIR: root, PA_ACTIVITY_LOG: join(root, "activity.jsonl") });
     const port = join(root, "port.mjs");
-    writeFileSync(port, `export const readAdvisoryStart = () => ({}); export const resolveAdvisoryOperationHost = () => ({}); export const trustedNativeExecutable = () => '/nix/store/fixture/opa'; export const parseOperationResult = () => { throw Error('unknown'); };`);
+    writeFileSync(port, `export { nativePublicText } from ${JSON.stringify(import.meta.resolve("@pa-platform/pa-core"))}; export const readAdvisoryStart = () => ({}); export const resolveAdvisoryOperationHost = () => ({}); export const trustedNativeExecutable = () => '/nix/store/fixture/opa'; export const parseOperationResult = () => { throw Error('unknown'); };`);
     const plugin = join(root, "plugin.mjs");
     writeFileSync(plugin, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE.replace(/import \* as paOperations from [^\n]+/, `import * as paOperations from ${JSON.stringify(pathToFileURL(port).href)}`));
     const loaded = await import(pathToFileURL(plugin).href) as { PaSafetyActivityPlugin(): Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>> };
@@ -54,5 +54,8 @@ test("generated OpenCode hooks delegate shell to the shared public owner and kee
     const after: { output: string; metadata?: Record<string, unknown> } = { output: "printed success without native facts" };
     await hooks["tool.execute.after"]!({ tool: "bash" }, after);
     assert.equal(after.metadata?.paOperationObservation, "unavailable");
+    process.env.TEST_PRIVATE_TOKEN = "fixture-env-secret-should-not-log";
+    await hooks["tool.execute.before"]!({ tool: "read" }, { args: { filePath: "README.md", note: process.env.TEST_PRIVATE_TOKEN } });
+    assert.ok(!readFileSync(join(root, "activity.jsonl"), "utf8").includes(process.env.TEST_PRIVATE_TOKEN));
   } finally { process.env = env; rmSync(root, { recursive: true, force: true }); }
 });

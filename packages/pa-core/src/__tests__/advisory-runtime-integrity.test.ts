@@ -74,7 +74,10 @@ test("32 real processes reserve the SAME existing lease operation: one winner,31
   assert.throws(() => beginAdvisoryRepositoryOperation(f.context, { id: "second", inputSha256: "a".repeat(64), intentRef: "fixture:second" }));
   assert.equal(readFileSync(join(f.worktree, "fixture.txt"), "utf8"), "before\n");
   assert.ok(captureRepositoryGitSnapshot(f.worktree).head);
-  assert.equal(withAdvisoryRepositoryOwner(f.context, lease => Boolean(lease.advisoryOperation)), true);
+  const retained = withAdvisoryRepositoryOwner(f.context, lease => JSON.stringify(lease));
+  const host = resolveAdvisoryOperationHost("pi");
+  for (const command of ["pwd", "git status --short"]) assert.equal((await executeOperation(JSON.stringify({ action: "run", command }), "pi", host)).outcome, "passed");
+  assert.equal(withAdvisoryRepositoryOwner(f.context, lease => JSON.stringify(lease)), retained, "safe diagnosis never rewrites the uncertain writer");
   assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: f.repo, worktreeRoot: f.worktree, ownershipToken: f.token }).status, "invalid-evidence");
 }));
 test("native path boundary refuses traversal,protected metadata,symlinks and hardlink aliases before mutation", async () => fixture(async f => {

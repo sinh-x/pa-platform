@@ -42,6 +42,14 @@ export function resolveAdvisoryOperationHost(runtime: "pi" | "opencode", cwd = p
       beginAdvisoryRepositoryOperation(context, { id: operationId, inputSha256: workflowDigest(command), intentRef: intent.ref });
       return intent;
     },
+    beginObservation(operationId, command) {
+      return host.evidence.publish("advisory-operation-intent", { operationId, command, deploymentId: id, cwd, readOnlyDiagnostic: true });
+    },
+    finishObservation(operationId, result, settled) {
+      const observed = host.evidence.read(result, "advisory-process-result") as { operationId?: unknown; process?: { groupSettled?: unknown } };
+      if (observed.operationId !== operationId || observed.process?.groupSettled !== settled) throw new Error("ADVISORY_OBSERVATION_UNPROVEN");
+      withAdvisoryRepositoryOwner(context, () => undefined); // never clears/rewrites writer custody
+    },
     finish(operationId, result, settled) {
       const observed = host.evidence.read(result, "advisory-process-result") as { operationId?: unknown; process?: { groupSettled?: unknown }; settled?: unknown };
       if (observed.operationId !== operationId || settled !== (observed.process?.groupSettled ?? observed.settled)) throw new Error("ADVISORY_SETTLEMENT_UNPROVEN");
