@@ -135,7 +135,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         args.push("--session", sessionId);
       }
       args.push("--prompt", wrapperPrompt);
-      const result = runInheritedCommand(args, { cwd, env });
+      const result = opts.onPid ? await runAdvisoryInheritedCommand(args, { cwd, env }, opts.onPid, opts.timeoutMs) : runInheritedCommand(args, { cwd, env });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
       if (errorMessage) {
@@ -181,6 +181,17 @@ export class OpencodeAdapter implements RuntimeAdapter {
 
 function delayedLaunchError(runtime: string): Promise<Error> {
   return new Promise((resolveError) => setImmediate(() => resolveError(new Error(`runner-readiness: ${runtime} background supervisor did not expose a PID`))));
+}
+
+async function runAdvisoryInheritedCommand(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }, onPid: (pid: number) => void, timeoutMs?: number): Promise<OpencodeCommandResult> {
+  const child = spawn("opencode", args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: ["inherit", "inherit", "pipe"] });
+  let stderr = "", spawnError: Error | undefined;
+  child.stderr?.on("data", (data: Buffer) => { stderr = tailString(stderr + data.toString("utf8"), STDERR_TAIL_BYTES); process.stderr.write(data); });
+  const finished = new Promise<number | null>(resolve => { child.once("error", error => { spawnError = error; resolve(null); }); child.once("close", resolve); });
+  if (child.pid) onPid(child.pid);
+  const timer = timeoutMs ? setTimeout(() => { if (child.pid) void terminateBackgroundSupervisor(child.pid).catch(() => { spawnError = new Error("owned runtime cleanup unproven"); }); }, timeoutMs) : undefined;
+  try { const status = await finished; return { status, stdout: "", stderr, ...(spawnError ? { spawnError } : {}) }; }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 function runInheritedCommand(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }): OpencodeCommandResult {

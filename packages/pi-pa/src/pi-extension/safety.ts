@@ -20,7 +20,7 @@ export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
 }
 
 type AdapterSafetyInput = { kind: "prose" | "path" | "shell"; value: string };
-interface AdapterSafetyDecision { allowed: boolean; reason?: string; guidance?: string; target?: string }
+interface AdapterSafetyDecision { code?: string; allowed: boolean; reason?: string; guidance?: string; target?: string }
 interface AdapterSafetyModule {
   evaluateSafetyPolicy?: (input: AdapterSafetyInput, options?: { trashExecutable?: string; cwd?: string; env?: Pick<NodeJS.ProcessEnv, "TMPDIR"> }) => AdapterSafetyDecision;
   isBlockedFilePath: (filePath: string) => boolean;
@@ -66,7 +66,7 @@ function legacyShellDecision(command: string, trashExecutable: string): AdapterS
 
 function blockedSafetyDecision(decision: AdapterSafetyDecision): PiSafetyDecision {
   const guidance = decision.guidance ? ` Use ${decision.guidance}.` : "";
-  return { allowed: false, reason: `BLOCKED: ${decision.reason ?? "PA safety policy denied this operation."}${guidance}` };
+  return { allowed: false, reason: `BLOCKED: ${decision.code ? `SAFETY_${decision.code.replaceAll("-", "_").toUpperCase()}: ` : ""}${decision.reason ?? "PA safety policy denied this operation."}${guidance}` };
 }
 
 function declaredPathValues(input: Record<string, unknown>): string[] {
