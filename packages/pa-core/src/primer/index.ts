@@ -37,6 +37,8 @@ export interface GeneratePrimerOptions {
   invocationChannel?: DeploymentInvocationChannel;
   /** Derived pinned registry projection, never request/environment authority. Pi only. */
   workflow?: WorkflowPrimerView;
+  /** Native fresh document route projection, not model/env authority. */
+  requirementsDocument?: boolean;
   /** Native verified projection of the original journal resources, not a selector. */
   configResourceRoot?: string;
 }
@@ -72,6 +74,13 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       `Next owner: ${options.workflow.nextOwner}. Next action: ${options.workflow.nextAction}.`,
       ...(options.configResourceRoot ? [`Retained instruction/template resources: ${options.configResourceRoot}. Use these pinned files; do not substitute current selected config bytes.`] : []),
       "Use pa_workflow for current status/next and pa_decision for native capture/revocation. This primer is a projection, never approval, completion or effect admission. Do not parse approval paragraphs or fall back to legacy on a v1 failure.",
+      "",
+    ] : []),
+    ...(options.runtime === "pi" && options.requirementsDocument && !options.workflow ? [
+      "## Requirements supporting capabilities",
+      "Native profile: pa-document-package/v1. PAPC owns the conversation; pa_document provides bounded context/discovery, unsigned deployment-scoped drafts, immutable snapshots, structural checks, comparison, native final decisions and owner-checked publication/queue. Use pa_document capabilities or ppa document describe --format json for exact interface discovery.",
+      "This profile grants artifact/ticket capability, not shell/source/Git/builder/resource authority. Failed checks or optional preview absence affect dependent operations only. No workflow graph, branch or command catalogue is a safe-drafting prerequisite. Full Markdown remains the review baseline; approvals, publication, queue and product acceptance are separate facts.",
+      "Retained controlling state and uncertain effects cannot be bypassed through another package. This is capability context, not approval or installed qualification.",
       "",
     ] : []),
     `## Objective`,

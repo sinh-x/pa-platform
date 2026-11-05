@@ -97,7 +97,7 @@ export function piWorkflowCoordinatorCaller(state: WorkflowState, context: PiWor
 const CHOICES = ["Approve exact package and displayed permissions", "Reject exact package", "Request changes", "Cancel"];
 const TECHNICAL = "View exact technical bindings";
 const visible = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-function pages(lines: string[]): string[] {
+export function nativeReviewPages(lines: string[]): string[] {
   const wrapped = lines.flatMap(line => {
     const text = Array.from(visible(line)), result: string[] = [];
     for (let start = 0; start < text.length;) {
@@ -127,7 +127,7 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
     if (Buffer.byteLength(raw, "utf8") > MAX_WORKFLOW_RECORD_BYTES) throw new JsonWorkflowError("WORKFLOW_CONTRACT", "decision-request-size", "package-owner");
     const list = (title: string, values: readonly string[]) => [title, ...(values.length ? values.map(value => `- ${value}`) : ["- none"])];
     const identifiers = (title: string, values: readonly string[]) => [`${title}: ${values.length ? values.join(", ") : "none"}`];
-    const review = pages([
+    const review = nativeReviewPages([
       `${subject.ticket}: review the exact implementation plan`,
       `Plan: ${subject.subjectId.replace(/[-.]/g, " ")}`,
       adopting ? "Decide whether this fresh foreground session may continue the retained workflow. This is not package approval."
@@ -159,7 +159,7 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
       `Workflow: ${subject.workflow.id}/${subject.workflow.version}`,
       ...(request.resources ? [`Pinned config: ${request.resources.configRevision}`] : []),
     ]);
-    const technical = pages(raw.split("\n")), transcript: { title: string; selected: string | null }[] = [];
+    const technical = nativeReviewPages(raw.split("\n")), transcript: { title: string; selected: string | null }[] = [];
     const select = async (title: string, choices: string[]) => {
       if (signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-native-request", "operator");
       const selected = await context.ui!.select(title, choices, signal ? { signal } : undefined);

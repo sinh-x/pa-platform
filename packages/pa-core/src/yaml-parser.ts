@@ -25,6 +25,9 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     const modeRecord = asRecord(mode, `deploy_modes[${index}]`);
     rejectRemovedRuntimeConfig(modeRecord, `deploy_modes[${index}].runtimes`);
     validateFlatModePair(modeRecord, index);
+    if (modeRecord["document_profile"] !== undefined && (modeRecord["document_profile"] !== "pa-document-package/v1" || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
+      throw new Error("document_profile requires requirements/analyze and exact pa-document-package/v1 semantics");
+    }
     const provider = optionalString(modeRecord["provider"]);
     const model = optionalString(modeRecord["model"]);
     const skills = (modeRecord["skills"] as Array<Record<string, string>> | undefined)?.map<SkillEntry>((skill) => ({
@@ -46,6 +49,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
       global_docs: modeRecord["global_docs"] as string[] | undefined,
       project_guides: parseProjectGuides(modeRecord["project_guides"], index),
       require_ticket: modeRecord["require_ticket"] as boolean | undefined,
+      ...(modeRecord["document_profile"] === undefined ? {} : { document_profile: "pa-document-package/v1" as const }),
     };
   });
 

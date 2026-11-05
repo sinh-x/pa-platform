@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -229,6 +229,31 @@ function migrate(db: Database.Database): void {
       BEGIN SELECT RAISE(ABORT, 'workflow snapshots are immutable'); END;
     CREATE TRIGGER IF NOT EXISTS workflow_snapshots_no_delete BEFORE DELETE ON workflow_snapshots
       BEGIN SELECT RAISE(ABORT, 'workflow snapshots are immutable'); END;
+    CREATE TABLE IF NOT EXISTS document_snapshots (
+      sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS document_subjects (
+      sha256 TEXT PRIMARY KEY, repo_key TEXT NOT NULL, ticket TEXT NOT NULL,
+      package_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,
+      UNIQUE (repo_key, ticket, package_id, revision)
+    );
+    CREATE TABLE IF NOT EXISTS document_events (
+      repo_key TEXT NOT NULL, ticket TEXT NOT NULL, revision INTEGER NOT NULL,
+      predecessor TEXT, sha256 TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (repo_key, ticket, revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS document_snapshots_no_update BEFORE UPDATE ON document_snapshots
+      BEGIN SELECT RAISE(ABORT, 'document snapshots are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_snapshots_no_delete BEFORE DELETE ON document_snapshots
+      BEGIN SELECT RAISE(ABORT, 'document snapshots are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_subjects_no_update BEFORE UPDATE ON document_subjects
+      BEGIN SELECT RAISE(ABORT, 'document subjects are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_subjects_no_delete BEFORE DELETE ON document_subjects
+      BEGIN SELECT RAISE(ABORT, 'document subjects are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_events_no_update BEFORE UPDATE ON document_events
+      BEGIN SELECT RAISE(ABORT, 'document events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS document_events_no_delete BEFORE DELETE ON document_events
+      BEGIN SELECT RAISE(ABORT, 'document events are append-only'); END;
     CREATE TABLE IF NOT EXISTS evaluator_ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       target_deployment_id TEXT NOT NULL,

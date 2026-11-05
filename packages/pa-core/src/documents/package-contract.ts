@@ -57,8 +57,17 @@ export function parseDocumentPackage(value: unknown): DocumentPackage {
     return result;
   });
 }
+export const DOCUMENT_ACTION_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  capabilities: [], status: ["ticket"], "ticket-create": ["title", "content", "intakeId"], discover: ["path"], context: ["path"], draft: ["path", "content", "expectedSha256"],
+  check: ["package"], freeze: ["package", "expectedRevision"], show: ["sha256"], read: ["sha256", "path", "offset"], compare: ["sha256", "previousSha256"],
+  capture: ["sha256", "expectedRevision"], revoke: ["sha256", "expectedRevision", "decisionId"], publish: ["sha256", "expectedRevision", "decisionId"], queue: ["sha256", "expectedRevision", "decisionId"],
+});
+export function documentInterfaceDescription(): Record<string, unknown> {
+  return { schemaVersion: "pa-document-interface/v1", packageVersion: DOCUMENT_PACKAGE_VERSION, nativeTool: "pa_document", actions: DOCUMENT_ACTION_FIELDS, limits: DOCUMENT_LIMITS,
+    cli: "description-only-no-decision-or-effect-import", availability: "requires-native-authenticated-Pi-requirements-session", preview: "unavailable-use-full-markdown", sourceAuthority: false, installedQualification: "not-asserted" };
+}
 export function parseDocumentRequest(input: string): Record<string, unknown> {
-  return documentGuard(() => object(parseWorkflowRequest(input), ["action"], ["package", "sha256", "expectedRevision", "previousSha256", "decisionId", "path"]));
+  return documentGuard(() => object(parseWorkflowRequest(input), ["action"], ["package", "sha256", "expectedRevision", "previousSha256", "decisionId", "path", "content", "expectedSha256", "offset", "title", "intakeId", "ticket"]));
 }
 export function documentPackageSha(subject: DocumentPackage): string { return digest(JSON.stringify(parseDocumentPackage(subject))); }
 export function documentDestination(subject: DocumentPackage, member: DocumentMember): string {
