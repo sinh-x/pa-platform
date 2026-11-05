@@ -20,13 +20,22 @@ leaving the historical `0.1.155-pap277.1` trial commit intact. The usual develop
 post-merge patch workflow owns the next integration version; no manual release,
 tag, installed package selection or Nix dependency-hash refresh is requested.
 
-PAPC-074 source is tracked by pa-platform-config PR #48. Its source-pair CI needs
-an explicit reachable clean PAP-277 candidate SHA; an unset variable is a failed
-prerequisite, not a skipped/passed check. Config-first integration and hosted CI
-must be verified separately from source-built development observations. Neither
-source merge nor conversational merge authorization approves new requirements
-bytes, settles a retained workflow intent, releases custody or certifies rollout.
-The original r004 pair, decisions and acceptance limitations remain preserved.
+PAPC-074 PR #48 is merged into config `develop` at
+`1c4994670088e5ac33e53e31065781d1fc2b0dc3`; this is the integration candidate's
+`.pa-platform-config.sha` pin. The template-registry digest is unchanged. After
+Sinh explicitly authorized the coordinated source merges, the non-secret config
+CI variable `PA_ADVISORY_RUNTIME_SOURCE_SHA` was set to the reachable clean runtime
+candidate `f32fd642e3b3ce36fd678fed4c267443a3781ba9`. Both failed PR source-pair jobs
+were rerun and passed without skipping the missing prerequisite. The original
+missing-variable failures remain in hosted history. Config PR #48 was already
+merged when the coordinated merge request reached GitHub; no local config source
+or branch was changed. PAP-277's final-head checks and merge are tracked in runtime
+PR #165, separately from source-built development observations.
+
+Neither source merge nor conversational merge authorization approves new
+requirements bytes, settles a retained workflow intent, releases custody or
+certifies rollout. The original r004 pair, decisions and acceptance limitations
+remain preserved.
 
 ## Installed verifier
 
