@@ -1,8 +1,8 @@
 # Explicit cancellation recovery (PAP-273)
 
 A cancelled native package decision grants no permissions. Ordinary `capture`
-remains ineligible after it; `revise` still requires genuine changes-requested or
-material-amendment conditions. Neither a new analyst session, queue status nor an
+remains ineligible after it; `revise` requires genuine changes-requested,
+material-amendment or approved unmaterialized document-revision conditions. Neither a new analyst session, queue status nor an
 ordinary structured question substitutes for native authority.
 
 The existing Pi `pa_decision` tool now accepts exactly:
@@ -17,6 +17,8 @@ outcome, permissions or replacement package. The foreground requirements caller
 must be the effective authenticated coordinator or an existing registry-authenticated
 same-role continuation. A fresh same-role deployment without `--resume` can first
 request explicit native adoption, as below; relaunching alone grants nothing.
+Approved/published packages without pending effects now also support narrowly
+scoped [document continuation](workflow-document-continuation.md).
 There is no shell/CLI approval workaround.
 
 Recovery is offered only for the latest unrevoked cancelled decision on the
@@ -54,7 +56,7 @@ When eligible, its exact request is:
 Send this through `pa_decision`, not a CLI/password or generic chat question.
 Native review binds both coordinators, run/revision, exact package and retained
 resources. Consent appends `coordinator-adopted` to the SAME journal; the original
-caller, cancellation, snapshots, attempts and bounds remain unchanged. It does
+caller, decisions, snapshots, attempts and bounds remain unchanged. It does
 not approve the package. Reread the incremented revision, then explicitly request
 `recover` and obtain the fresh native package decision. A queue-only adoption is
 instead restricted to reconciliation of the existing approved queue intent; it

@@ -9,6 +9,7 @@ import {
   type TemplateHost,
   type WorkflowRepository, type WorkflowHost, type WorkflowObservations, type WorkflowReadHost, type ReviewBundle, type JsonWorkflowEvidenceRef,
 } from "@pa-platform/pa-core";
+import { assertPiDocumentContinuation, piDocumentContinuationView } from "./workflow-document.js";
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { createPiSourceWorkflowOwner } from "./workflow-source.js";
 import { createPiMatrixWorkflowOwner } from "./workflow-matrix.js";
@@ -45,7 +46,7 @@ export function piWorkflowObservations(subject?: ReviewBundle, repository?: Work
   }
   return { capabilities: new Set(["operator.foreground", "artifact.paired-publication", "ticket.queue", "execution.scoped-local", "validation.matrix"]), projectProfile: profile, producerContract: producer, ...(producerFailure ? { producerFailure } : {}), readEvidence: ref => sourceBytes(subject, ref) };
 }
-export function piWorkflowReadHost(context?: PiWorkflowContext): WorkflowReadHost { return { ...(context?.mode === "tui" ? { coordinatorCaller: (state: Parameters<typeof piWorkflowCoordinatorCaller>[0]) => piWorkflowCoordinatorCaller(state, context) } : {}), observations: (subject, repository, state) => withExistingWorkflowJournal(journal => {
+export function piWorkflowReadHost(context?: PiWorkflowContext): WorkflowReadHost { return { documentContinuation: piDocumentContinuationView, ...(context?.mode === "tui" ? { coordinatorCaller: (state: Parameters<typeof piWorkflowCoordinatorCaller>[0]) => piWorkflowCoordinatorCaller(state, context) } : {}), observations: (subject, repository, state) => withExistingWorkflowJournal(journal => {
   if (!state) return piWorkflowObservations(subject, repository);
   if (!journal || !state.resources) return { ...piWorkflowObservations(subject, repository), producerContract: "unsupported", producerFailure: new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "config-runtime-owner") };
   return piWorkflowObservations(subject, repository, retainedTemplateHost(journal, state));
@@ -76,10 +77,12 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
   const pinnedTemplates = state?.resources ? retainedTemplateHost(journal, state) : undefined;
   const selection = request.action === "admit" ? loadSelectedWorkflows() : request.action === "revise" && state ? retainedWorkflowSelection(journal, state) : undefined;
   if (request.action === "admit" || request.action === "revise") {
-    let occupied = false;
-    try { observeReadonlyRepositoryTicketSlot(caller.repoRoot, caller.ticket); occupied = true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", "existing-ticket-lineage", "custody-owner"); }
-    if (occupied) throw new JsonWorkflowError("WORKFLOW_CONFLICT", "existing-ticket-lineage", "custody-owner");
+    if (request.action === "admit") {
+      let occupied = false;
+      try { observeReadonlyRepositoryTicketSlot(caller.repoRoot, caller.ticket); occupied = true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new JsonWorkflowError("WORKFLOW_UNCERTAIN", "existing-ticket-lineage", "custody-owner"); }
+      if (occupied) throw new JsonWorkflowError("WORKFLOW_CONFLICT", "existing-ticket-lineage", "custody-owner");
+    }
     if (!selection) throw new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "workflow-owner");
     subject = produceWorkflowSubject(selection, Buffer.from(request.producer), { ...(request.action === "revise" ? pinnedTemplates : {}), team: caller.team, mode: caller.mode }).subject;
   }
@@ -87,7 +90,7 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
   assertMarkers = () => assertWorkflowMarkerAvailable(caller.repoKey, caller.ticket, Boolean(state), store, state?.runId);
   assertMarkers();
   const host: WorkflowHost = { authenticate, resources: captureWorkflowResources, observations: () => piWorkflowObservations(subject, undefined, pinnedTemplates), capture: createPiWorkflowCapture(context, authenticate, signal),
-    owners: new Map([...createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), ["source.local", createPiSourceWorkflowOwner(journal, authenticate, continues)] as const, ["check.matrix", createPiMatrixWorkflowOwner(journal, authenticate, continues)] as const]), continues, assertInactive: assertPiWorkflowCoordinatorInactive, now: () => new Date().toISOString() };
+    owners: new Map([...createTicketWorkflowOwners(journal, store, getAiUsageDir(), authenticate, continues), ["source.local", createPiSourceWorkflowOwner(journal, authenticate, continues)] as const, ["check.matrix", createPiMatrixWorkflowOwner(journal, authenticate, continues)] as const]), continues, assertInactive: assertPiWorkflowCoordinatorInactive, assertDocumentContinuation: assertPiDocumentContinuation, now: () => new Date().toISOString() };
   const service = new JsonWorkflowService(journal, host);
   let decision: unknown;
   if (request.action === "admit") {
