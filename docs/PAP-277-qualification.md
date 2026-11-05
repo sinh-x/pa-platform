@@ -1,8 +1,32 @@
 # PAP-277 qualification and handoff
 
-Implementation follows r004's four phases. Each phase has a separate source
-commit. This is **not rollout acceptance**: no package/config install, activation,
-push/merge, live-state reconciliation, checkout return or human UAT was performed.
+The initial implementation follows r004's four phases, each with a separate
+source commit. Its historical qualification below is **not rollout acceptance**.
+No install, activation, live-state reconciliation, checkout return or human UAT
+is inferred from subsequent source integration.
+
+## Source integration follow-up
+
+At Sinh's explicit request, PAP-277 also delivers the d-910d46 document-revision
+and coordinator-continuation follow-up. See
+[the supported state table and request/compatibility guide](workflow-document-continuation.md).
+Focused source checks passed 223 tests; the full native workflow runtime entry
+passed 36 tests. Workspace typecheck/build, completions, secret scan and whitespace
+checks passed. The later full workspace run was bounded to 600 seconds and timed
+out in Pi integration; it does not replace or waive the earlier incomplete run.
+
+The integration candidate restores `0.1.155` across the four coupled manifests,
+leaving the historical `0.1.155-pap277.1` trial commit intact. The usual develop
+post-merge patch workflow owns the next integration version; no manual release,
+tag, installed package selection or Nix dependency-hash refresh is requested.
+
+PAPC-074 source is tracked by pa-platform-config PR #48. Its source-pair CI needs
+an explicit reachable clean PAP-277 candidate SHA; an unset variable is a failed
+prerequisite, not a skipped/passed check. Config-first integration and hosted CI
+must be verified separately from source-built development observations. Neither
+source merge nor conversational merge authorization approves new requirements
+bytes, settles a retained workflow intent, releases custody or certifies rollout.
+The original r004 pair, decisions and acceptance limitations remain preserved.
 
 ## Installed verifier
 
