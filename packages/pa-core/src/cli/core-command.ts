@@ -1,4 +1,6 @@
 import { basename } from "node:path";
+import { runOperationCommand } from "./commands/operation.js";
+import type { AdvisoryOperationHost } from "../operations/service.js";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { runTemplateCommand, type TemplateCliHost } from "./commands/template.js";
 import { runBranchCommand } from "./commands/branch.js";
@@ -33,6 +35,8 @@ export { compactActivityTail };
 
 export interface RunCoreCommandOptions {
   hooks?: CoreExecutionHooks;
+  /** Authenticated native operation host; not an argv permission override. */
+  operationHost?: AdvisoryOperationHost | null;
   io?: CliIo;
   now?: Date;
   sleep?: (ms: number) => Promise<void>;
@@ -60,6 +64,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       printHelp(io, opts.binaryName ?? defaultBinaryName());
       return 0;
     }
+    if (command === "operation" && (opts.binaryName === "ppa" || opts.binaryName === "opa")) return runOperationCommand(rest, io, opts.binaryName === "ppa" ? "pi" : "opencode", opts.operationHost);
     if (command === "template" && opts.binaryName === "ppa") return runTemplateCommand(rest, io, opts.templateHost);
     if (command === "artifact") return runArtifactCommand(rest, io);
     if (command === "repo-setup" && opts.binaryName !== "opa") return runRepoSetupOperatorCommand(rest, io, opts.repoOperatorHost);
@@ -105,6 +110,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("");
   io.stdout("Commands:");
+  if (binaryName === "ppa" || binaryName === "opa") io.stdout("  operation           Factual capabilities/checks; explicit pa-operation-result/v1 format");
   if (binaryName === "ppa") io.stdout("  template            Selected canonical templates (unsigned, read-only)");
   io.stdout("  artifact            Render companions; owned review requires selected managed runtime");
   io.stdout("  status              Show deployment status and activity");

@@ -63,6 +63,35 @@ Neither an available capability nor successful command certifies review/CI/UAT.
 Legacy formats/exits remain unchanged until explicitly version-dispatched;
 subsequent adapters must select `--format pa-operation-result/v1` explicitly.
 
+## Phase 2: capability and adapter surfaces
+
+Both `ppa operation` and `opa operation` dispatch the same core service:
+
+```sh
+ppa operation capabilities --format pa-operation-result/v1
+opa operation run --command 'corepack pnpm test' --timeout 1200 --format pa-operation-result/v1
+```
+
+`pa_operation` is Pi's native equivalent with one strict JSON `request`.
+OpenCode has the shared CLI and safety hook, not a native `pa_operation` tool;
+discovery reports that difference explicitly. An unauthenticated execution
+request is unavailable, not permission to run or a session stop. Discovery does
+not require optional project configuration. The operation service never imports
+model-supplied facts, uses no command catalogue, and creates no phase controller.
+
+The existing native evidence/process implementation moved unchanged into
+`pa-core/src/operations/evidence.ts`; the Pi module is a compatibility facade.
+Original record versions, references, bytes, process frames and private channels
+remain unchanged. Check failure returns the actual child exit as data. Native
+invocation errors use error status. Timeout/abort/output limits retain facts and
+owned cleanup rather than a forged pass. Whole-buffer redaction precedes output.
+
+New-start dispatch and removal of old ordinary-tool prerequisites are staged
+behind native registry identity; the producer and local writer integration land
+atomically in Phase 3. Phase 2 alone does not activate advisory sessions.
+Source adapter tests exercised actual CLI/native dispatch and real disposable
+children, not installed binaries or foreground agents.
+
 ## Veto/controller inventory
 
 Paths below are relative to `packages/`. These are gate families, not a claim

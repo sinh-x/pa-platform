@@ -1,4 +1,7 @@
 export * from "./operations/result.js";
+export * from "./operations/evidence.js";
+export * from "./operations/service.js";
+export * from "./operations/runtime.js";
 export { TEMPLATE_TOOL_REFERENCE } from "./templates/reference.js";
 export { reviewBundleTemplateConsumer } from "./workflows/producer.js";
 export { parseTaskHandoff, parsePairSignoff, ProducerContractError, type TaskHandoff, type PairSignoff } from "./tickets/producer-contract.js";

@@ -7,6 +7,7 @@ import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { boundJson } from "./tool-result.js";
 import { createPaTicketTool } from "./ticket-tool.js";
+import { registerOperationModule } from "./operation-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
 import { registerRepoSetupModule } from "./repo-setup.js";
@@ -197,6 +198,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
 
 export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
   registerPaToolsModule,
+  registerOperationModule,
   registerTemplateModule,
   registerJsonWorkflowModule,
   registerRepoSetupModule,
