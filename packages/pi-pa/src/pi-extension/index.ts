@@ -7,6 +7,7 @@ import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { boundJson } from "./tool-result.js";
 import { createPaTicketTool } from "./ticket-tool.js";
+import { registerAdvisoryModule } from "./advisory.js";
 import { registerOperationModule } from "./operation-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
@@ -190,6 +191,8 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
     return decision.allowed ? undefined : { block: true, reason: decision.reason };
   });
   registerExecutionCustodyModule(pi, lifecycle);
+  registerAdvisoryModule(pi, lifecycle);
+  registerOperationModule(pi, lifecycle);
   pi.on?.("agent_end", (event) => {
     const deployDir = process.env.PA_DEPLOYMENT_DIR;
     if (deployDir) persistTerminalStatus(event.messages, deployDir, process.env);
@@ -198,7 +201,6 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
 
 export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
   registerPaToolsModule,
-  registerOperationModule,
   registerTemplateModule,
   registerJsonWorkflowModule,
   registerRepoSetupModule,

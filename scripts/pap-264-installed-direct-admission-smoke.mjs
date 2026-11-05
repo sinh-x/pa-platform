@@ -185,7 +185,7 @@ export async function isolatedDriver(root, share) {
     if (name === "inherited-retired-child") process.env = { ...previousEnv, PA_TEAM: "builder", PA_MODE: "orchestrator", PA_DEPLOYMENT_ID: "d-264bbb", PA_DEPLOYMENT_DIR: join(ai, "deployments/d-264bbb"), PA_REPO: checkout, PA_TICKET_ID: ticket };
     const before = snapshot(root); const effects = { ...counts }; const beforeReadMark = readMark();
     try { for (const deploy of [deployWithPi, deployWithOpencode]) {
-      const result = await deploy({ ...request, ...selection }, { ...inert, name: deploy === deployWithPi ? "pi" : "opencode" }, undefined, { treehouse, preparedAuthority: authority });
+      const result = await deploy({ ...request, ...selection }, { ...inert, name: deploy === deployWithPi ? "pi" : "opencode" }, undefined, { retainedRuntimeFixture: "ordinary-native-execution/v1", treehouse, preparedAuthority: authority });
       assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined); diagnostic(result.reason);
     }
     if (name !== "historical-resume") {
@@ -218,7 +218,7 @@ export async function isolatedDriver(root, share) {
     const restoreBytes = fs.readFileSync(legacyPath);
     if (malformed) fs.writeFileSync(legacyPath, "{PRIVATE_SENTINEL", { mode: 0o600 });
     const before = fs.readFileSync(legacyPath); const preflight = counts.runtimePreflights;
-    const result = await deployWithPi({ ...request, mode: "orchestrator" }, inert, undefined, { treehouse, preparedAuthority: authority });
+    const result = await deployWithPi({ ...request, mode: "orchestrator" }, inert, undefined, { retainedRuntimeFixture: "ordinary-native-execution/v1", treehouse, preparedAuthority: authority });
     assert.equal(result.status, "failed"); diagnostic(result.reason); assert.equal(counts.runtimeSpawns, 0); assert.equal(counts.runtimePreflights, preflight);
     assert.deepEqual(fs.readFileSync(legacyPath), before); assert.deepEqual(core.getDeploymentEvents("d-264aaa"), history);
     scenarios.push(malformed ? "malformed-legacy" : "live-legacy");
@@ -332,7 +332,7 @@ export async function isolatedDriver(root, share) {
     return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } };
   } };
   try {
-    const launched = await deployWithPi({ ...request, mode: "orchestrator" }, adapter, undefined, { treehouse, preparedAuthority: authority });
+    const launched = await deployWithPi({ ...request, mode: "orchestrator" }, adapter, undefined, { retainedRuntimeFixture: "ordinary-native-execution/v1", treehouse, preparedAuthority: authority });
     if (bodyError) throw bodyError;
     assert.equal(launched.status, "success", launched.reason); assert.equal(counts.runtimeSpawns, 1); assert.equal(counts.implementSpawns, 0);
     assert.equal(git(["rev-parse", "HEAD"]), base); assert.equal(git(["branch", "--show-current"]), "develop");

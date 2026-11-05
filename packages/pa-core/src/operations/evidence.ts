@@ -86,7 +86,7 @@ export class NativeExecutionEvidence {
 
 /** Resolve only a root-owned installed executable; never accept a model/env
  * pathname as the interpreter or Git control program for native custody. */
-export function trustedNativeExecutable(name: "bash" | "git"): string {
+export function trustedNativeExecutable(name: "bash" | "git" | "opa" | "ppa"): string {
   for (const directory of (process.env.PATH ?? "").split(":")) {
     try {
       const path = realpathSync(join(directory, name)); const stat = lstatSync(path);

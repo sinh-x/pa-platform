@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AdvisoryFiles } from "./files.js";
 import { evaluateSafetyPolicy } from "../safety-policy.js";
 import { findSensitiveMatch } from "../sensitive-patterns.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
@@ -55,6 +56,30 @@ function proof(ref: SourceVersion, scope: string): OperationEvidence {
 }
 /** Shared actual executor, no catalogue/phase/package/check-order admission.
  * Evidence and process ownership remain native; failures never set session gates. */
+export async function executeAdvisoryFile(host: AdvisoryOperationHost, kind: "write" | "edit", input: Record<string, unknown>, invoke: (files: AdvisoryFiles) => Promise<unknown>, signal?: AbortSignal): Promise<OperationResult> {
+  const id = `op-${randomUUID()}`, source = `checkout:${host.cwd}`, r = base(id, kind, source, workflowDigest(JSON.stringify(input)));
+  if (signal?.aborted) return { ...r, completion: "cancelled", outcome: "skipped", findings: [finding("OPERATION_CANCELLED", "Cancellation observed before the file operation.")] };
+  const files = new AdvisoryFiles(host.cwd);
+  try { files.assertPath(String(input.path ?? input.filePath ?? "")); }
+  catch { return { ...r, enforcement: "denied", outcome: "skipped", findings: [finding("OPERATION_PATH_DENIED", "Protected, traversing or out-of-checkout path denied.", "security-owner")] }; }
+  let intent: SourceVersion;
+  try { intent = host.begin(id, JSON.stringify({ kind, path: input.path ?? input.filePath, inputSha256: r.scope.inputSha256 })); }
+  catch { return { ...r, enforcement: "denied", outcome: "skipped", findings: [finding("OPERATION_WRITER_CONFLICT", "Conflicting or uncertain writer; independent diagnosis remains available.", "repository-owner")] }; }
+  let value: unknown, failure = false;
+  try { value = await invoke(files); } catch { failure = true; value = { error: "Native file invocation failed; no passing observation is inferred." }; }
+  const bytes = Buffer.from(JSON.stringify(value));
+  const sink = host.evidence.sink(workflowDigest(`${id}:file-result`), "stdout");
+  const complete = sink.write(bytes); const nativeValue = sink.close();
+  if (!complete) failure = true;
+  const ref = host.evidence.publish("advisory-process-result", { operationId: id, intent, kind, nativeValue, outputLimitExceeded: !complete, settled: !files.uncertain });
+  const evidence = proof(ref, source);
+  let settled = !files.uncertain;
+  try { host.finish(id, ref, settled); } catch { settled = false; }
+  return parseOperationResult(serializeOperationResult({ ...r, observedAt: new Date().toISOString(), completion: signal?.aborted ? "cancelled" : failure || !settled ? "error" : "completed", outcome: signal?.aborted || failure || !settled ? "unknown" : "passed",
+    findings: signal?.aborted || failure || !settled ? [finding(signal?.aborted ? "OPERATION_CANCELLED" : "OPERATION_FILE_UNPROVEN", "Native file invocation or settlement failed; original evidence remains retained.")] : [], evidence: [evidence],
+    output: boundOperationOutput(nativePublicText(failure ? "File invocation failed; inspect retained native evidence." : `${kind} completed.`, host.privateValues), evidence), payload: { kind: "reference", evidence } }));
+}
+
 export async function executeOperation(rawRequest: string, runtime: "pi" | "opencode", host: AdvisoryOperationHost | null, signal?: AbortSignal): Promise<OperationResult> {
   let request: OperationRequest;
   try { request = parseOperationRequest(rawRequest); } catch { return operationFailure("OPERATION_INPUT_INVALID"); }

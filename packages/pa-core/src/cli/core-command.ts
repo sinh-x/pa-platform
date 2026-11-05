@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { runOperationCommand } from "./commands/operation.js";
 import type { AdvisoryOperationHost } from "../operations/service.js";
+import { resolveAdvisoryOperationHost } from "../operations/host.js";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { runTemplateCommand, type TemplateCliHost } from "./commands/template.js";
 import { runBranchCommand } from "./commands/branch.js";
@@ -64,7 +65,12 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       printHelp(io, opts.binaryName ?? defaultBinaryName());
       return 0;
     }
-    if (command === "operation" && (opts.binaryName === "ppa" || opts.binaryName === "opa")) return runOperationCommand(rest, io, opts.binaryName === "ppa" ? "pi" : "opencode", opts.operationHost);
+    if (command === "operation" && (opts.binaryName === "ppa" || opts.binaryName === "opa")) {
+      const runtime = opts.binaryName === "ppa" ? "pi" : "opencode";
+      let host = opts.operationHost ?? null;
+      try { if (opts.operationHost === undefined) host = resolveAdvisoryOperationHost(runtime); } catch { /* unavailable locally, never fallback authority */ }
+      return runOperationCommand(rest, io, runtime, host);
+    }
     if (command === "template" && opts.binaryName === "ppa") return runTemplateCommand(rest, io, opts.templateHost);
     if (command === "artifact") return runArtifactCommand(rest, io);
     if (command === "repo-setup" && opts.binaryName !== "opa") return runRepoSetupOperatorCommand(rest, io, opts.repoOperatorHost);

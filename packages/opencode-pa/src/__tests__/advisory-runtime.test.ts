@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE } from "../plugins/pa-safety-activity.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeExecutionEvidence, ProtectedWorkflowStore, runCoreCommand, parseOperationResult, type AdvisoryOperationHost } from "@pa-platform/pa-core";
@@ -27,4 +29,30 @@ test("actual OPA/PPA CLI dispatch shares neutral executor and result exits witho
     assert.equal(await call(["run", "--command", "pwd"]), 0);
     assert.equal(failed.process?.exitCode, 19);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("generated OpenCode hooks delegate shell to the shared public owner and keep protected denials local", async () => {
+  // Source hook unit port, not installed/native-authentication qualification.
+  const root = mkdtempSync(join(tmpdir(), "pap277-opa-hook-")), env = { ...process.env };
+  try {
+    Object.assign(process.env, { PA_DEPLOYMENT_ID: "d-123abc", PA_DEPLOYMENT_DIR: root, PA_ACTIVITY_LOG: join(root, "activity.jsonl") });
+    const port = join(root, "port.mjs");
+    writeFileSync(port, `export const readAdvisoryStart = () => ({}); export const resolveAdvisoryOperationHost = () => ({}); export const trustedNativeExecutable = () => '/nix/store/fixture/opa'; export const parseOperationResult = () => { throw Error('unknown'); };`);
+    const plugin = join(root, "plugin.mjs");
+    writeFileSync(plugin, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE.replace(/import \* as paOperations from [^\n]+/, `import * as paOperations from ${JSON.stringify(pathToFileURL(port).href)}`));
+    const loaded = await import(pathToFileURL(plugin).href) as { PaSafetyActivityPlugin(): Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>> };
+    const hooks = await loaded.PaSafetyActivityPlugin();
+    const command = `printf '%s' "it's fine"`;
+    const output = { args: { command } };
+    await hooks["tool.execute.before"]!({ tool: "bash" }, output);
+    assert.ok(output.args.command.startsWith("'/nix/store/fixture/opa' operation run --command "));
+    assert.match(output.args.command, /--format pa-operation-result\/v1$/);
+    assert.ok(output.args.command.includes(`'"'"'`), "apostrophes remain inert shell operands");
+    await assert.rejects(() => hooks["tool.execute.before"]!({ tool: "bash" }, { args: { command: "rm fixture.txt" } }), /SAFETY_DIRECT_DELETION/);
+    await hooks["tool.execute.before"]!({ tool: "read" }, { args: { filePath: "README.md" } });
+    await assert.rejects(() => hooks["tool.execute.before"]!({ tool: "read" }, { args: { filePath: ".env" } }), /SAFETY_PROTECTED_PATH/);
+    const after: { output: string; metadata?: Record<string, unknown> } = { output: "printed success without native facts" };
+    await hooks["tool.execute.after"]!({ tool: "bash" }, after);
+    assert.equal(after.metadata?.paOperationObservation, "unavailable");
+  } finally { process.env = env; rmSync(root, { recursive: true, force: true }); }
 });

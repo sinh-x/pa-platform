@@ -4,11 +4,13 @@ import { dirname, join } from "node:path";
 
 export const PA_SAFETY_ACTIVITY_PLUGIN_FILENAME = "pa-safety-activity.js";
 
+const PA_CORE_OPERATIONS_MODULE_URL = import.meta.resolve("@pa-platform/pa-core");
 const PA_CORE_SAFETY_MODULE_URL = new URL("./safety-policy.js", import.meta.resolve("@pa-platform/pa-core")).href;
 
 export const PA_SAFETY_ACTIVITY_PLUGIN_SOURCE = String.raw`import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import * as paSafety from ${JSON.stringify(PA_CORE_SAFETY_MODULE_URL)}
+import * as paOperations from ${JSON.stringify(PA_CORE_OPERATIONS_MODULE_URL)}
 
 function deploymentId() {
   return process.env.PA_DEPLOYMENT_ID || "unknown"
@@ -167,7 +169,7 @@ function evaluatePolicy(input, executable = "opa") {
 }
 
 function denyMessage(decision) {
-  return "BLOCKED: " + (decision.reason || "PA safety policy denied this operation.")
+  return "BLOCKED: " + (decision.code ? "SAFETY_" + decision.code.replaceAll("-", "_").toUpperCase() + ": " : "") + (decision.reason || "PA safety policy denied this operation.")
     + (decision.guidance ? " Use " + decision.guidance + "." : "")
 }
 
@@ -250,6 +252,9 @@ function messagePartType(part, properties) {
 
 export const PaSafetyActivityPlugin = async () => {
   const path = activityLogPath()
+  const pendingFiles = new Map()
+  const shellQuote = value => "'" + value.replaceAll("'", String.fromCharCode(39,34,39,34,39)) + "'"
+  const marked = () => Boolean(process.env.PA_DEPLOYMENT_ID && paOperations.readAdvisoryStart(process.env.PA_DEPLOYMENT_ID))
 
   if (isPaDeployment() && process.env.PA_DEPLOYMENT_DIR) {
     mkdirSync(process.env.PA_DEPLOYMENT_DIR, { recursive: true })
@@ -277,11 +282,48 @@ export const PaSafetyActivityPlugin = async () => {
         }
         if (tool === "apply_patch") guardPatch(args)
       }
+      if (marked()) {
+        const id = input?.callID || input?.toolCallID || input?.toolCallId || input?.id
+        if (tool === "bash") {
+          // The outer host shell dispatches only the installed public capability.
+          // The shared owner observes/cleans the actual command's process group.
+          paOperations.resolveAdvisoryOperationHost("opencode")
+          const executable = paOperations.trustedNativeExecutable("opa")
+          const command = args.command || ""
+          const direct = /^opa operation capabilities --format pa-operation-result\/v1$/.test(command)
+            || /^opa operation run --command '[^']*'(?: --timeout [0-9.]+)? --format pa-operation-result\/v1$/.test(command)
+          args.command = direct ? shellQuote(executable) + command.slice(3)
+            : shellQuote(executable) + " operation run --command " + shellQuote(command) + " --timeout " + String(Math.min(14400, Math.max(0.001, (args.timeout || 1200000) / 1000))) + " --format pa-operation-result/v1"
+        } else if (["write", "edit", "apply_patch"].includes(tool)) {
+          const host = paOperations.resolveAdvisoryOperationHost("opencode")
+          if (!host || !id || pendingFiles.has(id)) throw new Error("OPERATION_WRITER_CONFLICT")
+          const files = new paOperations.AdvisoryFiles(host.cwd)
+          const targets = tool === "apply_patch" ? pathsFromPatch(patchText(args)) : [args.filePath || args.file_path || args.path]
+          for (const target of targets) {
+            files.assertPath(target)
+            try { files.file(target) } catch (error) { if (error.code !== "ENOENT") throw error }
+          }
+          const operationId = "opencode-" + id
+          host.begin(operationId, JSON.stringify({ tool, inputSha256: paOperations.workflowDigest(JSON.stringify(args)) }))
+          pendingFiles.set(id, { host, operationId })
+        }
+      }
       appendActivity({ agent: sessionId(input), event: "tool.execute.before", data: { tool, args: activityArgs, summary: summarizeTool(tool, activityArgs) } })
     },
 
     "tool.execute.after": async (input, output) => {
       const tool = input?.tool || output?.tool || "unknown"
+      const id = input?.callID || input?.toolCallID || input?.toolCallId || input?.id
+      const pending = pendingFiles.get(id)
+      if (pending) {
+        const ref = pending.host.evidence.publish("advisory-process-result", { operationId: pending.operationId, kind: tool, settled: true, hostError: Boolean(output?.error) })
+        pending.host.finish(pending.operationId, ref, true)
+        pendingFiles.delete(id)
+      }
+      if (marked() && tool === "bash") {
+        try { output.metadata = { ...output.metadata, paOperation: paOperations.parseOperationResult(output.output) } }
+        catch { output.metadata = { ...output.metadata, paOperationObservation: "unavailable" } }
+      }
       appendActivity({ agent: sessionId(input), event: "tool.execute.after", data: { tool, tool_use_id: input?.toolCallID || input?.toolCallId || input?.id || "", error: output?.error || undefined, result: output?.result, summary: summarizeResult(output?.result || output) } })
     },
 

@@ -14,5 +14,6 @@ export function advisoryStartFromEvents(events: readonly RegistryEvent[]): Regis
 }
 export function readAdvisoryStart(deploymentId: string): RegistryEvent | null {
   if (!/^d-[0-9a-f]{6}$/.test(deploymentId)) return null;
-  return advisoryStartFromEvents(queryReadonlyDeploymentEvents(deploymentId));
+  try { return advisoryStartFromEvents(queryReadonlyDeploymentEvents(deploymentId)); }
+  catch { return null; } // unreadable/ambiguous is never evidence for an upgrade
 }

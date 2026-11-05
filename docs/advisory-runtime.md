@@ -92,6 +92,74 @@ atomically in Phase 3. Phase 2 alone does not activate advisory sessions.
 Source adapter tests exercised actual CLI/native dispatch and real disposable
 children, not installed binaries or foreground agents.
 
+## Phase 3: native identity, integrity and coexistence
+
+The existing immutable registry `started.note` pins `pa-advisory-runtime/v1`.
+Registry exact-start replay already protects this field. Updates, environment
+variables, model arguments and ticket status cannot supply that discriminator.
+Only the native launcher selects it for supported fresh sessions. Unmarked,
+resumed, ambiguous, parented, rogue-one and pinned workflow starts remain legacy.
+Existing native preparation reservations also select the retained consume route.
+No original start, signature, bound, counter, intent or holder is rewritten.
+
+New Pi support is the independent direct `builder/orchestrator` profile (one
+mode, ticketed checkout); legacy split-child profiles retain their original
+runtime. PPA launch reuses ticket slots, Treehouse identity and atomic branch
+materialization, but obtains ordinary base facts from the native ticket/Git owner
+rather than requiring a requirements package. This observation is not a new
+permission ledger. PAPC-074's compatible direct profile is still needed for
+installed qualification. Retained fixtures explicitly exercise the stricter old
+launcher through a trusted, non-CLI test dependency; this cannot select advisory
+mode, grants no permission, and is not a rollout or public bypass flag.
+
+Each new effect authenticates physical Git roots and live runtime/launcher
+ancestry against the native start and existing lease, plus Pi ticket capacity.
+An operation-local field in that SAME lease is reserved under its existing
+mutex before effects. It excludes simultaneous/uncertain effects, not reads.
+After native completion/cleanup proof, only that operation's original caller
+can relinquish its field. Unknown cleanup retains custody/permit and cannot be
+cleared by a tool error, printed success, PID death, retry or session shutdown.
+There are no phase/order/retry/review/no-progress counters in this path.
+
+Pi's actual bash/write/edit definitions use this local owner. Bash uses the
+shared native process runner; SDK write/edit matching uses no-follow dirfd file
+operations and atomic replacement. Protected paths, traversal, symlinks and
+hardlink aliases deny. Failed checks release settled operation custody and
+remain data, so repair/recheck/local commit can follow without a phase plan.
+Known safe observations remain callable even when a conflicting effect is
+uncertain. Unknown custom effect surfaces do not inherit untracked writer rights.
+
+OpenCode's shell hook delegates the original safe command to the installed
+`opa operation` capability, with inert shell quoting, instead of inventing exit
+or cleanup facts from host text. File hooks use the same native lease owner;
+missing after-events retain the effect. Hook result parsing accepts only an
+exact core result envelope; otherwise the observation is unavailable, not a
+pass. Native `pa_operation` parity is not claimed. The new foreground adapter
+publishes its actual PID before tools and retains a host timeout; installed TUI
+behavior remains an independent qualification obligation.
+
+### Explicit deprecation/reconciliation path
+
+| Retained surface | Read/reconcile owner | Removal prerequisite |
+|---|---|---|
+| Pinned JSON workflows/decisions | Existing workflow/decision status and exact-revision/same-intent native reconciliation | Owning workflow settles its own effects; preserve signed bytes and decisions |
+| Preparation receipts/reservations | Existing preparation/capacity owners; exact ready/consumed receipt | Native resource/custody settlement, never ticket cancellation |
+| Legacy execution plans/recovery/deadlines | Retained `pa_execution` and native restart owner | Explicit owner reconciliation; no counter reset or historical deadline extension |
+| Setup/catalogues/approval credentials | Optional setup/catalogue readers; operator authority for approval/revocation | Separately authorized deprecation and retained consumers reconciled |
+| Old installed qualification drivers | Explicit historical-profile fixture, not advisory acceptance | New exact installed pair and separately authorized adoption/rollback |
+
+Phase 3 source evidence: actual source-built default launch + SDK write/edit/bash
+with no requirements doc refs, fail/repair/recheck/commit; native core protected
+path/alias and timeout tests; 32-process reservation (1 winner/31 conflicts);
+existing capacity tests (duplicate lineage/fifth permit); retained execution and
+workflow replay tests. These use isolated Git/state and simulated provider/
+Treehouse admission, never production holders or human acceptance.
+
+The initial full workspace run exceeded 1800 seconds. Its original failures and
+skips are retained in the session evidence; it is NOT a passing matrix. Legacy
+fixture dispatch/composition failures were investigated and corrected, with
+focused reruns. External-config skips remain acceptance debt, not waived checks.
+
 ## Veto/controller inventory
 
 Paths below are relative to `packages/`. These are gate families, not a claim

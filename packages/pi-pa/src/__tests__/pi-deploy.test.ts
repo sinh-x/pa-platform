@@ -135,7 +135,7 @@ test("PAP-264 actual ordinary native holder relinquishes execution before indepe
       return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId! } };
     } };
   const result = await deployWithPi({ team: "builder", mode: "orchestrator", repo: "pa-platform", ticket: "PAP-198", timeout: 1800,
-    provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: authority });
+    provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { retainedRuntimeFixture: "ordinary-native-execution/v1", treehouse, preparedAuthority: authority });
   if (bodyFailure) throw bodyFailure;
   assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1); assert.equal(forbidden, 0);
 }));

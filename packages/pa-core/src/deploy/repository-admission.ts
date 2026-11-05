@@ -34,7 +34,8 @@ import { assertSupportedRuntime } from "./runtime-config.js";
 import { authenticateNativeExecutionRestart, assertNativeRestartProcessDead, type NativeExecutionRestartSource } from "./execution-restart.js";
 import type { ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
-import { withPreparedRepositoryTicketOwner, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
+import { readAdvisoryStart } from "../operations/runtime.js";
+import { withPreparedRepositoryTicketOwner, observeReadonlyRepositoryTicketSlot, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
 
 export const REPOSITORY_REVIEW_RESERVATION_FILE = "pa-repository-review.reservation.json";
 
@@ -210,6 +211,8 @@ export interface RepositoryMutationLease {
   readonly team?: string;
   /** Native direct custody remains active until journaled, inventory-proven relinquishment. */
   readonly directExecutionCustody?: "active" | "idle";
+  /** Operation-local native barrier, not a plan/phase/retry permission ledger. */
+  readonly advisoryOperation?: { readonly id: string; readonly caller: ProcessFingerprint; readonly inputSha256: string; readonly intentRef: string };
   readonly launchMode?: RepositoryAdmissionLaunchMode;
   readonly processFingerprint: ProcessFingerprint;
   readonly acquiredAt: string;
@@ -1571,6 +1574,65 @@ function safeGitRefComponent(value: string): boolean {
     && !value.endsWith(".lock");
 }
 
+export interface AdvisoryRepositoryContext {
+  readonly deploymentId: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+}
+/** Reuse the existing worktree mutex and live lease. Arguments select an
+ * observation, not authority: native immutable start, physical roots, actual
+ * runtime/launcher ancestry and (for Pi ticket writers) capacity are reread. */
+export function withAdvisoryRepositoryOwner<T>(context: AdvisoryRepositoryContext, action: (lease: RepositoryMutationLease) => T): T {
+  const start = readAdvisoryStart(context.deploymentId);
+  if (!start || start.team !== "builder" || start.repo_root !== context.repoRoot || start.worktree_root !== context.worktreeRoot) throw new Error("ADVISORY_CALLER_UNPROVEN");
+  const slot = classifyRepositoryMutationSlot(start.mode ?? "");
+  const location = repositoryLeaseLocation(context.repoRoot, context.worktreeRoot, slot);
+  return withMutationMutex(location.mutexPath, () => {
+    const status = queryReadonlyHelperRegistry(context.deploymentId).status;
+    const runtimeProcess = status?.pid ? readProcessFingerprint(status.pid) : undefined;
+    if (!status || status.status !== "running" || !runtimeProcess || !processIsWithinFingerprintLineage(process.pid, runtimeProcess)
+      || status.repo_root !== context.repoRoot || status.worktree_root !== context.worktreeRoot || status.team !== start.team || status.runtime !== start.runtime) throw new Error("ADVISORY_CALLER_UNPROVEN");
+    const inspection = inspectLeaseUnlocked(location.root, location.leasePath, readProcessFingerprint), lease = inspection.lease;
+    if (inspection.state !== "live" || !lease || lease.deploymentId !== context.deploymentId || lease.runtime !== start.runtime || lease.team !== "builder" || lease.mode !== start.mode
+      || (lease.worktreeRoot ?? lease.canonicalRepoRoot) !== context.worktreeRoot || !processIsWithinFingerprintLineage(process.pid, lease.processFingerprint)
+      || settlementPending(location.gitDir)) throw new Error("ADVISORY_WRITER_CONFLICT");
+    assertExpectedGitIdentity(context.worktreeRoot, lease.repositoryGitDir, lease.repositoryGitCommonDir);
+    if (lease.repositoryMetadataIdentity && lease.repositoryMetadataIdentity !== repositoryMetadataIdentity(location.root, location.worktree, location.gitDir, repositoryPhysicalGitCommonDir(location.worktree))) throw new Error("ADVISORY_IDENTITY_CHANGED");
+    const other = slot === "orchestrator" ? REPOSITORY_IMPLEMENT_LEASE_FILE : REPOSITORY_MUTATION_LEASE_FILE;
+    for (const name of [REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE, ...(location.linked ? [other] : [])]) if (reviewReservationPresent(join(location.gitDir, name))) throw new Error("ADVISORY_WRITER_CONFLICT");
+    if (start.runtime === "pi" && start.ticket_id) {
+      const capacity = observeReadonlyRepositoryTicketSlot(location.root, start.ticket_id).slot;
+      if (capacity.deploymentId !== start.deployment_id || capacity.slotId !== start.ticket_slot_id || capacity.repositoryPermit !== start.repository_permit
+        || !processIsWithinFingerprintLineage(process.pid, capacity.processFingerprint)) throw new Error("ADVISORY_CAPACITY_UNPROVEN");
+    }
+    const result = action(lease);
+    if (result && typeof result === "object" && "then" in result) throw new Error("ADVISORY_ASYNC_LOCK_CALLBACK");
+    return result;
+  });
+}
+export function beginAdvisoryRepositoryOperation(context: AdvisoryRepositoryContext, operation: { id: string; inputSha256: string; intentRef: string }): void {
+  withAdvisoryRepositoryOwner(context, lease => {
+    const caller = readProcessFingerprint(process.pid);
+    const next = { ...operation, caller };
+    if (!caller || !isAdvisoryOperation(next) || lease.advisoryOperation || lease.directExecutionCustody === "active") throw new Error("ADVISORY_OPERATION_CONFLICT");
+    const current = captureRepositoryGitSnapshot(context.worktreeRoot);
+    if (current.branch !== lease.preLaunchGitSnapshot.branch) throw new Error("ADVISORY_CHECKOUT_CHANGED");
+    const path = repositoryLeaseLocation(context.repoRoot, context.worktreeRoot, classifyRepositoryMutationSlot(lease.mode)).leasePath;
+    replaceLeaseAtomic(path, { ...lease, directExecutionCustody: "active", advisoryOperation: next as NonNullable<RepositoryMutationLease["advisoryOperation"]> }, randomUUID);
+  });
+}
+export function finishAdvisoryRepositoryOperation(context: AdvisoryRepositoryContext, operationId: string, settled: boolean): void {
+  withAdvisoryRepositoryOwner(context, lease => {
+    if (!lease.advisoryOperation || lease.advisoryOperation.id !== operationId || !fingerprintsEqual(lease.advisoryOperation.caller, readProcessFingerprint(process.pid))) throw new Error("ADVISORY_OPERATION_CONFLICT");
+    if (!settled) return; // uncertain effects retain ONLY the conflicting writer barrier
+    const next = captureRepositoryGitSnapshot(context.worktreeRoot);
+    if (next.branch !== lease.preLaunchGitSnapshot.branch) throw new Error("ADVISORY_CHECKOUT_CHANGED");
+    const { advisoryOperation: _finished, ...rest } = lease;
+    const path = repositoryLeaseLocation(context.repoRoot, context.worktreeRoot, classifyRepositoryMutationSlot(lease.mode)).leasePath;
+    replaceLeaseAtomic(path, { ...rest, directExecutionCustody: "idle", authorityGitSnapshot: next, authorityUpdatedAt: new Date().toISOString() }, randomUUID);
+  });
+}
+
 export function acquireRepositoryMutationLease(options: AcquireRepositoryMutationLeaseOptions): RepositoryLeaseAcquisition {
   assertSupportedRuntime(options.runtime);
   const slot = classifyRepositoryMutationSlot(options.mode);
@@ -2476,7 +2538,7 @@ export function releaseRepositoryMutationLease(options: {
     if (parsed === undefined) return { status: "absent" };
     if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree) return { status: "invalid-evidence" };
     if (!secureStringsEqual(parsed.ownershipToken, options.ownershipToken)) return { status: "token-mismatch" };
-    if (parsed.directExecutionCustody === "active") return { status: "invalid-evidence" };
+    if (parsed.directExecutionCustody === "active" || parsed.advisoryOperation) return { status: "invalid-evidence" };
     const borrowerInspection = slot === "implement" && linked
       ? { state: "absent" as const, reason: "independent implement owner has no borrower", borrowerPath }
       : inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
@@ -2758,6 +2820,7 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && isAbsolute(row["deploymentDirectory"] as string)
     && boundedString(row["runtime"])
     && (row["directExecutionCustody"] === undefined || row["directExecutionCustody"] === "active" || row["directExecutionCustody"] === "idle")
+    && (row["advisoryOperation"] === undefined || isAdvisoryOperation(row["advisoryOperation"]))
     && boundedString(row["mode"])
     && (row["team"] === undefined || boundedString(row["team"]))
     && (row["launchMode"] === undefined || row["launchMode"] === "foreground" || row["launchMode"] === "background" || row["launchMode"] === "dry-run")
@@ -2776,6 +2839,13 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && (row["branchTransitionPolicy"] === undefined || isBranchTransitionPolicy(row["branchTransitionPolicy"]))
     && (row["initialDevelopRemoteHead"] === undefined || (typeof row["initialDevelopRemoteHead"] === "string" && /^[0-9a-f]{40}$/.test(row["initialDevelopRemoteHead"])))
     && (row["branchTransitioned"] === undefined || row["branchTransitioned"] === true);
+}
+
+function isAdvisoryOperation(value: unknown): value is NonNullable<RepositoryMutationLease["advisoryOperation"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).sort().join(",") === "caller,id,inputSha256,intentRef" && boundedString(row.id) && boundedString(row.intentRef)
+    && typeof row.inputSha256 === "string" && /^[0-9a-f]{64}$/.test(row.inputSha256) && isProcessFingerprint(row.caller);
 }
 
 function isChildMutationScope(value: unknown, worktree: string): value is RepositoryChildMutationScope {
