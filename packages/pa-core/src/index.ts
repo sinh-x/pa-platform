@@ -27,6 +27,7 @@ export * from "./registry/index.js";
 export * from "./tickets/index.js";
 export * from "./bulletins/index.js";
 export * from "./documents/index.js";
+export * from "./documents/package-contract.js";
 export * from "./primer/index.js";
 export * from "./codectx/index.js";
 export * from "./trash/index.js";
