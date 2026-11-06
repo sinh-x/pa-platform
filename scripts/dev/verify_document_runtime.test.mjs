@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,9 +10,9 @@ import { createHarness, runHarness } from "./workflow_installed_harness.mjs";
 import { cleanEnvironment, digest, git, implementationFiles, physicalFile } from "./workflow_installed_support.mjs";
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 const events = () => [...DOCUMENT_CASES.map(([, owner, name]) => ({ type: "test:pass", data: { name, file: join("/fixture/harness", owner.replace(/\.ts$/, ".js")), details: { type: "test" } } })), { type: "test:summary", data: { success: true, counts: { passed: DOCUMENT_CASES.length, failed: 0, cancelled: 0, skipped: 0, todo: 0 } } }];
-test("PAP-283 installed accounting requires all 44 exact document owners, not advisory cases or caller totals", () => {
-  assert.equal(DOCUMENT_CASES.length, 44); assert.equal(new Set(initialDocumentCases().map(r => r.id)).size, initialDocumentCases().length);
-  assert.equal(accountDocumentCases(events(), "/fixture/harness").cases.length, 44);
+test("PAP-283 installed accounting requires all 45 exact document owners, not advisory cases or caller totals", () => {
+  assert.equal(DOCUMENT_CASES.length, 45); assert.equal(new Set(initialDocumentCases().map(r => r.id)).size, initialDocumentCases().length);
+  assert.equal(accountDocumentCases(events(), "/fixture/harness").cases.length, 45);
   for (const change of [
     e => e.splice(0, 1), e => e.unshift(e[0]), e => e[0].data.file = "/foreign/file.js", e => e[0].data.name = "actual Pi operation tool: failed check then safe diagnosis and recheck, no plan/catalogue/order",
     e => e[0].data.skip = true, e => e[0].data.todo = true, e => e[0].type = "test:fail", e => e.pop(), e => e.at(-1).data.success = false,
@@ -43,20 +43,26 @@ test("document installed verifier rejects source/config/result/skip overrides an
   const report = JSON.parse(run.stdout); assert.equal(report.status, "blocked"); assert.equal(report.installationPerformed, false); assert.equal(report.enablementPerformed, false); assert.equal(report.humanApproval, false); assert.equal(report.humanUat, false);
   assert.ok(report.cases.every(row => row.status === "not-run")); assert.deepEqual(report.cases.map(r => r.id), initialDocumentCases().map(r => r.id)); assert.equal(git(root, "status", "--porcelain=v2", "--untracked-files=all"), before);
 });
-test("source-built document driver unit runs the pinned 44-case harness and default entry mechanics without an installed-pass claim", async () => {
+test("source-built document driver unit runs the pinned 45-case harness and default entry mechanics without an installed-pass claim", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "pap283-driver-unit-")), directory = join(scratch, "harness");
   try {
     // No public source-mode exists. This internal harness/driver unit is NOT
     // selected-installed qualification and never runs qualifyDocumentRuntime.
-    const sourceSha = git(root, "rev-parse", "HEAD"), modules = Object.fromEntries(implementationFiles(root).map(path => [path, digest(physicalFile(join(root, path), 16_777_216))]));
-    const harness = await createHarness({ sourceRoot: root, sourceSha, moduleRoot: root, directory, requiredTestFiles: [...new Set(DOCUMENT_CASES.map(([, owner]) => owner))] });
+    const sourceRoot = join(scratch, "source"); mkdirSync(sourceRoot);
+    cpSync(join(root, "package.json"), join(sourceRoot, "package.json"));
+    for (const name of ["pa-core", "pi-pa"]) { mkdirSync(join(sourceRoot, "packages", name), { recursive: true }); cpSync(join(root, "packages", name, "src"), join(sourceRoot, "packages", name, "src"), { recursive: true }); }
+    symlinkSync(join(root, "node_modules"), join(sourceRoot, "node_modules"), "dir");
+    git(sourceRoot, "init", "-q", "-b", "fixture"); git(sourceRoot, "add", "--", "package.json", "packages");
+    git(sourceRoot, "-c", "user.name=Source-built driver unit", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Disposable driver fixture, not installed qualification");
+    const sourceSha = git(sourceRoot, "rev-parse", "HEAD"), modules = Object.fromEntries(implementationFiles(root).map(path => [path, digest(physicalFile(join(root, path), 16_777_216))]));
+    const harness = await createHarness({ sourceRoot, sourceSha, moduleRoot: root, directory, requiredTestFiles: [...new Set(DOCUMENT_CASES.map(([, owner]) => owner))] });
     const audit = join(scratch, "imports.jsonl"), frame = join(scratch, "imports-frame.json");
-    writeFileSync(frame, JSON.stringify({ sourceRoot: root, moduleRoot: root, harness: directory, modules, bridges: harness.bridges, audit }), { mode: 0o600 });
+    writeFileSync(frame, JSON.stringify({ sourceRoot, moduleRoot: root, harness: directory, modules, bridges: harness.bridges, audit }), { mode: 0o600 });
     const loader = new URL("./workflow_import_register.mjs", import.meta.url); loader.searchParams.set("frame", frame);
     const env = { ...cleanEnvironment(), NODE_OPTIONS: `--import=${loader.href}`, HOME: join(scratch, "home"), PA_PLATFORM_CONFIG: join(scratch, "config"), PA_AI_USAGE_HOME: join(scratch, "usage"), PA_REGISTRY_DB: join(scratch, "registry.db"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...(process.env.PA_SQLITE_NATIVE_BINDING ? { PA_SQLITE_NATIVE_BINDING: process.env.PA_SQLITE_NATIVE_BINDING } : {}) };
     for (const name of ["HOME", "PA_PLATFORM_CONFIG", "PA_AI_USAGE_HOME"]) mkdirSync(env[name], { recursive: true });
     const result = runHarness({ directory, harness, env, reporter: fileURLToPath(new URL("./workflow_test_reporter.mjs", import.meta.url)), evidenceRoot: scratch, account: accountDocumentCases });
-    assert.equal(result.cases.length, 44); assert.equal(result.tests.skipped, 0); assert.equal(result.tests.failed, 0);
+    assert.equal(result.cases.length, 45); assert.equal(result.tests.skipped, 0); assert.equal(result.tests.failed, 0);
     const bin = join(scratch, "bin"); mkdirSync(bin);
     for (const [binary, pkg] of [["ppa", "pi-pa"], ["opa", "opencode-pa"]]) writeFileSync(join(bin, binary), `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' '${join(root, `packages/${pkg}/dist/cli.js`).replaceAll("'", "'\\''")}' "$@"\n`, { mode: 0o700 });
     const entryFrame = join(scratch, "entry-frame.json"); writeFileSync(entryFrame, JSON.stringify({ share: root, ppa: join(bin, "ppa"), opa: join(bin, "opa"), evidenceRoot: scratch }), { mode: 0o600 });

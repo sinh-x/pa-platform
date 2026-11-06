@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { workflowDigest, parseTeamYamlContent, type DeploymentStatus, type RegistryEvent } from "@pa-platform/pa-core";
+import { generatePrimer, workflowDigest, parseTeamYamlContent, type DeploymentStatus, type RegistryEvent } from "@pa-platform/pa-core";
 import { authenticatePiDocumentCaller, DOCUMENT_SESSION_VERSION, type DocumentSessionDependencies } from "../document-session.js";
 import { createPiDocumentCapture } from "../document-native.js";
 import { createDocumentTool, documentSessionToolAllowed } from "../pi-extension/document-tool.js";
@@ -51,6 +51,17 @@ test("native route authentication requires an immutable launch, incarnation anch
   const associated = { event: "ticket-associated", previous_ticket_id: "EX-1", ticket_id: "EX-2", actor: "requirements/analyze" } as RegistryEvent;
   assert.equal(authenticatePiDocumentCaller(ctx, env, { ...deps, status: () => ({ ...status, ticket_id: "EX-2" }), events: () => [start, associated] }).ticket, "EX-2");
   assert.throws(() => authenticatePiDocumentCaller(ctx, env, { ...deps, status: () => ({ ...status, ticket_id: "EX-2" }), events: () => [start, { ...associated, previous_ticket_id: "EX-9" }] }), /DOCUMENT_AUTHORITY/);
+});
+test("fresh document primer avoids shell lifecycle and blanket stop without changing retained or OPA views", () => {
+  const teamConfig = parseTeamYamlContent("name: requirements\nobjective: Fixture requirements\nagents: []\ndeploy_modes:\n  - id: analyze\n    document_profile: pa-document-package/v1\n");
+  const options = { teamConfig, mode: "analyze", skillsDir: "/nonexistent-document-fixture-skills", repository: { repoKey: "example", repoRoot: "/tmp/example", worktreeRoot: "/tmp/example" } };
+  const document = generatePrimer({ ...options, runtime: "pi", requirementsDocument: true });
+  for (const forbidden of ["Before starting work, run `ppa bulletin list`", "finalize registry state with `ppa registry complete`", "On verification failure or abort, stop"]) assert.ok(!document.includes(forbidden), forbidden);
+  for (const required of ["pa_bulletin with action=list", "PAPC owns the requirements process", "independent safe reads, discussion and drafting remain available", "Session/registry terminal publication belongs to the runtime"]) assert.ok(document.includes(required), required);
+  const retained = generatePrimer({ ...options, runtime: "pi", requirementsDocument: true, workflow: { runId: "fixture", workflowId: "requirements-to-builder", version: "r001", sha256: "a".repeat(64), configRevision: "b".repeat(40), nextOwner: "existing-owner", nextAction: "reconcile" } });
+  assert.ok(!retained.includes("## Requirements supporting capabilities")); assert.ok(retained.includes("finalize registry state with `ppa registry complete`"));
+  const opa = generatePrimer({ ...options, runtime: "opencode", requirementsDocument: true });
+  assert.ok(!opa.includes("## Requirements supporting capabilities")); assert.ok(opa.includes("On verification failure or abort, stop"));
 });
 test("paired profile parser is version scoped and no source/shell/resource aliases inherit rights", () => {
   const yaml = 'name: requirements\ndeploy_modes:\n  - id: analyze\n    document_profile: pa-document-package/v1\n';

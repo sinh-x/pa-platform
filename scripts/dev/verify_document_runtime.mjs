@@ -40,6 +40,7 @@ export const DOCUMENT_CASES = Object.freeze([
   ...["Request changes", "Reject exact package", "Cancel", "undefined"].map((choice, i) => [`native-nonapproval-${i}`, p("document-native"), `native document choice ${choice} never grants approval`]),
   ["native-caller-and-abort", p("document-native"), "nonforeground, caller drift and aborted UI never issue a decision"],
   ["native-launch-incarnation", p("document-native"), "native route authentication requires an immutable launch, incarnation anchor, foreground and canonical root"],
+  ["document-primer-scope", p("document-native"), "fresh document primer avoids shell lifecycle and blanket stop without changing retained or OPA views"],
   ["role-and-tool-boundaries", p("document-native"), "paired profile parser is version scoped and no source/shell/resource aliases inherit rights"],
   ["bounded-lost-reply-correlation", p("document-native"), "native tool validates outer input and preserves durable-effect correlation in a bounded reply"],
   ["public-discovery-no-import", p("document-native"), "CLI discovery is static and never an approval/import workaround"],
@@ -101,7 +102,9 @@ export async function qualifyDocumentRuntime(args) {
   if (selection.registrySha256 !== pins.registrySha256 || selection.configRevision !== metadata.configSha || core.getTeamsDir() !== join(selection.root, "teams")) block("DOCUMENT_SELECTED_PAIR_MISMATCH");
   const resources = {};
   const selectedRead = path => { const raw = committedRead(selection.root, selection.configRevision, path); resources[path] = digest(raw); return raw.toString("utf8"); };
-  const team = validateDocumentProfile(core, selectedRead("teams/requirements.yaml"), selectedRead("skills/global/pa-requirements-workflow/SKILL.md"));
+  const teamSource = selectedRead("teams/requirements.yaml");
+  if (core.parseTeamYamlContent(teamSource).deploy_modes?.find(row => row.id === "analyze")?.document_profile !== "pa-document-package/v1") block("DOCUMENT_PAIRED_PROFILE_REQUIRED", "paired-document-profile");
+  const team = validateDocumentProfile(core, teamSource, selectedRead("skills/global/pa-requirements-workflow/SKILL.md"));
   mark("paired-document-profile", "passed");
   const primer = core.generatePrimer({ runtime: "pi", teamConfig: team, mode: "analyze", requirementsDocument: true, skillsDir: join(selection.root, "skills/global"), repository: { repoKey: "qualification-fixture", repoRoot: "/qualification-fixture", worktreeRoot: "/qualification-fixture" }, resolveFile: path => { selectedRead(path); return join(selection.root, path); } });
   const canonicalTag = `name="pa-requirements-workflow" path="${join(selection.root, "skills/global/pa-requirements-workflow/SKILL.md")}"`;
