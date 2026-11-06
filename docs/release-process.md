@@ -18,6 +18,26 @@ The latest PAP-273 labelled trial is `0.1.154-pap273.4`, committed at `2f2deccfe
 
 The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same four manifests for operator trial installation and PAPC development. This label does not resolve the retained full-suite timeout or establish installed-pair, foreground-agent, CI or human-UAT acceptance; see `PAP-277-qualification.md`. Use the clean version-label commit as the exact candidate SHA when building and verifying the trial. The PAP-277 integration candidate restores plain `0.1.155` across the same four manifests for the normal `develop` auto-patch flow; the historical trial and its qualification are not changed.
 
+The PAP-283 worktree trial label is `0.1.156-pap283.1`, set across those same four manifests for operator trial installation. `ppa --version` must display `ppa 0.1.156-pap283.1`; Nix also uses this label in the package name. `packages/runtime-host` stays independently versioned. Build the clean exact label commit, not a dirty/unversioned path. This version-only change does not alter dependency/lockfile/Nix hashes, resolve the still-pending PAPC opt-in pairing, or grant installation/activation or product acceptance.
+
+After separately installing it, run the following **from the clean PAP-283 worktree** to compare the selected installed package with its exact commit:
+
+```sh
+ppa --version
+python3 - <<'PY'
+import json, pathlib, shutil, subprocess
+assert not subprocess.check_output(['git', 'status', '--porcelain=v2', '--untracked-files=all'], text=True), 'worktree is dirty'
+expected = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+root = pathlib.Path(shutil.which('ppa')).resolve().parent.parent
+metadata = json.loads((root / 'share/pa-platform/review-runtime-provenance.json').read_text())
+assert metadata['packageVersion'] == '0.1.156-pap283.1', metadata
+assert metadata['sourceSha'] == expected, metadata
+print(json.dumps(metadata, indent=2))
+PY
+```
+
+The readable label distinguishes this trial; `sourceSha` verifies the precise commit. Later trial source changes require a fresh exact build/provenance check (and a new suffix for another operator-selected trial). Restore the ordinary version before integration as with the previous ticket-local builds. This check is identity verification, not the full installed document-package qualifier or human UAT.
+
 This prerelease suffix is an operator-readable label, not a release, tag, activation approval, or replacement for exact source/module provenance required by qualification. Do not run the manual release script to set it. Reconcile the worktree-only version before integration into the normal `develop` auto-patch flow. No lockfile or Nix dependency-hash refresh is needed for a version-only change.
 
 ## Manual Release
