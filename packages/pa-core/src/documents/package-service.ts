@@ -75,7 +75,9 @@ export class DocumentPackageService {
         const events = this.journal.events(caller.repoKey, ticket);
         result = { ticket, expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
       } else if (action === "ticket-create") {
-        const title = text(r.title, undefined, 256), description = text(r.content, undefined, 32768), tag = `document-intake-${text(r.intakeId, ID)}`;
+        const title = text(r.title, undefined, 256), tag = `document-intake-${text(r.intakeId, ID)}`;
+        if (typeof r.content !== "string" || !r.content.trim() || Buffer.byteLength(r.content) > 32768 || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(r.content)) documentReject();
+        const description = r.content;
         result = this.host.tickets.withWorkflowTransaction(() => {
           if (!isDeepStrictEqual(caller, this.caller())) documentReject("DOCUMENT_STALE");
           const existing = this.host.tickets.list({ project: caller.repoKey, tags: [tag] });
@@ -90,7 +92,7 @@ export class DocumentPackageService {
         });
       } else if (action === "draft") {
         const path = relativePath(r.path);
-        if (!path.startsWith(`agent-teams/requirements/artifacts/drafts/${caller.deploymentId}/`) || !/\.(?:md|txt)$/.test(path) || typeof r.content !== "string" || !r.content.length) documentReject();
+        if (!path.startsWith(`agent-teams/requirements/artifacts/drafts/${caller.deploymentId}/`) || !/\.(?:md|txt)$/.test(path) || typeof r.content !== "string" || !r.content.length || /[\p{Cs}]/u.test(r.content)) documentReject();
         const expected = r.expectedSha256 === null ? null : text(r.expectedSha256, SHA256), bytes = Buffer.from(r.content), sha256 = digest(bytes);
         validateDocumentBytes({ id: "draft", role: "specification", mediaType: "text/plain", source: path, description: "unsigned draft", bytes: bytes.length, sha256 }, bytes);
         result = this.host.tickets.withWorkflowTransaction(() => {

@@ -20,15 +20,25 @@ export function authenticatePiDocumentCaller(context: PiPreparationContext, env:
     fingerprint: readProcessFingerprint, inLineage: processIsWithinFingerprintLineage, cwd: () => process.cwd(), pid: process.pid, anchor: readPiProcessIdentity, ...overrides };
   const deny = (): never => { throw new DocumentPackageError("DOCUMENT_AUTHORITY"); };
   if (context.mode !== "tui" || env.PA_PI_EXECUTION_MODE !== "foreground" || !/^d-[0-9a-f]{6}$/.test(env.PA_DEPLOYMENT_ID ?? "")) deny();
-  const deploymentId = env.PA_DEPLOYMENT_ID!, status = d.status(deploymentId), starts = d.events(deploymentId).filter(event => event.event === "started"), start = starts[0];
+  const deploymentId = env.PA_DEPLOYMENT_ID!, status = d.status(deploymentId), events = d.events(deploymentId), starts = events.filter(event => event.event === "started"), start = starts[0];
   if (!status || starts.length !== 1 || !start || start.note !== DOCUMENT_SESSION_VERSION || start.runtime !== "pi" || start.binary !== "ppa"
     || status.status !== "running" || status.runtime !== "pi" || status.team !== "requirements" || status.mode !== "analyze" || status.rogue_one || status.builder_authority
     || status.treehouse_path || status.ticket_slot_id || status.repository_permit || !status.pid) return deny();
   const root = status.repo_root;
   if (!root || env.PA_TEAM !== "requirements" || env.PA_MODE !== "analyze" || env.PA_REPO !== root || env.PA_WORKTREE_ROOT !== root
     || status.repo !== root || status.worktree_root !== root || start.repo_root !== root || start.repo !== root || start.worktree_root !== root
-    || start.team !== status.team || start.mode !== status.mode || start.ticket_id !== status.ticket_id || start.rogue_one || start.builder_authority
-    || (env.PA_TICKET_ID || null) !== (status.ticket_id || null) || context.cwd !== root || d.cwd() !== root || d.physical(root) !== root) return deny();
+    || start.team !== status.team || start.mode !== status.mode || start.rogue_one || start.builder_authority
+    || (env.PA_TICKET_ID || null) !== (start.ticket_id || null) || context.cwd !== root || d.cwd() !== root || d.physical(root) !== root) return deny();
+  // The existing operator context owner can associate a ticket without mutating
+  // the immutable launch/env. Follow its exact recorded edges, never model JSON.
+  let ticket = start.ticket_id || null;
+  const associations = events.filter(event => event.event === "ticket-associated");
+  if (associations.length > 256) return deny();
+  for (const event of associations) {
+    if ((event.previous_ticket_id || null) !== ticket || event.actor !== "requirements/analyze" || (event.ticket_id && !/^[A-Z][A-Z0-9]*-\d+$/.test(event.ticket_id))) return deny();
+    ticket = event.ticket_id || null;
+  }
+  if (ticket !== (status.ticket_id || null)) return deny();
   const repo = d.repository(undefined, root), owner = d.fingerprint(status.pid), current = d.fingerprint(d.pid), sessionId = context.sessionManager?.getSessionId();
   if (repo.repoRoot !== root || repo.worktreeRoot !== root || repo.repositoryCwd !== root || !owner || !current || !d.inLineage(d.pid, owner) || !sessionId || !isDeepStrictEqual(owner, d.anchor(deploymentId, getDeployPaths(deploymentId).deployDir))) return deny();
   return { deploymentId, repoKey: repo.repoKey, repoRoot: root, ticket: status.ticket_id || null,

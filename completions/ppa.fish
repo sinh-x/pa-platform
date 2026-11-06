@@ -620,6 +620,11 @@ complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l id -r -d '
 complete -c ppa -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate' -l definition-file -r -d 'Bounded local JSON for static inspection only'
 complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l json -d 'Stable JSON projection'
 
+# Pi-only document interface discovery; no CLI approval or effects
+complete -c ppa -n __fish_use_subcommand -a document -d 'Native document toolkit interface discovery'
+complete -c ppa -n '__fish_seen_subcommand_from document; and not __fish_seen_subcommand_from describe' -a describe -d 'Describe exact native request fields'
+complete -c ppa -n '__fish_seen_subcommand_from document; and __fish_seen_subcommand_from describe' -l format -r -a json
+
 # Shared advisory operation contract; domain failures are data
 complete -c ppa -n __fish_use_subcommand -a operation -d 'Factual capabilities and bounded checks'
 complete -c ppa -n '__fish_seen_subcommand_from operation; and not __fish_seen_subcommand_from capabilities run' -a 'capabilities run'

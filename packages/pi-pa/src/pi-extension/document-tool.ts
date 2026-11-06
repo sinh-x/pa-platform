@@ -46,7 +46,13 @@ export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string):
   return ["pa_document", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"].includes(name);
 }
 export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
-  pi.registerTool?.({ ...createDocumentTool(), execute: (...args) => lifecycle ? lifecycle.trackRegistryAccess(() => createDocumentTool().execute(...args)) : createDocumentTool().execute(...args) });
+  pi.on?.("session_start", (_event: unknown, rawContext: unknown) => {
+    // Retained/OPA-equivalent managed loadouts must not advertise a capability
+    // they cannot authenticate. Register only in a genuine new document route.
+    try { authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { return; }
+    const tool = createDocumentTool();
+    pi.registerTool?.({ ...tool, execute: (...args) => lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args) });
+  });
   pi.on?.("tool_call", (event: unknown, rawContext: unknown) => {
     const id = process.env.PA_DEPLOYMENT_ID;
     if (!id || process.env.PA_TEAM !== "requirements" || process.env.PA_MODE !== "analyze") return;

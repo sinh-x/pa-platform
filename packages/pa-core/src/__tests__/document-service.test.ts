@@ -10,6 +10,8 @@ import { documentRuntimeFixture } from "./document-runtime-fixture.js";
 test("full five-member native-owned publication precedes primary and queue; replay is an observation", async () => {
   const f = documentRuntimeFixture(); try {
     const decisionId = await f.prepare();
+    const recovered = await f.call({ action: "status", ticket: "EX-1" });
+    assert.equal(recovered.ok, true); assert.equal((recovered.result as any).snapshots[0].sha256, f.sha256); assert.equal((recovered.result as any).expectedRevision, f.revision());
     assert.equal((await f.call({ action: "queue", sha256: f.sha256, decisionId, expectedRevision: f.revision() })).ok, false);
     assert.equal((await f.call({ action: "publish", sha256: f.sha256, decisionId, expectedRevision: f.revision() })).ok, true);
     const refs = f.store.get("EX-1")!.doc_refs; assert.equal(refs.length, 5); assert.equal(refs.filter(r => r.primary).length, 1);
@@ -111,7 +113,7 @@ test("retained effect conflicts block protected calls but not a separate unsigne
 test("ticket-first intake is idempotent under the existing owner without workflow approval", async () => {
   const f = documentRuntimeFixture(); try {
     const native = f.host.authenticate; f.host.authenticate = () => ({ ...native(), ticket: null });
-    const request = { action: "ticket-create", title: "Ticket first", content: "Discuss and draft this task.", intakeId: "intake-one" };
+    const request = { action: "ticket-create", title: "Ticket first", content: "Discuss and draft this task.\n\nPreserve the second paragraph.", intakeId: "intake-one" };
     const first = await f.call(request), again = await f.call(request);
     assert.equal(first.ok, true); assert.equal((again.result as any).reused, true); assert.equal((first.result as any).ticket.id, (again.result as any).ticket.id);
     assert.equal((await f.call({ ...request, title: "Changed scope" })).code, "DOCUMENT_CONFLICT");

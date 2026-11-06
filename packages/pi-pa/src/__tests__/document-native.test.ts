@@ -48,6 +48,9 @@ test("native route authentication requires an immutable launch, incarnation anch
   assert.throws(() => authenticatePiDocumentCaller(ctx, { ...env, PA_PI_EXECUTION_MODE: "background" }, deps), /DOCUMENT_AUTHORITY/);
   assert.throws(() => authenticatePiDocumentCaller(ctx, env, { ...deps, status: () => ({ ...status, builder_authority: "orchestrator" }) }), /DOCUMENT_AUTHORITY/);
   assert.equal(authenticatePiDocumentCaller(ctx, { ...env, PA_TICKET_ID: "" }, { ...deps, status: () => ({ ...status, ticket_id: undefined }), events: () => [{ ...start, ticket_id: undefined }] }).ticket, null);
+  const associated = { event: "ticket-associated", previous_ticket_id: "EX-1", ticket_id: "EX-2", actor: "requirements/analyze" } as RegistryEvent;
+  assert.equal(authenticatePiDocumentCaller(ctx, env, { ...deps, status: () => ({ ...status, ticket_id: "EX-2" }), events: () => [start, associated] }).ticket, "EX-2");
+  assert.throws(() => authenticatePiDocumentCaller(ctx, env, { ...deps, status: () => ({ ...status, ticket_id: "EX-2" }), events: () => [start, { ...associated, previous_ticket_id: "EX-9" }] }), /DOCUMENT_AUTHORITY/);
 });
 test("paired profile parser is version scoped and no source/shell/resource aliases inherit rights", () => {
   const yaml = 'name: requirements\ndeploy_modes:\n  - id: analyze\n    document_profile: pa-document-package/v1\n';
