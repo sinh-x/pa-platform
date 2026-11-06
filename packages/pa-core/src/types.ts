@@ -37,6 +37,8 @@ export interface DeployMode {
   global_docs?: string[];
   project_guides?: Record<string, string[]>;
   require_ticket?: boolean;
+  /** Versioned paired PAPC opt-in; native launch still authenticates the route. */
+  document_profile?: "pa-document-package/v1";
 }
 
 export interface HierarchyMember {

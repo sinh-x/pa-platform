@@ -95,9 +95,13 @@ export async function mutatePiWorkflow(request: PiWorkflowMutation, context: PiW
   let decision: unknown;
   if (request.action === "admit") {
     if (state) throw new JsonWorkflowError("WORKFLOW_CONFLICT", "existing-admitted-run", "workflow-owner");
-    state = service.admitProduced(selection!, Buffer.from(request.producer), {});
-    // Sticky discovery marker, not approval or a second source-of-truth store.
-    store.update(caller.ticket, { add_doc_ref: { type: "workflow", path: `registry-workflow:${state.runId}` } }, "workflow/runtime");
+    state = store.withWorkflowTransaction(() => {
+      assertMarkers();
+      const admitted = service.admitProduced(selection!, Buffer.from(request.producer), {});
+      // Serialize lineage admission with standalone document effect intent.
+      store.update(caller.ticket, { add_doc_ref: { type: "workflow", path: `registry-workflow:${admitted.runId}` } }, "workflow/runtime");
+      return admitted;
+    });
   } else {
     if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE");
     if (request.action === "revise") state = service.reviseProduced(state.runId, request.revision, selection!, Buffer.from(request.producer), {});

@@ -1102,7 +1102,13 @@ test("registry schema-v13 migration expands the production event constraint with
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "16" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "17" });
+    for (const table of ["document_subjects", "document_snapshots", "document_events"]) {
+      assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+      assert.equal((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n, 0);
+      const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?").all(table);
+      assert.equal(triggers.length, 2); // immutable/append-only evidence owners
+    }
     for (const column of ["previous_ticket_id", "actor", "reason"]) assert.equal(eventColumns.some((entry) => entry.name === column), true);
     for (const column of ["review_checkout", "parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
       assert.equal(eventColumns.some((entry) => entry.name === column), true);
