@@ -20,14 +20,15 @@ The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same fo
 
 The PAP-283 worktree trial label is `0.1.156-pap283.1`, set across those same four manifests for operator trial installation. `ppa --version` must display `ppa 0.1.156-pap283.1`; Nix also uses this label in the package name. `packages/runtime-host` stays independently versioned. Build the clean exact label commit, not a dirty/unversioned path. This version-only change does not alter dependency/lockfile/Nix hashes, resolve the still-pending PAPC opt-in pairing, or grant installation/activation or product acceptance.
 
-After separately installing it, run the following **from the clean PAP-283 worktree** to compare the selected installed package with its exact commit:
+The PAP-283 integration candidate restores plain `0.1.156` for the normal `develop` auto-patch flow. The historical labelled artifact remains bound to `e8602d710be6faae65a81e99014c825e91058164`; neither integration nor a subsequent auto bump changes that installed trial or transfers its qualification.
+
+After separately installing the labelled artifact, run the following to compare the selected installed package with that exact trial commit (not a moving branch HEAD):
 
 ```sh
 ppa --version
 python3 - <<'PY'
-import json, pathlib, shutil, subprocess
-assert not subprocess.check_output(['git', 'status', '--porcelain=v2', '--untracked-files=all'], text=True), 'worktree is dirty'
-expected = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+import json, pathlib, shutil
+expected = 'e8602d710be6faae65a81e99014c825e91058164'
 root = pathlib.Path(shutil.which('ppa')).resolve().parent.parent
 metadata = json.loads((root / 'share/pa-platform/review-runtime-provenance.json').read_text())
 assert metadata['packageVersion'] == '0.1.156-pap283.1', metadata

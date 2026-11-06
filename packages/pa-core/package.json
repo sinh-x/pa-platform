@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/pa-core",
-  "version": "0.1.156-pap283.1",
+  "version": "0.1.156",
   "type": "module",
   "description": "Runtime-agnostic core library for PA platform adapters",
   "main": "dist/index.js",
