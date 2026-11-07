@@ -10,6 +10,10 @@ Active runtime configuration stays outside this directory:
 
 Examples and explanatory docs live under `docs/` so they are not accidentally loaded as active team configuration.
 
+## Repository Standards
+
+- [Human-Facing CLI Message Standard](cli-message-standard.md) defines outcome-first PPA/OPA wording, bounded blocker guidance, and review criteria for future authorized message changes. It does not change runtime or machine-output contracts.
+
 ## Operational Docs
 
 - `advisory-runtime.md` documents PAP-277's result contract, gate inventory, new-run integrity and retained compatibility.
