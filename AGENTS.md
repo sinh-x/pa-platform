@@ -4,8 +4,10 @@
 
 - Base branch: `develop`
 - Release branch: `main`
-- Feature branches: `feature/<ticket>-<topic>`
+- Feature branches: `feature/<ticket>-<topic>`, created from `develop`.
 - Do not work directly on `main` or `develop`.
+- Merge feature branches into `develop`; merge `develop` into `main` for releases only.
+- Hotfixes branch from `main` and merge into both `main` and `develop`.
 
 ## Repository Layout
 

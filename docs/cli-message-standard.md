@@ -212,7 +212,7 @@ Never expose secrets, protected bodies or private raw streams to complete this l
 
 ## 6. Authoritative home and companion instructions
 
-This document owns the repository message rules. [Repository instructions](../CLAUDE.md) direct agents here; they must not create a second competing standard. Companion announcements describe scope and link here rather than expanding policy.
+This document owns the repository message rules. [Repository instructions](../AGENTS.md) direct agents here; they must not create a second competing standard. Companion announcements describe scope and link here rather than expanding policy.
 
 Repository-local instructions do not change external PA configuration or select a managed guide. Any later `project_guides` adoption belongs to the configuration owner through existing repository-keyed selection. Do not put repository-specific rules in unconditional global instructions or infer managed activation from file existence.
 
@@ -272,7 +272,7 @@ Adapted for repository publication from PAP-246's retained `v002-unapproved` gui
 - Source raw UTF-8 SHA-256: `a7d26d2ae0ee454486965add1033b41cdd25324c5f14b3bee876b817f7da7d52`.
 - Antecedent standard: `v001/cli-message-standard.md`, raw SHA-256 `0aac74443e9535c25ae0e236226fa72eb19063ce159b3da4924160b0f0a190f4`.
 - Scope correction: ticket comment `c-20261104094325095`; documentation-only rollout intent: `c-20261104124114193`; queue-only override: `c-20261105094445674`; preparation base: `c-20261107060439832`.
-- In rollout deployment `d-aea8d0`, the operator selected **Proceed with documentation rollout**: repository docs, CLAUDE.md adoption and repository informational announcement, committed in phases; no runtime code or external configuration changes.
+- In rollout deployment `d-aea8d0`, the operator selected **Proceed with documentation rollout**: repository docs, repository-agent instruction adoption and repository informational announcement, committed in phases; no runtime code or external configuration changes.
 
 This is a publication adaptation, **not the exact frozen template candidate**, a new native approval receipt, replacement requirements/UAT pair or amended historical matrix. Original artifacts and signed history remain unchanged. The retained guide's C1–C3 rules, patterns, working procedure and checklist are carried forward. Draft-only metadata/paths have been replaced with repository scope; examples consistently use the actor vocabulary; resource allocation and effect-retry admission are clarified. No software/UAT or installed-enforcement claim follows from these document changes.
 

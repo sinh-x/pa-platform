@@ -426,4 +426,4 @@ Release notes and tagging workflow are documented in `docs/release-process.md`.
 - `main` is the release branch.
 - Feature branches follow `feature/<ticket>-<topic>`.
 
-See `.claude/branch-strategy.yaml`.
+See [AGENTS.md](AGENTS.md#branch-strategy) for repository-agent instructions and the complete branch strategy.
