@@ -76,7 +76,14 @@ export class DocumentPackageService {
         const ticket = workflowTicket(r.ticket);
         if ((caller.ticket !== null && caller.ticket !== ticket) || this.host.tickets.get(ticket)?.project !== caller.repoKey) documentReject("DOCUMENT_AUTHORITY");
         const events = this.journal.events(caller.repoKey, ticket);
-        result = { ticket, expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
+        const record = this.host.tickets.get(ticket)!;
+        const handoff = this.host.workspaceProfile ? { handoff: {
+          association: caller.ticket === null ? "caller-unassociated" : "caller-associated",
+          queue: record.status === "pending-implementation" && record.assignee === "builder/team-manager" ? "recorded-pending-implementation" : "not-recorded-pending-implementation",
+          branchEvidence: !record.linkedBranches?.length ? "absent" : record.linkedBranches.length === 1 ? "recorded-unverified" : "multiple-recorded-unverified",
+          branchBridge: "unsupported-ticket-launcher-owner-required", custody: "not-observed", launchReady: false,
+        } } : {};
+        result = { ticket, ...handoff, expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
       } else if (action === "ticket-create") {
         const title = text(r.title, undefined, 256), tag = `document-intake-${text(r.intakeId, ID)}`;
         if (typeof r.content !== "string" || !r.content.trim() || Buffer.byteLength(r.content) > 32768 || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(r.content)) documentReject();

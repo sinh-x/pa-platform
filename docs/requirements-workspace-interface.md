@@ -80,5 +80,13 @@ Read-only file excerpts are limited to 16,000 characters. Current file/write,
 request, wall/CPU/output/descriptor/AS/shared-UID process limits are returned by
 `capabilities`; see the phase report for exact values and quota limitations.
 
+On v2, `pa_document status(ticket)` additionally reports caller association,
+recorded queue state, absent/recorded-unverified/multiple-recorded-unverified
+branch evidence, unsupported branch bridge, unobserved custody and
+`launchReady: false`. This is readback of native ticket records, not current Git
+or checkout authentication. Ticket creation does not associate the session.
+The ticket/launcher owner must coordinate branch planning/readback; there is no
+`pa_document branch-plan`, `associate-ticket`, `approve` or `launch` action.
+
 This contract does not implement branch-plan writes, builder launch/custody,
 installation, active config selection, foreground human evidence or product UAT.

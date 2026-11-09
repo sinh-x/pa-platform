@@ -134,3 +134,22 @@ failed/skipped**. PAPC-077's complete external instruction/template/validator
 closure is **not edited or qualified here**. That owner's integration remains
 pending, especially the blocked trusted-event experience; no active selection,
 legacy-resource rewrite or source-pair passing claim is made.
+
+## P5 publication/recovery and handoff (partial phase)
+
+Reused existing complete-before-primary publication, same-intent journal/ticket
+CAS and queue owners without a new approval/effect path. Added v2-only status
+readback distinguishing session association, recorded queue, recorded-but-unverified
+branch evidence and unproven custody/launch. Branch-plan bridge remains explicitly
+unsupported and assigned to the ticket/launcher owner, as allowed by the handoff;
+no guessed action, write grant or automatic builder launch was introduced.
+
+New handoff tests: **2 passed** after repairing one failed fixture that attempted
+forbidden direct linkedBranches replacement. The repaired fixture uses the actual
+TicketStore authenticated add-link owner and disposable Git repository. The first
+combined recovery run had **31 passed/1 failed** (that fixture), with all 30 existing
+integrity/process/service cases passing. Existing process-death/lost-reply,
+revocation, changed-byte and lifecycle negatives remain intact. V2 source fixture
+readback of already-issued exact effects performs no duplicate ticket/journal
+writes and requests no new consent. Actual new conversational decision integration
+and live branch bridge are not complete.
