@@ -95,3 +95,27 @@ processes, not installed qualification or human input). New native workspace
 suite has explicit manual-integration ownership in the portable CI partition;
 full local entry still runs every case. Browser/Okular export, attested human
 capture, PAPC rollout and foreground acceptance remain unproven.
+
+## P3 presentation and confirmation boundary
+
+`pa_document present(sha256)` is available only on the new native workspace
+profile. It reuses the existing pure escaped/CSP Markdown renderer, emits complete
+snapshot-derived Markdown and static HTML links, and a package/member/renderer/hash
+manifest. Existing companions must match exactly; changed output is a conflict,
+not silently overwritten. Images remain explicitly opaque. Mermaid diagrams are
+inert source, not claimed rendered diagrams. No browser is opened or observed;
+Okular-compatible export is unavailable with an explicit Markdown/browser fallback.
+
+New-profile capture/revoke now fail locally with DOCUMENT_UNAVAILABLE **before**
+calling any legacy native UI. Capabilities report the attestation requirement.
+Old-profile select capture is unchanged. Added tests prove caller actor/outcome,
+transcript and source/event labels cannot issue a decision, journal state remains
+unchanged, and publication without a decision fails. No conversational capability
+is advertised or fabricated. Completing AC/TS-08–10 requires a Pi-host-owned,
+unforgeable original input event identity/attestation, session/principal binding,
+deduplication and exact pending-target protocol; an SDK event/source label alone
+is insufficient. This is a dependent implementation blocker, not new scope intake.
+
+Executed: core build and adapter direct tsc passed; presentation + retained native
+suite **14 passed, 0 failed/skipped**. These are source/disposable fixture results,
+not human-event evidence or human readability/visual acceptance.

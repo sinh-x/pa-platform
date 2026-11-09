@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { presentDocumentPackage } from "./presentation.js";
 import { closeSync, lstatSync, opendirSync } from "node:fs";
 import { dirname } from "node:path";
 import { AdvisoryFiles } from "../operations/files.js";
@@ -17,6 +18,8 @@ import { checkDocumentPackage, compareDocumentPackages, documentText, readDocume
 export interface DocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string }
 export interface DocumentPackageHost {
   artifactRoot: string; tickets: TicketStore;
+  /** Native launch dispatch only, not imported package/request metadata. */
+  workspaceProfile?: boolean;
   authenticate(): DocumentCaller;
   /** Actual retained workflow/resource owners, rechecked inside ticket mutex. */
   assertEffectAvailable(subject: DocumentPackage): void;
@@ -68,7 +71,7 @@ export class DocumentPackageService {
       documentGuard(() => object(r, ["action", ...fields[action]!]));
       try { assertNoSensitiveMatch("content", raw); } catch { documentReject("DOCUMENT_INPUT"); }
       const caller = this.caller(); let result: unknown;
-      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: "unavailable-use-markdown", workflowRequired: false, sourceWriting: false };
+      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: this.host.workspaceProfile ? "unavailable-host-attestation-required" : "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: this.host.workspaceProfile ? "safe-static-html-companion" : "unavailable-use-markdown", workflowRequired: false, sourceWriting: false };
       else if (action === "status") {
         const ticket = workflowTicket(r.ticket);
         if ((caller.ticket !== null && caller.ticket !== ticket) || this.host.tickets.get(ticket)?.project !== caller.repoKey) documentReject("DOCUMENT_AUTHORITY");
@@ -137,7 +140,10 @@ export class DocumentPackageService {
       } else {
         const subject = this.subject(r.sha256), sha256 = documentPackageSha(subject);
         if (action === "show") result = this.view(subject);
-        else if (action === "read") {
+        else if (action === "present") {
+          if (!this.host.workspaceProfile) documentReject("DOCUMENT_UNAVAILABLE");
+          result = presentDocumentPackage(subject, this.host.artifactRoot, hash => this.journal.snapshot(hash));
+        } else if (action === "read") {
           const member = subject.members.find(m => m.id === text(r.path, ID)); if (!member) documentReject();
           const bytes = this.journal.snapshot(member.sha256), offset = integer(r.offset, 0, DOCUMENT_LIMITS.textBytes);
           const content = member.mediaType.startsWith("text/") ? documentText(bytes) : "";
@@ -147,6 +153,9 @@ export class DocumentPackageService {
           if (previous.ticket !== subject.ticket) documentReject("DOCUMENT_AUTHORITY");
           result = compareDocumentPackages(previous, subject, hash => this.journal.snapshot(hash));
         } else if (action === "capture" || action === "revoke") {
+          // No source label, model narrative or caller event ID is an attested
+          // human input. Do not silently fall back to v1 select dialogs in v2.
+          if (this.host.workspaceProfile) documentReject("DOCUMENT_UNAVAILABLE");
           const expectedRevision = this.revision(subject, r.expectedRevision), before = this.caller(subject);
           if (action === "revoke") this.approved(subject, text(r.decisionId, ID));
           const bytes = readDocumentSources(subject, this.host.artifactRoot);
