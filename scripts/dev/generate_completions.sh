@@ -93,4 +93,22 @@ printf '%s\n' \
   "complete -c ppa -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate' -l definition-file -r -d 'Bounded local JSON for static inspection only'" \
   "complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l json -d 'Stable JSON projection'" \
   >> "$PPA"
+printf '%s\n' \
+  '' \
+  '# Pi-only document interface discovery; no CLI approval or effects' \
+  "complete -c ppa -n __fish_use_subcommand -a document -d 'Native document toolkit interface discovery'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from document; and not __fish_seen_subcommand_from describe' -a describe -d 'Describe exact native request fields'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from document; and __fish_seen_subcommand_from describe' -l format -r -a json" \
+  >> "$PPA"
+for binary in ppa opa; do
+  printf '%s\n' \
+    '' \
+    '# Shared advisory operation contract; domain failures are data' \
+    "complete -c $binary -n __fish_use_subcommand -a operation -d 'Factual capabilities and bounded checks'" \
+    "complete -c $binary -n '__fish_seen_subcommand_from operation; and not __fish_seen_subcommand_from capabilities run' -a 'capabilities run'" \
+    "complete -c $binary -n '__fish_seen_subcommand_from operation' -l format -r -a pa-operation-result/v1" \
+    "complete -c $binary -n '__fish_seen_subcommand_from operation run' -l command -r -d 'Safe bounded shell command'" \
+    "complete -c $binary -n '__fish_seen_subcommand_from operation run' -l timeout -r -d 'Per-operation seconds (max 14400)'" \
+    >> "$ROOT/completions/$binary.fish"
+done
 echo "Generated completions/ppa.fish from completions/pa-core.fish"

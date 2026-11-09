@@ -6,7 +6,7 @@ import { RegistryWorkflowJournal, type WorkflowJournalEntry } from "../registry/
 import { array, digest, evidenceRef, ID, integer, workflowTicket, literal, object, oneOf, PACKAGE_PERMISSIONS, parseReviewBundle, reject, JsonWorkflowError, SHA256, strictJson, STEP_OUTCOMES, text, unique, type EvidenceRef, type PackagePermission, type ReviewBundle, type StepOutcome, type WorkflowDefinition } from "./contracts.js";
 import { evaluatePredicate, parseWorkflowDefinition } from "./definition.js";
 import { preflightWorkflow, preflightPinnedWorkflow, projectExecutionPrerequisites, type WorkflowObservations, type WorkflowPreflight } from "./preflight.js";
-import { subjectRevisionReason, type WorkflowAttempt } from "./revisions.js";
+import { documentRevisionEligibility, subjectRevisionReason, type WorkflowAttempt } from "./revisions.js";
 import { selectNewWorkflow, type WorkflowSelection } from "./selected.js";
 import { parseWorkflowResources, validateWorkflowResources, requireWorkflowResources, retainedTemplateHost, type CapturedWorkflowResources, type WorkflowResources } from "./resources.js";
 
@@ -33,17 +33,19 @@ export interface WorkflowHost {
   observations(): WorkflowObservations;
   /** Native selected-source owner only; not a public receipt/hash import. */
   resources?(selection: WorkflowSelection, subject: ReviewBundle, caller: WorkflowCaller): CapturedWorkflowResources;
-  capture(request: { action: "package" | "revoke" | "recover" | "adopt"; runId: string; revision: number; subject: ReviewBundle; subjectSha256: string; decisionId?: string; resources?: WorkflowResources; succession?: { previous: WorkflowCaller; current: WorkflowCaller; purpose: "cancelled-review" | "queue-reconcile"; queueIntent?: EffectIntent } }): Promise<{ outcome: WorkflowDecision["outcome"]; principal: string; evidence: EvidenceRef }>;
+  capture(request: { action: "package" | "revoke" | "recover" | "adopt"; runId: string; revision: number; subject: ReviewBundle; subjectSha256: string; decisionId?: string; resources?: WorkflowResources; succession?: { previous: WorkflowCaller; current: WorkflowCaller; purpose: "cancelled-review" | "queue-reconcile" | "document-continuation"; queueIntent?: EffectIntent } }): Promise<{ outcome: WorkflowDecision["outcome"]; principal: string; evidence: EvidenceRef }>;
   owners: ReadonlyMap<string, WorkflowEffectOwner>;
   /** Runtime-authenticated registry/process continuation only; never a public flag. */
   continues?(original: WorkflowCaller, current: WorkflowCaller): boolean;
   /** Native registry AND historical process-incarnation proof; absence/uncertainty rejects. */
   assertInactive?(owner: WorkflowCaller): void;
+  /** Read-only existing custody/materialization owners. No acquisition, release or execution grant. */
+  assertDocumentContinuation?(state: WorkflowState, subject: ReviewBundle, requireUnmaterialized: boolean): void;
   now(): string;
 }
 export interface WorkflowState {
   runId: string; revision: number; definition: WorkflowDefinition; subject: ReviewBundle; subjectSha256: string;
-  configRevision: string; resources?: WorkflowResources; caller: WorkflowCaller; coordinator?: WorkflowCaller; coordinatorQueueOnly?: boolean; decisions: WorkflowDecision[]; revoked: string[];
+  configRevision: string; resources?: WorkflowResources; caller: WorkflowCaller; coordinator?: WorkflowCaller; coordinatorQueueOnly?: boolean; coordinatorDocumentOnly?: boolean; coordinatorDocumentSubjectSha256?: string; decisions: WorkflowDecision[]; revoked: string[];
   outcomes: Record<string, StepOutcome>; pending: EffectIntent[]; attempts: WorkflowAttempt[];
 }
 function parseCaller(value: unknown): WorkflowCaller {
@@ -97,17 +99,21 @@ export function replayWorkflow(journal: RegistryWorkflowJournal, runId: string, 
       if (state.attempts.some(attempt => attempt.attemptId === attemptId)) reject("WORKFLOW_UNCERTAIN");
       subject = next; subjectSha256 = text(r.subjectSha256, SHA256);
       state.subject = subject; state.subjectSha256 = subjectSha256; state.outcomes = Object.create(null) as Record<string, StepOutcome>;
-      state.attempts.push({ attemptId, predecessor: previous.attemptId, subjectRef: subject.subjectId, subjectSha256, revision: entry.revision, reason: oneOf(r.reason, ["changes-requested", "material-amendment"]), outcomes: state.outcomes });
+      state.attempts.push({ attemptId, predecessor: previous.attemptId, subjectRef: subject.subjectId, subjectSha256, revision: entry.revision, reason: oneOf(r.reason, ["changes-requested", "material-amendment", "document-revision"]), outcomes: state.outcomes });
       readWorkflowEvidence(subject, ref => journal.snapshot(ref.sha256));
       if (r.producerSha256 !== undefined) verifyRetainedProducer(journal, state, r.producerSha256);
     } else if (type === "coordinator-adopted") {
-      const r = object(data, ["previous", "current", "subjectSha256", "resourcesSha256", "captureEvidenceRef", "principal"]);
+      const r = object(data, ["previous", "current", "subjectSha256", "resourcesSha256", "captureEvidenceRef", "principal"], ["purpose"]);
       const previous = parseCaller(r.previous), current = parseCaller(r.current);
-      if (JSON.stringify(previous) !== JSON.stringify(workflowCoordinator(state)) || !coordinatorAdoptionEligible(state)
+      const purpose = r.purpose === undefined ? legacyCoordinatorAdoptionPurpose(state) : oneOf(r.purpose, ["document-continuation"]);
+      if (!purpose || (r.purpose !== undefined && coordinatorAdoptionPurpose(state) !== purpose)
+        || JSON.stringify(previous) !== JSON.stringify(workflowCoordinator(state))
         || current.deploymentId === previous.deploymentId || current.team !== previous.team || current.mode !== previous.mode
         || r.subjectSha256 !== state.subjectSha256 || r.resourcesSha256 !== digest(JSON.stringify(requireWorkflowResources(state)))) reject("WORKFLOW_UNCERTAIN");
       assertSubjectCaller(state, current, false); evidenceRef(r.captureEvidenceRef); text(r.principal);
-      state.coordinatorQueueOnly = !recoverableCancelledDecision(state);
+      state.coordinatorQueueOnly = purpose === "queue-reconcile";
+      state.coordinatorDocumentOnly = purpose === "document-continuation";
+      state.coordinatorDocumentSubjectSha256 = purpose === "document-continuation" ? state.subjectSha256 : undefined;
       state.coordinator = current;
     } else if (type === "decision" || type === "decision-recovered") {
       const r = object(data, type === "decision" ? ["record"] : ["record", "cancelledDecisionId"]); const d = parseDecision(r.record);
@@ -126,6 +132,7 @@ export function replayWorkflow(journal: RegistryWorkflowJournal, runId: string, 
       const r = object(data, ["intent"]); const intent = parseIntent(r.intent);
       const step = definition.steps.find(s => s.id === intent.stepId);
       if (!step || step.kind === "decision" || intent.runId !== runId || intent.subjectSha256 !== subjectSha256 || intent.owner !== step.owner || !eligibleSteps(state).includes(step.id)) reject("WORKFLOW_UNCERTAIN");
+      if (!coordinatorOperationAllowed(state, step.operation.id)) reject("WORKFLOW_UNCERTAIN");
       requireDecision(state, intent.decisionId, step.authorization); state.pending.push(intent);
     } else if (type === "reconcile") {
       const r = object(data, ["intentId"]); if (!state.pending.some(i => i.intentId === text(r.intentId, ID))) reject("WORKFLOW_UNCERTAIN");
@@ -141,14 +148,30 @@ export function replayWorkflow(journal: RegistryWorkflowJournal, runId: string, 
   return state;
 }
 export function workflowCoordinator(state: WorkflowState): WorkflowCaller { return state.coordinator ?? state.caller; }
-/** Adoption cannot transfer in-flight source/check work or renew a package grant. */
-export function coordinatorAdoptionEligible(state: WorkflowState): boolean {
-  if (recoverableCancelledDecision(state)) return true;
-  return Boolean(state.resources && state.pending.length === 1 && state.pending.every(intent => {
+function legacyCoordinatorAdoptionPurpose(state: WorkflowState): "cancelled-review" | "queue-reconcile" | null {
+  if (!state.coordinatorDocumentOnly && recoverableCancelledDecision(state)) return "cancelled-review";
+  return state.resources && state.pending.length === 1 && state.pending.every(intent => {
     const step = state.definition.steps.find(s => s.id === intent.stepId);
     return step?.operation.id === "ticket.queue" && state.decisions.some(d => d.decisionId === intent.decisionId
       && d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId));
-  }));
+  }) ? "queue-reconcile" : null;
+}
+/** Adoption cannot transfer execution custody or renew a package grant. Old adoption events keep their original scopes. */
+export function coordinatorAdoptionPurpose(state: WorkflowState): "cancelled-review" | "queue-reconcile" | "document-continuation" | null {
+  const legacy = legacyCoordinatorAdoptionPurpose(state);
+  if (legacy) return legacy;
+  const latest = state.decisions.filter(d => d.subjectSha256 === state.subjectSha256).at(-1);
+  if (!latest || state.revoked.includes(latest.decisionId)) return null;
+  if (!state.coordinatorQueueOnly && (documentRevisionEligibility(state).structurallyAvailable || (state.coordinatorDocumentOnly && recoverableCancelledDecision(state)))
+    && !state.definition.steps.some(step => step.effects.some(effect => ["source.scoped", "check.scoped", "git.local"].includes(effect)) && state.outcomes[step.id] !== undefined)) return "document-continuation";
+  return null;
+}
+export function coordinatorAdoptionEligible(state: WorkflowState): boolean { return coordinatorAdoptionPurpose(state) !== null; }
+/** A document successor cannot execute source/check work or queue the adopted
+ * package. A NEW revised subject's exact approval may separately authorize queueing. */
+export function coordinatorOperationAllowed(state: WorkflowState, operation: string): boolean {
+  return !state.coordinatorDocumentOnly || operation === "publication.pair"
+    || (operation === "ticket.queue" && state.subjectSha256 !== state.coordinatorDocumentSubjectSha256);
 }
 function assertSubjectCaller(state: WorkflowState, caller: WorkflowCaller, exactIdentity = true, continues?: WorkflowHost["continues"]): void {
   const coordinator = workflowCoordinator(state);
@@ -202,6 +225,7 @@ export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySe
     const step = state.definition.steps.find(s => s.id === id)!;
     if (!state.resources) { blocked.push({ stepId: id, code: "WORKFLOW_SOURCE" }); return false; }
     if (step.kind === "decision") return true;
+    if (!coordinatorOperationAllowed(state, step.operation.id)) { blocked.push({ stepId: id, code: "WORKFLOW_AUTHORITY" }); return false; }
     if (!state.decisions.some(d => d.subjectSha256 === state.subjectSha256 && d.outcome === "approved" && !state.revoked.includes(d.decisionId) && step.authorization.every(p => d.permissions.includes(p)))) {
       blocked.push({ stepId: id, code: "WORKFLOW_AUTHORITY" }); return false;
     }
@@ -213,7 +237,7 @@ export function projectWorkflowNext(state: WorkflowState, operations: ReadonlySe
     const decision = state.decisions.find(d => d.decisionId === packageReview.decisionId)!;
     blocked.push({ stepId: decision.stepId, code: "WORKFLOW_AUTHORITY" });
   }
-  return { runId: state.runId, revision: state.revision, eligible, reconcile: state.pending, blocked, packageReview,
+  return { runId: state.runId, revision: state.revision, eligible, reconcile: state.pending, blocked, packageReview, documentRevision: documentRevisionEligibility(state),
     ...(packageReview.recovery ? { nextAction: packageReview.recovery.nextAction, nextOwner: packageReview.recovery.correctionOwner } : {}) };
 }
 function requireStaticCompatibility(report: WorkflowPreflight): void {
@@ -228,6 +252,10 @@ export class JsonWorkflowService {
   private caller(state: WorkflowState, queueSettlement = false): WorkflowCaller {
     if (state.coordinatorQueueOnly && !queueSettlement) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "adopted-queue-intent-only", "coordinator-owner");
     const caller = parseCaller(this.host.authenticate()); assertSubjectCaller(state, caller, true, this.host.continues); return caller;
+  }
+  private documentBoundary(state: WorkflowState, subject: ReviewBundle, requireUnmaterialized: boolean): void {
+    if (!this.host.assertDocumentContinuation && (requireUnmaterialized || state.coordinatorDocumentOnly)) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", "document-custody-proof", "custody-owner");
+    this.host.assertDocumentContinuation?.(state, subject, requireUnmaterialized);
   }
   next(runId: string): ReturnType<typeof projectWorkflowNext> {
     return projectWorkflowNext(this.status(runId), new Set(this.host.owners.keys()), this.host.observations());
@@ -286,6 +314,8 @@ export class JsonWorkflowService {
     if (state.revision !== expectedRevision) reject("WORKFLOW_CONFLICT");
     requireWorkflowResources(state);
     const subject = parseReviewBundle(rawSubject), reason = subjectRevisionReason(state, subject);
+    const unmaterialized = reason === "document-revision" || (state.subject.handoff.type === "fresh" && subject.handoff.type === "fresh");
+    this.documentBoundary(state, subject, unmaterialized);
     const report = preflightPinnedWorkflow({ definition: state.definition, sha256: state.subject.workflow.sha256, configRevision: state.configRevision }, this.host.observations(), subject);
     requireStaticCompatibility(report);
     const evidence = readWorkflowEvidence(subject, this.host.observations().readEvidence);
@@ -293,6 +323,7 @@ export class JsonWorkflowService {
       const current = replayWorkflow(this.journal, state.runId, entries);
       if (subjectRevisionReason(current, subject) !== reason || JSON.stringify(this.caller(current)) !== JSON.stringify(caller)) reject("WORKFLOW_CONFLICT");
       readWorkflowEvidence(subject, this.host.observations().readEvidence);
+      this.documentBoundary(current, subject, unmaterialized);
       return { eventId: `event-${randomUUID()}`, type: "subject-revised", data: { previousSubjectSha256: current.subjectSha256, subjectSha256: digest(rawSubject), previousAttemptId: current.attempts.at(-1)!.attemptId,
         attemptId: `attempt-${randomUUID()}`, reason, ...(provenance ? { producerSha256: digest(provenance) } : {}) } };
     }, [rawSubject, ...evidence, ...(provenance ? [provenance] : [])]);
@@ -314,6 +345,7 @@ export class JsonWorkflowService {
   }
   async adoptCoordinator(runId: string, expectedRevision: number, subjectSha256: string): Promise<WorkflowState> {
     const state = this.status(runId), current = parseCaller(this.host.authenticate()), previous = workflowCoordinator(state);
+    const purpose = coordinatorAdoptionPurpose(state);
     const check = (s: WorkflowState) => {
       assertSubjectCaller(s, current, false);
       if (s.revision !== expectedRevision || s.subjectSha256 !== subjectSha256 || !coordinatorAdoptionEligible(s)
@@ -322,18 +354,23 @@ export class JsonWorkflowService {
         || JSON.stringify(parseCaller(this.host.authenticate())) !== JSON.stringify(current)) reject("WORKFLOW_AUTHORITY");
       if (!this.host.assertInactive) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", "coordinator-inactive-proof", "runtime-owner");
       this.host.assertInactive(previous);
+      if (purpose === "document-continuation") {
+        if (!this.host.assertDocumentContinuation) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", "document-custody-proof", "custody-owner");
+        this.host.assertDocumentContinuation(s, s.subject, false);
+      }
       readWorkflowEvidence(s.subject, this.host.observations().readEvidence);
     };
     check(state);
     const capture = await this.host.capture({ action: "adopt", runId, revision: expectedRevision, subject: structuredClone(state.subject), subjectSha256,
-      resources: structuredClone(requireWorkflowResources(state)), succession: { previous, current, purpose: recoverableCancelledDecision(state) ? "cancelled-review" : "queue-reconcile",
+      resources: structuredClone(requireWorkflowResources(state)), succession: { previous, current, purpose: purpose!,
         ...(state.pending[0] ? { queueIntent: structuredClone(state.pending[0]) } : {}) } });
     check(this.status(runId));
     if (capture.outcome !== "approved") return this.status(runId);
     this.journal.append(runId, expectedRevision, entries => {
       const s = replayWorkflow(this.journal, runId, entries); check(s);
       return { eventId: `event-${randomUUID()}`, type: "coordinator-adopted", data: { previous, current, subjectSha256,
-        resourcesSha256: digest(JSON.stringify(requireWorkflowResources(s))), captureEvidenceRef: evidenceRef(capture.evidence), principal: text(capture.principal) } };
+        resourcesSha256: digest(JSON.stringify(requireWorkflowResources(s))), captureEvidenceRef: evidenceRef(capture.evidence), principal: text(capture.principal),
+        ...(purpose === "document-continuation" ? { purpose } : {}) } };
     });
     return this.status(runId);
   }
@@ -370,6 +407,7 @@ export class JsonWorkflowService {
     const state = this.status(runId); const caller = this.caller(state);
     if (state.revision !== expectedRevision || !eligibleSteps(state).includes(stepId)) reject("WORKFLOW_CONFLICT");
     const step = state.definition.steps.find(s => s.id === stepId)!; if (step.kind === "decision") reject("WORKFLOW_AUTHORITY");
+    if (!coordinatorOperationAllowed(state, step.operation.id)) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "adopted-document-continuation-only", "coordinator-owner");
     requireDecision(state, decisionId, step.authorization); requireWorkflowResources(state);
     if (requiresProjectCommands(step)) {
       const blocked = projectExecutionPrerequisites(this.host.observations())[0];
@@ -385,7 +423,9 @@ export class JsonWorkflowService {
     const state = this.status(runId);
     const intent = state.pending.find(i => i.intentId === intentId);
     this.caller(state, Boolean(intent && state.definition.steps.find(s => s.id === intent.stepId)?.operation.id === "ticket.queue")); if (!intent || state.revision !== expectedRevision) reject("WORKFLOW_CONFLICT");
-    const step = state.definition.steps.find(s => s.id === intent.stepId)!; const owner = this.host.owners.get(step.operation.id); if (!owner) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", step.operation.id, step.owner);
+    const step = state.definition.steps.find(s => s.id === intent.stepId)!;
+    if (!coordinatorOperationAllowed(state, step.operation.id)) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "adopted-document-continuation-only", "coordinator-owner");
+    const owner = this.host.owners.get(step.operation.id); if (!owner) throw new JsonWorkflowError("WORKFLOW_CAPABILITY", step.operation.id, step.owner);
     this.journal.append(runId, expectedRevision, entries => { this.caller(replayWorkflow(this.journal, runId, entries), step.operation.id === "ticket.queue"); return { eventId: `event-${randomUUID()}`, type: "reconcile", data: { intentId } }; });
     return this.perform(intent, owner);
   }

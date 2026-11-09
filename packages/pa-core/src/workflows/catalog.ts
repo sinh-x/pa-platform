@@ -36,6 +36,19 @@ export function assertWorkflowMarkerReferences(refs: unknown, runId: string | nu
 }
 export function assertWorkflowMarkerAvailable(repoKey: string, ticket: string, found: boolean, store = new TicketStore(), runId?: string): void {
   const record = store.get(ticket);
+  // Document publication/queue intents are owned by the SAME registry, not a
+  // model marker. A second workflow lineage may not bypass even a failed intent.
+  // Draft snapshots/decisions alone do not freeze independent graph preparation.
+  let registryPresent = false;
+  try { lstatSync(getRegistryDbPath()); registryPresent = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") reject("WORKFLOW_UNCERTAIN"); }
+  if (registryPresent) {
+    const db = openReadonlyRegistryDatabase(true);
+    try {
+      const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_events'").get();
+      if (table && db.prepare("SELECT 1 FROM document_events WHERE repo_key = ? AND ticket = ? AND json_extract(body, '$.data.kind') = 'intent' LIMIT 1").get(repoKey, ticket)) reject("WORKFLOW_CONFLICT");
+    } finally { db.close(); }
+  }
   if (!found) {
     if (record?.doc_refs.some(ref => ref.type === "workflow")) reject("WORKFLOW_UNCERTAIN");
     return; // unselected legacy identity remains with its original owner

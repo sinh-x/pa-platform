@@ -207,7 +207,8 @@ for (const variant of ["before-decision", "rejected", "cancelled", "stale", "rev
 test("material revision cannot become fresh, change pinned semantics or forget an unknown in-flight intent", async () => {
   const f = workflowRuntimeFixture(); try {
     const run = f.service.admit(f.selection, f.subject), d = await f.service.decide(run.runId, 1, "approve");
-    assert.throws(() => f.service.revise(run.runId, 2, bytes(nextSubject(f))), /WORKFLOW_AUTHORITY/);
+    delete f.host.assertDocumentContinuation;
+    assert.throws(() => f.service.revise(run.runId, 2, bytes(nextSubject(f))), /document-custody-proof/);
     const owner = { admit: () => {}, observe: async () => ({ state: "unknown" as const }), execute: async () => { throw Error("must not execute"); }, verify: () => false };
     (f.host.owners as Map<string, typeof owner>).set("publication.pair", owner);
     await assert.rejects(f.service.requestStep(run.runId, 2, "publish", d.decisionId), /WORKFLOW_UNCERTAIN/);
@@ -257,7 +258,7 @@ test("32 actual SQLite connections accept exactly one linked subject revision, r
 (async()=>{const {tsImport}=await import(w.tsx); const {getDb}=await tsImport(w.dbModule,w.dbModule);
 const {RegistryWorkflowJournal}=await tsImport(w.journalModule,w.journalModule); const {JsonWorkflowService}=await tsImport(w.serviceModule,w.serviceModule);
 const db=getDb(w.path), journal=new RegistryWorkflowJournal(db); const evidence=new Map(w.evidence.map(([k,v])=>[k,Buffer.from(v)]));
-const service=new JsonWorkflowService(journal,{authenticate:()=>w.caller,observations:()=>({capabilities:new Set(w.capabilities),projectProfile:'supported',producerContract:'supported',readEvidence:r=>evidence.get(r.ref)||null}),owners:new Map(),capture:()=>{throw Error('no capture');},now:()=>''});
+const service=new JsonWorkflowService(journal,{assertDocumentContinuation(){},authenticate:()=>w.caller,observations:()=>({capabilities:new Set(w.capabilities),projectProfile:'supported',producerContract:'supported',readEvidence:r=>evidence.get(r.ref)||null}),owners:new Map(),capture:()=>{throw Error('no capture');},now:()=>''});
 parentPort.postMessage('ready'); Atomics.wait(new Int32Array(w.barrier),0,0);
 try{service.revise(w.runId,w.revision,Buffer.from(w.subject));parentPort.postMessage('accepted');}
 catch(e){parentPort.postMessage(e.code==='WORKFLOW_CONFLICT'?'conflict':'unexpected');} finally{db.close();}

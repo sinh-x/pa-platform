@@ -1,3 +1,4 @@
+import { readAdvisoryStart } from "@pa-platform/pa-core";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
@@ -195,6 +196,12 @@ export class PiNativeExecutionAdapter {
     if (!id || !/^d-[0-9a-f]{6}$/.test(id)) {
       if (this.#sessions.size) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
       if (diagnostic) throw executionFailure("EXECUTION_UNKNOWN");
+      return null;
+    }
+    // New native starts use operation-local integrity, not the retained phase
+    // controller. The advisory module independently authenticates each effect.
+    if (readAdvisoryStart(id)) {
+      if (this.#sessions.size) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
       return null;
     }
     const directory = getDeployPaths(id).deployDir;

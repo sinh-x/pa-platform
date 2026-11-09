@@ -1,3 +1,5 @@
+import { ADVISORY_RUNTIME_VERSION, resolveAdvisoryTaskBaseline, preparedRepositoryTicketReservationPath } from "@pa-platform/pa-core";
+import { DOCUMENT_SESSION_VERSION, selectsDocumentSession } from "./document-session.js";
 import { execFileSync } from "node:child_process";
 import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type RepositoryChildSettlementResult } from "@pa-platform/pa-core";
 import { createHash } from "node:crypto";
@@ -414,6 +416,9 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
 }
 
 export interface PiDeployDependencies {
+  /** Historical stricter launcher fixture only; never an argv/env/config field
+   * and never selects advisory behavior or weakens a security boundary. */
+  readonly retainedRuntimeFixture?: "ordinary-native-execution/v1";
   /** Trusted embedding/test seam only; never populated from requests, CLI, environment or team config. */
   readonly reviewPreflight?: typeof inspectReviewPreflight;
   readonly treehouse?: TreehouseClient;
@@ -772,6 +777,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (!request.ticketWorktree) throw error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
   }
+  // Only genuinely fresh, unpinned independent builder launches select the
+  // advisory contract. Neither model prose nor an environment flag selects it.
+  let advisoryLaunch = dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
+  const documentLaunch = selectsDocumentSession({ team: team.name, mode: mode?.id, pinned: Boolean(pinnedConfig), resume: Boolean(request.resume), inherited: Boolean(inheritedAttempt), rogue: team.name === "rogue-one", background: Boolean(request.background), ticketWorktree: Boolean(request.ticketWorktree), supportedConfig: mode?.document_profile === "pa-document-package/v1" });
   // Strict mode rejection precedes resume-file inspection; unsupported historical
   // runtime rejection still precedes workspace/registry allocation and hooks.
   try {
@@ -936,13 +945,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const initialRepository = parent ? invocationRepository : selectorRepository;
       const ticket = new TicketStore().get(ticketId);
       if (!ticket) throw new Error(`Condition: Treehouse ticket checkout admission. Source: durable ticket store. Reason: ticket ${ticketId} does not exist. Correction: restore the exact ticket and linked-branch evidence. Resume Action: retry before Treehouse acquisition.`);
+      // Existing native preparation custody is retained, not silently upgraded
+      // or bypassed by a fresh invocation against the same reserved checkout.
+      if (advisoryLaunch && existsSync(preparedRepositoryTicketReservationPath(initialRepository.repoRoot, ticketId))) advisoryLaunch = false;
       let linkedBranchFailure: unknown;
       try { requireTicketLinkedBranch(ticket, initialRepository.repoKey); } catch (error) { linkedBranchFailure = error; }
-      assertPiStructuredLaunchPrerequisites(initialRepository.repoKey, initialRepository.repoRoot, ticketId, linkedBranchFailure === undefined);
+      if (!advisoryLaunch) assertPiStructuredLaunchPrerequisites(initialRepository.repoKey, initialRepository.repoRoot, ticketId, linkedBranchFailure === undefined);
       if (linkedBranchFailure) throw linkedBranchFailure;
-      structuredBaseline = resolvePiStructuredBaseline(initialRepository.repoKey, initialRepository.repoRoot, ticketId);
+      structuredBaseline = advisoryLaunch ? null : resolvePiStructuredBaseline(initialRepository.repoKey, initialRepository.repoRoot, ticketId);
       if (structuredBaseline && (builderMode !== "orchestrator" || team.deploy_modes?.some(entry => entry.id === "implement"))) throw new Error("structured workflow requires the supported direct orchestrator owner; no split-mode fallback");
-      if (builderMode === "orchestrator" && !request.resume && !structuredBaseline) {
+      if (!advisoryLaunch && builderMode === "orchestrator" && !request.resume && !structuredBaseline) {
         preparedBuilderAdmission = consumePiPreparedBuilderAdmission({ repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot, ticket: ticketId,
           deploymentId, deploymentDirectory: deployDir, timeoutSeconds: request.timeout }, dependencies);
         if (preparedBuilderAdmission) { activeTicketSlot = preparedBuilderAdmission.slot; timeout = { timeout: preparedBuilderAdmission.timeoutSeconds }; }
@@ -950,7 +962,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       // Ordinary direct admission must carry task intent before acquiring a
       // permit/checkout. Legacy split-mode and optional preparation retain their
       // separate provenance; neither is a fallback for a denied ordinary task.
-      const intendedTaskBaseline = structuredBaseline ?? (builderMode === "orchestrator" && !preparedBuilderAdmission && !team.deploy_modes?.some((entry) => entry.id === "implement")
+      const intendedTaskBaseline = advisoryLaunch ? resolveAdvisoryTaskBaseline({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, ticketId }) : structuredBaseline ?? (builderMode === "orchestrator" && !preparedBuilderAdmission && !team.deploy_modes?.some((entry) => entry.id === "implement")
         ? resolveOrdinaryTaskBaseline({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, ticketId })
         : undefined);
       if (structuredBaseline && request.resume) {
@@ -1129,7 +1141,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const pinned = !currentPlan.rogue_one && currentPlan.ticket && (structuredBaseline || (currentPlan.team === "requirements" && currentPlan.mode === "analyze")) ? readTicketWorkflow(currentPlan.ticket) : null;
     if (pinned && !pinnedConfig) throw new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "workflow-owner");
     if (pinnedConfig) { pinnedConfig.reread(); pinnedConfigRoot = pinnedConfig.materialize(deployDir); }
-    const primer = generatePrimer({ runtime: "pi", ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", requirementsDocument: documentLaunch, ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
       : primer;
@@ -1260,7 +1272,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: documentLaunch ? DOCUMENT_SESSION_VERSION : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
     : plan.treehouse?.authority === "orchestrator" && !team.deploy_modes?.some((entry) => entry.id === "implement") ? structuredBaseline ? structuredLaunchNote(ORDINARY_NATIVE_EXECUTION_START, structuredBaseline.authority) : ORDINARY_NATIVE_EXECUTION_START : undefined });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     // The service authenticates durable terminal evidence, never a success-only
@@ -1505,7 +1517,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const handoff = retainedResume!.bindChild(pid); activeRepositoryLease = handoff; activeTicketSlot = handoff.ticketSlot;
       if (Date.now() >= Date.parse(retainedResume!.binding.bounds.deadlineAt)) throw workflowError();
     } : undefined;
-    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, ...(request.background || retainedResume ? { timeoutMs: Math.min(plan.timeoutSeconds * 1000, retainedResume ? Math.max(1, Date.parse(retainedResume.binding.bounds.deadlineAt) - Date.now()) : Infinity) } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, ...(advisoryLaunch || request.background || retainedResume ? { timeoutMs: Math.min(plan.timeoutSeconds * 1000, retainedResume ? Math.max(1, Date.parse(retainedResume.binding.bounds.deadlineAt) - Date.now()) : Infinity) } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
     if (protectedValidationLaunch) {
       (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
     }

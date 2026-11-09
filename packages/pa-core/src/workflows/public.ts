@@ -9,9 +9,10 @@ import { queryWorkflow } from "./queries.js";
 import { preflightWorkflow, preflightPinnedWorkflow, projectExecutionPrerequisites, unavailableWorkflowObservations } from "./preflight.js";
 import type { WorkflowObservations, WorkflowPreflight } from "./preflight.js";
 import { loadSelectedWorkflows, type WorkflowSelection } from "./selected.js";
-import { eligibleSteps, projectWorkflowNext, workflowPackageReview, workflowCoordinator, coordinatorAdoptionEligible, type WorkflowState } from "./service.js";
+import { eligibleSteps, projectWorkflowNext, workflowPackageReview, workflowCoordinator, coordinatorAdoptionEligible, coordinatorAdoptionPurpose, type WorkflowState } from "./service.js";
 import { readCanonicalWorkflowArtifact } from "./consumers.js";
 import { readWorkflowEvidence } from "./evidence.js";
+import { documentRevisionEligibility } from "./revisions.js";
 import { gate } from "./presentation.js";
 
 export interface WorkflowPrimerView { runId: string; workflowId: string; version: string; sha256: string; configRevision: string; nextOwner: string; nextAction: string }
@@ -36,12 +37,13 @@ export interface WorkflowReadHost {
   operations?: ReadonlySet<string>;
   /** Native observational caller eligibility only; no grant or public override. */
   coordinatorCaller?(state: WorkflowState): Record<string, unknown>;
+  documentContinuation?(state: WorkflowState): Record<string, unknown>;
 }
 export function workflowCoordinatorView(state: WorkflowState, host: WorkflowReadHost = {}) {
   const available = coordinatorAdoptionEligible(state);
   return { original: state.caller.deploymentId, effective: workflowCoordinator(state).deploymentId,
-    scope: state.coordinatorQueueOnly ? "existing-queue-intent-only" : "retained-workflow",
-    adoption: { structurallyAvailable: available, ...(available ? { request: { action: "adopt", revision: state.revision, subjectSha256: state.subjectSha256 } } : {}),
+    scope: state.coordinatorQueueOnly ? "existing-queue-intent-only" : state.coordinatorDocumentOnly ? "document-continuation-only" : "retained-workflow",
+    adoption: { structurallyAvailable: available, purpose: coordinatorAdoptionPurpose(state), ...(available ? { request: { action: "adopt", revision: state.revision, subjectSha256: state.subjectSha256 } } : {}),
       requires: ["authenticated-foreground-same-role", "inactive-coordinator-incarnation-and-resume-lineage", "native-operator-consent", "exact-package-resource-CAS"], grantsPermissions: false },
     caller: host.coordinatorCaller?.(state) ?? { status: "uninspected", correctionOwner: "native-foreground-coordinator", nextAction: "Inspect from an authenticated foreground requirements session; structural availability is not caller authority." } };
 }
@@ -104,10 +106,10 @@ export function workflowReadService(input: Uint8Array | string, host: WorkflowRe
         if (!state) throw new JsonWorkflowError("WORKFLOW_SOURCE", "admitted-run", "workflow-owner");
         if (action === "status") {
           const observations = observe();
-          result = { ...state, runState: "admitted", packageReview: workflowPackageReview(state), coordinatorContinuation: workflowCoordinatorView(state, host), resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations) };
+          result = { ...state, runState: "admitted", packageReview: workflowPackageReview(state), documentRevision: documentRevisionEligibility(state), documentCustody: host.documentContinuation?.(state) ?? { status: "uninspected", correctionOwner: "custody-owner" }, coordinatorContinuation: workflowCoordinatorView(state, host), resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations) };
         } else if (action === "next") {
           const observations = observe();
-          result = { ...projectWorkflowNext(state, host.operations ?? new Set(), observations), coordinatorContinuation: workflowCoordinatorView(state, host), runState: "admitted", resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations), effectsAdmitted: false };
+          result = { ...projectWorkflowNext(state, host.operations ?? new Set(), observations), documentCustody: host.documentContinuation?.(state) ?? { status: "uninspected", correctionOwner: "custody-owner" }, coordinatorContinuation: workflowCoordinatorView(state, host), runState: "admitted", resourceState: state.resources ? "retained" : "legacy-missing", projectProfile: observations.projectProfile, executionPrerequisites: projectExecutionPrerequisites(observations), effectsAdmitted: false };
         } else {
           const id = text(r.id, ID), decision = state.decisions.find(d => d.decisionId === id);
           if (!decision) throw new JsonWorkflowError("WORKFLOW_AUTHORITY");

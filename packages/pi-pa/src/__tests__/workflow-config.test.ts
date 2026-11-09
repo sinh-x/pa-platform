@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { appendRegistryEvent, PA_PI_EXECUTION_MODE_ENV, closeDb, captureWorkflowResources, generatePrimer, loadSelectedWorkflows, workflowReadService } from "@pa-platform/pa-core";
+import { appendRegistryEvent, PA_PI_EXECUTION_MODE_ENV, closeDb, captureWorkflowResources, generatePrimer, loadSelectedWorkflows, workflowReadService, readProcessFingerprint } from "@pa-platform/pa-core";
 import { bytes, fixtureEvidence } from "../../../pa-core/src/__tests__/workflow-fixtures.js";
 import { committedConfigFixture } from "../../../pa-core/src/__tests__/committed-config-fixture.js";
 import { workflowRuntimeFixture } from "../../../pa-core/src/__tests__/workflow-runtime-fixture.js";
 import { authenticatePiWorkflowCaller, createPiWorkflowCapture, type PiWorkflowContext } from "../workflow-native.js";
 import { mutatePiWorkflow, piRetainedTemplateHost, piWorkflowReadHost } from "../workflow-host.js";
+import { assertPiDocumentContinuation, piDocumentContinuationView } from "../workflow-document.js";
 import { pinnedPiWorkflowConfig } from "../workflow-config.js";
 import { createPaTemplateTool } from "../pi-extension/template-tool.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
@@ -39,7 +41,7 @@ function fixture(legacy = false, native = false) {
   if (legacy) delete f.host.resources; else f.host.resources = captureWorkflowResources;
   const request = bytes({ action: "render", id: "review-bundle", version: "1", bindings: { bundle: f.bundle } });
   const state = legacy ? f.service.admit(f.selection, bytes(f.bundle)) : f.service.admitProduced(f.selection, request, {});
-  mkdirSync(join(f.root, "tickets")); writeFileSync(join(f.root, "tickets/EX-1.json"), JSON.stringify({ id: "EX-1", project: "example", doc_refs: [{ type: "workflow", path: `registry-workflow:${state.runId}` }] }));
+  mkdirSync(join(f.root, "tickets")); writeFileSync(join(f.root, "tickets/EX-1.json"), JSON.stringify({ id: "EX-1", project: "example", linkedBranches: [], doc_refs: [{ type: "workflow", path: `registry-workflow:${state.runId}` }] }));
   return { ...f, config, state, context, approve: () => { cancel = false; }, close: () => { process.chdir(cwd); closeDb(); config.close(); f.close(); process.env = env; } };
 }
 
@@ -101,14 +103,14 @@ test("default native mutation host recovers a cancelled package through supporte
   } finally { f.close(); }
 });
 
-test("fresh default foreground host adopts a dead coordinator without resume, then recovers the same package", async () => {
+for (const outcome of ["cancelled", "approved"] as const) test(`fresh default foreground host adopts a dead coordinator without resume for ${outcome} continuation`, async () => {
   const f = fixture(); const child = spawn(process.execPath, ["-e", "process.stdin.resume();process.stdout.write('ready');"], { stdio: ["pipe", "pipe", "pipe"] });
   try {
     await once(child.stdout!, "data");
     const repo = f.state.subject.repository.root, oldDir = join(f.root, "deployments/d-abcdef"); mkdirSync(oldDir, { recursive: true });
     appendRegistryEvent({ deployment_id: "d-abcdef", team: "requirements", mode: "analyze", event: "started", runtime: "pi", binary: "ppa", timestamp: new Date().toISOString(), pid: child.pid!, repo, repo_root: repo, worktree_root: repo, ticket_id: "EX-1" });
     assert.equal(recordPiProcessIdentity("d-abcdef", oldDir, child.pid!), true);
-    const capture = f.host.capture; f.host.capture = async r => ({ ...await capture(r), outcome: "cancelled" });
+    const capture = f.host.capture; f.host.capture = async r => ({ ...await capture(r), outcome });
     const cancelled = await f.service.decide(f.state.runId, 1, "approve");
     appendRegistryEvent({ deployment_id: "d-abcdef", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "partial" });
     assert.throws(() => assertPiWorkflowCoordinatorInactive(f.state.caller), /coordinator-live/);
@@ -131,8 +133,15 @@ test("fresh default foreground host adopts a dead coordinator without resume, th
     assert.deepEqual(f.journal.read(state.runId).slice(0, 2), before); assert.deepEqual(state.resources, f.state.resources);
     const adoptedView = workflowReadService('{"action":"status","ticket":"EX-1"}', piWorkflowReadHost(f.context)) as any;
     assert.equal(adoptedView.result.coordinatorContinuation.caller.status, "authenticated-coordinator");
-    const recovered = await mutatePiWorkflow({ action: "recover", revision: 3, decisionId: cancelled.decisionId, subjectSha256: state.subjectSha256 }, f.context);
-    assert.equal(recovered.ok, true); assert.equal(f.service.status(state.runId).decisions.at(-1)!.outcome, "approved");
+    if (outcome === "cancelled") {
+      const recovered = await mutatePiWorkflow({ action: "recover", revision: 3, decisionId: cancelled.decisionId, subjectSha256: state.subjectSha256 }, f.context);
+      assert.equal(recovered.ok, true); assert.equal(f.service.status(state.runId).decisions.at(-1)!.outcome, "approved");
+    } else {
+      assert.equal(state.coordinatorDocumentOnly, true); assert.deepEqual(state.decisions, [cancelled]);
+      assert.equal(adoptedView.result.coordinatorContinuation.scope, "document-continuation-only");
+      await assert.rejects(mutatePiWorkflow({ action: "request-step", revision: 3, stepId: "queue" }, f.context), /WORKFLOW_/);
+      assert.equal(f.service.status(state.runId).revision, 3);
+    }
     assert.equal(f.journal.runs("example", "EX-1").length, 1); assert.equal(f.service.status(state.runId).pending.length, 0);
   } finally { child.stdin?.end(); f.close(); }
 });
@@ -167,6 +176,70 @@ test("retained native selection denies changed physical root/unretained route in
     assert.throws(() => piRetainedTemplateHost(), /retained-resource-closure/);
     const response = await createPaTemplateTool().execute("denied", { request: '{"action":"list"}' }, undefined, undefined, {});
     assert.equal(response.isError, true); assert.equal(JSON.parse(response.content[0]!.text).code, "TEMPLATE_PAIR");
+  } finally { f.close(); }
+});
+
+test("default native producer revises an approved fresh package without materialization or reusing approval", async () => {
+  const f = fixture(false, true); try {
+    f.approve(); const old = await f.service.decide(f.state.runId, 1, "approve");
+    const before = f.journal.read(f.state.runId), ticket = readFileSync(join(f.root, "tickets/EX-1.json")), repo = f.bundle.repository.root;
+    const status = execFileSync("git", ["status", "--porcelain=v2"], { cwd: repo });
+    const next = structuredClone(f.bundle); next.revision++; next.subjectId = "native-document-revision";
+    next.requirements.ref = "requirements:agent-teams/requirements/artifacts/native-document-r002.md";
+    next.uat.ref = "uat:agent-teams/requirements/artifacts/native-document-r002-uat.md"; next.matrix.ref = next.requirements.ref;
+    const preview = join(f.root, "agent-teams/requirements/artifacts/reviews/EX-1/r002"); mkdirSync(preview, { recursive: true });
+    for (const [ref, raw] of fixtureEvidence(next)) writeFileSync(join(preview, ref === next.requirements.ref ? "requirements.md" : "uat-preview.md"), raw);
+    const producer = JSON.stringify({ action: "render", id: "review-bundle", version: "1", bindings: { bundle: next } });
+    const result = await mutatePiWorkflow({ action: "revise", revision: 2, producer }, f.context);
+    assert.equal(result.ok, true); const revised = f.service.status(f.state.runId);
+    assert.equal(revised.attempts[1]!.reason, "document-revision"); assert.equal(revised.subject.handoff.type, "fresh");
+    assert.deepEqual(revised.decisions, [old]); assert.equal(revised.outcomes.approve, undefined);
+    assert.deepEqual(f.journal.read(f.state.runId).slice(0, before.length), before);
+    assert.deepEqual(readFileSync(join(f.root, "tickets/EX-1.json")), ticket);
+    assert.deepEqual(execFileSync("git", ["status", "--porcelain=v2"], { cwd: repo }), status);
+    const read = workflowReadService('{"action":"next","ticket":"EX-1"}', piWorkflowReadHost(f.context)) as any;
+    assert.equal(read.result.packageReview.approved, false); assert.equal(read.result.coordinatorContinuation.caller.relation, "exact");
+    assert.equal(read.result.documentCustody.freshToFresh.status, "unmaterialized-observed");
+    const approval = await mutatePiWorkflow({ action: "capture", revision: revised.revision, stepId: "approve" }, f.context);
+    assert.equal(approval.ok, true); assert.notEqual(f.service.status(f.state.runId).decisions.at(-1)!.decisionId, old.decisionId);
+  } finally { f.close(); }
+});
+
+test("fresh document proof rejects an unlinked existing branch and never treats Git failure as absence", () => {
+  const f = fixture(false, true); try {
+    const state = f.state, repo = state.subject.repository.root;
+    execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Synthetic document proof"], { cwd: repo });
+    execFileSync("git", ["branch", state.subject.handoff.branch], { cwd: repo });
+    const before = execFileSync("git", ["show-ref"], { cwd: repo });
+    assert.throws(() => assertPiDocumentContinuation(state, state.subject, true), /document-branch-materialized-or-uncertain/);
+    assert.deepEqual(execFileSync("git", ["show-ref"], { cwd: repo }), before);
+    const path = process.env.PATH; process.env.PATH = "/nonexistent";
+    try { assert.throws(() => assertPiDocumentContinuation(state, state.subject, true), /document-custody-unknown|document-branch-inspection/); }
+    finally { process.env.PATH = path; }
+  } finally { f.close(); }
+});
+
+test("document custody separates inert materialization from live/unknown writers without repairing or acquiring resources", async () => {
+  const f = fixture(false, true); try {
+    const state = f.state, repo = state.subject.repository.root;
+    assert.doesNotThrow(() => assertPiDocumentContinuation(state, state.subject, true));
+    const head = "c".repeat(40), path = join(f.root, "tickets/EX-1.json"), ticket = JSON.parse(readFileSync(path, "utf8"));
+    ticket.linkedBranches = [{ repo: "example", branch: state.subject.handoff.branch, state: "materialized", baseSha: state.subject.handoff.baseSha, headSha: head }]; writeFileSync(path, JSON.stringify(ticket));
+    assert.throws(() => assertPiDocumentContinuation(state, state.subject, true), /document-branch-materialized-or-uncertain/);
+    const amendment = { ...state.subject, handoff: { type: "amendment" as const, branch: state.subject.handoff.branch, baseSha: state.subject.handoff.baseSha, featureSha: head, branchAction: "reuse" as const } };
+    assert.doesNotThrow(() => assertPiDocumentContinuation(state, amendment, false)); // no slot acquisition just to draft documents
+    const dir = join(repo, ".git/pa-ticket-builder-slots"); mkdirSync(dir, { mode: 0o700 });
+    const slot = join(dir, `${createHash("sha256").update(state.subject.ticket).digest("hex")}.json`);
+    writeFileSync(slot, JSON.stringify({ schemaVersion: 1, slotToken: "synthetic", slotId: "pa:example:EX-1", canonicalRepoKey: "example", canonicalRepoRoot: repo,
+      ticket: "EX-1", deploymentId: "d-aabbcc", deploymentDirectory: join(f.root, "deployments/d-aabbcc"), repositoryPermit: 1,
+      processFingerprint: readProcessFingerprint(process.pid), acquiredAt: new Date().toISOString() }), { mode: 0o600 });
+    const before = readFileSync(slot);
+    assert.throws(() => assertPiDocumentContinuation(state, amendment, false), /document-live-writer/);
+    assert.deepEqual(readFileSync(slot), before);
+    writeFileSync(slot, "malformed protected custody");
+    assert.throws(() => assertPiDocumentContinuation(state, amendment, false), /document-custody-unknown/);
+    const view = piDocumentContinuationView(state); assert.equal(view.status, "blocked"); assert.equal(view.correctionOwner, "custody-owner");
+    assert.equal(readFileSync(slot, "utf8"), "malformed protected custody");
   } finally { f.close(); }
 });
 

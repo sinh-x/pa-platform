@@ -34,10 +34,11 @@ export function parseArguments(args) {
   if (args.length !== 4 || args[0] !== "--selected-installed" || args[1] !== "--require-candidate" || !/^[a-f0-9]{40}$/.test(args[2] ?? "") || args[3] !== "--require-paired-config") block("WORKFLOW_ARGUMENTS", "arguments");
   return args[2];
 }
-export function discoverInstalled(pathValue = process.env.PATH ?? "") {
-  const binary = pathValue.split(":").filter(isAbsolute).map(path => join(path, "ppa")).find(path => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } });
+export function discoverInstalled(pathValue = process.env.PATH ?? "", binaryName = "ppa") {
+  if (!["ppa", "opa"].includes(binaryName)) block("WORKFLOW_INSTALLED_BINARY_REQUIRED");
+  const binary = pathValue.split(":").filter(isAbsolute).map(path => join(path, binaryName)).find(path => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } });
   if (!binary) block("WORKFLOW_INSTALLED_BINARY_REQUIRED");
-  const physical = realpathSync(binary), match = /^(\/nix\/store\/[a-z0-9]{32}-[^/]+)\/bin\/(?:ppa|\.ppa-wrapped)$/.exec(physical);
+  const physical = realpathSync(binary), match = new RegExp(`^(/nix/store/[a-z0-9]{32}-[^/]+)/bin/(?:${binaryName}|\\.${binaryName}-wrapped)$`).exec(physical);
   if (!match) block("WORKFLOW_INSTALLED_PROVENANCE_REQUIRED");
   return { binary, physical, packageRoot: match[1], share: join(match[1], "share/pa-platform"), binarySha256: digest(physicalFile(physical, 1_048_576, true)) };
 }
@@ -92,8 +93,8 @@ export function verifyModules(root, installed) {
   if (realpathSync(join(installed.share, "packages/pi-pa/node_modules/@pa-platform/pa-core")) !== join(installed.share, "packages/pa-core")) block("WORKFLOW_DEPENDENCY_SUBSTITUTION");
   return modules;
 }
-export function trackedSource(root) {
-  return gitBytes(root, "ls-tree", "-r", "--name-only", "HEAD", "packages/pa-core/src", "packages/pi-pa/src").toString("utf8").trim().split("\n").filter(Boolean);
+export function trackedSource(root, packageNames = ["pa-core", "pi-pa"]) {
+  return gitBytes(root, "ls-tree", "-r", "--name-only", "HEAD", ...packageNames.map(name => `packages/${name}/src`)).toString("utf8").trim().split("\n").filter(Boolean);
 }
 export function committedRead(root, sha, path) {
   if (path.startsWith("/") || path.includes("\\") || path.split("/").some(part => !part || part === "." || part === "..")) block("WORKFLOW_SOURCE_PATH");

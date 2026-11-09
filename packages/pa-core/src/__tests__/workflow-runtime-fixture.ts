@@ -28,7 +28,7 @@ export function workflowRuntimeFixture(): WorkflowRuntimeFixture {
   const selection: WorkflowSelection = { schemaVersion: "pa-workflow-selection/v1", configRoot: "/selected", configRevision: "a".repeat(40), manifestSha256: "a".repeat(64), bindings: [{ schemaVersion: "pa-workflow-binding/v1", team: "requirements", mode: "analyze", enabled: true, workflowId: d.workflowId, workflowVersion: d.version }], definitions: [{ definition: d, raw, sha256: digest(raw), configRoot: "/selected", configRevision: "a".repeat(40), manifestSha256: "a".repeat(64) }] };
   let captures = 0;
   const ref = (): EvidenceRef => ({ schemaVersion: "pa-workflow-evidence-ref/v1", ref: `synthetic-capture-${++captures}`, version: "v1", sha256: digest(`synthetic-${captures}`) });
-  const host: WorkflowHost = { resources: workflowResourceFixture, authenticate: () => ({ deploymentId: "d-abcdef", repoKey: b.repository.key, repoRoot: b.repository.root, ticket: b.ticket, team: "requirements", mode: "analyze", identitySha256: "a".repeat(64) }),
+  const host: WorkflowHost = { assertDocumentContinuation: () => {}, resources: workflowResourceFixture, authenticate: () => ({ deploymentId: "d-abcdef", repoKey: b.repository.key, repoRoot: b.repository.root, ticket: b.ticket, team: "requirements", mode: "analyze", identitySha256: "a".repeat(64) }),
     observations: () => ({ capabilities: new Set(d.requiredCapabilities), projectProfile: "supported", producerContract: "supported", readEvidence: r => evidence.get(r.ref) ?? null }),
     capture: async () => ({ outcome: "approved", principal: "synthetic-test-operator", evidence: ref() }), owners: new Map(), now: () => "2026-10-28T00:00:00.000Z" };
   const service = new JsonWorkflowService(journal, host);

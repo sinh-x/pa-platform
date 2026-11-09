@@ -3,7 +3,8 @@ import { userInfo } from "node:os";
 import { lstatSync, readFileSync } from "node:fs";
 import { readPiProcessIdentity } from "./process-identity.js";
 import { isDeepStrictEqual } from "node:util";
-import { getDeployPaths, readProcessFingerprint, queryDeploymentStatus, getDeploymentEvents, getDeploymentsByTicketId, workflowCoordinator, coordinatorAdoptionEligible, JsonWorkflowError, MAX_WORKFLOW_RECORD_BYTES, type WorkflowCaller, type WorkflowState, type WorkflowHost } from "@pa-platform/pa-core";
+import { getDeployPaths, readProcessFingerprint, queryDeploymentStatus, getDeploymentEvents, getDeploymentsByTicketId, workflowCoordinator, coordinatorAdoptionEligible, coordinatorAdoptionPurpose, JsonWorkflowError, MAX_WORKFLOW_RECORD_BYTES, type WorkflowCaller, type WorkflowState, type WorkflowHost } from "@pa-platform/pa-core";
+import { assertPiDocumentContinuation } from "./workflow-document.js";
 import { authenticatePiPreparationCaller, type PiPreparationContext } from "./pi-extension/prepared-workflow.js";
 
 export interface PiWorkflowContext extends PiPreparationContext {
@@ -82,10 +83,12 @@ export function piWorkflowCoordinatorCaller(state: WorkflowState, context: PiWor
     const current = authenticatePiWorkflowCaller(context), effective = workflowCoordinator(state);
     if (current.repoKey !== state.subject.repository.key || current.repoRoot !== state.subject.repository.root || current.ticket !== state.subject.ticket
       || current.team !== effective.team || current.mode !== effective.mode) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "coordinator-caller-context", "launcher-owner");
-    if (isDeepStrictEqual(current, effective) || createPiWorkflowContinuation(() => authenticatePiWorkflowCaller(context))(effective, current)) return { status: "authenticated-coordinator", effectsAdmitted: false };
+    if (isDeepStrictEqual(current, effective)) return { status: "authenticated-coordinator", relation: "exact", effectsAdmitted: false };
+    if (createPiWorkflowContinuation(() => authenticatePiWorkflowCaller(context))(effective, current)) return { status: "authenticated-coordinator", relation: "registry-resume", effectsAdmitted: false };
     if (!coordinatorAdoptionEligible(state)) return { status: "adoption-ineligible", correctionOwner: "workflow-owner", effectsAdmitted: false };
     assertPiWorkflowCoordinatorInactive(effective);
-    return { status: "eligible-for-native-adoption-consent", correctionOwner: "operator", effectsAdmitted: false };
+    if (coordinatorAdoptionPurpose(state) === "document-continuation") assertPiDocumentContinuation(state, state.subject, false);
+    return { status: "eligible-for-native-adoption-consent", purpose: coordinatorAdoptionPurpose(state), correctionOwner: "operator", effectsAdmitted: false };
   } catch (error) {
     const failure = error instanceof JsonWorkflowError ? error : new JsonWorkflowError("WORKFLOW_AUTHORITY", "foreground-caller-unproven", "launcher-owner");
     return { status: "blocked", code: failure.code, gateId: failure.gateId, correctionOwner: failure.correctionOwner, effectsAdmitted: false };
@@ -94,7 +97,7 @@ export function piWorkflowCoordinatorCaller(state: WorkflowState, context: PiWor
 const CHOICES = ["Approve exact package and displayed permissions", "Reject exact package", "Request changes", "Cancel"];
 const TECHNICAL = "View exact technical bindings";
 const visible = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-function pages(lines: string[]): string[] {
+export function nativeReviewPages(lines: string[]): string[] {
   const wrapped = lines.flatMap(line => {
     const text = Array.from(visible(line)), result: string[] = [];
     for (let start = 0; start < text.length;) {
@@ -124,7 +127,7 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
     if (Buffer.byteLength(raw, "utf8") > MAX_WORKFLOW_RECORD_BYTES) throw new JsonWorkflowError("WORKFLOW_CONTRACT", "decision-request-size", "package-owner");
     const list = (title: string, values: readonly string[]) => [title, ...(values.length ? values.map(value => `- ${value}`) : ["- none"])];
     const identifiers = (title: string, values: readonly string[]) => [`${title}: ${values.length ? values.join(", ") : "none"}`];
-    const review = pages([
+    const review = nativeReviewPages([
       `${subject.ticket}: review the exact implementation plan`,
       `Plan: ${subject.subjectId.replace(/[-.]/g, " ")}`,
       adopting ? "Decide whether this fresh foreground session may continue the retained workflow. This is not package approval."
@@ -134,7 +137,9 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
         `Continue this retained workflow from ${request.succession!.previous.deploymentId} in ${request.succession!.current.deploymentId}.`,
         "The previous coordinator must be inactive. This transfers coordination of this exact retained package only.",
         "It does not approve the package, renew revoked permissions, run checks, publish, queue or launch a builder.",
-        "Only cancelled review recovery or settlement of the existing queue intent is eligible. A separate package review is required for cancellation recovery.",
+        request.succession!.purpose === "document-continuation"
+          ? "Document continuation only: revise and review documents, then publish an exactly approved pair. No source/check execution or builder custody is transferred. Queueing the adopted package is denied; only a NEW revised subject's exact approval can separately authorize its queue operation."
+          : "Only cancelled review recovery or settlement of the existing queue intent is eligible. A separate package review is required for cancellation recovery.",
         `Continuation purpose: ${request.succession!.purpose}.`,
         ...(request.succession!.queueIntent ? [`Existing queue intent: ${request.succession!.queueIntent.intentId}`, `Existing package decision: ${request.succession!.queueIntent.decisionId}`] : []),
       ] : []),
@@ -154,7 +159,7 @@ export function createPiWorkflowCapture(context: PiWorkflowContext, authenticate
       `Workflow: ${subject.workflow.id}/${subject.workflow.version}`,
       ...(request.resources ? [`Pinned config: ${request.resources.configRevision}`] : []),
     ]);
-    const technical = pages(raw.split("\n")), transcript: { title: string; selected: string | null }[] = [];
+    const technical = nativeReviewPages(raw.split("\n")), transcript: { title: string; selected: string | null }[] = [];
     const select = async (title: string, choices: string[]) => {
       if (signal?.aborted) throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "cancelled-native-request", "operator");
       const selected = await context.ui!.select(title, choices, signal ? { signal } : undefined);

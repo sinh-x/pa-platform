@@ -26,7 +26,7 @@ export interface MaterializeTicketBranchOptions {
   approvedPreparationBaseSha?: string;
   /** Native ordinary launcher only. Reauthenticated against durable task/sign-off
    * evidence inside the transaction; never an agent/environment SHA override. */
-  intendedTaskBaseline?: OrdinaryTaskBaseline | StructuredTaskBaseline;
+  intendedTaskBaseline?: OrdinaryTaskBaseline | StructuredTaskBaseline | AdvisoryTaskBaseline;
   /** Trusted structured consumer adapter; rereads registry authority inside the existing owner transaction.
    * No public JSON/CLI callback, SHA override or implicit legacy translation. */
   rereadStructuredTaskBaseline?: () => StructuredTaskBaseline;
@@ -53,6 +53,27 @@ export interface OrdinaryTaskBaseline {
   readonly requirements: { readonly ref: string; readonly sha256: string };
   readonly approval: { readonly commentId: string; readonly sha256: string };
 }
+export interface AdvisoryTaskBaseline {
+  readonly schemaVersion: "advisory-task-baseline/v1";
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly ticket: string;
+  readonly branch: string;
+  readonly baseSha: string;
+}
+/** Native branch facts for an ordinary NEW task, not requirements/package
+ * approval. Existing capacity/materialization intent still owns atomic effects. */
+export function resolveAdvisoryTaskBaseline(options: OrdinaryTaskBaselineOptions): AdvisoryTaskBaseline {
+  const root = exactPhysicalPath(options.canonicalRepoRoot, "canonical repository root"), repo = loadRepoEntry(options.canonicalRepoKey);
+  if (!repo || repo.path !== root) throw ordinaryBaselineError("IDENTITY");
+  const ticket = (options.ticketStore ?? new TicketStore()).get(options.ticketId);
+  if (!ticket || ticket.id !== options.ticketId) throw ordinaryBaselineError("MISSING");
+  const linked = requireTicketLinkedBranch(ticket, options.canonicalRepoKey);
+  const runGit = options.runGit ?? defaultGit;
+  const baseSha = fullCommit(runGit, root, linked.baseSha ?? `refs/heads/${repo.developBranch ?? "develop"}^{commit}`, "native task base");
+  return Object.freeze({ schemaVersion: "advisory-task-baseline/v1", repoKey: options.canonicalRepoKey, repoRoot: root, ticket: options.ticketId, branch: linked.branch, baseSha });
+}
+
 export type OrdinaryTaskBaselineOptions = Pick<MaterializeTicketBranchOptions, "canonicalRepoKey" | "canonicalRepoRoot" | "ticketId" | "ticketStore" | "runGit">;
 
 /** Resolve only the single primary approved task source and its own-ticket
@@ -413,7 +434,7 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
     if (ordinary) {
       const current = ordinary.schemaVersion === "structured-task-baseline/v1"
         ? options.rereadStructuredTaskBaseline?.()
-        : resolveOrdinaryTaskBaseline(options);
+        : ordinary.schemaVersion === "advisory-task-baseline/v1" ? resolveAdvisoryTaskBaseline(options) : resolveOrdinaryTaskBaseline(options);
       if (!current || JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");
       if (ordinary.schemaVersion === "structured-task-baseline/v1" && ordinary.handoff.type === "amendment") {
         if (currentLinked.state !== "materialized" || currentLinked.headSha !== ordinary.handoff.featureSha

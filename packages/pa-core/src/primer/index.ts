@@ -37,6 +37,8 @@ export interface GeneratePrimerOptions {
   invocationChannel?: DeploymentInvocationChannel;
   /** Derived pinned registry projection, never request/environment authority. Pi only. */
   workflow?: WorkflowPrimerView;
+  /** Native fresh document route projection, not model/env authority. */
+  requirementsDocument?: boolean;
   /** Native verified projection of the original journal resources, not a selector. */
   configResourceRoot?: string;
 }
@@ -50,6 +52,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime));
   const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
   const setup = options.runtime === "pi" && options.teamConfig.name === "repo-setup" && mode?.id === "setup";
+  const document = options.runtime === "pi" && options.requirementsDocument === true && !options.workflow && options.teamConfig.name === "requirements" && mode?.id === "analyze";
   const toolReference = setup ? REPO_SETUP_TOOL_REFERENCE : demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime));
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
@@ -74,13 +77,20 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       "Use pa_workflow for current status/next and pa_decision for native capture/revocation. This primer is a projection, never approval, completion or effect admission. Do not parse approval paragraphs or fall back to legacy on a v1 failure.",
       "",
     ] : []),
+    ...(document ? [
+      "## Requirements supporting capabilities",
+      "Native profile: pa-document-package/v1. PAPC owns the conversation; pa_document provides bounded context/discovery, unsigned deployment-scoped drafts, immutable snapshots, structural checks, comparison, native final decisions and owner-checked publication/queue. Use pa_document capabilities for exact interface discovery; the separate operator CLI can describe the interface with ppa document describe --format json.",
+      "This profile grants artifact/ticket capability, not shell/source/Git/builder/resource authority. Failed checks or optional preview absence affect dependent operations only. No workflow graph, branch or command catalogue is a safe-drafting prerequisite. Full Markdown remains the review baseline; approvals, publication, queue and product acceptance are separate facts.",
+      "Retained controlling state and uncertain effects cannot be bypassed through another package. This is capability context, not approval or installed qualification.",
+      "",
+    ] : []),
     `## Objective`,
     objective,
     ``,
     `## Runtime Tools`,
     toolReference,
     ``,
-    setup ? "## Active Bulletins\nBefore discovery, use pa_bulletin with action=list. Stop on a blocking bulletin; do not invoke a shell." : renderActiveBulletins(options.runtime),
+    setup ? "## Active Bulletins\nBefore discovery, use pa_bulletin with action=list. Stop on a blocking bulletin; do not invoke a shell." : renderActiveBulletins(options.runtime, document),
     ``,
     `## Team`,
     demoteAuthoritativeAdditionalInstructionsHeading(options.teamConfig.description),
@@ -92,7 +102,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
     ``,
-    renderDeploymentInstructions(options.teamConfig, mode, options.runtime),
+    renderDeploymentInstructions(options.teamConfig, mode, options.runtime, document),
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
@@ -386,7 +396,11 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
   }).join("\n\n");
 }
 
-function renderActiveBulletins(runtime: RuntimeName): string {
+function renderActiveBulletins(runtime: RuntimeName, document = false): string {
+  if (runtime === "pi" && document) return [
+    "## Active Bulletins",
+    "Use pa_bulletin with action=list before discovery. Respect actual blocking bulletins for this team or all teams; do not bypass a safety boundary.",
+  ].join("\n");
   switch (runtime) {
     case "opencode":
       return [
@@ -511,8 +525,15 @@ const REPO_SETUP_TOOL_REFERENCE = [
   "These discovery operations are registered by the runtime itself; generic read/search tool availability is not assumed. Linux descriptor confinement, owned non-symlink files, sensitive filtering and finite input/output limits apply.",
 ].join("\n");
 
-function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
+function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName, document = false): string {
   assertSupportedRuntime(runtime);
+  if (runtime === "pi" && document) return [
+    "## Deployment Instructions",
+    "PAPC owns the requirements process. Use only native tools exposed in this document session; no shell, generic source/Git writers, builder preparation or resource operations are granted.",
+    "Record meaningful feedback and exact returned package/effect locators with pa_ticket comments and authorized pa_document artifacts. Administrative status is not approval; protected publication/queue must use their native owners.",
+    "Session/registry terminal publication belongs to the runtime. Exit with Pi's existing /quit, Ctrl-C, EOF or terminal-close controls when finished; do not issue manual registry commands or write logs outside the authorized artifact roots.",
+    "Failed checks or missing optional helpers constrain their dependent operations only. Preserve actual failures, diagnose/repair authorized drafts and report specific limitations; independent safe reads, discussion and drafting remain available. Protected denials and conflicting/uncertain effects remain enforced.",
+  ].join("\n");
   if (runtime === "pi" && teamConfig.name === "repo-setup" && mode?.id === "setup") return [
     "## Deployment Instructions",
     "Ticketless, primary-root, candidate-only setup: discover, read/search, observe prerequisites, inspect, then stage using pa_repo_setup.",

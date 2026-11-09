@@ -585,3 +585,10 @@ complete -c opa -n '__fish_seen_subcommand_from signal; and __fish_seen_subcomma
 complete -c opa -n '__fish_seen_subcommand_from signal; and __fish_seen_subcommand_from collect' -l skip-route -d 'Extract raw notes only'
 complete -c opa -n '__fish_seen_subcommand_from signal; and __fish_seen_subcommand_from collect' -l reprocess -d 'Re-route existing raw notes'
 complete -c opa -n '__fish_seen_subcommand_from signal; and __fish_seen_subcommand_from collect' -l conversation-id -d 'Override conversation ID' -r
+
+# Shared advisory operation contract; domain failures are data
+complete -c opa -n __fish_use_subcommand -a operation -d 'Factual capabilities and bounded checks'
+complete -c opa -n '__fish_seen_subcommand_from operation; and not __fish_seen_subcommand_from capabilities run' -a 'capabilities run'
+complete -c opa -n '__fish_seen_subcommand_from operation' -l format -r -a pa-operation-result/v1
+complete -c opa -n '__fish_seen_subcommand_from operation run' -l command -r -d 'Safe bounded shell command'
+complete -c opa -n '__fish_seen_subcommand_from operation run' -l timeout -r -d 'Per-operation seconds (max 14400)'

@@ -1,3 +1,4 @@
+import { ADVISORY_RUNTIME_VERSION } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentStatus } from "@pa-platform/pa-core";
@@ -161,6 +162,10 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   if (!isRogueOneTeam(teamConfig.name) && !ticketId && selectedMode?.require_ticket === true) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: "Hard block: no resolvable ticket id. Provide --ticket <id> or set PA_TICKET_ID before deploying. The opencode adapter refuses to launch without a ticket for traceability." };
   }
+  // A missing optional ticket document is not workflow admission. Only actual
+  // retained workflow bindings keep this fresh route on historical semantics.
+  const retainedWorkflow = teamConfig.name === "builder" && ticketId ? new TicketStore().get(ticketId)?.doc_refs.some(ref => ref.type === "workflow") : false;
+  const advisoryLaunch = teamConfig.name === "builder" && !request.resume && !retainedWorkflow;
   let sessionName: string | undefined;
   if (ticketId) {
     try {
@@ -230,12 +235,13 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   };
 
   try {
-    emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
+    emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.worktreeRoot, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, ...(advisoryLaunch ? { note: ADVISORY_RUNTIME_VERSION } : {}) });
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     if (plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
       const acquisition = acquireRepositoryMutationLease({
         canonicalRepoKey: plan.repoKey,
         canonicalRepoRoot: plan.repoRoot,
+        expectedGitDir: plan.repositoryGitDir, expectedGitCommonDir: plan.repositoryGitCommonDir,
         deploymentId,
         deploymentDirectory: deployDir,
         runtime: "opencode",
@@ -243,7 +249,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
         launchMode: plan.repositoryAdmission.launchMode,
         team: teamConfig.name,
         ...(plan.ticket ? { ticket: plan.ticket } : {}),
-        force: plan.repositoryAdmission.force,
+        force: advisoryLaunch ? false : plan.repositoryAdmission.force,
       });
       if (acquisition.status === "rejected") {
         const reason = boundedDiagnostic(acquisition.diagnostic);
@@ -275,9 +281,10 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     } else {
       writePrimer(plan);
     }
+    const onPid = advisoryLaunch ? (pid: number) => emitPidEvent({ deploymentId, team: teamConfig.name, pid }) : undefined;
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, ...(onPid ? { onPid } : {}), sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
     // Only persist a session file when a real opencode session token was captured.
     // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
     // the deploy id as a placeholder, which silently broke `opa deploy --resume`.

@@ -571,7 +571,7 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
         finally { process.chdir(previousCwd); process.env = inherited; }
         return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId } };
       } };
-    const result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-256", repo: f.caller.repoKey, timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: f.authority });
+    const result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-256", repo: f.caller.repoKey, timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { retainedRuntimeFixture: "ordinary-native-execution/v1", treehouse, preparedAuthority: f.authority });
     if (bodyFailure) throw bodyFailure;
     if (expectedTerminal === "retained-started-operation") {
       assert.equal(result.status, "failed", "adapter exit zero is not matching direct settlement");
