@@ -58,5 +58,6 @@ export * from "./knowledge/index.js";
 export * from "./validation/index.js";
 export * from "./validation/review-contract.js";
 export * from "./workflows/index.js";
+export { AdvisoryFiles } from "./operations/files.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";

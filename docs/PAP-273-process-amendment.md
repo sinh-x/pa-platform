@@ -69,3 +69,29 @@ PAPC process edits belong to PAPC-077, external compatible selection to PAP-285.
 Hosted CI, independent review, exact Git packaging/install/selection/reload and
 Sinh foreground UAT are separate gates; none follows from these source checks.
 Actual results and remaining limitations will be appended per phase.
+
+## P2 source delivery
+
+Added opt-in workspace profile/start marker, authenticated `pa_workspace`, CAS
+writes, explicit sanitized repository-file import and read, and confined helpers.
+Generic source/shell tools remain denied in both versions. Workspace inputs,
+scripts and outputs persist under the native deployment draft directory;
+helper results are retained in a sibling directory outside the helper mount.
+
+Limits: request 64 KiB, file/import and RLIMIT_FSIZE 1 MiB, combined captured
+stdout/stderr 32 KiB, wall/CPU 30 seconds, 128 descriptors, address space 8 GiB,
+RLIMIT_NPROC 8192. NPROC is a **shared host-UID ceiling**, not an operation-local
+PID quota; unavailable shared capacity fails closed. No aggregate workspace disk
+quota or hostile-same-UID protection is claimed. The initial 1024 NPROC/2 GiB
+attempt failed namespace startup (two tests failed), because this host already
+had thousands of user threads. Preserve that failed attempt; corrected limits
+passed the disposable checks. Node uses bounded old-space and disables the Wasm
+trap reservation; arbitrary toolchains remain unsupported.
+
+Executed: core build passed; adapter direct tsc passed after correcting initial
+TypeScript narrowing/API errors. Focused complete document family: **50 passed,
+0 failed/skipped** (source fixtures and actual disposable Python namespace
+processes, not installed qualification or human input). New native workspace
+suite has explicit manual-integration ownership in the portable CI partition;
+full local entry still runs every case. Browser/Okular export, attested human
+capture, PAPC rollout and foreground acceptance remain unproven.

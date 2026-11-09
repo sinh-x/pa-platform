@@ -8,6 +8,7 @@ export const manualIntegration = Object.freeze({
   'pi-pa': Object.freeze({
     'src/__tests__/ordinary-local-development.test.ts': 'real ordinary launcher, sandboxed checks and commits',
     'src/__tests__/project-command-contract.test.ts': 'trusted immutable executable and namespace profile',
+    'src/__tests__/document-workspace.test.ts': 'requirements workspace CAS/path/input checks plus mandatory real Nix bubblewrap/prlimit helper, subprocess, network, cancellation and output-boundary cases',
     'src/__tests__/project-command-catalogue-execution.test.ts': 'native operator evidence plus selected-task immutable executable and namespace confinement',
     'src/__tests__/prepared-native.test.ts': 'native/packaged SDK and isolated project-command integration',
     'src/__tests__/pi-deploy.test.ts': 'deployment/custody/review including a real ordinary command contract',

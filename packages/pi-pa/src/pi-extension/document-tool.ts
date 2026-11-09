@@ -3,7 +3,8 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, getConfigDir, getDeploymentEvents, readArtifactFile } from "@pa-platform/pa-core";
 import { mutatePiDocument } from "../document-native.js";
-import { DOCUMENT_SESSION_VERSION, authenticatePiDocumentCaller } from "../document-session.js";
+import { createWorkspaceTool } from "./workspace-tool.js";
+import { DOCUMENT_SESSION_VERSION, DOCUMENT_WORKSPACE_SESSION_VERSION, authenticatePiDocumentCaller } from "../document-session.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
 
@@ -49,17 +50,21 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
   pi.on?.("session_start", (_event: unknown, rawContext: unknown) => {
     // Retained/OPA-equivalent managed loadouts must not advertise a capability
     // they cannot authenticate. Register only in a genuine new document route.
-    try { authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { return; }
-    const tool = createDocumentTool();
-    pi.registerTool?.({ ...tool, execute: (...args) => lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args) });
+    let caller;
+    try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { return; }
+    const tools = [createDocumentTool(), ...(caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION ? [createWorkspaceTool()] : [])];
+    for (const tool of tools) pi.registerTool?.({ ...tool, execute: (...args) => lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args) });
   });
   pi.on?.("tool_call", (event: unknown, rawContext: unknown) => {
     const id = process.env.PA_DEPLOYMENT_ID;
     if (!id || process.env.PA_TEAM !== "requirements" || process.env.PA_MODE !== "analyze") return;
     const starts = getDeploymentEvents(id).filter(e => e.event === "started");
-    if (!starts.some(e => e.note === DOCUMENT_SESSION_VERSION)) return; // retained route, never silently upgraded
-    try { authenticatePiDocumentCaller(rawContext as PiWorkflowContext); }
+    if (!starts.some(e => [DOCUMENT_SESSION_VERSION, DOCUMENT_WORKSPACE_SESSION_VERSION].includes(e.note ?? ""))) return; // retained route, never silently upgraded
+    let caller;
+    try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); }
     catch { return { block: true, reason: "Native document-session identity is unproven; no source/resource capability is granted." }; }
+    const name = (event as PiToolCall).toolName ?? (event as PiToolCall).name;
+    if (caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION && name === "pa_workspace") return;
     return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
   });
 };
