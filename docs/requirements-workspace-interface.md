@@ -37,7 +37,11 @@ live household/production input, arbitrary toolchains or public external effects
 Working files are unsigned, mutable and native-deployment scoped under
 `agent-teams/requirements/artifacts/drafts/<deployment>/workspace/`. They can be
 saved, repaired and read without ticket/catalogue/final-package gates. Helper
-records persist outside the helper mount in sibling `helper-results/`; outcome,
+records persist outside the helper mount in sibling `helper-results/` with
+private permissions. A durable pre-dispatch intent and exclusive native active
+marker protect interrupted/unknown helper ownership. Unsettled markers block
+workspace writers (not safe reads); only native proven settlement clears them.
+There is no caller cleanup/result override. Outcome,
 cancellation, output-limit and cleanup facts stay distinct. No automatic cleanup
 or workspace expiry is introduced. Existing historical artifact read owners are
 unchanged; there is no foreign write capability or new historical-read override.

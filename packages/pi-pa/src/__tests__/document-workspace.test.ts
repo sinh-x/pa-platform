@@ -43,11 +43,12 @@ test("actual namespace helper preserves outputs while denying repository/foreign
   const f = fixture();
   try {
     // Python avoids V8's platform-dependent virtual-address reservations.
-    writeFileSync(join(f.root, "probe.py"), `import os, socket, subprocess, sys\nfrom pathlib import Path\nassert 'PA_DEPLOYMENT_ID' not in os.environ\nassert not Path(${JSON.stringify(f.repo)}).exists()\nassert not Path(${JSON.stringify(f.base)}).exists()\ntry:\n socket.create_connection(('1.1.1.1', 80), timeout=.1)\n raise AssertionError('network escaped')\nexcept OSError: pass\nPath('output.json').write_text('{"count": 2}')\nsubprocess.run([sys.executable, '-c', 'from pathlib import Path; Path("child.txt").write_text("child")'], check=True)\nprint('confined')\n`);
+    writeFileSync(join(f.root, "probe.py"), `import os, socket, subprocess, sys\nfrom pathlib import Path\nassert 'PA_DEPLOYMENT_ID' not in os.environ\nassert not Path(${JSON.stringify(f.repo)}).exists()\nassert not Path(${JSON.stringify(f.base)}).exists()\nfor target in [${JSON.stringify(join(f.repo, "changed"))}, ${JSON.stringify(join(f.base, "foreign-changed"))}]:\n try:\n  Path(target).write_text('denied')\n  raise AssertionError('host write escaped')\n except OSError: pass\nos.symlink(${JSON.stringify(f.repo)}, 'escape')\ntry:\n Path('escape/changed').write_text('denied')\n raise AssertionError('symlink escaped')\nexcept OSError: pass\ntry:\n socket.create_connection(('1.1.1.1', 80), timeout=.1)\n raise AssertionError('network escaped')\nexcept OSError: pass\nPath('output.json').write_text('{"count": 2}')\nsubprocess.run([sys.executable, '-c', 'from pathlib import Path; Path("child.txt").write_text("child")'], check=True)\nprint('confined')\n`);
     const result = await f.service.execute(JSON.stringify({ action: "run", program: "python3", path: "probe.py" }));
     assert.equal(result.passed, true, JSON.stringify(result));
     assert.equal(readFileSync(join(f.root, "child.txt"), "utf8"), "child");
     assert.equal(existsSync(join(f.repo, "output.json")), false);
+    assert.equal(existsSync(join(f.repo, "changed")), false); assert.equal(existsSync(join(f.base, "foreign-changed")), false);
     assert.ok(existsSync(join(f.base, String(result.evidence))));
   } finally { f.cleanup(); }
 });
@@ -63,6 +64,22 @@ test("actual helper output overflow/cancellation are bounded and results do not 
     assert.equal(cancelled.cancelled, true); assert.equal(cancelled.cleanup, "settled");
     writeFileSync(join(f.root, "bad.py"), "raise RuntimeError('fixture failure')\n");
     const failed = await runWorkspaceHelper(f.root, "python3", "bad.py"); assert.notEqual(failed.exitCode, 0);
+  } finally { f.cleanup(); }
+});
+test("advertised Node and Bash programs actually run under the same finite namespace limits", async () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.root, "node.js"), "require('fs').writeFileSync('node.txt', 'node'); console.log('node')");
+    writeFileSync(join(f.root, "bash.sh"), "printf bash > bash.txt; printf bash");
+    for (const [program, script] of [["node", "node.js"], ["bash", "bash.sh"]] as const) {
+      const result = await runWorkspaceHelper(f.root, program, script);
+      assert.equal(result.exitCode, 0, JSON.stringify(result)); assert.equal(result.cleanup, "settled");
+    }
+    writeFileSync(join(f.root, "limit.py"), "import sys; sys.stdout.write('x' * 32768)");
+    const boundary = await runWorkspaceHelper(f.root, "python3", "limit.py");
+    assert.equal(boundary.outputLimited, false); assert.equal(boundary.stdout.length, WORKSPACE_LIMITS.outputBytes);
+    writeFileSync(join(f.root, "file.py"), "from pathlib import Path; Path('large').write_bytes(b'x' * 1048577)");
+    const oversized = await runWorkspaceHelper(f.root, "python3", "file.py"); assert.notEqual(oversized.exitCode, 0);
   } finally { f.cleanup(); }
 });
 test("workspace blockers are bounded, static and outer tool inputs cannot grant rights", async () => {

@@ -63,8 +63,9 @@ export class DocumentPackageService {
       snapshotRef: `registry-document-package:${sha256}`, approvalIsAcceptance: false };
   }
   async execute(raw: string): Promise<Record<string, unknown>> {
+    let requestedAction: string | undefined;
     try {
-      const r = parseDocumentRequest(raw), action = text(r.action);
+      const r = parseDocumentRequest(raw), action = text(r.action); requestedAction = action;
       // Validate exact action shape before any operation. No extra keys or imported grants.
       const fields = DOCUMENT_ACTION_FIELDS;
       if (!Object.hasOwn(fields, action)) documentReject();
@@ -233,7 +234,9 @@ export class DocumentPackageService {
       const facts: Pick<OperationResult, "completion" | "outcome" | "enforcement" | "capability" | "required"> = {
         completion: "error", outcome: "unknown", enforcement: ["DOCUMENT_AUTHORITY", "DOCUMENT_CONFLICT"].includes(code) ? "denied" : "allowed", capability: code === "DOCUMENT_UNAVAILABLE" ? "unavailable" : "available", required: false,
       };
-      return { schemaVersion: "pa-document-result/v1", ok: false, code, facts, correctionOwner: code === "DOCUMENT_AUTHORITY" ? "native-owner" : "document-operation-owner", scope: "this-operation-only", executionAdmitted: false };
+      const unattestedCapture = this.host.workspaceProfile && code === "DOCUMENT_UNAVAILABLE" && (requestedAction === "capture" || requestedAction === "revoke");
+      const guidance = unattestedCapture ? { guidance: "Package decision not started; safe authoring and presentation remain available.\nCondition: This new-profile decision request cannot issue authority.\nSource: Native human-input provenance check (DOCUMENT_UNAVAILABLE).\nReason: The Pi host does not supply the required attested original human-event identity. Chat text or another approval dialog cannot repair this capability gap.\nCorrection: Ask the Pi host/runtime maintainer to provide supported attested-event capture. Impact: none for this request. Actor: agent or operator. New approval: not required to ask; implementation and activation need their own authority. Prerequisite: preserve the current package and prior decisions.\nResume Action: Request capture only after supported host capability and exact-package checks are available; admission is rechecked. Do not substitute a tool-supplied outcome or upgrade retained sessions." } : {};
+      return { schemaVersion: "pa-document-result/v1", ok: false, code, facts, ...guidance, correctionOwner: unattestedCapture ? "pi-human-input-host-owner" : code === "DOCUMENT_AUTHORITY" ? "native-owner" : "document-operation-owner", scope: "this-operation-only", executionAdmitted: false };
     }
   }
 }

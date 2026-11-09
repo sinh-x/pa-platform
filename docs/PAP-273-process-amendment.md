@@ -153,3 +153,85 @@ revocation, changed-byte and lifecycle negatives remain intact. V2 source fixtur
 readback of already-issued exact effects performs no duplicate ticket/journal
 writes and requests no new consent. Actual new conversational decision integration
 and live branch bridge are not complete.
+
+## P6 local qualification checkpoint — NOT acceptance
+
+Final source includes P1–P5 commits `981f688`, `e73679a`, `6e9d5c1`,
+`6c9a1e1`, `9332a8f` and the P6 commit containing this report. No runtime version,
+config pin, installed store, external config, remote or ticket lifecycle is changed.
+
+Qualification review added durable, exclusive pre-dispatch helper intents,
+private 0600 result files/0700 result directory, and a native pending marker.
+Crashes/unknown cleanup retain the marker and block overlapping workspace writers;
+safe reads/capability inspection remain possible. Only proven settlement clears
+it. There is no caller settlement grant or blind-reset action. Added portable
+unsettled-state/duplicate-key/request-boundary cases and real Node/Bash, exact
+32 KiB stdout and over-1 MiB file-limit probes. Native probes now attempt denied
+host/foreign/symlink writes, not just inspect absent mounts. Repository/workspace
+ancestor overlap is rejected. No aggregate disk quota or per-operation PID quota
+is claimed; resource-saturation and full crash/recovery qualification are pending.
+
+New-profile unavailable capture now reports the exact Pi human-input host owner
+with bounded, operation-local five-field guidance. This is formatting over fixed
+native causes, not another probe, approval question or permission path.
+
+### Actually executed
+
+Evidence: deployment-owned
+`deployments/d-977df3/artifacts/PAP-273-validation/` under the ai-usage store.
+
+| Command / lane | Actual disposition |
+|---|---|
+| `corepack pnpm typecheck` (final) | exit 0 |
+| `corepack pnpm build` (final) | exit 0 |
+| focused core/Pi `document-*.test.ts` (final) | **58 passed, 0 failed/skipped**, exit 0 |
+| verifier + portable partition ownership tests | **12 passed, 0 failed/skipped**, exit 0 |
+| `corepack pnpm completions` | exit 0; no generated diff |
+| `corepack pnpm test:code` | exit 1: driver 35 passed; core 1769 passed, **1 failed**, 14 skipped; downstream lanes not reached |
+| separate OpenCode test | 106 passed, 0 failed, **1 skipped**; exit 0 is not a required-skips waiver |
+| separate Pi `test:code` | **600-second command timeout**, no final suite summary; incomplete, not passed |
+| runtime-host test | 1 passed, exit 0 |
+| full `corepack pnpm test` entry | **180-second command timeout** including preceding final typecheck/build; no complete suite result |
+| staged sensitive-workflow scan | run before every phase commit; final result recorded by commit command |
+
+The broad core failure is `generatePrimer live requirements config satisfies the
+versioned compatibility contract when available`: the currently selected live
+config's dispatch objective does not satisfy the retained fresh-handoff tuple
+regex. No baseline reproduction or exact paired-lane qualification was performed
+here; do not relabel it as an unrelated passing baseline or weaken the assertion.
+The Pi/full timeouts leave their incomplete cases outstanding. No owned test
+process remained after the harness timeouts. Early development TypeScript errors,
+two namespace-limit failures and the forbidden direct-link fixture attempt remain
+reported above. A later guidance edit also initially failed typecheck/build due
+to mutable action narrowing; retained `*-narrowing-failed.log` records precede the
+corrected final passing builds.
+
+### AC / TS disposition (not acceptance)
+
+| AC / TS | Source evidence delivered | Remaining gate |
+|---|---|---|
+| 01 | native association authentication + v2 handoff readback | complete missing-context diagnostic/foreground coverage |
+| 02 | workspace CAS/read/import and boundary tests | exact installed modes and full artifact coverage |
+| 03 | actual Python/Node/Bash confined helpers | installed/fresh-host/objective trial |
+| 04 | actual host/foreign/symlink/network denial, child/cancel/output/file limits | saturation, operation-local quota design if required, full cleanup matrix |
+| 05 | persistent results/intents and unsettled writer denial | actual interruption/resume/retention experience |
+| 06 | existing extensible package mechanics retained | PAPC complete process/composition and feedback trial |
+| 07 | exact snapshot Markdown/HTML manifests; no viewer claims | actual browser readability, diagrams, chosen Okular export/fallback |
+| 08–10 | explicit fail-closed unavailable capability; v1 unchanged | host-attested events, pending-target/dedup/CAS implementation and real human confirmation |
+| 11 | existing publication/queue process-death/lost-reply cases retained | new trusted decision integration + installed proof |
+| 12 | truthful record-only handoff readback | supported ticket/launcher branch bridge |
+| 13 | explicit new launch marker/parser/primer/tool dispatch tests | exact old/new selected-config and installed lanes |
+| 14 | bounded workspace/unattested-capture causes and injection negatives | independent human readability and complete adapter/CLI review |
+| 15 | local source checks and old installed inventory preserved | current hosted CI, independent review, exact packaging/selection/installed provenance |
+| 16 | **not performed** | genuine normal foreground Sinh UAT/adoption; actual prompt counts/effects |
+
+The old 62-ID document installed verifier remains **v1 only** and unchanged; it
+cannot qualify v2 by numerical count or source substitution. A v2 installed/default
+entry qualifier and complete new-case ownership must accompany the missing host/
+PAPC integration before rollout. Existing validation lanes and mandatory tests
+are not removed. No installed verifier, packaging, installation/activation/reload,
+source-pair config lane, remote CI/push/PR/merge, independent reviewer, browser/
+Obsidian/Okular observation, actual human approval/UAT, NX-067/TTL-017 retry or
+checkout return was performed. The ticket and amended process remain **partial**,
+not complete/accepted. Resume independent safe source work at the specific owner
+blockers; do not repeat historical human decisions or product effects.

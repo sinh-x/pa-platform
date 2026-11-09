@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { lstatSync, realpathSync, mkdirSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import {
   AdvisoryFiles, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, readArtifactFile,
@@ -30,6 +30,20 @@ function executable(name: string): string {
     } catch { /* absence does not authorize a fallback */ }
   }
   return fail("DOCUMENT_UNAVAILABLE");
+}
+function syncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+function clearActiveHelper(root: string): void { unlinkSync(join(root, "active-helper.json")); syncDirectory(root); }
+function saveHelperEvidence(parent: string, name: string, content: string): void {
+  const directory = openSync(join(parent, "helper-results"), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fchmodSync(directory, 0o700);
+    const fd = openSync(`/proc/self/fd/${directory}/${name}`, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(fd, content); fsyncSync(fd); } finally { closeSync(fd); }
+    fsyncSync(directory);
+  } finally { closeSync(directory); }
 }
 export interface WorkspaceProcessResult { exitCode: number | null; signal: string | null; timedOut: boolean; cancelled: boolean; outputLimited: boolean; cleanup: "settled" | "unknown"; stdout: string; stderr: string }
 /** Namespace owns every child; group cancellation also kills the namespace init.
@@ -86,8 +100,15 @@ export class DocumentWorkspace {
     if (action === "capabilities") return { schemaVersion: "pa-workspace/v1", root: this.root, limits: WORKSPACE_LIMITS, programs: ["node", "python3", "bash"], confinement: "required-per-run", productSourceMounted: false, capture: "unavailable-host-attestation-required" };
     // The root is native-derived. Refuse aliases/foreign roots, never create a
     // missing hierarchy through a symlink. Parent creation is descriptor-confined.
-    if (realpathSync(this.root) !== this.root || realpathSync(this.repository) !== this.repository) fail("DOCUMENT_AUTHORITY");
+    const inside = (root: string, target: string) => { const r = relative(root, target); return r === "" || (r !== ".." && !r.startsWith("../") && !isAbsolute(r)); };
+    if (realpathSync(this.root) !== this.root || realpathSync(this.repository) !== this.repository || inside(this.root, this.repository) || inside(this.repository, this.root)) fail("DOCUMENT_AUTHORITY");
     const files = new AdvisoryFiles(this.root), selected = path(request.path);
+    // A crashed/unsettled helper must not be overlapped by another writer.
+    const evidence = new AdvisoryFiles(dirname(this.root));
+    if (action !== "read") {
+      try { evidence.file("active-helper.json"); fail("DOCUMENT_UNCERTAIN"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
     const same = () => { assertSameDocumentCaller(before, this.authenticate()); if (signal?.aborted) fail("DOCUMENT_STALE"); };
     same();
     if (action === "read") {
@@ -109,12 +130,27 @@ export class DocumentWorkspace {
     }
     if (!["node", "python3", "bash"].includes(String(request.program))) fail();
     const operationId = `helper-${randomUUID()}`;
-    const result = await runWorkspaceHelper(this.root, request.program as "node" | "python3" | "bash", selected, signal);
+    const scriptSha256 = workflowDigest(readArtifactFile(join(this.root, selected), WORKSPACE_LIMITS.fileBytes, "ARTIFACT_STALE"));
+    evidence.file("helper-results", undefined, true);
+    const intent = JSON.stringify({ operationId, caller: before.identitySha256, program: request.program, path: selected, scriptSha256 });
+    saveHelperEvidence(dirname(this.root), `${operationId}.intent.json`, intent);
+    let active: number;
+    try { active = openSync(join(dirname(this.root), "active-helper.json"), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600); }
+    catch { fail("DOCUMENT_UNCERTAIN"); }
+    try { writeFileSync(active, intent); fsyncSync(active); } finally { closeSync(active); }
+    syncDirectory(dirname(this.root));
+    let result: WorkspaceProcessResult;
+    try { result = await runWorkspaceHelper(this.root, request.program as "node" | "python3" | "bash", selected, signal); }
+    catch (error) {
+      // The runner rejects only before a child exists; an emitted close with an
+      // actual child always returns settlement facts instead of throwing.
+      saveHelperEvidence(dirname(this.root), `${operationId}.json`, JSON.stringify({ operationId, completion: "not-started" }));
+      clearActiveHelper(dirname(this.root)); throw error;
+    }
     // Retain real results outside the helper mount; no script can forge this
     // record. Same-UID limits are unchanged; this is evidence, never authority.
-    const evidence = new AdvisoryFiles(dirname(this.root));
-    evidence.file("helper-results", undefined, true);
-    evidence.file(`helper-results/${operationId}.json`, JSON.stringify({ operationId, caller: before.identitySha256, program: request.program, path: selected, ...result }));
+    saveHelperEvidence(dirname(this.root), `${operationId}.json`, JSON.stringify({ operationId, caller: before.identitySha256, program: request.program, path: selected, scriptSha256, ...result }));
+    if (result.cleanup === "settled") clearActiveHelper(dirname(this.root));
     same();
     // Never expose protected output merely because the process could print it.
     let output: string;
