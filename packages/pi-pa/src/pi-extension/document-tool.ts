@@ -30,8 +30,9 @@ export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile =
     },
   };
 }
-export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string): boolean {
+export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, workspaceProfile = false): boolean {
   const name = call.toolName ?? call.name ?? "";
+  if (workspaceProfile && name === "pa_workspace") return true;
   if (name === "read" && repoRoot && typeof call.input.path === "string") {
     try {
       const selected = call.input.path;
@@ -64,8 +65,6 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); }
     catch { return { block: true, reason: "Native document-session identity is unproven; no source/resource capability is granted." }; }
-    const name = (event as PiToolCall).toolName ?? (event as PiToolCall).name;
-    if (caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION && name === "pa_workspace") return;
-    return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
+    return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd, caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
   });
 };

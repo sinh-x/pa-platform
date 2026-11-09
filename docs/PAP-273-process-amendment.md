@@ -119,3 +119,18 @@ is insufficient. This is a dependent implementation blocker, not new scope intak
 Executed: core build and adapter direct tsc passed; presentation + retained native
 suite **14 passed, 0 failed/skipped**. These are source/disposable fixture results,
 not human-event evidence or human readability/visual acceptance.
+
+## P4 runtime integration handoff (partial phase)
+
+Added [the actual PAPC integration contract](requirements-workspace-interface.md),
+version-aware runtime primer and tool descriptions, and source dispatch tests.
+The native start marker, not current config/env text, selects rights. Explicit
+v2 registration/loadout keeps generic shell/source and alias denials. V1/OPA/
+retained primer paths retain their original semantics. Safe workspace tools are
+not claimed as conversational approval capability.
+
+Executed core build, adapter tsc and native/dispatch tests: **12 passed, zero
+failed/skipped**. PAPC-077's complete external instruction/template/validator
+closure is **not edited or qualified here**. That owner's integration remains
+pending, especially the blocked trusted-event experience; no active selection,
+legacy-resource rewrite or source-pair passing claim is made.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { generatePrimer, workflowDigest, parseTeamYamlContent, type DeploymentStatus, type RegistryEvent } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, DOCUMENT_SESSION_VERSION, type DocumentSessionDependencies } from "../document-session.js";
+import { authenticatePiDocumentCaller, DOCUMENT_SESSION_VERSION, DOCUMENT_WORKSPACE_SESSION_VERSION, type DocumentSessionDependencies } from "../document-session.js";
 import { createPiDocumentCapture } from "../document-native.js";
 import { createDocumentTool, documentSessionToolAllowed } from "../pi-extension/document-tool.js";
 import { runDocumentDescription } from "../document-cli.js";
@@ -43,6 +43,9 @@ test("native route authentication requires an immutable launch, incarnation anch
   const env = { PA_DEPLOYMENT_ID: "d-abcdef", PA_TEAM: "requirements", PA_MODE: "analyze", PA_TICKET_ID: "EX-1", PA_REPO: root, PA_WORKTREE_ROOT: root, PA_PI_EXECUTION_MODE: "foreground" };
   const ctx: PiWorkflowContext = { mode: "tui", cwd: root, sessionManager: { getSessionId: () => "synthetic-session" } };
   assert.equal(authenticatePiDocumentCaller(ctx, env, deps).ticket, "EX-1");
+  assert.equal(authenticatePiDocumentCaller(ctx, env, deps).profile, undefined);
+  assert.equal(authenticatePiDocumentCaller(ctx, env, { ...deps, events: () => [{ ...start, note: DOCUMENT_WORKSPACE_SESSION_VERSION }] }).profile, DOCUMENT_WORKSPACE_SESSION_VERSION);
+  assert.throws(() => authenticatePiDocumentCaller(ctx, { ...env, PA_DOCUMENT_PROFILE: DOCUMENT_WORKSPACE_SESSION_VERSION }, { ...deps, events: () => [{ ...start, note: undefined }] }), /DOCUMENT_AUTHORITY/);
   assert.throws(() => authenticatePiDocumentCaller(ctx, env, { ...deps, events: () => [{ ...start, note: "model-claim" }] }), /DOCUMENT_AUTHORITY/);
   assert.throws(() => authenticatePiDocumentCaller(ctx, env, { ...deps, anchor: () => ({ ...fingerprint, startTimeTicks: "9999" }) }), /DOCUMENT_AUTHORITY/);
   assert.throws(() => authenticatePiDocumentCaller(ctx, { ...env, PA_PI_EXECUTION_MODE: "background" }, deps), /DOCUMENT_AUTHORITY/);
