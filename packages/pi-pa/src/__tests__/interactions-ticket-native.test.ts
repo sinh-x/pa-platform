@@ -70,15 +70,30 @@ test("default non-editor composition registers finite intake only for fresh auth
     }));
     const snapshot = ticketSnapshot(), capability = await call(capabilityPacket);
     assert.equal(capability.isError, false); assert.deepEqual(ticketSnapshot(), snapshot, "capability description creates no ticket, lock, intent or audit changes");
-    const grammar = JSON.parse(capability.content[0]!.text); assert.deepEqual(grammar.supportedActions, ["capabilities", "create"]);
+    const grammar = JSON.parse(capability.content[0]!.text); assert.deepEqual(grammar.supportedActions, ["capabilities", "inspect", "reuse", "create"]);
     assert.equal(grammar.schemas.create.properties.project.type, "string"); assert.equal(grammar.availability.installed, "unproven"); assert.equal(grammar.authorityGranted, false);
     assert.ok(Buffer.byteLength(capability.content[0]!.text) <= 51200);
     assert.equal((await call({ request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities", requestId: "must-not-allocate" }) })).isError, true);
     assert.deepEqual(ticketSnapshot(), snapshot);
+    const primaryInspection = await call({ request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "intake", project: "example", ticket: parent.id }) });
+    assert.equal(primaryInspection.isError, false, primaryInspection.content[0]!.text);
+    assert.deepEqual(ticketSnapshot(), snapshot, "inspection leaves all existing ticket-owner files unchanged");
     const gates = await host.dispatch("tool_call", { toolName: tool.name, input: packet }, context);
     assert.equal(gates.some((result: any) => result?.block === true), false);
     const first = await call(packet); assert.equal(first.isError, false, first.content[0]!.text);
     const created = JSON.parse(first.content[0]!.text); assert.equal(created.ticket.id, "OTH-001"); assert.equal(created.primaryTicket, parent.id);
+    const inspection = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "companion", project: "other", ticket: created.ticket.id };
+    const readSnapshot = ticketSnapshot();
+    const inspected = await call({ request: JSON.stringify(inspection) }); assert.equal(inspected.isError, false, inspected.content[0]!.text);
+    const selection = JSON.parse(inspected.content[0]!.text);
+    const reusePacket = { request: JSON.stringify({ ...inspection, action: "reuse", expectedVersion: selection.version, expectedTitle: selection.ticket.title, expectedType: selection.ticket.type }) };
+    const reused = await call(reusePacket); assert.equal(reused.isError, false, reused.content[0]!.text);
+    assert.equal(JSON.parse(reused.content[0]!.text).ticket.id, created.ticket.id);
+    assert.equal(JSON.parse(reused.content[0]!.text).primaryTicket, parent.id);
+    assert.equal(JSON.parse(reused.content[0]!.text).authorityGranted, false);
+    assert.deepEqual(ticketSnapshot(), readSnapshot, "inspection/reuse do not change ticket, lock, counter, intent or audit state");
+    const stale = await call({ request: JSON.stringify({ ...JSON.parse(reusePacket.request), expectedTitle: "Unaligned work" }) });
+    assert.equal(stale.details.code, "TICKET_INTERACTION_STALE"); assert.deepEqual(ticketSnapshot(), readSnapshot);
     const replay = JSON.parse((await call(packet)).content[0]!.text); assert.equal(replay.ticket.id, created.ticket.id); assert.equal(replay.reusedIntent, true);
     for (const input of [{ ...packet, actor: "sinh" }, { request: JSON.stringify({ ...request, approval: true }) }, { request: JSON.stringify({ ...request, kind: "intake" }) }]) assert.equal((await call(input)).isError, true);
     const changed = await call({ request: JSON.stringify({ ...request, title: "Changed intent" }) }); assert.equal(changed.details.code, "TICKET_CREATE_CONFLICT");
@@ -87,7 +102,7 @@ test("default non-editor composition registers finite intake only for fresh auth
     assert.equal(readFileSync(join(usage, "tickets", `${created.ticket.id}.json`), "utf8").includes("Explicit source-fixture companion"), true);
     assert.equal((await call(packet, { ...context, cwd: "/other" })).isError, true);
     assert.equal((await call(packet, { ...context, mode: "rpc" })).isError, true);
-    sessionId = "replacement-session"; assert.equal((await call(packet)).isError, true); sessionId = "disposable-native-fixture-not-human";
+    sessionId = "replacement-session"; assert.equal((await call(reusePacket)).isError, true); assert.equal((await call(packet)).isError, true); sessionId = "disposable-native-fixture-not-human";
     process.env.PA_PI_EXECUTION_MODE = "background"; assert.equal((await call(packet)).isError, true); process.env.PA_PI_EXECUTION_MODE = "foreground";
     process.env.PA_TEAM = "builder"; assert.equal((await call(packet)).isError, true); process.env.PA_TEAM = "requirements";
     for (const legacy of ["requirements-document-capabilities/v1", "requirements-document-workspace/v2", "requirements-document-confirmation/v3", "unmarked"]) {
@@ -97,6 +112,7 @@ test("default non-editor composition registers finite intake only for fresh auth
       assert.equal(retained.tools.has("pa_ticket_intake"), false); assert.equal(retained.tools.has("pa_capabilities"), false);
       const denied = await call(packet); assert.equal(denied.isError, true); assert.equal(denied.details.code, "TICKET_INTERACTION_SESSION");
       assert.equal((await call(capabilityPacket)).isError, true);
+      assert.equal((await call(reusePacket)).details.code, "TICKET_INTERACTION_SESSION");
       await retainedLifecycle.shutdown({}, context);
     }
     assert.equal(store.list().length, 2);

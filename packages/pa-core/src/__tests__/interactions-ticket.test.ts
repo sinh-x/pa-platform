@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { TicketStore } from "../tickets/store.js";
-import { createTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
+import { createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
 
 const request = { schemaVersion: "pa-ticket-intake/v1", action: "create", requestId: "requested-companion-1", kind: "companion", project: "other", title: "Explicit companion", summary: "Requested work", description: "Source fixture, not customer data" };
 function fixture(run: (store: TicketStore, caller: TicketInteractionCaller, dir: string) => void): void {
@@ -24,7 +24,7 @@ test("intake interface discovery is strict bounded metadata, not an effect or in
   assert.equal(parseTicketIntakeOperation(raw).action, "capabilities");
   assert.equal(parseTicketIntakeOperation(JSON.stringify(request)).action, "create");
   const metadata = ticketIntakeInterface();
-  assert.deepEqual(metadata.supportedActions, ["capabilities", "create"]);
+  assert.deepEqual(metadata.supportedActions, ["capabilities", "inspect", "reuse", "create"]);
   assert.equal(metadata.schemas.create, ticketIntakeRequestSchema);
   assert.equal(metadata.availability.installed, "unproven"); assert.equal(metadata.availability.admitted, "not-checked");
   assert.equal(metadata.authorityGranted, false);
@@ -33,6 +33,65 @@ test("intake interface discovery is strict bounded metadata, not an effect or in
     assert.throws(() => parseTicketIntakeOperation(JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities", ...extra })), TicketInteractionError);
   assert.throws(() => parseTicketIntakeOperation('{"schemaVersion":"pa-ticket-intake/v1","action":"capabilities","action":"create"}'), TicketInteractionError);
 });
+
+test("exact aligned reuse is a read-only caller-bound snapshot, not a claim or reassociation", () => fixture((store, caller, dir) => {
+  const selected = store.create({ ...store.get(caller.ticket!)!, project: "other", title: "Existing requested companion" });
+  const inspect = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "companion", project: "other", ticket: selected.id };
+  const authenticate = () => ({ ...caller });
+  const before = store.readAudit(), primary = store.get(caller.ticket!);
+  const observed = readTicketInteraction(JSON.stringify(inspect), { store, authenticate });
+  assert.equal(observed.action, "inspect"); assert.equal(observed.ticket.id, selected.id);
+  assert.equal(observed.primaryTicket, caller.ticket); assert.match(observed.version, /^[a-f0-9]{64}$/);
+  const reuse = { ...inspect, action: "reuse", expectedVersion: observed.version, expectedTitle: selected.title, expectedType: selected.type };
+  const result = readTicketInteraction(JSON.stringify(reuse), { store, authenticate });
+  assert.equal(result.action, "reuse"); assert.equal(result.version, observed.version); assert.equal(result.authorityGranted, false);
+  assert.deepEqual(store.readAudit(), before); assert.deepEqual(store.get(caller.ticket!), primary);
+  assert.equal(store.list().length, 2);
+  for (const change of [{ expectedTitle: "Different work" }, { expectedType: "bug" }, { expectedVersion: "b".repeat(64) }])
+    assert.throws(() => readTicketInteraction(JSON.stringify({ ...reuse, ...change }), { store, authenticate }), /TICKET_INTERACTION_STALE/);
+  store.comment(selected.id, "fixture", "A concurrent change invalidates the complete snapshot");
+  assert.throws(() => readTicketInteraction(JSON.stringify(reuse), { store, authenticate }), /TICKET_INTERACTION_STALE/);
+  assert.throws(() => readTicketInteraction(JSON.stringify(inspect), { store, authenticate: () => ({ ...caller, ticket: null }) }), /TICKET_INTERACTION_PROJECT/);
+  assert.throws(() => readTicketInteraction(JSON.stringify({ ...inspect, kind: "intake" }), { store, authenticate }), /TICKET_INTERACTION_PROJECT/);
+  assert.throws(() => readTicketInteraction(JSON.stringify({ ...inspect, ticket: caller.ticket }), { store, authenticate }), /TICKET_INTERACTION_SELECTION/);
+  assert.throws(() => readTicketInteraction(JSON.stringify({ ...inspect, ticket: "OTH-999" }), { store, authenticate }), /TICKET_INTERACTION_SELECTION/);
+  writeFileSync(join(dir, "OTH-002.json"), JSON.stringify({ _alias: true, movedTo: selected.id }));
+  assert.throws(() => readTicketInteraction(JSON.stringify({ ...inspect, ticket: "OTH-002" }), { store, authenticate }), /TICKET_INTERACTION_SELECTION/);
+  const otherSession = { ...caller, identitySha256: "b".repeat(64) };
+  assert.throws(() => readTicketInteraction(JSON.stringify(reuse), { store, authenticate: () => otherSession }), /TICKET_INTERACTION_STALE/);
+}));
+
+test("reuse framing, sensitive output and caller changes reject without exposing target content", () => fixture((store, caller) => {
+  const inspect = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "intake", project: "sample", ticket: caller.ticket };
+  for (const extra of [{ actor: "sinh" }, { requestId: "write" }, { expectedVersion: "a".repeat(64) }, { command: "anything" }, { approval: true }])
+    assert.throws(() => parseTicketIntakeOperation(JSON.stringify({ ...inspect, ...extra })), TicketInteractionError);
+  for (const ticket of ["SMP", "../SMP-001", "SMP-001\n"])
+    assert.throws(() => parseTicketIntakeOperation(JSON.stringify({ ...inspect, ticket })), TicketInteractionError);
+  assert.throws(() => parseTicketIntakeOperation(JSON.stringify({ ...inspect, action: "reuse" })), TicketInteractionError);
+  const before = store.readAudit(); let calls = 0;
+  assert.throws(() => readTicketInteraction(JSON.stringify(inspect), { store, authenticate: () => ++calls === 1 ? caller : { ...caller, identitySha256: "b".repeat(64) } }), /TICKET_INTERACTION_SESSION/);
+  assert.deepEqual(store.readAudit(), before);
+  store.update(caller.ticket!, { title: "-----BEGIN SYNTHETIC PRIVATE KEY-----" });
+  assert.throws(() => readTicketInteraction(JSON.stringify(inspect), { store, authenticate: () => caller }), (error: unknown) => error instanceof TicketInteractionError && error.code === "TICKET_INTERACTION_SENSITIVE" && !error.message.includes("SYNTHETIC"));
+}));
+
+test("selection rejects concurrent drift, oversized legacy metadata, duplicates and authority fields", () => fixture((store, caller, dir) => {
+  const inspect = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "intake", project: "sample", ticket: caller.ticket };
+  const raw = JSON.stringify(inspect);
+  assert.throws(() => parseTicketIntakeOperation(raw.replace('"action":"inspect"', '"action":"inspect","action":"inspect"')), TicketInteractionError);
+  let checks = 0;
+  assert.throws(() => readTicketInteraction(raw, { store, authenticate: () => {
+    if (++checks === 2) store.comment(caller.ticket!, "fixture", "Concurrent source change");
+    return caller;
+  } }), /TICKET_INTERACTION_STALE/);
+  const current = store.get(caller.ticket!)!;
+  writeFileSync(join(dir, `${caller.ticket}.json`), JSON.stringify({ ...current, title: "x".repeat(1025) }));
+  assert.throws(() => readTicketInteraction(raw, { store, authenticate: () => caller }), /TICKET_INTERACTION_SELECTION/);
+  for (const code of ["TICKET_INTERACTION_SELECTION", "TICKET_INTERACTION_STALE"] as const) {
+    const error = new TicketInteractionError(code); assert.ok(error.message.length <= 2000);
+    for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(error.message.split(`${label}:`).length - 1, 1);
+  }
+}));
 
 test("strict raw intake contract shares published fields and rejects authority, duplicates, Unicode and oversized inputs", () => {
   assert.equal(ticketIntakeRequestSchema.additionalProperties, false);

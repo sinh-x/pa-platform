@@ -5,7 +5,7 @@ import { sanitizeTextInput } from "../deploy/control.js";
 import { creationDigest } from "../tickets/create-intent.js";
 import { getValidTeamNames, isCanonicalTicketId, validateAssignee } from "../tickets/validate.js";
 import type { TicketStore } from "../tickets/store.js";
-import type { CreateTicketInput, Estimate, TicketPriority, TicketType } from "../tickets/types.js";
+import type { CreateTicketInput, Estimate, TicketPriority, TicketType, Ticket } from "../tickets/types.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { MAX_INTERACTION_REQUEST_BYTES, SOURCE_ONLY_AVAILABILITY } from "./contract.js";
 
@@ -15,23 +15,29 @@ export const TICKET_INTAKE_VERSION = "pa-ticket-intake/v1" as const;
 export interface TicketInteractionCaller {
   profile: string; deploymentId: string; repoKey: string; ticket: string | null; identitySha256: string;
 }
-export type TicketInteractionCode = "TICKET_INTERACTION_INPUT" | "TICKET_INTERACTION_SESSION" | "TICKET_INTERACTION_PROJECT" | "TICKET_INTERACTION_SENSITIVE" | "TICKET_INTERACTION_UNCERTAIN";
+export type TicketInteractionCode = "TICKET_INTERACTION_INPUT" | "TICKET_INTERACTION_SESSION" | "TICKET_INTERACTION_PROJECT" | "TICKET_INTERACTION_SENSITIVE" | "TICKET_INTERACTION_UNCERTAIN" | "TICKET_INTERACTION_SELECTION" | "TICKET_INTERACTION_STALE";
 const reasons: Record<TicketInteractionCode, string> = {
+  TICKET_INTERACTION_SELECTION: "The exact selected ticket is missing, moved, outside the requested project or not safely representable. No replacement or fuzzy match was selected.",
+  TICKET_INTERACTION_STALE: "The selected ticket no longer matches the caller-bound inspected version and expected title/type. Reinspect the existing ticket before deciding whether it is still aligned work.",
   TICKET_INTERACTION_INPUT: "The raw request does not match the bounded intake schema. Ordinary intake requires explicit type, priority, estimate and assignee; no actor, lifecycle, root, approval or execution fields are accepted.",
   TICKET_INTERACTION_SESSION: "The new native requirements interaction profile or unchanged current caller could not be established. Retained profiles do not gain creation rights.",
   TICKET_INTERACTION_PROJECT: "The exact registered destination or primary ticket scope is invalid. Cross-project work requires an explicit companion request and a valid bound primary ticket.",
-  TICKET_INTERACTION_SENSITIVE: "The sensitive-input owner did not admit the requested metadata. Its content is not included in this diagnostic.",
+  TICKET_INTERACTION_SENSITIVE: "The sensitive-input owner did not admit the requested or selected metadata. Its content is not included in this diagnostic.",
   TICKET_INTERACTION_UNCERTAIN: "The effect owner did not establish the final result. Creation may be partial; preserve the original request identity and owner records.",
 };
 export class TicketInteractionError extends Error {
   constructor(readonly code: TicketInteractionCode) {
     super([
-      code === "TICKET_INTERACTION_UNCERTAIN" ? "Ticket creation outcome is unproven; do not create a replacement request." : "Ticket creation was not admitted; the original request is retained.",
-      "Condition: The requested intake has no proven successful result.",
+      code === "TICKET_INTERACTION_UNCERTAIN" ? "Ticket intake outcome is unproven; do not create a replacement request." : "Ticket intake request was not admitted; the original selection or request is retained.",
+      "Condition: The requested intake operation has no proven successful result.",
       "Source: Native ticket intake validation and existing ticket owner.",
       `Reason: ${reasons[code]} (${code})`,
-      "Correction: Inspect the supported intake schema and original native caller/effect binding with the ticket runtime owner. Impact: read-only. Actor: agent or operator. New approval: not required for inspection. Prerequisite: preserve the primary ticket and original request/intent; do not bypass uncertainty with a fresh ID or shell fallback.",
-      "Resume Action: Correct invalid input or reconcile the original owner result, then submit the same intended request. Current admission is checked again; this interface grants no source, Git, resource or lifecycle authority.",
+      code === "TICKET_INTERACTION_STALE"
+        ? "Correction: Reinspect the same exact ticket with action=inspect and compare its current title/type with the requested work. Impact: read-only. Actor: agent. New approval: not required for inspection. Prerequisite: supported native session and exact registered project/ticket; do not guess a replacement."
+        : "Correction: Inspect the supported intake schema and original native caller/effect binding with the ticket runtime owner. Impact: read-only. Actor: agent or operator. New approval: not required for inspection. Prerequisite: preserve the primary ticket and original request/intent; do not bypass uncertainty with a fresh ID or shell fallback.",
+      code === "TICKET_INTERACTION_STALE"
+        ? "Resume Action: Only if the current ticket is still aligned, resubmit reuse with the newly inspected version/title/type. Current caller and freshness are checked again; this is not a claim or mutation."
+        : "Resume Action: Correct invalid input or reconcile the original owner result, then submit the same intended request. Current admission is checked again; this interface grants no source, Git, resource or lifecycle authority.",
     ].join("\n")); this.name = "TicketInteractionError";
   }
 }
@@ -68,25 +74,51 @@ function readTicketIntakeObject(raw: string | Uint8Array): Record<string, unknow
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail("TICKET_INTERACTION_INPUT");
   return value as Record<string, unknown>;
 }
-export function parseTicketIntakeRequest(raw: string | Uint8Array): TicketIntakeRequest {
-  const row = readTicketIntakeObject(raw);
+function validateFields(row: Record<string, unknown>, schema: { required: readonly string[]; properties: Readonly<Record<string, unknown>> }): void {
   type Field = { const?: string; enum?: readonly string[]; pattern?: string; maxLength?: number; minLength?: number };
-  const fields: Readonly<Record<string, Field>> = ticketIntakeRequestSchema.properties;
-  if (ticketIntakeRequestSchema.required.some(key => !Object.hasOwn(row, key)) || Object.entries(row).some(([key, value]) => {
+  const fields = schema.properties as Readonly<Record<string, Field>>;
+  if (schema.required.some(key => !Object.hasOwn(row, key)) || Object.entries(row).some(([key, value]) => {
     if (!Object.hasOwn(fields, key) || typeof value !== "string") return true;
     const field = fields[key]!;
     return (field.const !== undefined && field.const !== value) || (field.enum !== undefined && !field.enum.includes(value))
       || (field.maxLength !== undefined && Buffer.byteLength(value) > field.maxLength) || value.length < (field.minLength ?? 0)
       || (field.pattern !== undefined && !new RegExp(field.pattern).test(value));
-  }) || (row.kind === "intake" && ["type", "priority", "estimate", "assignee"].some(key => !Object.hasOwn(row, key)))) return fail("TICKET_INTERACTION_INPUT");
+  })) fail("TICKET_INTERACTION_INPUT");
+}
+export function parseTicketIntakeRequest(raw: string | Uint8Array): TicketIntakeRequest {
+  const row = readTicketIntakeObject(raw);
+  validateFields(row, ticketIntakeRequestSchema);
+  if (row.kind === "intake" && ["type", "priority", "estimate", "assignee"].some(key => !Object.hasOwn(row, key))) return fail("TICKET_INTERACTION_INPUT");
   return { ...row } as unknown as TicketIntakeRequest;
+}
+const selectionProperties = Object.freeze({ schemaVersion: ticketIntakeRequestSchema.properties.schemaVersion,
+  kind: ticketIntakeRequestSchema.properties.kind, project: ticketIntakeRequestSchema.properties.project,
+  ticket: identifier(`^[A-Z][A-Z0-9]*-[0-9]{3,}${exactEnd}`, 128),
+});
+export const ticketIntakeInspectSchema = Object.freeze({ type: "object", additionalProperties: false,
+  required: Object.freeze(["schemaVersion", "action", "kind", "project", "ticket"]),
+  properties: Object.freeze({ ...selectionProperties, action: Object.freeze({ const: "inspect" }) }),
+});
+export const ticketIntakeReuseSchema = Object.freeze({ type: "object", additionalProperties: false,
+  required: Object.freeze([...ticketIntakeInspectSchema.required, "expectedVersion", "expectedTitle", "expectedType"]),
+  properties: Object.freeze({ ...selectionProperties, action: Object.freeze({ const: "reuse" }),
+    expectedVersion: identifier(`^[a-f0-9]{64}${exactEnd}`, 64), expectedTitle: text(1024, 1), expectedType: ticketIntakeRequestSchema.properties.type }),
+});
+export interface TicketSelectionRequest {
+  schemaVersion: typeof TICKET_INTAKE_VERSION; action: "inspect" | "reuse"; kind: "intake" | "companion"; project: string; ticket: string;
+  expectedVersion?: string; expectedTitle?: string; expectedType?: TicketType;
 }
 export const ticketIntakeCapabilitiesRequestSchema = Object.freeze({
   type: "object", additionalProperties: false, required: Object.freeze(["schemaVersion", "action"]),
   properties: Object.freeze({ schemaVersion: Object.freeze({ const: TICKET_INTAKE_VERSION }), action: Object.freeze({ const: "capabilities" }) }),
 });
-export function parseTicketIntakeOperation(raw: string | Uint8Array): TicketIntakeRequest | { schemaVersion: typeof TICKET_INTAKE_VERSION; action: "capabilities" } {
+export function parseTicketIntakeOperation(raw: string | Uint8Array): TicketIntakeRequest | TicketSelectionRequest | { schemaVersion: typeof TICKET_INTAKE_VERSION; action: "capabilities" } {
   const row = readTicketIntakeObject(raw);
+  if (row.action === "inspect" || row.action === "reuse") {
+    validateFields(row, row.action === "inspect" ? ticketIntakeInspectSchema : ticketIntakeReuseSchema);
+    if (!isCanonicalTicketId(row.ticket)) return fail("TICKET_INTERACTION_INPUT");
+    return { ...row } as unknown as TicketSelectionRequest;
+  }
   if (row.action !== "capabilities") return parseTicketIntakeRequest(raw);
   if (Object.keys(row).length !== 2 || row.schemaVersion !== TICKET_INTAKE_VERSION) return fail("TICKET_INTERACTION_INPUT");
   return { schemaVersion: TICKET_INTAKE_VERSION, action: "capabilities" };
@@ -97,9 +129,12 @@ export function parseTicketIntakeOperation(raw: string | Uint8Array): TicketInta
 export function ticketIntakeInterface() {
   return Object.freeze({
     schemaVersion: "pa-ticket-intake-capabilities/v1", scope: "intake-interface-only",
-    supportedActions: Object.freeze(["capabilities", "create"] as const),
+    supportedActions: Object.freeze(["capabilities", "inspect", "reuse", "create"] as const),
     requiredNativeProfile: TICKET_INTERACTIONS_PROFILE,
-    schemas: Object.freeze({ capabilities: ticketIntakeCapabilitiesRequestSchema, create: ticketIntakeRequestSchema }),
+    schemas: Object.freeze({ capabilities: ticketIntakeCapabilitiesRequestSchema, inspect: ticketIntakeInspectSchema, reuse: ticketIntakeReuseSchema, create: ticketIntakeRequestSchema }),
+    selection: Object.freeze({ effect: "read-only", version: "complete ticket snapshot bound to current native caller; not permission",
+      reuse: "Exact selected ID/project plus inspected expectedVersion/title/type; no fuzzy matching, mutation, claim or primary reassociation.",
+      freshness: "As-of this read only; changes invalidate the version. Reuse grants no planning, lifecycle, resource or execution authority." }),
     limits: Object.freeze({ requestUtf8Bytes: MAX_INTERACTION_REQUEST_BYTES, resultUtf8Bytes: 51200, resultLines: 2000 }),
     creation: Object.freeze({ status: "idea", derivedActor: "requirements/analyze", primaryAssociation: "unchanged", project: "exact-registered-key-only",
       intake: "same-project; explicit type, priority, estimate and assignee required",
@@ -109,7 +144,7 @@ export function ticketIntakeInterface() {
     }),
     availability: SOURCE_ONLY_AVAILABILITY, authorityGranted: false,
     limitations: Object.freeze(["This grammar description is not creation admission or installed qualification.",
-      "Aligned reuse-selection, planning/lifecycle/Git/resource operations and other-role ports remain unimplemented.",
+      "Planning/lifecycle/Git/resource operations and other-role ports remain unimplemented.",
       "No shell, root/provider/model reassociation or external-file access follows from this port."]),
   });
 }
@@ -117,22 +152,53 @@ export interface TicketIntakeResult {
   schemaVersion: "pa-ticket-intake-result/v1"; action: "create"; requestId: string; primaryTicket: string | null;
   ticket: { id: string; project: string }; reusedIntent: boolean; sanitizedFields: string[];
 }
+export interface TicketSelectionResult {
+  schemaVersion: "pa-ticket-selection-result/v1"; action: "inspect" | "reuse"; primaryTicket: string | null; version: string;
+  ticket: Pick<Ticket, "id" | "project" | "title" | "type" | "status" | "priority" | "estimate" | "assignee" | "updatedAt">;
+  authorityGranted: false;
+}
+/** Read-only selection, not a durable claim or permission. A complete snapshot
+ * version makes concurrent edits (including hidden history) stale for reuse. */
+export function readTicketInteraction(raw: string | Uint8Array, owner: { store: Pick<TicketStore, "get">; authenticate(): TicketInteractionCaller }): TicketSelectionResult {
+  const request = parseTicketIntakeOperation(raw);
+  if (request.action !== "inspect" && request.action !== "reuse") return fail("TICKET_INTERACTION_INPUT");
+  const caller = Object.freeze({ ...owner.authenticate() });
+  const validate = () => validateTicketScope(request, owner.authenticate(), caller, owner.store);
+  validateTicketScope(request, caller, caller, owner.store);
+  const ticket = owner.store.get(request.ticket);
+  if (!ticket || ticket.id !== request.ticket || ticket.project !== request.project) return fail("TICKET_INTERACTION_SELECTION");
+  const version = creationDigest({ ticket, caller });
+  if (request.action === "reuse" && (request.expectedVersion !== version || request.expectedTitle !== ticket.title || request.expectedType !== ticket.type)) return fail("TICKET_INTERACTION_STALE");
+  const selected = { id: ticket.id, project: ticket.project, title: ticket.title, type: ticket.type, status: ticket.status,
+    priority: ticket.priority, estimate: ticket.estimate, assignee: ticket.assignee, updatedAt: ticket.updatedAt };
+  // Legacy data may exceed the new port's bounds or sensitivity policy. Do not
+  // truncate it into a misleading aligned-work preview or echo unsafe content.
+  if (typeof ticket.title !== "string" || !ticket.title.trim() || Buffer.byteLength(ticket.title) > 1024
+    || !ticketIntakeRequestSchema.properties.type.enum.includes(ticket.type)
+    || Buffer.byteLength(JSON.stringify(selected)) > 8192) return fail("TICKET_INTERACTION_SELECTION");
+  try { assertNoSensitiveMatch("content", JSON.stringify(selected)); } catch { return fail("TICKET_INTERACTION_SENSITIVE"); }
+  validate();
+  const current = owner.store.get(request.ticket);
+  if (!current || creationDigest({ ticket: current, caller }) !== version) return fail("TICKET_INTERACTION_STALE");
+  return { schemaVersion: "pa-ticket-selection-result/v1", action: request.action, primaryTicket: caller.ticket, version, ticket: selected, authorityGranted: false };
+}
+function validateTicketScope(request: { project: string; kind: "intake" | "companion" }, current: TicketInteractionCaller, caller: TicketInteractionCaller, store: Pick<TicketStore, "get">): void {
+  if (!current || current.profile !== TICKET_INTERACTIONS_PROFILE || !/^d-[a-f0-9]{6}$/.test(current.deploymentId)
+    || !/^[a-f0-9]{64}$/.test(current.identitySha256) || current.identitySha256.length !== 64 || !isDeepStrictEqual(current, caller)) fail("TICKET_INTERACTION_SESSION");
+  const repos = loadReposYaml(), destination = repos[request.project];
+  if (!Object.hasOwn(repos, current.repoKey) || !Object.hasOwn(repos, request.project) || !destination?.prefix || !/^[A-Z][A-Z0-9]*$/.test(destination.prefix)
+    || Object.values(repos).filter(repo => repo.prefix?.toUpperCase() === destination.prefix!.toUpperCase()).length !== 1) fail("TICKET_INTERACTION_PROJECT");
+  if (current.ticket !== null) {
+    if (!isCanonicalTicketId(current.ticket)) fail("TICKET_INTERACTION_SESSION");
+    const primary = store.get(current.ticket);
+    if (!primary || primary.id !== current.ticket || primary.project !== current.repoKey) fail("TICKET_INTERACTION_PROJECT");
+  }
+  if ((request.kind === "companion" && current.ticket === null) || (request.kind === "intake" && request.project !== current.repoKey)) fail("TICKET_INTERACTION_PROJECT");
+}
 /** Trusted adapter seam, NOT model parameters. Authentication is synchronous and repeated under the SAME owner mutex. */
 export function createTicketInteraction(raw: string | Uint8Array, owner: { store: TicketStore; authenticate(): TicketInteractionCaller }): TicketIntakeResult {
   const request = parseTicketIntakeRequest(raw), caller = Object.freeze({ ...owner.authenticate() });
-  const validate = (current: TicketInteractionCaller): void => {
-    if (!current || current.profile !== TICKET_INTERACTIONS_PROFILE || !/^d-[a-f0-9]{6}$/.test(current.deploymentId)
-      || !/^[a-f0-9]{64}$/.test(current.identitySha256) || current.identitySha256.length !== 64 || !isDeepStrictEqual(current, caller)) fail("TICKET_INTERACTION_SESSION");
-    const repos = loadReposYaml(), destination = repos[request.project];
-    if (!Object.hasOwn(repos, current.repoKey) || !Object.hasOwn(repos, request.project) || !destination?.prefix || !/^[A-Z][A-Z0-9]*$/.test(destination.prefix)
-      || Object.values(repos).filter(repo => repo.prefix?.toUpperCase() === destination.prefix!.toUpperCase()).length !== 1) fail("TICKET_INTERACTION_PROJECT");
-    if (current.ticket !== null) {
-      if (!isCanonicalTicketId(current.ticket)) fail("TICKET_INTERACTION_SESSION");
-      const primary = owner.store.get(current.ticket);
-      if (!primary || primary.project !== current.repoKey) fail("TICKET_INTERACTION_PROJECT");
-    }
-    if ((request.kind === "companion" && current.ticket === null) || (request.kind === "intake" && request.project !== current.repoKey)) fail("TICKET_INTERACTION_PROJECT");
-  };
+  const validate = (current: TicketInteractionCaller): void => validateTicketScope(request, current, caller, owner.store);
   validate(caller);
   const sanitizedFields: string[] = [];
   const sanitize = (field: "title" | "summary" | "description"): string => {

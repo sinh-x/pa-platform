@@ -3,7 +3,7 @@
 This directory contains a **partial source implementation**, not the completed
 PAP-282 interface or an installed/adopted runtime claim. The catalogue/discovery
 reader is source-only and never grants permissions. A separate finite ticket
-creation service now has an opt-in requirements native port described below.
+creation and exact existing-ticket selection service has an opt-in requirements native port described below.
 Neither surface executes CLI commands or alters a retained tool schema. The Pi
 adapter exposes `pa_capabilities` for native-proven advisory starts and the new
 opt-in document-interactions profile; its target inventory is never live admission.
@@ -26,9 +26,11 @@ it does not replace that package or narrow its acceptance criteria.
   effect variants. `cliForms` are schematic inventory labels, **not runnable
   commands or an argv grammar**. `targetDisposition` is product intent, not
   current availability. No generic forwarding/dispatch exists.
-- `tickets.ts`: strict raw creation request/schema and requirements-only service;
+- `tickets.ts`: strict raw creation/inspection/reuse schemas and requirements-only service;
   current native caller, exact registered project, primary scope, metadata and
-  sensitive-input checks are repeated inside the existing ticket-owner mutex.
+  sensitive-input checks are repeated at the owner boundary. Creation rechecks
+  inside the existing ticket-owner mutex; selection rereads without locking or
+  mutation and rejects changed snapshots.
 - `source-inventory.json`: hashes of selected dispatch/CLI/native owner sources. Tests conservatively
   require reconciliation when any tracked source changes or a command file is
   added. Hash equality is not semantic coverage, installed provenance or approval.
@@ -116,7 +118,7 @@ pair qualification and operator adoption remain separate.
 
 Retained `pa_ticket` remains read/show/list/comment. Retained document ticketless
 intake, signed package bytes and native decisions are not migrated. Only requested
-idea creation is added, not planning/status/primary/Git/resource/shell operations.
+idea creation and read-only exact-ticket selection are added, not planning/status/primary/Git/resource/shell operations.
 Cross-project metadata does not access that project's files or alter the primary
 association/root/provider/model. Destination must be an exact registered project
 key with an unambiguous prefix, not a path or fuzzy alias.
@@ -127,11 +129,37 @@ In the new-profile session, first describe the actual finite port with:
 {"request":"{\"schemaVersion\":\"pa-ticket-intake/v1\",\"action\":\"capabilities\"}"}
 ```
 
-This strict read returns the creation schema, defaults, limits and only implemented
-actions (`capabilities`, `create`), without constructing TicketStore or creating an
+This strict read returns supported schemas, defaults, limits and only implemented
+actions (`capabilities`, `inspect`, `reuse`, `create`), without constructing TicketStore or creating an
 intent/lock/ticket/audit. It is interface metadata, not installed provenance,
 creation admission or a grant. Each creation still rechecks all effect owners.
 `pa_capabilities` remains a separate broader **source-only target inventory**.
+
+### Select aligned existing work before creating
+
+After searching through the existing read interface, inspect one exact candidate:
+
+```json
+{"request":"{\"schemaVersion\":\"pa-ticket-intake/v1\",\"action\":\"inspect\",\"kind\":\"companion\",\"project\":\"other\",\"ticket\":\"OTH-001\"}"}
+```
+
+This synthetic locator is not a real ticket or authorization. `inspect` returns
+bounded safe identifying metadata and a digest of the complete normalized ticket
+snapshot bound to the current native caller. To select this unchanged work, send
+`action=reuse` with the same kind/project/ticket and exact `expectedVersion`,
+`expectedTitle`, `expectedType` from inspection. The version is a freshness
+precondition, **not permission or approval of hidden content**. Every call checks
+the current caller/project/primary again. Changes to any ticket content, including
+comments, or the caller invalidate reuse. Missing/moved/foreign tickets and
+unaligned title/type reject; no fuzzy matching or automatic replacement occurs.
+
+Both operations are read-only as-of observations. They return the existing real
+ID and unchanged primary ID, not a durable reservation, claim, planning grant,
+execution right or promise of later availability. They do not write ticket,
+intent, counter, audit or lock state, and the adapter will not initialize a missing
+ticket directory for a selection. Unsafe or oversized legacy metadata is rejected,
+not truncated into a misleading alignment preview. Full paged ticket/history
+readers and mutation-owner CAS remain separate P3/P4 work.
 
 Synthetic creation request for an already-bound new-profile session (not a real
 ticket or authorization; replace project/title with explicitly requested work):
@@ -155,7 +183,7 @@ not raw metadata or exceptions.
 Source fixtures exercise real ticket persistence/audit and native registry/process
 identity with a synthetic Pi host, including the source launcher-to-default-port
 path with a simulated provider. They are **not** actual installed/foreground
-human observations. Explicit aligned-existing-ticket reuse, full planning flows,
+human observations. Full planning flows,
 all concrete role cells, actual launcher-to-provider/default installed qualification,
 remaining P1 and P3–P7 remain incomplete. No umbrella completion or acceptance follows.
 The external-file-read amendment is outside approved r001 and is not implemented
