@@ -1,4 +1,4 @@
-export const WEB_LIMITS = Object.freeze({ urlBytes: 4096, redirects: 5, timeoutMs: 30000, bodyBytes: 2 * 1024 * 1024, textPoints: 16000, replyBytes: 50 * 1024, lines: 2000, concurrent: 2 });
+export const WEB_LIMITS = Object.freeze({ urlBytes: 4096, redirects: 5, timeoutMs: 30000, requestMs: 29000, cleanupMs: 1000, bodyBytes: 2 * 1024 * 1024, textPoints: 16000, replyBytes: 50 * 1024, lines: 2000, concurrent: 2 });
 export type PublicWebCode = "WEB_POLICY" | "WEB_INPUT" | "WEB_TARGET" | "WEB_SENSITIVE" | "WEB_UNSUPPORTED" | "WEB_LIMIT" | "WEB_NETWORK" | "WEB_HTTP" | "WEB_CANCELLED" | "WEB_TIMEOUT" | "WEB_BUSY" | "WEB_CLEANUP";
 export type PublicWebStage = "not-started" | "resolving" | "requested";
 export class PublicWebError extends Error {

@@ -124,8 +124,9 @@ The native session resource owner permits at most two reads, aborts/waits on
 shutdown, and survives same-process reload. A settled reload may reuse it; an
 uncertain result cannot be cleared by reload or a session switch. Exact installed
 replacement-process/host shutdown behavior still requires separate qualification.
-Socket disposal gets a bounded one-second settlement wait; unproven closure is
-explicit, never inferred from cancellation. Deadline fixtures are not a measured
+The work deadline is 29 seconds, reserving a bounded one-second socket settlement
+wait inside the 30-second total budget; unproven closure is explicit, never
+inferred from cancellation. Deadline fixtures are not a measured
 installed wall-clock SLA under host scheduling or synchronous extraction load.
 
 ### Privacy and activation status

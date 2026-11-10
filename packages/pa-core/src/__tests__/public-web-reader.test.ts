@@ -129,9 +129,10 @@ test("cancellation, concurrency and uncertain cleanup preserve owned work across
 });
 
 test("end-to-end deadline includes DNS/extraction checkpoints, and sensitive-policy failure is pre-network", async () => {
+  assert.ok(WEB_LIMITS.requestMs + WEB_LIMITS.cleanupMs <= WEB_LIMITS.timeoutMs, "cleanup must fit inside the total deadline");
   const f = fixture(); let clock = 0;
   f.dependencies.now = () => clock;
-  f.dependencies.resolve = async () => { clock = WEB_LIMITS.timeoutMs; return ["93.184.216.34"]; };
+  f.dependencies.resolve = async () => { clock = WEB_LIMITS.requestMs; return ["93.184.216.34"]; };
   const timeout = await read(f.dependencies); assert.equal(timeout.ok, false); if (!timeout.ok) assert.equal(timeout.code, "WEB_TIMEOUT");
   assert.equal(f.requests.length, 0);
   const broken = fixture(); broken.dependencies.patterns = () => { throw new Error("private config path must not leak"); };

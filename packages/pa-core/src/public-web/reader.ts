@@ -37,10 +37,11 @@ export async function readPublicWeb(input: string, evidence: string, signal?: Ab
   let stage: PublicWebStage = "not-started";
   const controller = new AbortController(), now = dependencies.now ?? (() => performance.now()), start = now();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, WEB_LIMITS.timeoutMs);
+  // Reserve bounded socket settlement inside the total end-to-end budget.
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, WEB_LIMITS.requestMs);
   const cancel = () => controller.abort(); signal?.addEventListener("abort", cancel, { once: true });
   const check = () => {
-    if (timedOut || now() - start >= WEB_LIMITS.timeoutMs) throw new PublicWebError("WEB_TIMEOUT");
+    if (timedOut || now() - start >= WEB_LIMITS.requestMs) throw new PublicWebError("WEB_TIMEOUT");
     if (signal?.aborted || controller.signal.aborted) throw new PublicWebError("WEB_CANCELLED");
   };
   try {
@@ -84,7 +85,7 @@ export async function readPublicWeb(input: string, evidence: string, signal?: Ab
       check(); return result;
     }
   } catch (error) {
-    const code = error instanceof PublicWebError && error.code === "WEB_CLEANUP" ? "WEB_CLEANUP" : timedOut || now() - start >= WEB_LIMITS.timeoutMs ? "WEB_TIMEOUT" : signal?.aborted ? "WEB_CANCELLED" : error instanceof PublicWebError ? error.code : "WEB_NETWORK";
+    const code = error instanceof PublicWebError && error.code === "WEB_CLEANUP" ? "WEB_CLEANUP" : timedOut || now() - start >= WEB_LIMITS.requestMs ? "WEB_TIMEOUT" : signal?.aborted ? "WEB_CANCELLED" : error instanceof PublicWebError ? error.code : "WEB_NETWORK";
     return publicWebFailure(code, stage);
   } finally { clearTimeout(timer); signal?.removeEventListener("abort", cancel); controller.abort(); }
 }

@@ -11,7 +11,7 @@ import { PublicWebError, WEB_LIMITS, type PublicWebResponse } from "./types.js";
 export async function resolvePublicAddresses(host: string, signal: AbortSignal): Promise<string[]> {
   if (signal.aborted) throw new PublicWebError("WEB_CANCELLED");
   if (isIP(host)) return [host];
-  const resolver = new Resolver({ timeout: WEB_LIMITS.timeoutMs, tries: 1 });
+  const resolver = new Resolver({ timeout: WEB_LIMITS.requestMs, tries: 1 });
   const cancel = () => resolver.cancel(); signal.addEventListener("abort", cancel, { once: true });
   try {
     const results = await Promise.allSettled([resolver.resolve4(host), resolver.resolve6(host)]);
@@ -115,7 +115,7 @@ export async function fetchPublicHop(url: URL, address: string, signal: AbortSig
     if (socket && !socketClosed && closePromise) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const settled = await Promise.race([closePromise.then(() => true), new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 1000); })]);
+        const settled = await Promise.race([closePromise.then(() => true), new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), WEB_LIMITS.cleanupMs); })]);
         if (!settled) throw new PublicWebError("WEB_CLEANUP");
       } finally { if (timer) clearTimeout(timer); }
     }
