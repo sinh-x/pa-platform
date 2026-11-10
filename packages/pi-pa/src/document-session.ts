@@ -5,7 +5,11 @@ import { readPiProcessIdentity } from "./process-identity.js";
 import type { PiPreparationContext } from "./pi-extension/prepared-workflow.js";
 
 export const DOCUMENT_SESSION_VERSION = "requirements-document-capabilities/v1";
-export interface PiDocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string }
+export const DOCUMENT_WORKSPACE_SESSION_VERSION = "requirements-document-workspace/v2";
+export const DOCUMENT_CONFIRMATION_SESSION_VERSION = "requirements-document-confirmation/v3";
+export const DOCUMENT_SESSION_VERSIONS = [DOCUMENT_SESSION_VERSION, DOCUMENT_WORKSPACE_SESSION_VERSION, DOCUMENT_CONFIRMATION_SESSION_VERSION] as const;
+export function workspaceDocumentCaller(caller: PiDocumentCaller): boolean { return caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION || caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION; }
+export interface PiDocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; profile?: string; sessionId?: string }
 export function selectsDocumentSession(input: { team: string; mode?: string; pinned: boolean; resume: boolean; inherited: boolean; rogue: boolean; background: boolean; ticketWorktree: boolean; supportedConfig: boolean }): boolean {
   return input.supportedConfig && input.team === "requirements" && input.mode === "analyze" && !input.pinned && !input.resume && !input.inherited && !input.rogue && !input.background && !input.ticketWorktree;
 }
@@ -21,7 +25,7 @@ export function authenticatePiDocumentCaller(context: PiPreparationContext, env:
   const deny = (): never => { throw new DocumentPackageError("DOCUMENT_AUTHORITY"); };
   if (context.mode !== "tui" || env.PA_PI_EXECUTION_MODE !== "foreground" || !/^d-[0-9a-f]{6}$/.test(env.PA_DEPLOYMENT_ID ?? "")) deny();
   const deploymentId = env.PA_DEPLOYMENT_ID!, status = d.status(deploymentId), events = d.events(deploymentId), starts = events.filter(event => event.event === "started"), start = starts[0];
-  if (!status || starts.length !== 1 || !start || start.note !== DOCUMENT_SESSION_VERSION || start.runtime !== "pi" || start.binary !== "ppa"
+  if (!status || starts.length !== 1 || !start || !DOCUMENT_SESSION_VERSIONS.some(version => version === start.note) || start.runtime !== "pi" || start.binary !== "ppa"
     || status.status !== "running" || status.runtime !== "pi" || status.team !== "requirements" || status.mode !== "analyze" || status.rogue_one || status.builder_authority
     || status.treehouse_path || status.ticket_slot_id || status.repository_permit || !status.pid) return deny();
   const root = status.repo_root;
@@ -42,6 +46,7 @@ export function authenticatePiDocumentCaller(context: PiPreparationContext, env:
   const repo = d.repository(undefined, root), owner = d.fingerprint(status.pid), current = d.fingerprint(d.pid), sessionId = context.sessionManager?.getSessionId();
   if (repo.repoRoot !== root || repo.worktreeRoot !== root || repo.repositoryCwd !== root || !owner || !current || !d.inLineage(d.pid, owner) || !sessionId || !isDeepStrictEqual(owner, d.anchor(deploymentId, getDeployPaths(deploymentId).deployDir))) return deny();
   return { deploymentId, repoKey: repo.repoKey, repoRoot: root, ticket: status.ticket_id || null,
+    ...(start.note === DOCUMENT_WORKSPACE_SESSION_VERSION ? { profile: DOCUMENT_WORKSPACE_SESSION_VERSION } : start.note === DOCUMENT_CONFIRMATION_SESSION_VERSION ? { profile: DOCUMENT_CONFIRMATION_SESSION_VERSION, sessionId } : {}),
     identitySha256: workflowDigest(JSON.stringify({ deploymentId, owner, current, sessionId, root, ticket: status.ticket_id || null, startedAt: status.started_at })) };
 }
 export function assertSameDocumentCaller(before: PiDocumentCaller, after: PiDocumentCaller): void {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { confirmDocument, type NativeDocumentConfirmationRequest, type NativeDocumentConfirmationResult } from "./confirmation-service.js";
+import { presentDocumentPackage } from "./presentation.js";
 import { closeSync, lstatSync, opendirSync } from "node:fs";
 import { dirname } from "node:path";
 import { AdvisoryFiles } from "../operations/files.js";
@@ -6,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { openArtifactDirectory, readArtifactFile } from "../artifacts/manifest.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
-import { documentCompletedOperation, documentPending, type DocumentDecision, type DocumentIntent, type RegistryDocumentJournal } from "../registry/documents.js";
+import { documentDecisionRecords, documentRevokedDecisionIds, documentCompletedOperation, documentPending, type DocumentDecision, type DocumentIntent, type RegistryDocumentJournal } from "../registry/documents.js";
 import type { TicketStore } from "../tickets/store.js";
 import { TicketPackagePublication } from "../tickets/package-publication.js";
 import type { OperationResult } from "../operations/result.js";
@@ -14,9 +16,14 @@ import { digest, ID, integer, JsonWorkflowError, object, relativePath, SHA256, t
 import { DocumentPackageError, documentGuard, documentPackageSha, documentReject, DOCUMENT_ACTION_FIELDS, DOCUMENT_LIMITS, parseDocumentPackage, parseDocumentRequest, type DocumentPackage } from "./package-contract.js";
 import { checkDocumentPackage, compareDocumentPackages, documentText, readDocumentSources, validateDocumentBytes } from "./package-tools.js";
 
-export interface DocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string }
+export interface DocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; sessionId?: string }
 export interface DocumentPackageHost {
   artifactRoot: string; tickets: TicketStore;
+  /** Native launch dispatch only, not imported package/request metadata. */
+  workspaceProfile?: boolean;
+  confirmationProfile?: boolean;
+  inspectBranch?(ticket: string): Record<string, unknown> | Promise<Record<string, unknown>>;
+  confirm?(request: NativeDocumentConfirmationRequest): Promise<NativeDocumentConfirmationResult>;
   authenticate(): DocumentCaller;
   /** Actual retained workflow/resource owners, rechecked inside ticket mutex. */
   assertEffectAvailable(subject: DocumentPackage): void;
@@ -38,11 +45,15 @@ export class DocumentPackageService {
   private revision(subject: DocumentPackage, expected: unknown): number {
     const revision = integer(expected, 0, 1023); if (this.events(subject).length !== revision) documentReject("DOCUMENT_CONFLICT"); return revision;
   }
-  private approved(subject: DocumentPackage, decisionId: string): DocumentDecision {
+  private approved(subject: DocumentPackage, decisionId: string, operation?: "publish" | "queue"): DocumentDecision {
     const events = this.events(subject), sha256 = documentPackageSha(subject);
-    const latest = events.flatMap(e => e.data.kind === "decision" && e.data.subjectSha256 === sha256 ? [e.data] : []).at(-1);
-    const decision = latest?.decisionId === decisionId && !events.some(e => e.data.kind === "revoked" && e.data.decisionId === decisionId) ? latest : undefined;
+    const latest = documentDecisionRecords(events, sha256).at(-1);
+    const decision = latest?.decisionId === decisionId && !documentRevokedDecisionIds(events).has(decisionId) ? latest : undefined;
     if (!decision || decision.outcome !== "approved") documentReject("DOCUMENT_AUTHORITY");
+    if ("confirmationVersion" in decision) {
+      if (decision.confirmationVersion !== "pa-document-confirmation/v1" || operation && (decision.scope === "content" || operation === "queue" && decision.scope !== "publish-and-queue")) documentReject("DOCUMENT_AUTHORITY");
+      this.journal.snapshot(decision.evidenceSha256);
+    }
     return decision;
   }
   private predecessor(subject: DocumentPackage): DocumentPackage | undefined {
@@ -54,26 +65,42 @@ export class DocumentPackageService {
   }
   private view(subject: DocumentPackage): Record<string, unknown> {
     const events = this.events(subject), sha256 = documentPackageSha(subject);
-    const revoked = new Set(events.flatMap(e => e.data.kind === "revoked" ? [e.data.decisionId] : []));
-    return { sha256, expectedRevision: events.length, package: subject, decisions: events.flatMap(e => e.data.kind === "decision" && e.data.subjectSha256 === sha256 ? [{ decisionId: e.data.decisionId, outcome: e.data.outcome, evidenceSha256: e.data.evidenceSha256, revoked: revoked.has(e.data.decisionId) }] : []).slice(-32),
+    const revoked = documentRevokedDecisionIds(events);
+    return { sha256, expectedRevision: events.length, package: subject, decisions: documentDecisionRecords(events, sha256).map(d => ({ decisionId: d.decisionId, outcome: d.outcome, evidenceSha256: d.evidenceSha256, revoked: revoked.has(d.decisionId), ...("confirmationVersion" in d ? { confirmationVersion: d.confirmationVersion, scope: d.scope } : {}) })).slice(-32),
+      ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events).filter(c => c.sha256 === sha256) } : {}),
       pending: documentPending(events), results: events.flatMap(e => e.data.kind === "result" && e.data.subjectSha256 === sha256 ? [{ revision: e.revision, ...e.data }] : []).slice(-16),
       snapshotRef: `registry-document-package:${sha256}`, approvalIsAcceptance: false };
   }
+  private confirmations(events: ReturnType<RegistryDocumentJournal["events"]>) {
+    return events.flatMap(e => e.data.kind === "confirmation" ? [{ decisionId: e.data.decisionId, sha256: e.data.subjectSha256, outcome: e.data.outcome, operation: e.data.operation, scope: e.data.scope, expectedRevision: e.revision - 1, revokes: e.data.revokes, linkage: "inspect-or-reconcile-same-request" }] : []).slice(-32);
+  }
   async execute(raw: string): Promise<Record<string, unknown>> {
+    let requestedAction: string | undefined;
     try {
-      const r = parseDocumentRequest(raw), action = text(r.action);
+      const r = parseDocumentRequest(raw), action = text(r.action); requestedAction = action;
       // Validate exact action shape before any operation. No extra keys or imported grants.
       const fields = DOCUMENT_ACTION_FIELDS;
       if (!Object.hasOwn(fields, action)) documentReject();
       documentGuard(() => object(r, ["action", ...fields[action]!]));
       try { assertNoSensitiveMatch("content", raw); } catch { documentReject("DOCUMENT_INPUT"); }
       const caller = this.caller(); let result: unknown;
-      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: "unavailable-use-markdown", workflowRequired: false, sourceWriting: false };
-      else if (action === "status") {
+      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: this.host.confirmationProfile ? (this.host.confirm ? "pi-native-confirmation/v1-use-confirm" : "unavailable-native-tui-required") : this.host.workspaceProfile ? "unavailable-host-attestation-required" : "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: this.host.workspaceProfile ? "safe-static-html-companion" : "unavailable-use-markdown", workflowRequired: false, sourceWriting: false, ...(this.host.confirmationProfile ? { branchBridge: this.host.inspectBranch ? "read-only-existing-owner-inspection" : "unavailable" } : {}) };
+      else if (action === "status" || action === "branch-inspect") {
         const ticket = workflowTicket(r.ticket);
         if ((caller.ticket !== null && caller.ticket !== ticket) || this.host.tickets.get(ticket)?.project !== caller.repoKey) documentReject("DOCUMENT_AUTHORITY");
         const events = this.journal.events(caller.repoKey, ticket);
-        result = { ticket, expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
+        const record = this.host.tickets.get(ticket)!;
+        const handoff = this.host.workspaceProfile ? { handoff: {
+          association: caller.ticket === null ? "caller-unassociated" : "caller-associated",
+          queue: record.status === "pending-implementation" && record.assignee === "builder/team-manager" ? "recorded-pending-implementation" : "not-recorded-pending-implementation",
+          branchEvidence: !record.linkedBranches?.length ? "absent" : record.linkedBranches.length === 1 ? "recorded-unverified" : "multiple-recorded-unverified",
+          branchBridge: this.host.confirmationProfile && this.host.inspectBranch ? "use-branch-inspect" : "unsupported-ticket-launcher-owner-required", custody: "not-observed", launchReady: false,
+        } } : {};
+        if (action === "branch-inspect") {
+          if (!this.host.confirmationProfile || !this.host.inspectBranch) documentReject("DOCUMENT_UNAVAILABLE");
+          result = await this.host.inspectBranch(ticket);
+          if (!isDeepStrictEqual(caller, this.caller()) || !isDeepStrictEqual(record.linkedBranches, this.host.tickets.get(ticket)?.linkedBranches)) documentReject("DOCUMENT_STALE");
+        } else result = { ticket, ...handoff, ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events) } : {}), expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
       } else if (action === "ticket-create") {
         const title = text(r.title, undefined, 256), tag = `document-intake-${text(r.intakeId, ID)}`;
         if (typeof r.content !== "string" || !r.content.trim() || Buffer.byteLength(r.content) > 32768 || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(r.content)) documentReject();
@@ -137,7 +164,10 @@ export class DocumentPackageService {
       } else {
         const subject = this.subject(r.sha256), sha256 = documentPackageSha(subject);
         if (action === "show") result = this.view(subject);
-        else if (action === "read") {
+        else if (action === "present") {
+          if (!this.host.workspaceProfile) documentReject("DOCUMENT_UNAVAILABLE");
+          result = presentDocumentPackage(subject, this.host.artifactRoot, hash => this.journal.snapshot(hash));
+        } else if (action === "read") {
           const member = subject.members.find(m => m.id === text(r.path, ID)); if (!member) documentReject();
           const bytes = this.journal.snapshot(member.sha256), offset = integer(r.offset, 0, DOCUMENT_LIMITS.textBytes);
           const content = member.mediaType.startsWith("text/") ? documentText(bytes) : "";
@@ -146,7 +176,12 @@ export class DocumentPackageService {
           const previous = this.subject(r.previousSha256);
           if (previous.ticket !== subject.ticket) documentReject("DOCUMENT_AUTHORITY");
           result = compareDocumentPackages(previous, subject, hash => this.journal.snapshot(hash));
+        } else if (action === "confirm" || action === "confirm-revoke") {
+          result = await confirmDocument(this.journal, this.host, subject, () => this.caller(subject), r);
         } else if (action === "capture" || action === "revoke") {
+          // No source label, model narrative or caller event ID is an attested
+          // human input. Do not silently fall back to v1 select dialogs in v2.
+          if (this.host.workspaceProfile) documentReject("DOCUMENT_UNAVAILABLE");
           const expectedRevision = this.revision(subject, r.expectedRevision), before = this.caller(subject);
           if (action === "revoke") this.approved(subject, text(r.decisionId, ID));
           const bytes = readDocumentSources(subject, this.host.artifactRoot);
@@ -177,7 +212,7 @@ export class DocumentPackageService {
             let events = this.events(subject), pending = documentPending(events);
             if (pending.some(i => i.operationId !== operationId)) documentReject("DOCUMENT_UNCERTAIN");
             const predecessor = this.predecessor(subject);
-            const authorize = () => { this.caller(subject); this.host.assertEffectAvailable(subject); this.approved(subject, decisionId); readDocumentSources(subject, this.host.artifactRoot); };
+            const authorize = () => { this.caller(subject); this.host.assertEffectAvailable(subject); this.approved(subject, decisionId, action); readDocumentSources(subject, this.host.artifactRoot); };
             const completed = events.some(e => e.data.kind === "result" && e.data.operationId === operationId && e.data.outcome === "completed");
             const proven = action === "publish" ? this.publication.observe(subject, predecessor) === "complete" : this.publication.queued(subject, predecessor);
             if (completed || (pending.some(i => i.operationId === operationId) && proven)) {
@@ -217,7 +252,11 @@ export class DocumentPackageService {
       const facts: Pick<OperationResult, "completion" | "outcome" | "enforcement" | "capability" | "required"> = {
         completion: "error", outcome: "unknown", enforcement: ["DOCUMENT_AUTHORITY", "DOCUMENT_CONFLICT"].includes(code) ? "denied" : "allowed", capability: code === "DOCUMENT_UNAVAILABLE" ? "unavailable" : "available", required: false,
       };
-      return { schemaVersion: "pa-document-result/v1", ok: false, code, facts, correctionOwner: code === "DOCUMENT_AUTHORITY" ? "native-owner" : "document-operation-owner", scope: "this-operation-only", executionAdmitted: false };
+      const unattestedCapture = this.host.workspaceProfile && !this.host.confirmationProfile && code === "DOCUMENT_UNAVAILABLE" && (requestedAction === "capture" || requestedAction === "revoke");
+      const nativeUnavailable = this.host.confirmationProfile && code === "DOCUMENT_UNAVAILABLE" && ["confirm", "confirm-revoke", "capture", "revoke"].includes(requestedAction ?? "");
+      const nativeGuidance = { guidance: `Package decision not started; safe authoring and presentation remain available.\nCondition: This native confirmation request is unavailable.\nSource: Versioned Pi native confirmation owner (DOCUMENT_UNAVAILABLE).\nReason: ${requestedAction === "capture" || requestedAction === "revoke" ? "capture/revoke are retained-interface actions, not the v3 native confirmation protocol." : "The eligible foreground native custom-UI capability is unavailable."}\nCorrection: Inspect pa_document capabilities and use the supported confirm/confirm-revoke interface only in an authenticated v3 foreground host. Impact: read-only for inspection. Actor: agent or operator. New approval: not required to inspect; the actual final decision still requires its native selection. Prerequisite: preserve the current immutable package and original request identity.\nResume Action: Request the supported native operation after its host prerequisite is available; do not import outcomes, attest earlier chat or fall back into a retained profile.` };
+      const guidance = nativeUnavailable ? nativeGuidance : unattestedCapture ? { guidance: "Package decision not started; safe authoring and presentation remain available.\nCondition: This new-profile decision request cannot issue authority.\nSource: Native human-input provenance check (DOCUMENT_UNAVAILABLE).\nReason: The Pi host does not supply the required attested original human-event identity. Chat text or another approval dialog cannot repair this capability gap.\nCorrection: Ask the Pi host/runtime maintainer to provide supported attested-event capture. Impact: none for this request. Actor: agent or operator. New approval: not required to ask; implementation and activation need their own authority. Prerequisite: preserve the current package and prior decisions.\nResume Action: Request capture only after supported host capability and exact-package checks are available; admission is rechecked. Do not substitute a tool-supplied outcome or upgrade retained sessions." } : {};
+      return { schemaVersion: "pa-document-result/v1", ok: false, code, facts, ...guidance, correctionOwner: nativeUnavailable ? "pi-native-confirmation-owner" : unattestedCapture ? "pi-human-input-host-owner" : code === "DOCUMENT_AUTHORITY" ? "native-owner" : "document-operation-owner", scope: "this-operation-only", executionAdmitted: false };
     }
   }
 }

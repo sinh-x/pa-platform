@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { inspectPiDocumentBranch } from "./document-branch.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
   DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, resolveTrustedTicketMutationContext, workflowDigest,
-  type DocumentPackageHost,
+  type DocumentPackageHost, parseDocumentRequest, DOCUMENT_ACTION_FIELDS, workflowObject,
 } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller } from "./document-session.js";
+import { createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "./document-confirmation-native.js";
+import { authenticatePiDocumentCaller, assertSameDocumentCaller, DOCUMENT_CONFIRMATION_SESSION_VERSION, workspaceDocumentCaller } from "./document-session.js";
 import { nativeReviewPages, type PiWorkflowContext } from "./workflow-native.js";
 
 /** Native foreground consent. Model JSON has no outcome, actor or permission field. */
@@ -59,6 +61,7 @@ export function createPiDocumentCapture(context: PiWorkflowContext, authenticate
     return { outcome, principal, evidenceSha256: workflowDigest(nativeEvidence), nativeEvidence };
   };
 }
+const activeConfirmations = new Map<string, { requestSha256: string; result: Promise<Record<string, unknown>> }>();
 export async function mutatePiDocument(request: string, context: PiWorkflowContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const authenticate = () => { if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); return authenticatePiDocumentCaller(context); };
   const caller = authenticate(), artifactRoot = getAiUsageDir();
@@ -68,7 +71,11 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   try { if (realpathSync(getTicketsDir()) !== getTicketsDir()) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
-  const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, capture: createPiDocumentCapture(context, authenticate, signal),
+  const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
+    confirmationProfile: caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION,
+    ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
+    ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
+    capture: createPiDocumentCapture(context, authenticate, signal),
     assertEffectAvailable(subject) {
       authenticate();
       // A retained controller is sticky even if its decision is cancelled or revoked.
@@ -82,5 +89,20 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
       throw new DocumentPackageError("DOCUMENT_CONFLICT");
     },
   };
-  return new DocumentPackageService(new RegistryDocumentJournal(getDb()), host).execute(request);
+  const service = new DocumentPackageService(new RegistryDocumentJournal(getDb()), host);
+  if (caller.profile !== DOCUMENT_CONFIRMATION_SESSION_VERSION) return service.execute(request);
+  const parsed = parseDocumentRequest(request);
+  if (parsed.action !== "confirm" && parsed.action !== "confirm-revoke") return service.execute(request);
+  try { workflowObject(parsed, ["action", ...DOCUMENT_ACTION_FIELDS[parsed.action]!]); }
+  catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
+  const requestSha256 = workflowDigest(JSON.stringify(Object.fromEntries(Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b)))));
+  const active = activeConfirmations.get(caller.identitySha256);
+  if (active) {
+    if (active.requestSha256 !== requestSha256) throw new DocumentPackageError("DOCUMENT_CONFLICT");
+    return active.result;
+  }
+  const result = service.execute(request);
+  activeConfirmations.set(caller.identitySha256, { requestSha256, result });
+  try { return await result; }
+  finally { if (activeConfirmations.get(caller.identitySha256)?.result === result) activeConfirmations.delete(caller.identitySha256); }
 }
