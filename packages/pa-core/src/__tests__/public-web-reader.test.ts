@@ -72,6 +72,36 @@ test("HTML extraction is inert, bounded, attributed and never claims rendered-pa
   for (const html of ['<script>only JS</script>', '<form><input type="password"></form>', '<html>Just a moment... cf-chl-challenge</html>']) assert.throws(() => extractPublicText(html, "text/html"), PublicWebError);
 });
 
+test("HTML suppression survives self-closing syntax, pseudo end tags and nested active text", async () => {
+  for (const tag of ["script", "style", "template", "iframe", "object", "form", "noscript"]) {
+    const html = `<${tag}/>suppressed payload</${tag}><p>Visible article.</p>`;
+    const result = await read(fixture(html, "text/html").dependencies);
+    assert.equal(result.ok, true, tag);
+    if (result.ok) assert.equal(result.text, "Visible article.", tag);
+    assert.throws(() => extractPublicText(`<${tag}/>suppressed payload`, "text/html"), PublicWebError, tag);
+  }
+  for (const html of [
+    '<div hidden/>suppressed payload</div><p>Visible article.</p>',
+    '<div aria-hidden="true"/>suppressed payload</div><p>Visible article.</p>',
+    '<div hidden><div/>nested payload</div>suppressed payload</div><p>Visible article.</p>',
+    '<script>suppressed < /script>still suppressed</script><p>Visible article.</p>',
+    '<style>suppressed </ style>still suppressed</style><p>Visible article.</p>',
+    '<div hidden><script>const text = "</div>";</script>suppressed payload</div><p>Visible article.</p>',
+    '<form><style>/* </form> */</style>suppressed payload</form><p>Visible article.</p>',
+    '<template><iframe>fake </template> end</iframe>suppressed payload</template><p>Visible article.</p>',
+    '<div hidden><script>const text = "<style>";</script>suppressed payload</div><p>Visible article.</p>',
+  ]) {
+    assert.equal(extractPublicText(html, "text/html").text, "Visible article.", html);
+  }
+  for (const tag of ["textarea", "title", "xmp", "noembed", "iframe", "noscript"]) {
+    const html = `<div hidden><${tag}>fake </div> end</${tag}>suppressed payload</div><p>Visible article.</p>`;
+    assert.equal(extractPublicText(html, "text/html").text, "Visible article.", tag);
+  }
+  assert.throws(() => extractPublicText('<div hidden><plaintext>fake </div> payload', "text/html"), PublicWebError);
+  // Void elements do not own subsequent text, even with a hidden attribute.
+  assert.equal(extractPublicText('<input hidden><img hidden/><p>Visible article.</p>', "text/html").text, "Visible article.");
+});
+
 test("body/output limits count bytes, code points and serialized tool reply, with explicit clipping", async () => {
   for (const body of ["😀".repeat(20000), "\"\\".repeat(20000), "x\n".repeat(20000)]) {
     const result = await read(fixture(body).dependencies); assert.equal(result.ok, true);
