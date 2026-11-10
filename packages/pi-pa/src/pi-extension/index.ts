@@ -11,7 +11,8 @@ import { registerAdvisoryModule } from "./advisory.js";
 import { registerOperationModule } from "./operation-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
-import { registerDocumentModule } from "./document-tool.js";
+import { registerDocumentModule, policyDocumentDeployment, assertPolicyDocumentTool } from "./document-tool.js";
+import type { PiWorkflowContext } from "../workflow-native.js";
 import { registerRepoSetupModule } from "./repo-setup.js";
 export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
 import { registerQuestionModule } from "./question.js";
@@ -68,6 +69,7 @@ export interface PiToolDefinition<TInput extends Record<string, unknown> = Recor
 export interface PiSafetyDecision { allowed: boolean; reason?: string }
 export interface PiAgentMessage { role?: string; stopReason?: string; errorMessage?: string; content?: unknown }
 export interface PiRuntime {
+  setActiveTools?: (names: string[]) => void;
   registerTool?: <TInput extends Record<string, unknown>, TDetails extends Record<string, unknown>>(tool: PiToolDefinition<TInput, TDetails>) => void;
   on?: {
     (event: "tool_call", handler: (call: PiToolCall) => unknown): void;
@@ -133,7 +135,20 @@ export function registerPiSessionModules(
   lifecycle: PiSessionLifecycle,
   modules: readonly PiExtensionModule[] = PI_PA_MODULES,
 ): void {
-  const moduleRuntime = captureModuleShutdownHandlers(pi, lifecycle);
+  const deploymentId = policyDocumentDeployment();
+  // Defense in depth for direct/delegated calls to custom implementations. Built-in
+  // tools additionally pass the document module's tool_call gate. No chosen-role list.
+  const guardedRuntime = deploymentId ? new Proxy(pi, {
+    get(target, property) {
+      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => {
+        assertPolicyDocumentTool(deploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
+        return tool.execute(...args);
+      } });
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) : pi;
+  const moduleRuntime = captureModuleShutdownHandlers(guardedRuntime, lifecycle);
   for (const registerModule of modules) registerModule(moduleRuntime, lifecycle);
   pi.on?.("session_shutdown", (event, context) => lifecycle.shutdown(event, context));
 }

@@ -6,7 +6,8 @@ import { mutatePiDocument } from "../document-native.js";
 import { runDocumentConfirmationCommand } from "./document-confirmation-command.js";
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { createWorkspaceTool } from "./workspace-tool.js";
-import { DOCUMENT_CONFIRMATION_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
+import { confirmationDocumentCaller, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
+import { MODE_CAPABILITY_SESSION, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
 
@@ -36,7 +37,11 @@ export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile =
 export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, workspaceProfile = false): boolean {
   const name = call.toolName ?? call.name ?? "";
   if (workspaceProfile && name === "pa_workspace") return true;
-  if (name === "read" && repoRoot && typeof call.input.path === "string") {
+  if (name === "read") return guardedDocumentReadAllowed(call, repoRoot);
+  return ["pa_document", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"].includes(name);
+}
+export function guardedDocumentReadAllowed(call: PiToolCall, repoRoot?: string): boolean {
+  if (repoRoot && typeof call.input.path === "string") {
     try {
       const selected = call.input.path;
       const path = realpathSync(isAbsolute(selected) ? selected : resolve(repoRoot, selected));
@@ -49,20 +54,53 @@ export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, 
       return true;
     } catch { return false; }
   }
-  return ["pa_document", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"].includes(name);
+  return false;
+}
+/** Capture native route once; later environment edits cannot turn off the guard. */
+export function policyDocumentDeployment(): string | undefined {
+  const id = process.env.PA_DEPLOYMENT_ID;
+  return id && getDeploymentEvents(id).some(event => event.event === "started" && event.note === MODE_CAPABILITY_SESSION) ? id : undefined;
+}
+export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
+  const caller = authenticatePiDocumentCaller(context);
+  if (caller.deploymentId !== deploymentId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  const name = call.toolName ?? call.name ?? "";
+  if (!capabilityToolSelected(caller.capabilities.policy, name)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
+  if (name === "read" && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
 }
 export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
+  const policyDeploymentId = policyDocumentDeployment();
+  const exposePolicy = (context: unknown) => {
+    if (!policyDeploymentId) return;
+    try {
+      const caller = authenticatePiDocumentCaller(context as PiWorkflowContext);
+      if (caller.deploymentId !== policyDeploymentId || !caller.capabilities || !pi.setActiveTools) throw new ModeCapabilityError("CAPABILITY_BINDING");
+      pi.setActiveTools([...selectedCapabilityTools(caller.capabilities.policy)]);
+    } catch (error) { pi.setActiveTools?.([]); throw error; }
+  };
+  pi.on?.("before_agent_start", (_event, context) => exposePolicy(context));
   pi.on?.("session_start", (_event: unknown, rawContext: unknown) => {
     // Retained/OPA-equivalent managed loadouts must not advertise a capability
     // they cannot authenticate. Register only in a genuine new document route.
     let caller;
-    try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { return; }
-    const confirmationProfile = caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION;
+    try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { if (policyDeploymentId) pi.setActiveTools?.([]); return; }
+    const confirmationProfile = confirmationDocumentCaller(caller);
     const tools = [createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile), ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : [])];
     if (confirmationProfile) pi.registerCommand?.("pa-approve", { description: "Request/reconcile one native package decision. Arguments: strict confirm or confirm-revoke JSON (same pa_document grammar).", handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext)) : runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext) });
-    for (const tool of tools) pi.registerTool?.({ ...tool, execute: (...args) => lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args) });
+    for (const tool of tools) {
+      if (caller.capabilities && !capabilityToolSelected(caller.capabilities.policy, tool.name)) continue;
+      pi.registerTool?.({ ...tool, execute: async (...args) => {
+        if (policyDeploymentId) assertPolicyDocumentTool(policyDeploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
+        return lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args);
+      } });
+    }
+    exposePolicy(rawContext);
   });
   pi.on?.("tool_call", (event: unknown, rawContext: unknown) => {
+    if (policyDeploymentId) {
+      try { assertPolicyDocumentTool(policyDeploymentId, event as PiToolCall, rawContext as PiWorkflowContext); return; }
+      catch (error) { return { block: true, reason: error instanceof ModeCapabilityError ? error.message : new ModeCapabilityError("CAPABILITY_BINDING").message }; }
+    }
     const id = process.env.PA_DEPLOYMENT_ID;
     if (!id || process.env.PA_TEAM !== "requirements" || process.env.PA_MODE !== "analyze") return;
     const starts = getDeploymentEvents(id).filter(e => e.event === "started");

@@ -1,15 +1,17 @@
 import { realpathSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { DocumentPackageError, getDeployPaths, getDeploymentEvents, processIsWithinFingerprintLineage, queryDeploymentStatus, readProcessFingerprint, resolveRepoExecutionPath, workflowDigest } from "@pa-platform/pa-core";
+import { MODE_CAPABILITY_SESSION, parseModeCapabilityBinding, type ModeCapabilityBinding } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
 import type { PiPreparationContext } from "./pi-extension/prepared-workflow.js";
 
 export const DOCUMENT_SESSION_VERSION = "requirements-document-capabilities/v1";
 export const DOCUMENT_WORKSPACE_SESSION_VERSION = "requirements-document-workspace/v2";
 export const DOCUMENT_CONFIRMATION_SESSION_VERSION = "requirements-document-confirmation/v3";
-export const DOCUMENT_SESSION_VERSIONS = [DOCUMENT_SESSION_VERSION, DOCUMENT_WORKSPACE_SESSION_VERSION, DOCUMENT_CONFIRMATION_SESSION_VERSION] as const;
-export function workspaceDocumentCaller(caller: PiDocumentCaller): boolean { return caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION || caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION; }
-export interface PiDocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; profile?: string; sessionId?: string }
+export const DOCUMENT_SESSION_VERSIONS = [DOCUMENT_SESSION_VERSION, DOCUMENT_WORKSPACE_SESSION_VERSION, DOCUMENT_CONFIRMATION_SESSION_VERSION, MODE_CAPABILITY_SESSION] as const;
+export function confirmationDocumentCaller(caller: PiDocumentCaller): boolean { return caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION || caller.profile === MODE_CAPABILITY_SESSION; }
+export function workspaceDocumentCaller(caller: PiDocumentCaller): boolean { return caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION || confirmationDocumentCaller(caller); }
+export interface PiDocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; profile?: string; sessionId?: string; capabilities?: ModeCapabilityBinding }
 export function selectsDocumentSession(input: { team: string; mode?: string; pinned: boolean; resume: boolean; inherited: boolean; rogue: boolean; background: boolean; ticketWorktree: boolean; supportedConfig: boolean }): boolean {
   return input.supportedConfig && input.team === "requirements" && input.mode === "analyze" && !input.pinned && !input.resume && !input.inherited && !input.rogue && !input.background && !input.ticketWorktree;
 }
@@ -45,7 +47,18 @@ export function authenticatePiDocumentCaller(context: PiPreparationContext, env:
   if (ticket !== (status.ticket_id || null)) return deny();
   const repo = d.repository(undefined, root), owner = d.fingerprint(status.pid), current = d.fingerprint(d.pid), sessionId = context.sessionManager?.getSessionId();
   if (repo.repoRoot !== root || repo.worktreeRoot !== root || repo.repositoryCwd !== root || !owner || !current || !d.inLineage(d.pid, owner) || !sessionId || !isDeepStrictEqual(owner, d.anchor(deploymentId, getDeployPaths(deploymentId).deployDir))) return deny();
+  let capabilities: ModeCapabilityBinding | undefined;
+  if (start.note === MODE_CAPABILITY_SESSION) {
+    try {
+      if (!start.mode_capability_binding || start.mode_capability_binding.length > 65536 || start.mode_capability_binding !== status.mode_capability_binding) return deny();
+      capabilities = parseModeCapabilityBinding(JSON.parse(start.mode_capability_binding));
+      // Native emitter serializes this canonical shape. Reject duplicate keys,
+      // noncanonical/tampered bytes, aliases and non-native reconstruction.
+      if (JSON.stringify(capabilities) !== start.mode_capability_binding) return deny();
+    } catch { return deny(); }
+  } else if (start.mode_capability_binding !== undefined || status.mode_capability_binding !== undefined) return deny();
   return { deploymentId, repoKey: repo.repoKey, repoRoot: root, ticket: status.ticket_id || null,
+    ...(capabilities ? { capabilities, profile: MODE_CAPABILITY_SESSION, sessionId } : {}),
     ...(start.note === DOCUMENT_WORKSPACE_SESSION_VERSION ? { profile: DOCUMENT_WORKSPACE_SESSION_VERSION } : start.note === DOCUMENT_CONFIRMATION_SESSION_VERSION ? { profile: DOCUMENT_CONFIRMATION_SESSION_VERSION, sessionId } : {}),
     identitySha256: workflowDigest(JSON.stringify({ deploymentId, owner, current, sessionId, root, ticket: status.ticket_id || null, startedAt: status.started_at })) };
 }

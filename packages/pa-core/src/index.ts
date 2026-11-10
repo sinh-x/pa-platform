@@ -16,6 +16,8 @@ export * from "./time.js";
 export * from "./config.js";
 export * from "./timers.js";
 export * from "./yaml-parser.js";
+export * from "./mode-capabilities.js";
+export * from "./mode-capability-selection.js";
 export * from "./repos.js";
 export * from "./project-command-catalogue.js";
 export * from "./project-command-catalogue-files.js";

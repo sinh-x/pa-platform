@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { before, after } from "node:test";
 import registerPiVimMode from "../../vendor/pi-vimmode/index.ts";
 import registerProperBase from "../../vendor/proper-pi-extensions/proper-base/index.ts";
 import {
@@ -21,6 +21,15 @@ import {
   type EditorFactory,
 } from "./fixtures/pi-composed-host.js";
 
+// Isolate the entire synthetic lifecycle, not just factory registration: native
+// session_start handlers also consult immutable launch identity.
+const inheritedEnvironment = process.env;
+before(() => {
+  process.env = { ...inheritedEnvironment };
+  for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE"]) delete process.env[key];
+});
+after(() => { process.env = inheritedEnvironment; });
+
 const PROPER_WRAPPED = Symbol.for("pi-proper-history.wrapped");
 const TRANSCRIPT_CLEANUP = Symbol.for("pi-proper-base.transcript-cleanup");
 type ScheduledCallback = () => void;
@@ -34,6 +43,9 @@ const BOTH_EDITOR_MODULES = createPiPaModules([VIM_FACTORY, PROPER_FACTORY]);
 function registerPiSessionModules(...args: Parameters<typeof registerSessionModules>): void {
   const original = process.env;
   process.env = { ...original, PA_TEAM: "fixture", PA_MODE: "fixture" };
+  // Native optional routes follow immutable registry starts, not role env labels.
+  // This legacy-only fixture must not borrow the surrounding live deployment.
+  delete process.env.PA_DEPLOYMENT_ID;
   try { registerSessionModules(...args); } finally { process.env = original; }
 }
 

@@ -6,7 +6,7 @@ import {
   AdvisoryFiles, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, readArtifactFile,
   parseWorkflowRequest, workflowDigest, workflowObject,
 } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller, workspaceDocumentCaller, DOCUMENT_CONFIRMATION_SESSION_VERSION, type PiDocumentCaller } from "./document-session.js";
+import { authenticatePiDocumentCaller, assertSameDocumentCaller, workspaceDocumentCaller, confirmationDocumentCaller, type PiDocumentCaller } from "./document-session.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
 
 export const WORKSPACE_LIMITS = Object.freeze({ requestBytes: 65536, fileBytes: 1048576, outputBytes: 32768, timeoutSeconds: 30, processes: 8192, addressSpaceBytes: 8589934592 });
@@ -167,6 +167,6 @@ export async function mutatePiWorkspace(raw: string, context: PiWorkflowContext,
   const parent = new AdvisoryFiles(base), folder = `agent-teams/requirements/artifacts/drafts/${caller.deploymentId}`;
   parent.file(`${folder}/workspace`, undefined, true);
   const result = await new DocumentWorkspace(join(base, folder, "workspace"), caller.repoRoot, authenticate).execute(raw, signal);
-  if (caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION && Object.hasOwn(result, "capture")) result.capture = "use-pa-document-capabilities";
+  if (confirmationDocumentCaller(caller) && Object.hasOwn(result, "capture")) result.capture = "use-pa-document-capabilities";
   return result;
 }
