@@ -1,6 +1,9 @@
 # Config-owned Pi document capabilities (PAP-289)
 
-Status: source implementation candidate, **not installed, qualified or activated**.
+Status: config-selected reader **enabled in source for qualification**, not installed
+or qualified by this change. See [current enablement and packaging](#current-enablement-and-packaging--d-b08f19)
+for the policy decision and remaining delivery steps. Historical checkpoints below
+retain their original staged/closed-gate status; they do not describe this candidate.
 Audience: runtime/PAPC maintainers and independent reviewers. Product authority is
 PAP-289's published `pap-289-config-capabilities/r006` requirements and UAT package.
 This page documents the source contract, not a replacement approval or matrix.
@@ -19,7 +22,9 @@ caller as v4 or upgrade an existing session. OPA rejects this Pi-only selection 
 
 The launcher reads committed `teams/requirements.yaml` using
 `CommittedConfigSource`, requires the loaded mode and committed selection to
-agree, and rechecks source drift before native start. The immutable execution plan
+agree, and rechecks source drift before native start and again after hooks/preflight,
+immediately before runtime spawn. A preflight drift failure uses the existing
+terminal owner: preparation may have started, but Pi is not spawned. The immutable execution plan
 and registry `started.mode_capability_binding` record config revision, raw resource
 SHA-256, path, profile, policy version and canonical sorted selected IDs. The new
 native start marker is `requirements-document-policy/v1`. Neither an environment
@@ -55,7 +60,7 @@ cannot replace them with paths, modules, commands, headers or authority fields.
 | `human.question` | `question` | human question; never native protected approval |
 | `session.todo` | `todo` | session-local task lifecycle |
 | `context.read` | `read` | existing canonical project/artifact/config path and content guards |
-| `web.public-read` | `pa_web_read` | `public-web/reader.ts` + `web-read-tool.ts`; staged supplied-public-HTTPS reader; launcher qualification gate remains closed |
+| `web.public-read` | `pa_web_read` | `public-web/reader.ts` + `web-read-tool.ts`; supplied-public-HTTPS reader, selected only through the immutable native policy |
 
 A configuration preserving the current v4 baseline explicitly lists all twelve
 non-web IDs. The original ten-ID example omitted v4 intake and source discovery;
@@ -85,8 +90,9 @@ PAP-289's original base `1eaf2e3f4f871cf0eaa2dbc07c969589f864978b`
 predated PAP-282. Sinh authorized local integration of exact develop
 `b7476b607187de081d95ccb8bc9e4bddd620652f`, which contains the native v4
 implementation. This candidate combines both dispatches, rather than copying an
-unimplemented ID or rebuilding the ticket effect owner. PAPC-081 contract review
-of this corrected candidate is still required; integration is not adoption.
+unimplemented ID or rebuilding the ticket effect owner. PAPC-081 accepted the
+corrected source contract in `c-20261110141005340`; integration/source agreement
+is not installed qualification or adoption.
 
 `ticket.intake` and `capability.discover` are independent selectors: neither
 implies the other, `ticket.read-comment`, a package tool, or a writer. The intake
@@ -133,7 +139,7 @@ nine affected source hashes were renewed, and policy registry/resolver plus the
 generic execution guard were added to snapshot coverage. This is change detection,
 not independent semantic completeness or installed provenance.
 
-## Staged public-page reader
+## Config-selected public-page reader
 
 The source composition now registers `pa_web_read` only when the immutable policy
 selects it. Its strict request is `{ "url": "https://…" }`; config cannot supply
@@ -206,15 +212,19 @@ external extraction service or separate retention sink is introduced. Public GET
 can cause remote side effects: the tool instructs agents not to read known action
 URLs and does not pretend to prove that a URL was selected by a human.
 
-**The launcher still returns `CAPABILITY_UNAVAILABLE` for `web.public-read`.**
-Source registration and synthetic native starts are not public-egress activation.
-A proposal to open the staging gate first needs runtime/PAPC contract review and
-approved exact public routing/retention, then an explicitly admitted qualification
-candidate/pair. Qualification must measure deadlines, shutdown/reload/replacement
-and same-runtime config toggles; independent review, required CI and genuine human
-UAT/adoption remain separate before live use. A source gate edit alone cannot
-satisfy any of those obligations. No active policy, external PAPC source,
-installation or egress setting is changed here.
+The unconditional launcher `CAPABILITY_UNAVAILABLE` staging rejection is removed
+in this candidate following the operator's routing/retention decision below.
+Selecting `web.public-read` in an eligible new committed policy now permits native
+reader registration and execution; it does **not** send a request at launch or
+select it implicitly. Omission continues to deny the tool, including direct calls.
+No environment bypass, reader-specific role allowlist, relaxed safety check or
+second policy/approval ledger is introduced. Retained sessions do not gain access.
+
+Source registration and synthetic starts are not installed qualification.
+Qualification must still measure deadlines, shutdown/reload/replacement and
+same-runtime config toggles; independent review, required CI and genuine human
+UAT/adoption remain separate. No active PAPC policy, external source, installation
+or live network request is changed/performed by this source work.
 
 ## Verification and rollout boundaries
 
@@ -224,6 +234,13 @@ Focused source tests: `public-web-reader.test.ts`, `public-web-transport.test.ts
 They use disposable native registries/process evidence and synthetic tool/UI seams.
 V4 intake, discovery and ticket intent suites additionally cover the integrated
 baseline; none is permission to run product ticket effects outside its native owner.
+`public-web-launch.test.ts` additionally exercises the real source launcher with
+committed disposable configurations, full twelve-ID baseline, reader on/off/on,
+exact revision/resource digest/native binding, unsafe literal URL rejection before
+DNS, omission/direct-call guards, preflight drift and retained v1-v4 starts. It does
+not replace the reader's connector or send live requests. These source launches use
+a synthetic provider/host, not the installed foreground application.
+
 Reader tests use synthetic DNS/TLS/socket/content fixtures; an in-memory Duplex
 also exercises the real Node HTTPS request/response parser without network access.
 Cases cover unsafe/mixed answers and redirects, peer/certificate mismatch, fixed
@@ -232,8 +249,8 @@ cancellation, deadline checkpoints, concurrency, unknown cleanup and native on/o
 admission. They are not a real DNS/TLS/public request, installed foreground session,
 human readability review or UAT.
 
-PAPC must review this exact schema/profile, preserve the complete baseline and
-provide matching selected instructions in its separately admitted repository.
+PAPC's accepted source contract and committed selection/instructions preserve the
+complete baseline. Further selected configuration changes remain PAPC-owned.
 The same qualified runtime must demonstrate reader-on/off in separately authorized
 new starts, without a rebuild. Current sessions must stay unchanged. No active pin,
 installation, public-egress activation, remote push/PR or checkout return is
@@ -255,15 +272,136 @@ formatting performs no probes/effects and never echoes raw config or errors. Exi
 retained messages and machine contracts are unchanged. The registry binding fields
 are intentional additive machine-contract changes, not wording-only alterations.
 
-Reader messages are additional returned tool-result paths: invalid input, native
+Reader messages are returned tool-result paths: invalid input, native
 policy unavailable, unsafe target, sensitive data, unsupported content, bounds,
 HTTP/network failure, cancellation, timeout, busy capacity and unknown cleanup.
 `publicWebDiagnostic` is pure fixed typed text with the same five-label/2000-unit
 blocker contract, never raw exceptions or URLs. Success and clipping warnings are
 ordinary outcome/coverage prose. Before: URL selection stopped at the unavailable
-launch gate. After (source fixtures only): a selected native reader returns actual
-fixture text/provenance or a typed bounded blocker; the live launch gate remains
-unchanged. Structural message tests are not independent human readability review.
+launch gate. After: an eligible selected policy reaches native registration; a read
+returns source text/provenance or an existing typed bounded blocker. New launcher
+fixtures observe unsafe-target/omission/binding blockers, not a live page. Message
+wording, machine result schemas, streams and exit contracts are unchanged; the
+changed path is admission, not a wording-only change. Structural message tests are
+not independent human readability review.
+
+## Current enablement and packaging — d-b08f19
+
+PAPC-081's latest feedback (`c-20261110151652796`) correctly reports that its
+accepted twelve-ID configuration at `95a2bb593a18ef2f8fbbbf337227cb1bf0d1a53e`
+cannot qualify reader-on while the installed runtime unconditionally rejects it.
+This source continuation removes that blocker; it does not change that installed
+artifact or the companion checkout. PAPC's current committed baseline still omits
+the reader, so deploying it unchanged does not grant web access.
+
+In this deployment the operator selected **Accept policy; implement enablement**
+after reviewing direct system DNS + HTTPS, network/destination disclosure of
+hostname/path/query, existing model-transcript retention of supplied input/returned
+text, and no new cache/service. The explicit scope is source enablement and
+qualification preparation, **not installation, live requests or completed UAT**.
+This conversational decision is not a fabricated native package/approval receipt,
+independent security review or final adoption. Existing native effect owners and
+reader safety guards remain unchanged. Further routing, storage, proxy or retention
+changes need owning review; this decision does not authorize them.
+
+### Clean exact artifact, not a readable-label inference
+
+Do not patch `review-runtime-provenance.json` or substitute the currently installed
+`0.1.160-pap289.1` build: its `unversioned-dirty-source` metadata remains historical.
+This source change leaves that readable label unchanged. Compare exact commits,
+not labels. After the runtime owner commits the reviewed candidate, use an explicit
+full `PAP289_SHA` and physical `PAP289_ROOT` for that clean checkout. Package-only
+recipe (not executed here), using the existing release/validation-lane mechanism:
+
+```sh
+set -eu
+# PAP289_ROOT and PAP289_SHA are supplied by the runtime owner, not inferred
+# from a moving feature branch. Commit all candidate edits before this step.
+test "$(git -C "$PAP289_ROOT" rev-parse HEAD)" = "$PAP289_SHA"
+test -z "$(git -C "$PAP289_ROOT" status --porcelain=v2 --untracked-files=all)"
+CANDIDATE_OUTPUT=$(nix build --offline --no-link --no-write-lock-file --print-out-paths \
+  "git+file://${PAP289_ROOT}?rev=${PAP289_SHA}#default")
+python3 - "$CANDIDATE_OUTPUT" "$PAP289_SHA" "$PAP289_ROOT" <<'PY'
+import json, pathlib, re, sys
+output, expected, source = sys.argv[1:]
+assert re.fullmatch(r'[0-9a-f]{40}', expected), 'Exact full source commit required'
+root = pathlib.Path(source)
+metadata = json.loads((pathlib.Path(output) / 'share/pa-platform/review-runtime-provenance.json').read_text())
+assert metadata['schemaVersion'] == 'pa-review-runtime/v1'
+assert metadata['sourceSha'] == expected, 'Dirty/path-derived metadata is not commit provenance'
+assert metadata['packageVersion'] == json.loads((root / 'package.json').read_text())['version']
+assert metadata['configSha'] == (root / '.pa-platform-config.sha').read_text().strip()
+print(json.dumps(metadata, indent=2))
+PY
+test "$(git -C "$PAP289_ROOT" rev-parse HEAD)" = "$PAP289_SHA"
+test -z "$(git -C "$PAP289_ROOT" status --porcelain=v2 --untracked-files=all)"
+```
+
+The `git+file` exact revision supplies Nix `self.rev`; a dirty/path flake does not.
+Offline cache/toolchain failure is a packaging blocker, not permission to fetch,
+install, forge metadata or relabel an old output. The recipe makes no profile or
+system selection change. No pin refresh or new trial label is included here.
+`configSha` above checks the packaged default pin only, **not** selection of PAPC-081.
+A default-pin refresh has its own owner; an explicitly selected clean committed PAPC
+configuration must be captured separately by the native capability binding.
+See [validation lanes](requirements-validation-lanes.md) for source/installed lane
+separation and [release process](release-process.md#ticket-local-build-labels).
+
+### Next PAPC qualification boundary
+
+After exact artifact/provenance verification and separately admitted runtime/config
+selection, the PAPC owner can qualify its reader-on/off fixtures with the **same**
+installed binary in new normal foreground `requirements/analyze` sessions. Preserve
+all twelve baseline IDs and provider/model. Record selected config commit, resource
+SHA-256, native binding and runtime store identity for A/B/A; omission must deny
+registration and direct execution, and old sessions must not widen. Then use an
+operator-supplied public URL/question and observe actual page contents plus citation,
+not search snippets or a fabricated retrieval. Do not switch to rogue-one, general
+shell or browser to pass. Existing retained/OPA controls, deadlines, cancellation,
+shutdown/reload/replacement, independent review, complete required CI and genuine
+human readability/UAT/adoption remain separate requirements. None was supplied by
+this source-only continuation.
+
+### Local source verification for d-b08f19
+
+- Core focused command: `NO_COLOR=1 corepack pnpm --filter @pa-platform/pa-core
+  exec tsx --test --test-concurrency=1` with
+  `src/__tests__/{public-web-reader,public-web-transport,mode-capabilities,teams,registry,execution-plan,interactions-contract,interactions-catalogue,interactions-discovery,interactions-ticket}.test.ts`:
+  **101 passed, zero failed, two existing external-config fixture skips**.
+- Pi focused command: `NO_COLOR=1 corepack pnpm --filter @pa-platform/pi-pa
+  exec tsx --test --test-concurrency=1` with
+  `src/__tests__/{public-web-launch,mode-capability-session,document-session,document-native,document-workspace-dispatch,document-confirmation-native,document-confirmation-entry,interactions-discovery-native,interactions-ticket-native,pi-extension-composition,pi-native-host}.test.ts`:
+  **61 passed, zero failures/skips**, after workspace build/typecheck.
+- `NO_COLOR=1 corepack pnpm build` and `NO_COLOR=1 corepack pnpm typecheck`:
+  passed. No CLI grammar or completion changes.
+- `NO_COLOR=1 timeout --signal=TERM --kill-after=10s 360s corepack pnpm test:code`:
+  **incomplete, exit 124**. Root 42/42 passed; the core lane reached reported
+  case 1523 without a test failure before interruption, but has no final summary.
+  Later package lanes did not run. Log: `/tmp/pap289-d-b08f19-test-code.log`.
+  No passing full/code-only aggregate or manual-integration result is claimed.
+
+The new launcher file first reproduced two failures at the closed staging gate.
+Removing it left one failing preflight-drift case: the original selection recheck
+preceded preflight. The added pre-spawn recheck fixes that case through existing
+terminal publication; the test now also verifies the already-recorded native start
+and failed completion, with no PID/runtime spawn. Final focused run passes all four
+new cases; no assertion was removed to conceal drift.
+
+The dispatch source-inventory digest was renewed only after reconciling the two
+launcher changes: finite CLI forms/aliases, launch/resource effect classes,
+original intake/CAS owners and source-only discovery availability are unchanged.
+Reader selection reaches only the existing native tool, not a generic CLI forwarder;
+the new pre-spawn check narrows admission. Catalogue contract/negative/inventory
+checks above passed; the hash is change detection, not independent review.
+Before/after blocker paths are described above. Plain structural message assertions
+passed; independent human readability review and installed behavior were not observed.
+The exact Nix build recipe remains unexecuted, as do installation and live HTTP.
+
+## Historical source checkpoints
+
+The following records predate d-b08f19. Their closed-gate and outstanding-policy
+statements are retained historical facts, superseded for this source candidate by
+the current section above, not retroactive changes to installed or test evidence.
 
 ### Extraction hardening check — d-34b8ca
 

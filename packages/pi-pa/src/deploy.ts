@@ -785,7 +785,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let modeCapabilities: ReturnType<typeof selectModeCapabilities> | undefined;
   if (mode?.capability_policy !== undefined) {
     if (!documentLaunch || mode.document_profile !== MODE_CAPABILITY_PROFILE) return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
-    if (mode.capability_policy.allow.includes("web.public-read")) return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_UNAVAILABLE").message };
+    // All closed-registry capabilities, including the supplied-public-page reader,
+    // use the same committed selection. Tool registration and each invocation still
+    // authenticate this immutable native binding; selection never bypasses owners.
     try { modeCapabilities = selectModeCapabilities(mode.capability_policy); }
     catch { return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_BINDING").message }; }
   }
@@ -1520,6 +1522,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (structuredBaseline) rereadStructured();
     selectedTicketWorktree?.reread();
     retainedResume?.reread();
+    // Preflight/hooks can yield after the native start event. Do not spawn a
+    // policy session if its committed selection changed during that interval.
+    try { modeCapabilities?.assertCurrent(); }
+    catch { return completeFailure(new ModeCapabilityError("CAPABILITY_BINDING").message); }
 
     let publishedPid: number | undefined;
     const publishPid = (pid: number): void => {

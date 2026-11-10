@@ -10,7 +10,7 @@
     "packages/pa-core/src/tickets/validate.ts": "76c2434d10a59cb99aba558947be5b4364b1f7d45d3e5d27bfe7f1440e464af5",
     "packages/pa-core/src/types.ts": "2bcf1420d17f24256c593c93cd9708103ad0753a174042a42052825f5a536c3c",
     "packages/pa-core/src/yaml-parser.ts": "b6aad5f9bc237959d5393302f1155c46554fe8129b05ce7a6961a0c48a4e2fd6",
-    "packages/pi-pa/src/deploy.ts": "c156c25cb852d563c4855654f58fa169c48e883e6bad3dd2d34896c101f78d5a",
+    "packages/pi-pa/src/deploy.ts": "0fad7201c8a5d0aa697b866fdce03883d61cdd8e109b28e8fed559149e9d1b58",
     "packages/pi-pa/src/document-confirmation-native.ts": "0f582eb4eaae9c17147d3c77c8296c32e38c2d0026d01ad5f91fcc7b52f03b0e",
     "packages/pi-pa/src/document-native.ts": "7d40fd669524f83293eda17e2e256032e5b79f61d708db11a6f3dc1c42b7bbee",
     "packages/pi-pa/src/document-session.ts": "08ec07560627dbe90471f8c723ec714b800609152ccae7071857e5eb8c035f22",

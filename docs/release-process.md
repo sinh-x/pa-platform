@@ -24,6 +24,12 @@ The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same fo
 
 The PAP-283 worktree trial label is `0.1.156-pap283.1`, set across those same four manifests for operator trial installation. `ppa --version` must display `ppa 0.1.156-pap283.1`; Nix also uses this label in the package name. `packages/runtime-host` stays independently versioned. Build the clean exact label commit, not a dirty/unversioned path. This version-only change does not alter dependency/lockfile/Nix hashes, resolve the still-pending PAPC opt-in pairing, or grant installation/activation or product acceptance.
 
+Current PAP-289 reader enablement and the clean exact-Git build/provenance recipe
+are documented in [mode-capabilities.md](mode-capabilities.md#current-enablement-and-packaging--d-b08f19).
+That source continuation does not change the installed trial or its label. The
+following label-only record predates enablement; its outstanding-policy/gate
+statements describe that earlier checkpoint, not the new source candidate.
+
 The PAP-289 worktree trial label is `0.1.160-pap289.1`, set across the same four manifests at the operator's request so a separately installed worktree build is identifiable. Expect `ppa --version` to display `ppa 0.1.160-pap289.1`; verify `packageVersion` and the clean label commit's exact `sourceSha` in `share/pa-platform/review-runtime-provenance.json` as well. `packages/runtime-host` remains independently versioned. This label does not enable the staged public reader or complete PAPC composition, egress/retention approval, independent review/CI, installed qualification or human UAT. No installation, config-pin, dependency/lockfile/Nix hash, release/tag or rebase change follows from this version-only update. Restore the current plain develop version before integration; the requested updated-develop rebase remains outstanding.
 
 The PAP-283 integration candidate restores plain `0.1.156` for the normal `develop` auto-patch flow. The historical labelled artifact remains bound to `e8602d710be6faae65a81e99014c825e91058164`; neither integration nor a subsequent auto bump changes that installed trial or transfers its qualification.
