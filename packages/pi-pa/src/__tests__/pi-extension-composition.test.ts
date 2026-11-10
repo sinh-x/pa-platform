@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { before, after } from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import registerPiVimMode from "../../vendor/pi-vimmode/index.ts";
 import registerProperBase from "../../vendor/proper-pi-extensions/proper-base/index.ts";
 import {
@@ -21,15 +21,6 @@ import {
   type EditorFactory,
 } from "./fixtures/pi-composed-host.js";
 
-// Isolate the entire synthetic lifecycle, not just factory registration: native
-// session_start handlers also consult immutable launch identity.
-const inheritedEnvironment = process.env;
-before(() => {
-  process.env = { ...inheritedEnvironment };
-  for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE"]) delete process.env[key];
-});
-after(() => { process.env = inheritedEnvironment; });
-
 const PROPER_WRAPPED = Symbol.for("pi-proper-history.wrapped");
 const TRANSCRIPT_CLEANUP = Symbol.for("pi-proper-base.transcript-cleanup");
 type ScheduledCallback = () => void;
@@ -37,6 +28,16 @@ type ScheduledCallback = () => void;
 const VIM_FACTORY: BundledEditorFactory = { name: "pi-vimmode", version: "0.9.0", register: registerPiVimMode };
 const PROPER_FACTORY: BundledEditorFactory = { name: "proper-base", version: "0.5.0", register: registerProperBase };
 const BOTH_EDITOR_MODULES = createPiPaModules([VIM_FACTORY, PROPER_FACTORY]);
+
+let surroundingEnvironment: NodeJS.ProcessEnv;
+beforeEach(() => {
+  surroundingEnvironment = process.env;
+  process.env = { ...surroundingEnvironment };
+  // Isolation must cover lifecycle dispatch as well as factory registration.
+  // No live registry identity belongs to these synthetic legacy hosts.
+  for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE"]) delete process.env[key];
+});
+afterEach(() => { process.env = surroundingEnvironment; });
 
 // Editor composition fixtures assert the legacy loadout, independent of the
 // surrounding PA deployment. Dedicated runtime suites verify each optional mode.

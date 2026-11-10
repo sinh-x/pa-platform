@@ -36,7 +36,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     const modeRecord = asRecord(mode, `deploy_modes[${index}]`);
     rejectRemovedRuntimeConfig(modeRecord, `deploy_modes[${index}].runtimes`);
     validateFlatModePair(modeRecord, index);
-    if (modeRecord["document_profile"] !== undefined && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", MODE_CAPABILITY_PROFILE].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
+    if (modeRecord["document_profile"] !== undefined && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", "pa-document-interactions/v4", MODE_CAPABILITY_PROFILE].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
       throw new Error("document_profile requires requirements/analyze and an exact supported document profile");
     }
     const hasPolicy = Object.hasOwn(modeRecord, "capability_policy");

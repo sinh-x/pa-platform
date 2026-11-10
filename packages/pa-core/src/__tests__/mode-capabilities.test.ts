@@ -10,6 +10,7 @@ import { selectModeCapabilities } from "../mode-capability-selection.js";
 import { CommittedConfigSource } from "../selected-config-source.js";
 import { appendRegistryEvent, getDeploymentEvents, queryDeploymentStatus, computeDeploymentStatuses } from "../registry/index.js";
 import { closeDb } from "../registry/db.js";
+import { generatePrimer } from "../primer/index.js";
 const policy = (allow: string[] = []) => ({ version: MODE_CAPABILITY_POLICY_VERSION, allow });
 const config = (value: unknown = policy(), profile = MODE_CAPABILITY_PROFILE) => `name: requirements\nobjective: test\nagents: []\ndeploy_modes:\n  - id: analyze\n    document_profile: ${profile}\n    capability_policy: ${JSON.stringify(value)}\n`;
 
@@ -18,7 +19,7 @@ test("closed registry is exact replacement selection with immutable deterministi
   assert.equal(new Set(MODE_CAPABILITIES.map(c => c.tool)).size, MODE_CAPABILITIES.length);
   assert.deepEqual(selectedCapabilityTools(parseModeCapabilityPolicy(policy())), []);
   const all = parseModeCapabilityPolicy(policy(MODE_CAPABILITIES.map(c => c.id).reverse()));
-  assert.equal(all.allow.length, 11);
+  assert.equal(all.allow.length, 13);
   assert.ok(Object.isFrozen(all)); assert.ok(Object.isFrozen(all.allow));
   assert.deepEqual(all.allow, [...all.allow].sort());
   for (const entry of MODE_CAPABILITIES) {
@@ -50,7 +51,7 @@ test("invalid present policies never drop keys, truncate, inherit, or fall back"
 });
 
 test("retained absent-policy profiles preserve parsed behavior; new bindings are strict", () => {
-  for (const profile of ["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3"]) {
+  for (const profile of ["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", "pa-document-interactions/v4"]) {
     const retained = parseTeamYamlContent(config().replace(MODE_CAPABILITY_PROFILE, profile).replace(/    capability_policy:.+\n/, ""));
     assert.equal(retained.deploy_modes![0]!.capability_policy, undefined);
     assert.equal(retained.deploy_modes![0]!.document_profile, profile);
@@ -76,7 +77,19 @@ test("selected committed resource binds exact bytes/revision and rejects drift/f
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("native registry persists selection and forbids later widening or changed replay", () => {
+test("policy primer names the exact selection without misidentifying it as a retained profile", () => {
+  for (const ids of [[], ["ticket.intake", "capability.discover"], MODE_CAPABILITIES.map(c => c.id)]) {
+    const teamConfig = parseTeamYamlContent(config(policy(ids)));
+    const primer = generatePrimer({ runtime: "pi", teamConfig, mode: "analyze", requirementsDocument: true, skillsDir: "/nonexistent-fixture-skills" });
+    assert.match(primer, /Native profile: pa-document-policy\/v1/);
+    assert.ok(primer.includes(`Selected tools: ${JSON.stringify(selectedCapabilityTools(parseModeCapabilityPolicy(policy(ids))))}`));
+    assert.doesNotMatch(primer, /Native profile: pa-document-(package|workspace|confirmation|interactions)\//);
+    assert.match(primer, /Existing sessions never widen/);
+    assert.match(primer, /not installed qualification/);
+  }
+});
+
+test("native registry persists selection and forbids later widening or changed replay",  () => {
   const old = process.env.PA_REGISTRY_DB, root = mkdtempSync(join(tmpdir(), "mode-policy-registry-")); closeDb();
   process.env.PA_REGISTRY_DB = join(root, "registry.db");
   try {

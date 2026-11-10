@@ -9,9 +9,11 @@ export const MODE_CAPABILITY_MAX_BYTES = 64 * 1024;
 // This is the inventory of trusted implementations, NOT a role's default selection.
 // Existing tool schemas/action parsers remain authoritative; config cannot replace them.
 export const MODE_CAPABILITIES = Object.freeze([
-  { id: "document.package", tool: "pa_document", owner: "document-native", actions: "native document package grammar; confirmation-v3 prerequisites" },
+  { id: "document.package", tool: "pa_document", owner: "document-native", actions: "native document package grammar; v4-compatible confirmation owner" },
   { id: "document.workspace", tool: "pa_workspace", owner: "document-workspace", actions: "native bounded workspace grammar" },
   { id: "ticket.read-comment", tool: "pa_ticket", owner: "ticket-tool", actions: "read,show,list,comment" },
+  { id: "ticket.intake", tool: "pa_ticket_intake", owner: "ticket-intake-tool", actions: "capabilities,inspect,reuse,create,patch-planning; native ticket intent/CAS owners" },
+  { id: "capability.discover", tool: "pa_capabilities", owner: "capability-tool", actions: "source-only list,describe; no live availability or authority" },
   { id: "bulletin.read", tool: "pa_bulletin", owner: "pa-tools", actions: "list" },
   { id: "registry.read", tool: "pa_registry", owner: "pa-tools", actions: "show,list" },
   { id: "status.read", tool: "pa_status", owner: "pa-tools", actions: "read deployment status" },

@@ -140,10 +140,12 @@ export function registerPiSessionModules(
   // tools additionally pass the document module's tool_call gate. No chosen-role list.
   const guardedRuntime = deploymentId ? new Proxy(pi, {
     get(target, property) {
-      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => {
+      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => lifecycle.trackRegistryAccess(() => {
+        // Guard authentication itself reads the registry. Reject late calls before
+        // that read, not only inside the selected implementation's lifecycle.
         assertPolicyDocumentTool(deploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
         return tool.execute(...args);
-      } });
+      }) });
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },

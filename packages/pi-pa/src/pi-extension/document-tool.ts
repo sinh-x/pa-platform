@@ -7,7 +7,9 @@ import { runDocumentConfirmationCommand } from "./document-confirmation-command.
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { createWorkspaceTool } from "./workspace-tool.js";
 import { createPublicWebTool } from "./web-read-tool.js";
-import { confirmationDocumentCaller, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
+import { confirmationDocumentCaller, DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
+import { createPaTicketIntakeTool, ticketIntakeFailure } from "./ticket-intake-tool.js";
+import { createPaCapabilitiesTool } from "./capability-tool.js";
 import { MODE_CAPABILITY_SESSION, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
@@ -35,8 +37,9 @@ export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile =
     },
   };
 }
-export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, workspaceProfile = false): boolean {
+export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, workspaceProfile = false, interactionsProfile = false): boolean {
   const name = call.toolName ?? call.name ?? "";
+  if (interactionsProfile && ["pa_ticket_intake", "pa_capabilities"].includes(name)) return true;
   if (workspaceProfile && name === "pa_workspace") return true;
   if (name === "read") return guardedDocumentReadAllowed(call, repoRoot);
   return ["pa_document", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "question", "todo"].includes(name);
@@ -86,14 +89,35 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { if (policyDeploymentId) pi.setActiveTools?.([]); return; }
     const confirmationProfile = confirmationDocumentCaller(caller);
-    const tools = [createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile), ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
+    const interactionsProfile = caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION;
+    const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile);
+    if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
+    if (caller.capabilities) document.description = "Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
+    const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
       ...(caller.capabilities && caller.sessionId && capabilityToolSelected(caller.capabilities.policy, "pa_web_read") ? [createPublicWebTool(caller.deploymentId, caller.sessionId, lifecycle)] : [])];
+    if (interactionsProfile || caller.capabilities) {
+      tools.push(createPaTicketIntakeTool(caller.identitySha256));
+      const identity = caller.identitySha256;
+      tools.push(createPaCapabilitiesTool(context => {
+        const current = authenticatePiDocumentCaller(context as PiWorkflowContext);
+        return current.identitySha256 === identity && (current.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION
+          || (current.profile === MODE_CAPABILITY_SESSION && !!current.capabilities && capabilityToolSelected(current.capabilities.policy, "pa_capabilities")));
+      }));
+    }
     if (confirmationProfile) pi.registerCommand?.("pa-approve", { description: "Request/reconcile one native package decision. Arguments: strict confirm or confirm-revoke JSON (same pa_document grammar).", handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext)) : runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext) });
     for (const tool of tools) {
       if (caller.capabilities && !capabilityToolSelected(caller.capabilities.policy, tool.name)) continue;
       pi.registerTool?.({ ...tool, execute: async (...args) => {
-        if (policyDeploymentId) assertPolicyDocumentTool(policyDeploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
-        return lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args);
+        const run = () => {
+          if (policyDeploymentId) assertPolicyDocumentTool(policyDeploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
+          return tool.execute(...args);
+        };
+        try { return await (lifecycle ? lifecycle.trackRegistryAccess(run) : run()); }
+        catch (error) {
+          // Retain v4's bounded late-call response without opening a closed registry.
+          if (tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
+          throw error;
+        }
       } });
     }
     exposePolicy(rawContext);
@@ -110,6 +134,6 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); }
     catch { return { block: true, reason: "Native document-session identity is unproven; no source/resource capability is granted." }; }
-    return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd, workspaceDocumentCaller(caller)) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
+    return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd, workspaceDocumentCaller(caller), caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
   });
 };

@@ -12,8 +12,10 @@ select `document_profile: pa-document-policy/v1`. It requires `capability_policy
 with exactly `version: pa-mode-capabilities/v1` and `allow: [...]`. Selection is
 replacement, not additive; `[]` grants no model-selectable tools. Native lifecycle
 and operator commands are not model tool grants. No other role/adapter migrates.
-Present invalid policies reject; retained absent-policy v1/v2/v3 routes keep their
-old contracts. OPA rejects this Pi-only selection rather than ignoring it.
+Present invalid policies reject; retained absent-policy v1/v2/v3/v4 routes keep
+their old contracts. The policy route preserves v4 package/workspace and finite
+intake semantics only for explicitly selected tools; it does not relabel a policy
+caller as v4 or upgrade an existing session. OPA rejects this Pi-only selection rather than ignoring it.
 
 The launcher reads committed `teams/requirements.yaml` using
 `CommittedConfigSource`, requires the loaded mode and committed selection to
@@ -41,9 +43,11 @@ cannot replace them with paths, modules, commands, headers or authority fields.
 
 | ID | Exact tool | Action/schema and intrinsic owner |
 | --- | --- | --- |
-| `document.package` | `pa_document` | `document-native.ts`; package grammar, v3 confirmation owner |
+| `document.package` | `pa_document` | `document-native.ts`; v4-compatible package grammar and unchanged native confirmation owner |
 | `document.workspace` | `pa_workspace` | `document-workspace.ts`; bounded workspace grammar; no network |
 | `ticket.read-comment` | `pa_ticket` | `ticket-tool.ts`; read/show/list/comment and ticket owner |
+| `ticket.intake` | `pa_ticket_intake` | `ticket-intake-tool.ts`, `interactions/tickets.ts`; capabilities/inspect/reuse/create/patch-planning under existing ticket intent/CAS and retained-owner checks |
+| `capability.discover` | `pa_capabilities` | `capability-tool.ts`; bounded source-only list/describe, never live availability or execution authority |
 | `bulletin.read` | `pa_bulletin` | list active bulletins |
 | `registry.read` | `pa_registry` | show/list bounded registry data |
 | `status.read` | `pa_status` | one deployment status |
@@ -53,17 +57,19 @@ cannot replace them with paths, modules, commands, headers or authority fields.
 | `context.read` | `read` | existing canonical project/artifact/config path and content guards |
 | `web.public-read` | `pa_web_read` | `public-web/reader.ts` + `web-read-tool.ts`; staged supplied-public-HTTPS reader; launcher qualification gate remains closed |
 
-A configuration preserving the full baseline explicitly lists the first ten IDs.
-For example (synthetic, not an instruction to edit active config):
+A configuration preserving the current v4 baseline explicitly lists all twelve
+non-web IDs. The original ten-ID example omitted v4 intake and source discovery;
+PAPC-081 correctly rejected it as a migration baseline. For example (synthetic,
+not an instruction to edit active config):
 
 ```yaml
 - id: analyze
   document_profile: pa-document-policy/v1
   capability_policy:
     version: pa-mode-capabilities/v1
-    allow: [document.package, document.workspace, ticket.read-comment, bulletin.read,
-            registry.read, status.read, template.draft, human.question, session.todo,
-            context.read]
+    allow: [document.package, document.workspace, ticket.read-comment, ticket.intake,
+            capability.discover, bulletin.read, registry.read, status.read,
+            template.draft, human.question, session.todo, context.read]
 ```
 
 Unknown/duplicate IDs, wildcards, tool-name aliases, null/wrong/extra fields,
@@ -72,6 +78,60 @@ The selected resource is at most 64 KiB UTF-8; policies have at most 64 unique I
 each at most 128 ASCII characters. The finite current registry is smaller than the
 upper bound: a 64-element array of unknown IDs still rejects. New IDs require a
 runtime implementation, not a config override.
+
+### V4 compatibility and PAPC handoff
+
+PAP-289's original base `1eaf2e3f4f871cf0eaa2dbc07c969589f864978b`
+predated PAP-282. Sinh authorized local integration of exact develop
+`b7476b607187de081d95ccb8bc9e4bddd620652f`, which contains the native v4
+implementation. This candidate combines both dispatches, rather than copying an
+unimplemented ID or rebuilding the ticket effect owner. PAPC-081 contract review
+of this corrected candidate is still required; integration is not adoption.
+
+`ticket.intake` and `capability.discover` are independent selectors: neither
+implies the other, `ticket.read-comment`, a package tool, or a writer. The intake
+interface reports the actual policy native profile plus `requiredCapability`;
+retained v4 interface metadata and request/result semantics are unchanged. The
+core ticket service checks the selected binding again inside existing creation
+and planning mutexes. Identity-bound snapshot versions, original request IDs and
+payloads, CAS, retained deployment exclusions and primary association all retain
+their existing owners. No cross-profile replay or authority translation is added.
+Late custom calls are rejected by the lifecycle before guard authentication can
+reopen a closed registry. The primer now names the policy profile and exact set,
+not the v1 fallback prose; matching PAPC process instructions remain PAPC-owned.
+
+Concrete synthetic example: a policy selecting only `ticket.intake` may use its
+strict native interface to create one explicitly requested companion to an
+already-bound primary. Replaying the same request ID/content returns that same
+ticket; changing the title conflicts. Inspect/reuse do not claim/reassociate it.
+Planning uses both original inspected versions and only the permitted scalar
+fields. Omit `ticket.intake` and even a direct implementation call rejects before
+constructing a ticket store; selecting source discovery does not restore intake.
+This demonstrates a contract, not actual companion creation or human UAT.
+
+Paired focused entrypoints (run from the indicated package with
+`corepack pnpm --filter PACKAGE exec tsx --test --test-concurrency=1`):
+
+- `@pa-platform/pa-core`: `src/__tests__/mode-capabilities.test.ts` for strict
+  selection/primer; `src/__tests__/interactions-ticket.test.ts` runs service
+  scenarios under both v4 and policy callers, including original-intent recovery,
+  changed caller/binding, CAS and retained-owner negatives.
+- `@pa-platform/pi-pa` after the core build:
+  `src/__tests__/mode-capability-session.test.ts` covers selected/omitted intake,
+  real native owner with synthetic host, full intake/companion/inspect/reuse/
+  planning/replay, discovery, immutable registration and late-call rejection.
+  `src/__tests__/interactions-ticket-native.test.ts` retains v4 controls and adds
+  a real source launcher/committed-config selection fixture for the policy route.
+  These are disposable source fixtures, not installed foreground qualification.
+
+The integrated PAP-282 conservative source-inventory check initially rejected
+changed ticket dispatch bytes. Semantic reconciliation found the same finite
+intake actions, aliases, read/write classifications and effect owners; eligibility
+now also includes explicitly selected policy callers. Catalogue owner descriptions
+reflect that distinction without populating live binding/authority fields. The
+nine affected source hashes were renewed, and policy registry/resolver plus the
+generic execution guard were added to snapshot coverage. This is change detection,
+not independent semantic completeness or installed provenance.
 
 ## Staged public-page reader
 
@@ -156,6 +216,8 @@ Focused source tests: `public-web-reader.test.ts`, `public-web-transport.test.ts
 `mode-capabilities.test.ts`,
 `mode-capability-session.test.ts`, registry/plan/team and retained document tests.
 They use disposable native registries/process evidence and synthetic tool/UI seams.
+V4 intake, discovery and ticket intent suites additionally cover the integrated
+baseline; none is permission to run product ticket effects outside its native owner.
 Reader tests use synthetic DNS/TLS/socket/content fixtures; an in-memory Duplex
 also exercises the real Node HTTPS request/response parser without network access.
 Cases cover unsafe/mixed answers and redirects, peer/certificate mismatch, fixed
@@ -172,8 +234,15 @@ installation, public-egress activation, remote push/PR or checkout return is
 performed by this source change. Independent review, hosted CI, installed tests,
 human clarity/usefulness/UAT and explicit adoption remain separate obligations.
 
-Before: the retained document hook described a fixed artifact/ticket tool route.
-After: selected-route blockers distinguish malformed/unknown policy, unsupported
+Before: the retained document hook described a fixed artifact/ticket tool route;
+the initial policy primer incorrectly fell through to “Native profile:
+pa-document-package/v1.” After: it says “Native profile: pa-document-policy/v1”
+and displays exact selected IDs/tools, including an empty set. Tool help retains
+package/confirmation behavior and labels intake/discovery as separate selections.
+These are information/help changes, not new protected-effect approvals. Human
+readability and installed foreground checks remain outstanding.
+
+Selected-route blockers distinguish malformed/unknown policy, unsupported
 profile, unavailable implementation, unproven binding and omitted capability.
 They use fixed, plain, bounded five-field guidance from `modeCapabilityDiagnostic`;
 formatting performs no probes/effects and never echoes raw config or errors. Existing
