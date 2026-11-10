@@ -58,7 +58,7 @@ export function parseDocumentPackage(value: unknown): DocumentPackage {
   });
 }
 export const DOCUMENT_ACTION_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  capabilities: [], status: ["ticket"], "ticket-create": ["title", "content", "intakeId"], discover: ["path"], context: ["path"], draft: ["path", "content", "expectedSha256"],
+  capabilities: [], status: ["ticket"], "branch-inspect": ["ticket"], "ticket-create": ["title", "content", "intakeId"], discover: ["path"], context: ["path"], draft: ["path", "content", "expectedSha256"],
   check: ["package"], freeze: ["package", "expectedRevision"], show: ["sha256"], present: ["sha256"], read: ["sha256", "path", "offset"], compare: ["sha256", "previousSha256"],
   confirm: ["sha256", "expectedRevision", "scope"], "confirm-revoke": ["sha256", "expectedRevision", "decisionId"],
   capture: ["sha256", "expectedRevision"], revoke: ["sha256", "expectedRevision", "decisionId"], publish: ["sha256", "expectedRevision", "decisionId"], queue: ["sha256", "expectedRevision", "decisionId"],

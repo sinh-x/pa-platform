@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { inspectPiDocumentBranch } from "./document-branch.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
@@ -71,6 +72,7 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
   const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
     confirmationProfile: caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION,
+    ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
     ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
     capture: createPiDocumentCapture(context, authenticate, signal),
     assertEffectAvailable(subject) {

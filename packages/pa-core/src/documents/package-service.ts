@@ -22,6 +22,7 @@ export interface DocumentPackageHost {
   /** Native launch dispatch only, not imported package/request metadata. */
   workspaceProfile?: boolean;
   confirmationProfile?: boolean;
+  inspectBranch?(ticket: string): Record<string, unknown> | Promise<Record<string, unknown>>;
   confirm?(request: NativeDocumentConfirmationRequest): Promise<NativeDocumentConfirmationResult>;
   authenticate(): DocumentCaller;
   /** Actual retained workflow/resource owners, rechecked inside ticket mutex. */
@@ -83,8 +84,8 @@ export class DocumentPackageService {
       documentGuard(() => object(r, ["action", ...fields[action]!]));
       try { assertNoSensitiveMatch("content", raw); } catch { documentReject("DOCUMENT_INPUT"); }
       const caller = this.caller(); let result: unknown;
-      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: this.host.confirmationProfile && this.host.confirm ? "pi-native-confirmation/v1-use-confirm" : this.host.workspaceProfile ? "unavailable-host-attestation-required" : "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: this.host.workspaceProfile ? "safe-static-html-companion" : "unavailable-use-markdown", workflowRequired: false, sourceWriting: false };
-      else if (action === "status") {
+      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: this.host.confirmationProfile && this.host.confirm ? "pi-native-confirmation/v1-use-confirm" : this.host.workspaceProfile ? "unavailable-host-attestation-required" : "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: this.host.workspaceProfile ? "safe-static-html-companion" : "unavailable-use-markdown", workflowRequired: false, sourceWriting: false, ...(this.host.confirmationProfile ? { branchBridge: this.host.inspectBranch ? "read-only-existing-owner-inspection" : "unavailable" } : {}) };
+      else if (action === "status" || action === "branch-inspect") {
         const ticket = workflowTicket(r.ticket);
         if ((caller.ticket !== null && caller.ticket !== ticket) || this.host.tickets.get(ticket)?.project !== caller.repoKey) documentReject("DOCUMENT_AUTHORITY");
         const events = this.journal.events(caller.repoKey, ticket);
@@ -93,9 +94,13 @@ export class DocumentPackageService {
           association: caller.ticket === null ? "caller-unassociated" : "caller-associated",
           queue: record.status === "pending-implementation" && record.assignee === "builder/team-manager" ? "recorded-pending-implementation" : "not-recorded-pending-implementation",
           branchEvidence: !record.linkedBranches?.length ? "absent" : record.linkedBranches.length === 1 ? "recorded-unverified" : "multiple-recorded-unverified",
-          branchBridge: "unsupported-ticket-launcher-owner-required", custody: "not-observed", launchReady: false,
+          branchBridge: this.host.confirmationProfile && this.host.inspectBranch ? "use-branch-inspect" : "unsupported-ticket-launcher-owner-required", custody: "not-observed", launchReady: false,
         } } : {};
-        result = { ticket, ...handoff, ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events) } : {}), expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
+        if (action === "branch-inspect") {
+          if (!this.host.confirmationProfile || !this.host.inspectBranch) documentReject("DOCUMENT_UNAVAILABLE");
+          result = await this.host.inspectBranch(ticket);
+          if (!isDeepStrictEqual(caller, this.caller()) || !isDeepStrictEqual(record.linkedBranches, this.host.tickets.get(ticket)?.linkedBranches)) documentReject("DOCUMENT_STALE");
+        } else result = { ticket, ...handoff, ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events) } : {}), expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
       } else if (action === "ticket-create") {
         const title = text(r.title, undefined, 256), tag = `document-intake-${text(r.intakeId, ID)}`;
         if (typeof r.content !== "string" || !r.content.trim() || Buffer.byteLength(r.content) > 32768 || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(r.content)) documentReject();

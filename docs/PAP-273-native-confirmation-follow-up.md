@@ -94,4 +94,30 @@ command/tool equivalence, rejection/abort/caller and dispatch tests **9 passed,
 zero failed/skipped**. UI keyboard events are disposable synthetic test inputs,
 not genuine human approval or visual/readability UAT. Shared command messages
 lead with decision/linkage outcomes; failures preserve possible partial issuance
-and route same-request inspection, not blind retries or duplicate approvals.
+and route same-request inspection, not blind retries or duplicate approvals. The complete document
+family after A2 passed **81/81, zero skips**.
+
+## A3 delivered
+
+New V3-only `pa_document branch-inspect(ticket)` consumes the ticket's existing
+linkedBranches, registered physical identity, exact branch/base/head, Treehouse
+status/select-existing, existing Git snapshot/metadata policy, and protected
+lock-free repository ownership observers. No generic inspection path calls the
+existing mutex-taking custody inspectors, acquire/prepare/materialize/refresh,
+launch or ticket-write services. Capacity/execution remains deferred to actual
+launch owners; `launchReady` and `authorityGranted` are always false.
+
+Findings distinguish missing/foreign/multiple/invalid/planned linkage, base,
+current HEAD (including descendant advancement without inferred new intent),
+lease absence/ambiguity/unavailability, physical worktree mismatch, branch
+mismatch, live owner conflict, unproven owner evidence and mid-observation drift.
+Successful observations re-read current Git, lease, protected authority and
+link/queue facts. Mutable facts must still be rechecked at selection/launch;
+there is no reusable permission token or automatic baseline/branch repair.
+
+Actual A3 tests: core build passed; **8 tests passed, zero failed/skipped**, using
+real disposable Git worktrees, existing native live-owner acquisition for fixture
+setup, and a bounded Treehouse status fixture that refuses allocation commands.
+Before/after filesystem (including directories/modes/hashes), ticket and lease
+snapshots remain unchanged by inspection. This proves source owner composition,
+not a real installed Treehouse/config pair or foreground handoff acceptance.
