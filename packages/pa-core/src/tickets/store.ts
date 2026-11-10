@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { AdvisoryFiles } from "../operations/files.js";
+import { parseReviewEvidenceJson } from "../validation/review-contract.js";
+import { TicketCreateIntentError, creationDigest, creationKey, creationReservations, publishCreationIntent, readCreationIntent, type TicketCreateIntentIdentity, type TicketCreateIntentHooks } from "./create-intent.js";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -77,6 +80,77 @@ export class TicketStore {
       this.writeTicket(ticket);
       this.appendAudit(id, "created", actor, { status: ["", ticket.status], assignee: ["", ticket.assignee] });
       return ticket;
+    });
+  }
+
+  /** New finite creation primitive. Legacy create/document-intake behavior is
+   * retained; adapters must separately authenticate their selected writer profile.
+   * The SAME ticket mutex owns reservation, ticket and audit reconciliation.
+   * An immutable intent reserves an ID before counter/ticket/audit effects. */
+  createWithIntent(input: CreateTicketInput, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketCreateIntentHooks): { ticket: Ticket; reused: boolean } {
+    const key = creationKey(identity);
+    if (!actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
+    const { key: project, prefix } = resolveProject(input.project);
+    const normalizedInput = { ...input, project };
+    const payloadSha256 = creationDigest({ input: normalizedInput, actor });
+    const assertCurrent = (): void => {
+      const result: unknown = hooks.assertCurrent();
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
+    };
+    const observed = (stage: "intent" | "ticket" | "audit"): void => {
+      const result: unknown = hooks.afterPersist?.(stage);
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    };
+    return this.withTransaction(() => {
+      assertCurrent();
+      let record = readCreationIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.actor !== actor)) throw new TicketCreateIntentError("TICKET_CREATE_CONFLICT");
+      if (!record) {
+        const id = this.nextAvailableId(prefix), now = nowUtc();
+        const ticket = this.normalizeTicket({ ...normalizedInput, id, createdAt: now, updatedAt: now, resolvedAt: input.resolvedAt ?? null,
+          subTickets: [], nextSubTicketCounter: 0, linkedBranches: input.linkedBranches ?? [], linkedCommits: input.linkedCommits ?? [] });
+        record = { schemaVersion: "pa-ticket-create-intent/v1", key, ...identity, payloadSha256, ticketSha256: creationDigest(ticket), actor, ticket };
+        assertCurrent();
+        publishCreationIntent(this.dir, record);
+        observed("intent");
+      }
+      const planned = record.ticket;
+      // Never silently normalize malformed persisted candidate bytes.
+      if (!isDeepStrictEqual(this.normalizeTicket(planned as unknown as Record<string, unknown>), planned) || planned.project !== project) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      const expectedAudit: AuditEntry = { ticket_id: planned.id, action: "created", actor, timestamp: planned.createdAt,
+        changes: { status: ["", planned.status], assignee: ["", planned.assignee] } };
+      let audits: AuditEntry[], current: Ticket | undefined;
+      try { audits = this.readCreationAudits().entries.filter(row => row.ticket_id === planned.id && row.action === "created"); current = this.get(planned.id); }
+      catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+      if (audits.length > 1 || (audits.length === 1 && (creationDigest(audits[0]) !== creationDigest(expectedAudit) || !current || current.id !== planned.id || current.project !== project))) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      if (audits.length === 0) {
+        if (current && !isDeepStrictEqual(current, planned)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+        if (!current) {
+          assertCurrent();
+          // The durable reservation is already visible to all ordinary ID allocators.
+          this.advanceCounter(prefix, planned.id);
+          // A symlink/foreign inode or corrupt existing file is not an absent ticket.
+          const files = new AdvisoryFiles(this.dir);
+          try { files.file(`${planned.id}.json`); throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+          files.file(`${planned.id}.json`, JSON.stringify(planned, null, 2));
+          observed("ticket");
+        }
+        assertCurrent();
+        const readback = this.get(planned.id);
+        if (!readback || !isDeepStrictEqual(readback, planned)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+        const previous = this.readCreationAudits().raw;
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${previous}${JSON.stringify(expectedAudit)}\n`);
+        observed("audit");
+      }
+      assertCurrent();
+      const persisted = this.get(planned.id);
+      const finalAudits = this.readCreationAudits().entries.filter(row => row.ticket_id === planned.id && row.action === "created");
+      if (!persisted || persisted.id !== planned.id || persisted.project !== project || finalAudits.length !== 1 || creationDigest(finalAudits[0]) !== creationDigest(expectedAudit)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return { ticket: persisted, reused };
     });
   }
 
@@ -320,6 +394,21 @@ export class TicketStore {
     return readFileSync(path, "utf-8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as AuditEntry);
   }
 
+  private readCreationAudits(): { raw: string; entries: AuditEntry[] } {
+    let bytes: Buffer;
+    try { bytes = new AdvisoryFiles(this.dir).file("audit.jsonl") as Buffer; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { raw: "", entries: [] }; throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+    let raw: string;
+    try { raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+    // A torn final row is unknown; never concatenate a new event onto it.
+    if (raw && !raw.endsWith("\n")) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    try {
+      const entries = raw.split("\n").filter(Boolean).map(line => parseReviewEvidenceJson(Buffer.from(line), "ticket-audit") as AuditEntry);
+      if (entries.some(entry => !entry || typeof entry !== "object" || typeof entry.ticket_id !== "string" || typeof entry.action !== "string" || typeof entry.actor !== "string" || !entry.changes)) throw new Error();
+      return { raw, entries };
+    } catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+  }
+
   private ticketPath(id: string): string {
     if (!isCanonicalTicketId(id)) throw new Error("Ticket ID must be canonical");
     const directory = resolve(this.dir);
@@ -355,17 +444,39 @@ export class TicketStore {
     return this.normalizeTicket(raw);
   }
 
-  private counterPath(): string {
-    return resolve(this.dir, "counter.json");
+  private readCreationCounters(): CounterStore {
+    let bytes: Buffer;
+    try { bytes = new AdvisoryFiles(this.dir).file("counter.json") as Buffer; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+    try {
+      const counters = parseReviewEvidenceJson(bytes, "ticket-counter") as CounterStore;
+      if (!counters || typeof counters !== "object" || Array.isArray(counters)
+        || Object.entries(counters).some(([prefix, value]) => !/^[A-Z][A-Z0-9]*$/.test(prefix) || !Number.isSafeInteger(value) || value < 0)) throw new Error();
+      return { ...counters };
+    } catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+  }
+
+  private nextAvailableId(prefix: string): string {
+    const counters = this.readCreationCounters();
+    const reservations = creationReservations(this.dir);
+    let next = (counters[prefix] ?? 0) + 1;
+    while (reservations.has(`${prefix}-${String(next).padStart(3, "0")}`)) next++;
+    if (!Number.isSafeInteger(next) || next < 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    return `${prefix}-${String(next).padStart(3, "0")}`;
+  }
+
+  private advanceCounter(prefix: string, id: string): void {
+    const counters = this.readCreationCounters();
+    const next = Number(id.slice(prefix.length + 1));
+    if (!Number.isSafeInteger(next) || next < 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    counters[prefix] = Math.max(counters[prefix] ?? 0, next);
+    new AdvisoryFiles(this.dir).file("counter.json", JSON.stringify(counters, null, 2));
   }
 
   private allocateId(prefix: string): string {
-    const path = this.counterPath();
-    const counters = existsSync(path) ? (JSON.parse(readFileSync(path, "utf-8")) as CounterStore) : {};
-    const next = (counters[prefix] ?? 0) + 1;
-    counters[prefix] = next;
-    writeFileSync(path, JSON.stringify(counters, null, 2));
-    return `${prefix}-${String(next).padStart(3, "0")}`;
+    const id = this.nextAvailableId(prefix);
+    this.advanceCounter(prefix, id);
+    return id;
   }
 
   private normalizeTicket(raw: Record<string, unknown>): Ticket {

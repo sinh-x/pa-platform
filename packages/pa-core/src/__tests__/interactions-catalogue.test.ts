@@ -45,6 +45,7 @@ test("catalogue validator rejects duplicate identities, orphan aliases, invalid 
 test("hidden effect variants and deprecated/unsupported forms remain explicit", () => {
   assert.equal(operation("health.save").effectClass, "write");
   assert.equal(operation("status.wait").effectClass, "write");
+  assert.equal(operation("serve.status").effectClass, "write", "CLI status can remove stale PID state");
   assert.equal(operation("deploy.preview").effectClass, "write");
   assert.equal(operation("registry.clean.apply").targetDisposition, "operator-only");
   assert.equal(operation("registry.sweep.apply").targetDisposition, "operator-only");

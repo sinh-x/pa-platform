@@ -83,7 +83,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
     ["agent-model", ["evaluate --agent-model"], "launch", "unsupported"],
   ]),
   ...family("serve", "Agent API server", [
-    ["status", ["serve status"], "read", "native", { aliases: ["serve-status"] }],
+    ["status", ["serve status"], "write", "owner", { aliases: ["serve-status"], reason: "The existing CLI status wrapper removes stale PID state. A future native observational reader must use a separate safe read port, never this lifecycle wrapper." }],
     ["start", ["serve", "serve --background", "serve --force", "serve --dev", "serve --host", "serve --cors"], "resource", "operator"],
     ["stop", ["serve stop"], "resource", "operator", { aliases: ["stop"] }],
     ["restart", ["serve restart", "serve restart --dev", "serve restart --force", "serve restart --cors"], "resource", "operator", { aliases: ["restart"] }],
@@ -217,7 +217,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "operation.run"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "operation.run", "serve.status"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

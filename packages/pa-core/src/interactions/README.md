@@ -24,13 +24,14 @@ it does not replace that package or narrow its acceptance criteria.
   effect variants. `cliForms` are schematic inventory labels, **not runnable
   commands or an argv grammar**. `targetDisposition` is product intent, not
   current availability. No generic forwarding/dispatch exists.
-- `source-inventory.json`: hashes of 36 dispatch/CLI/native owner sources. Tests conservatively
+- `source-inventory.json`: hashes of 39 dispatch/CLI/native owner sources. Tests conservatively
   require reconciliation when any tracked source changes or a command file is
   added. Hash equality is not semantic coverage, installed provenance or approval.
 
 For example, `health.report` is a read while `health.save` is a write delegated to
-its existing owner. `status.wait` is not a safe substitute for a native read:
-its existing CLI implementation can reconcile lifecycle state. Signal dry-run
+its existing owner. `status.wait` and `serve.status` are not safe substitutes
+for native reads: their existing CLI implementations can reconcile lifecycle
+state or remove stale PID state. Signal dry-run
 remains sensitive/operator-only even when it does not persist results.
 
 Every native/delegation binding and operation request/result schema reference is
@@ -58,6 +59,37 @@ reconcile IDs/forms/effect boundaries and add negative tests **before** updating
 its source digest. Never refresh hashes solely to silence a failing test. The
 independent high-risk invariants are additional regression checks, not a complete
 permission engine or exhaustive command parser.
+
+## Ticket-owner creation primitive (not yet a native writer binding)
+
+`TicketStore.createWithIntent` extends the existing ticket owner, not the
+interaction catalogue. It accepts trusted adapter-supplied caller scope, stable
+request ID and a mandatory reauthentication callback under the same mutex used by
+ordinary ticket writers. It is not reachable from a new tool yet; raw request
+validation, role selection, registered-project scope and explicit companion
+intent still belong to the future admitted adapter/service.
+
+The ticket store owns immutable `.ticket-create-<digest>.json` intent records
+beside its existing counter/ticket/audit files. These are idempotency data, **not
+permissions, approvals or a second adapter replay database**. An intent reserves
+one exact ID and complete candidate before counter, ticket and audit effects.
+All ordinary ID allocation skips these reservations. Candidate and counter writes
+are atomic; the new primitive writes its audit through the same atomic file
+boundary, and reports success only after ticket/audit readback. `reused` refers to
+an existing intent and does not claim a recovery performed no remaining effects.
+
+An interrupted original intent can finish missing proven steps. Conflicting
+payload/actor, malformed intent/candidate/audit, a deleted or moved ticket, and
+unsafe file aliases are not silently normalized, overwritten or treated as
+absence. Unknown reservation data blocks dependent creation (including ordinary
+ID allocation); it never authorizes deleting evidence or retrying with a fresh
+identity. Existing document-v1/v2/v3 tag-based intake is not migrated or widened.
+
+Disposable tests cover response loss, interruption after intent/ticket/audit,
+ordinary-writer reservation coexistence, real concurrent owner processes,
+conflicting payloads, stale caller callbacks, corruption and symlinks. They are
+not a genuine native foreground creation journey, exhaustive crash/power-loss
+qualification, source-owner authentication or full CLI/native parity.
 
 ## Focused checks
 
