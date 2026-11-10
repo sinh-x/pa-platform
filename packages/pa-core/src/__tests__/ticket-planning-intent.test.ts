@@ -47,6 +47,26 @@ test("interrupted intent/ticket/audit stages recover original request with one u
   });
 });
 
+test("trusted snapshot validator always receives the original snapshot under lock, including interrupted and completed replay", () => {
+  for (const stop of ["intent", "ticket", "audit"] as const) fixture((store, id, dir) => {
+    const original = store.get(id)!, version = ticketPlanningVersion(original), patch = { summary: "Caller-bound requested work" };
+    const observations: string[] = [];
+    const hooks = { ...current, assertSnapshot(ticket: typeof original) {
+      observations.push(ticketPlanningVersion(ticket)); assert.deepEqual(ticket, original);
+      ticket.title = "Accidental trusted callback mutation must not alter owner state";
+    } };
+    assert.throws(() => store.patchPlanningWithIntent(id, version, patch, "requirements/analyze", identity, { ...hooks, afterPersist(stage) { if (stage === stop) throw Error("response lost"); } }), /response lost/);
+    const pendingFiles = readdirSync(dir).sort(), pendingAudit = store.readAudit();
+    assert.throws(() => store.patchPlanningWithIntent(id, version, patch, "requirements/analyze", identity, { ...current, assertSnapshot() { throw Error("caller binding is stale"); } }), /caller binding is stale/);
+    assert.deepEqual(readdirSync(dir).sort(), pendingFiles); assert.deepEqual(store.readAudit(), pendingAudit);
+    const recovered = store.patchPlanningWithIntent(id, version, patch, "requirements/analyze", identity, hooks);
+    assert.equal(recovered.reused, true); assert.equal(recovered.ticket.title, original.title);
+    store.comment(id, "fixture", "Later work");
+    const replay = store.patchPlanningWithIntent(id, version, patch, "requirements/analyze", identity, hooks);
+    assert.equal(replay.ticket.comments.length, 1); assert.deepEqual(observations, [version, version, version]);
+  });
+});
+
 test("unfinished same-target intent blocks a fresh identity and preserves intervening ordinary work", () => fixture((store, id, dir) => {
   const version = ticketPlanningVersion(store.get(id)!);
   assert.throws(() => store.patchPlanningWithIntent(id, version, { title: "Partial" }, "requirements/analyze", identity, { ...current, afterPersist(stage) { if (stage === "ticket") throw Error("stop"); } }));

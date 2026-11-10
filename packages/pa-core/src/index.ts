@@ -1,4 +1,4 @@
-export { createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, ticketIntakeRequestSchema, ticketIntakeInspectSchema, ticketIntakeReuseSchema, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, TICKET_INTAKE_VERSION, type TicketInteractionCaller, type TicketIntakeResult, type TicketSelectionRequest, type TicketSelectionResult } from "./interactions/tickets.js";
+export { patchTicketPlanningInteraction, ticketPlanningRequestSchema, type TicketPlanningRequest, type TicketPlanningResult, createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, ticketIntakeRequestSchema, ticketIntakeInspectSchema, ticketIntakeReuseSchema, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, TICKET_INTAKE_VERSION, type TicketInteractionCaller, type TicketIntakeResult, type TicketSelectionRequest, type TicketSelectionResult } from "./interactions/tickets.js";
 export { TicketCreateIntentError } from "./tickets/create-intent.js";
 export { INTERACTIONS_VERSION, MAX_INTERACTION_REQUEST_BYTES, InteractionInputError } from "./interactions/contract.js";
 export { createSourceCatalogueReader, InteractionDiscoveryError } from "./interactions/discovery.js";
@@ -28,6 +28,7 @@ export { inspectApprovedProjectCatalogue, RepoOperatorError, type ApprovedProjec
 export * from "./readonly-helper-context.js";
 export * from "./interactive.js";
 export * from "./registry/index.js";
+export { TicketPlanningIntentError } from "./tickets/planning-intent.js";
 export * from "./tickets/index.js";
 export * from "./bulletins/index.js";
 export * from "./documents/index.js";

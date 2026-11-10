@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
-import { queryReadonlyHelperRegistry } from "../registry/index.js";
+import { hasOtherTicketDeploymentAssociation, queryReadonlyHelperRegistry } from "../registry/index.js";
 import type { RegistryEvent } from "../types.js";
 import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
 
@@ -72,6 +72,29 @@ function expectAssociationError(fn: () => unknown, code: TicketAssociationError[
   assert.equal(caught.code, code);
   return caught;
 }
+
+test("ticket planning ownership observation is read-only, conservative across terminal/reassociation history, and fail-closed", () => {
+  withAssociationFixture(({ root, canonicalRoot }) => {
+    const dbPath = join(root, "registry.db"), self = "d-282aaa", other = "d-282bbb";
+    assert.throws(() => hasOtherTicketDeploymentAssociation("PAP-001", self));
+    assert.equal(existsSync(dbPath), false, "missing registry must not initialize a database");
+    const start = { team: "requirements", mode: "analyze", runtime: "pi" as const, binary: "ppa", event: "started" as const,
+      timestamp: "2026-11-10T00:00:00Z", repo: canonicalRoot, repo_root: canonicalRoot, worktree_root: canonicalRoot };
+    appendRegistryEvent({ ...start, deployment_id: self, ticket_id: "PAP-001" });
+    assert.equal(hasOtherTicketDeploymentAssociation("PAP-001", self), false);
+    appendRegistryEvent({ ...start, deployment_id: other });
+    associateDeploymentTicket({ deploymentId: other, ticketId: "PAP-001", expectedTicketId: null, actor: "operator", reason: "disposable owner fixture" });
+    assert.equal(hasOtherTicketDeploymentAssociation("PAP-001", self), true);
+    associateDeploymentTicket({ deploymentId: other, ticketId: "PAP-002", expectedTicketId: "PAP-001", actor: "operator", reason: "retain earlier association" });
+    appendRegistryEvent({ deployment_id: other, team: "requirements", event: "completed", status: "success", timestamp: "2026-11-10T00:01:00Z" });
+    const before = readFileSync(dbPath), events = getDeploymentEvents(other);
+    assert.equal(hasOtherTicketDeploymentAssociation("PAP-001", self), true, "completed/reassociated is not settlement of historical package/custody");
+    assert.equal(hasOtherTicketDeploymentAssociation("PAP-003", self), false);
+    assert.deepEqual(getDeploymentEvents(other), events); assert.deepEqual(readFileSync(dbPath), before);
+    for (const [ticket, deployment] of [["../PAP-001", self], ["PAP-001", `${self}\n`], ["PAP-001", "forged"]])
+      assert.throws(() => hasOtherTicketDeploymentAssociation(ticket!, deployment!));
+  });
+});
 
 test("terminal child registry CAS is event-idempotent at unchanged HEAD and rejects successors", () => {
   withAssociationFixture(({ canonicalRoot }) => {

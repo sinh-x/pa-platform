@@ -103,16 +103,16 @@ conflicting payloads, stale caller callbacks, corruption and symlinks. They are
 not a genuine native foreground creation journey, exhaustive crash/power-loss
 qualification, source-owner authentication or full CLI/native parity.
 
-## Scalar planning owner foundation — no native mutation port yet
+## Scalar planning — limited new-v4 native slice, not activation
 
-`TicketStore.patchPlanningWithIntent` adds a finite **data-owner** primitive for
-`title`, `summary`, `description`, `priority` and `estimate` only. It is not
-registered in `pa_ticket_intake`, does not add a role permission, and is not the
-complete FR-05 planning journey. Status/assignee, arrays/tags/blockers, comments,
-refs, Git evidence and subtickets are not patch fields. A future native adapter
-must independently authenticate the supported profile, current caller, retained
-ownership and exact project under the same ticket mutex; a callback or snapshot
-hash supplied by a model would not establish those facts.
+`TicketStore.patchPlanningWithIntent` is the finite **data-owner** primitive for
+`title`, `summary`, `description`, `priority` and `estimate` only. The explicitly
+selected new-v4 `pa_ticket_intake` now exposes `action=patch-planning` through
+`patchTicketPlanningInteraction`. This is not the complete FR-05 journey.
+Status/assignee, arrays/tags/blockers, comments, refs, Git evidence and subtickets
+are not patch fields. The adapter reauthenticates the supported native profile,
+current caller, exact project and conservative retained-owner observation under
+the same ticket mutex. Supplied versions are preconditions, never authority.
 
 The primitive accepts the complete normalized ticket version, stable scoped
 request identity, exact finite patch, derived actor and synchronous trusted
@@ -136,8 +136,10 @@ Source tests cover fault boundaries, real concurrent owner processes, stale CAS,
 same-intent replay, changed caller/policy, pending-intent bypass, corrupt intent,
 symlinks and torn audit. They do not prove crash/power-loss completeness, full
 CLI/native differential parity, current retained-owner eligibility, installed
-native planning or human UAT. Native finite planning and incremental owner flows
-remain first unproven work; no generic raw-update tool is introduced.
+native planning or human UAT. The new native slice is separately covered by
+synthetic composed-host source tests, not actual installed behavior. Incremental
+owner flows and broader retained-owner reconciliation remain unfinished; no
+generic raw-update tool is introduced.
 
 ## Opt-in native creation slice — source support, not activation
 
@@ -154,7 +156,8 @@ pair qualification and operator adoption remain separate.
 
 Retained `pa_ticket` remains read/show/list/comment. Retained document ticketless
 intake, signed package bytes and native decisions are not migrated. Only requested
-idea creation and read-only exact-ticket selection are added, not planning/status/primary/Git/resource/shell operations.
+idea creation, read-only exact-ticket selection and limited scalar planning are
+added, not status/primary/Git/resource/shell operations.
 Cross-project metadata does not access that project's files or alter the primary
 association/root/provider/model. Destination must be an exact registered project
 key with an unambiguous prefix, not a path or fuzzy alias.
@@ -166,7 +169,7 @@ In the new-profile session, first describe the actual finite port with:
 ```
 
 This strict read returns supported schemas, defaults, limits and only implemented
-actions (`capabilities`, `inspect`, `reuse`, `create`), without constructing TicketStore or creating an
+actions (`capabilities`, `inspect`, `reuse`, `create`, `patch-planning`), without constructing TicketStore or creating an
 intent/lock/ticket/audit. It is interface metadata, not installed provenance,
 creation admission or a grant. Each creation still rechecks all effect owners.
 `pa_capabilities` remains a separate broader **source-only target inventory**.
@@ -195,7 +198,38 @@ execution right or promise of later availability. They do not write ticket,
 intent, counter, audit or lock state, and the adapter will not initialize a missing
 ticket directory for a selection. Unsafe or oversized legacy metadata is rejected,
 not truncated into a misleading alignment preview. Full paged ticket/history
-readers and mutation-owner CAS remain separate P3/P4 work.
+readers remain separate P3 work.
+
+### Patch scalar planning from an inspected snapshot
+
+For this NEW v4 port only, `inspect` also returns `snapshotVersion`, the complete
+normalized data-owner CAS digest. Send `action=patch-planning` with a stable
+`requestId`, the same exact kind/project/ticket, `expectedVersion` set to inspected
+`version`, `expectedSnapshotVersion` set to inspected `snapshotVersion`, and a
+nonempty `patch` containing only the five scalar fields listed above. For example,
+a synthetic patch body is `{"summary":"Clarified requested scope","estimate":"S"}`;
+use the real inspected versions, not fixture hashes. Strict raw JSON rejects
+unknown/duplicate/authority fields and unsafe, oversized or invalid text before
+effects. Planning preserves text verbatim within these bounds; unlike creation,
+it does not apply lossy CLI creation sanitization.
+
+The service verifies the caller-bound version against the ORIGINAL intent
+snapshot inside the ticket mutex, including same-intent recovery. The adapter's
+read-only registry observation rejects ANY other current or historical deployment
+association, even if completed or later reassociated. Missing registry evidence
+also rejects. This deliberately conservative slice cannot settle a retained
+package/custody owner or promise general requirements planning; that reconciliation
+remains with the existing owners. Current registry observations are not a global
+reservation against future owner changes, and are repeated before effects.
+
+A successful result identifies the persisted ticket/project, unchanged primary,
+original applied version and whether the original intent was reused. It returns
+no hidden ticket body and makes no approval/lifecycle/execution claim. After reply
+loss, retain ORIGINAL ID, both versions and patch. Completed replay preserves later
+ordinary work without another audit; pending uncertainty is not bypassed with a
+fresh ID. If caller/project/ownership is no longer admitted, the dependent call
+stops and original records stay preserved. A proven stale request that published
+no intent requires reinspection and a new planning decision, not blind retry.
 
 Synthetic creation request for an already-bound new-profile session (not a real
 ticket or authorization; replace project/title with explicitly requested work):

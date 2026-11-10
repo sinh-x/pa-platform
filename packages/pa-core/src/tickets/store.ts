@@ -185,6 +185,14 @@ export class TicketStore {
       const reused = record !== undefined;
       if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.actor !== actor
         || record.expectedVersion !== expectedVersion || !isDeepStrictEqual(record.patch, patch))) throw new TicketPlanningIntentError("TICKET_PLAN_CONFLICT");
+      const assertSnapshot = (ticket: Ticket) => {
+        // A copy prevents a trusted validation callback from accidentally editing
+        // the historical record that the owner will subsequently publish/replay.
+        const result: unknown = hooks.assertSnapshot?.(JSON.parse(JSON.stringify(ticket)) as Ticket);
+        if (result instanceof Promise) void result.catch(() => {});
+        if (result !== undefined) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+      };
+      if (record) assertSnapshot(record.before);
       // A missing final audit is a pending owner effect, including when the
       // candidate ticket is already visible. Fresh IDs may not bypass it.
       const audits = readAudits().entries;
@@ -195,6 +203,7 @@ export class TicketStore {
         const before = this.get(id);
         assertPlanningScope(before, id);
         if (ticketPlanningVersion(before) !== expectedVersion) throw new TicketPlanningIntentError("TICKET_PLAN_STALE");
+        assertSnapshot(before);
         if (Object.entries(patch).every(([field, value]) => before[field as keyof TicketPlanningPatch] === value)) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
         const after = { ...before, ...patch, updatedAt: nowUtc() };
         record = { schemaVersion: "pa-ticket-planning-intent/v1", key, ...boundIdentity, payloadSha256, actor, expectedVersion,

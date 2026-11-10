@@ -70,7 +70,7 @@ test("default non-editor composition registers finite intake only for fresh auth
     }));
     const snapshot = ticketSnapshot(), capability = await call(capabilityPacket);
     assert.equal(capability.isError, false); assert.deepEqual(ticketSnapshot(), snapshot, "capability description creates no ticket, lock, intent or audit changes");
-    const grammar = JSON.parse(capability.content[0]!.text); assert.deepEqual(grammar.supportedActions, ["capabilities", "inspect", "reuse", "create"]);
+    const grammar = JSON.parse(capability.content[0]!.text); assert.deepEqual(grammar.supportedActions, ["capabilities", "inspect", "reuse", "create", "patch-planning"]);
     assert.equal(grammar.schemas.create.properties.project.type, "string"); assert.equal(grammar.availability.installed, "unproven"); assert.equal(grammar.authorityGranted, false);
     assert.ok(Buffer.byteLength(capability.content[0]!.text) <= 51200);
     assert.equal((await call({ request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities", requestId: "must-not-allocate" }) })).isError, true);
@@ -100,6 +100,28 @@ test("default non-editor composition registers finite intake only for fresh auth
     assert.equal(JSON.stringify(store.get(parent.id)), parentBefore); assert.equal(store.readAudit().filter(row => row.ticket_id === created.ticket.id).length, 1);
     assert.equal(getDeploymentEvents(id).filter(e => e.event === "ticket-associated").length, 0);
     assert.equal(readFileSync(join(usage, "tickets", `${created.ticket.id}.json`), "utf8").includes("Explicit source-fixture companion"), true);
+    const freshSelection = JSON.parse((await call({ request: JSON.stringify(inspection) })).content[0]!.text);
+    const planningPacket = { ...inspection, action: "patch-planning", requestId: "native-planning-1",
+      expectedVersion: freshSelection.version, expectedSnapshotVersion: freshSelection.snapshotVersion, patch: { summary: "Scoped scalar planning" } };
+    const planned = await call({ request: JSON.stringify(planningPacket) }); assert.equal(planned.isError, false, planned.content[0]!.text);
+    assert.equal(JSON.parse(planned.content[0]!.text).reusedIntent, false); assert.equal(store.get(created.ticket.id)!.summary, planningPacket.patch.summary);
+    const planningAudit = store.readAudit(); assert.equal(planningAudit.at(-1)!.actor, "requirements/analyze");
+    const plannedSnapshot = ticketSnapshot();
+    for (const patch of [{ status: "done" }, { assignee: "builder/team-manager" }, { tags: ["archived"] }, { doc_refs: [] }]) {
+      assert.equal((await call({ request: JSON.stringify({ ...planningPacket, patch }) })).isError, true);
+      assert.deepEqual(ticketSnapshot(), plannedSnapshot);
+    }
+    const stalePlanning = await call({ request: JSON.stringify({ ...planningPacket, requestId: "stale-competing-plan" }) });
+    assert.equal(stalePlanning.details.code, "TICKET_PLAN_STALE", "typed owner cause survives the native wrapper");
+    assert.deepEqual(ticketSnapshot(), plannedSnapshot);
+    const replayPlanning = await call({ request: JSON.stringify(planningPacket) }); assert.equal(replayPlanning.isError, false, replayPlanning.content[0]!.text);
+    assert.equal(JSON.parse(replayPlanning.content[0]!.text).reusedIntent, true); assert.deepEqual(store.readAudit(), planningAudit);
+    const historicalOwner = "d-282fff";
+    emitStartedEvent({ deploymentId: historicalOwner, team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo, ticketId: created.ticket.id, note: "requirements-document-confirmation/v3" });
+    const retainedSnapshot = ticketSnapshot();
+    const retainedPlanning = await call({ request: JSON.stringify(planningPacket) }); assert.equal(retainedPlanning.details.code, "TICKET_INTERACTION_OWNER");
+    assert.deepEqual(ticketSnapshot(), retainedSnapshot, "other retained owner blocks even replay before any ticket/intent/audit effects");
+    assert.equal(JSON.stringify(store.get(parent.id)), parentBefore);
     assert.equal((await call(packet, { ...context, cwd: "/other" })).isError, true);
     assert.equal((await call(packet, { ...context, mode: "rpc" })).isError, true);
     sessionId = "replacement-session"; assert.equal((await call(reusePacket)).isError, true); assert.equal((await call(packet)).isError, true); sessionId = "disposable-native-fixture-not-human";
@@ -113,6 +135,7 @@ test("default non-editor composition registers finite intake only for fresh auth
       const denied = await call(packet); assert.equal(denied.isError, true); assert.equal(denied.details.code, "TICKET_INTERACTION_SESSION");
       assert.equal((await call(capabilityPacket)).isError, true);
       assert.equal((await call(reusePacket)).details.code, "TICKET_INTERACTION_SESSION");
+      assert.equal((await call({ request: JSON.stringify(planningPacket) })).details.code, "TICKET_INTERACTION_SESSION");
       await retainedLifecycle.shutdown({}, context);
     }
     assert.equal(store.list().length, 2);

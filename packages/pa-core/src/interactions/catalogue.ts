@@ -203,6 +203,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   nativeEntry("ticket.intake.capabilities", "pa_ticket_intake", "capabilities", "read", `${pi}pi-extension/ticket-intake-tool.ts`, "opt-in requirements document interactions-v4 interface metadata"),
   ...["inspect", "reuse"].map(action => nativeEntry(`ticket.intake.${action}`, "pa_ticket_intake", action, "read", `${pi}pi-extension/ticket-intake-tool.ts`, "opt-in requirements document interactions-v4 read-only exact-ticket selection")),
   nativeEntry("ticket.intake.create", "pa_ticket_intake", "create", "write", `${pi}pi-extension/ticket-intake-tool.ts`, "opt-in requirements document interactions-v4 and ticket creation-intent owner"),
+  nativeEntry("ticket.intake.patch-planning", "pa_ticket_intake", "patch-planning", "write", `${pi}pi-extension/ticket-intake-tool.ts`, "opt-in requirements document interactions-v4 scalar planning, caller-bound CAS, no other current/historical deployment association"),
   // Native-only operations are not invented CLI subcommands. Exact profile and
   // journal semantics remain with these source handlers; no binding is inferred.
   ...["admit", "revise", "request-step", "reconcile"].map(action => nativeEntry(`workflow.native.${action}`, "pa_workflow", action, "write", `${pi}pi-extension/workflow.ts`, "selected workflow journal")),

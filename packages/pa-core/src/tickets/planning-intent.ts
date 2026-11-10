@@ -12,6 +12,9 @@ export type TicketPlanningPatch = Partial<Pick<Ticket, "title" | "summary" | "de
 export interface TicketPlanningHooks {
   /** Mandatory trusted adapter authentication/ownership check under the shared ticket mutex. */
   assertCurrent(): void;
+  /** Trusted adapter verifies the ORIGINAL complete snapshot, including on replay.
+   * This binds inspected caller data without treating a hash as authority. */
+  assertSnapshot?(ticket: Ticket): void;
   /** Optional digest of a future adapter's raw input before lossy sanitization; idempotency only. */
   requestBinding?: string;
   /** Trusted fault-test seam, never native request data. */

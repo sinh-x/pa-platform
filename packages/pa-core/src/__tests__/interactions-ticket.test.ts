@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { TicketStore } from "../tickets/store.js";
-import { createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
+import { patchTicketPlanningInteraction, createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
 
 const request = { schemaVersion: "pa-ticket-intake/v1", action: "create", requestId: "requested-companion-1", kind: "companion", project: "other", title: "Explicit companion", summary: "Requested work", description: "Source fixture, not customer data" };
 function fixture(run: (store: TicketStore, caller: TicketInteractionCaller, dir: string) => void): void {
@@ -24,7 +24,7 @@ test("intake interface discovery is strict bounded metadata, not an effect or in
   assert.equal(parseTicketIntakeOperation(raw).action, "capabilities");
   assert.equal(parseTicketIntakeOperation(JSON.stringify(request)).action, "create");
   const metadata = ticketIntakeInterface();
-  assert.deepEqual(metadata.supportedActions, ["capabilities", "inspect", "reuse", "create"]);
+  assert.deepEqual(metadata.supportedActions, ["capabilities", "inspect", "reuse", "create", "patch-planning"]);
   assert.equal(metadata.schemas.create, ticketIntakeRequestSchema);
   assert.equal(metadata.availability.installed, "unproven"); assert.equal(metadata.availability.admitted, "not-checked");
   assert.equal(metadata.authorityGranted, false);
@@ -91,6 +91,66 @@ test("selection rejects concurrent drift, oversized legacy metadata, duplicates 
     const error = new TicketInteractionError(code); assert.ok(error.message.length <= 2000);
     for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(error.message.split(`${label}:`).length - 1, 1);
   }
+}));
+
+test("native scalar planning binds inspected caller and owner snapshot, preserves arrays and replays original intent", () => fixture((store, caller) => {
+  const inspect = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "intake", project: "sample", ticket: caller.ticket! };
+  let ownerChecks = 0;
+  const owner = { store, authenticate: () => ({ ...caller }), assertPlanningOwner: () => { ownerChecks++; } };
+  const selection = readTicketInteraction(JSON.stringify(inspect), owner);
+  const packet = { ...inspect, action: "patch-planning", requestId: "planning-1", expectedVersion: selection.version,
+    expectedSnapshotVersion: selection.snapshotVersion, patch: { title: "Updated scoped plan", priority: "high" } };
+  const before = store.get(caller.ticket!)!, result = patchTicketPlanningInteraction(JSON.stringify(packet), owner);
+  assert.equal(result.action, "patch-planning"); assert.equal(result.reusedIntent, false); assert.equal(result.primaryTicket, caller.ticket);
+  assert.equal(result.ticket.id, caller.ticket); assert.match(result.appliedVersion, /^[a-f0-9]{64}$/); assert.ok(ownerChecks >= 2);
+  const after = store.get(caller.ticket!)!;
+  assert.equal(after.title, packet.patch.title); assert.deepEqual(after.tags, before.tags); assert.deepEqual(after.comments, before.comments);
+  assert.equal(store.readAudit().at(-1)!.actor, "requirements/analyze");
+  store.comment(caller.ticket!, "fixture", "Later ordinary work must survive completed replay");
+  const audit = store.readAudit();
+  assert.equal(patchTicketPlanningInteraction(JSON.stringify(packet), owner).reusedIntent, true);
+  assert.deepEqual(store.readAudit(), audit); assert.equal(store.get(caller.ticket!)!.comments.length, 1);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify({ ...packet, patch: { title: "Changed request" } }), owner), /TICKET_PLAN_CONFLICT/);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify({ ...packet, requestId: "stale-new-id" }), owner), /TICKET_PLAN_STALE/);
+}));
+
+test("native planning response loss reconciles original caller-bound versions at each owner boundary", () => {
+  for (const stop of ["intent", "ticket", "audit"] as const) fixture((store, caller) => {
+    const inspect = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "intake", project: "sample", ticket: caller.ticket! };
+    const owner = { store, authenticate: () => ({ ...caller }), assertPlanningOwner: () => {} };
+    const selection = readTicketInteraction(JSON.stringify(inspect), owner);
+    const packet = { ...inspect, action: "patch-planning", requestId: "recover-native", expectedVersion: selection.version,
+      expectedSnapshotVersion: selection.snapshotVersion, patch: { summary: "One original planning effect" } };
+    const original = store.patchPlanningWithIntent.bind(store);
+    store.patchPlanningWithIntent = (id, version, patch, actor, identity, hooks) => original(id, version, patch, actor, identity,
+      { ...hooks, afterPersist(stage) { if (stage === stop) throw Error("source fixture response loss"); } });
+    assert.throws(() => patchTicketPlanningInteraction(JSON.stringify(packet), owner), /source fixture response loss/);
+    store.patchPlanningWithIntent = original;
+    assert.throws(() => patchTicketPlanningInteraction(JSON.stringify(packet), { ...owner, authenticate: () => ({ ...caller, identitySha256: "d".repeat(64) }) }), /TICKET_INTERACTION_STALE/);
+    const result = patchTicketPlanningInteraction(JSON.stringify(packet), owner);
+    assert.equal(result.reusedIntent, true); assert.equal(store.get(caller.ticket!)!.summary, packet.patch.summary);
+    assert.equal(store.readAudit().filter(row => row.action === "updated").length, 1);
+  });
+});
+
+test("planning rejects forged fields, caller/version/project and retained owners before intent or ticket effects", () => fixture((store, caller, dir) => {
+  const inspect = { schemaVersion: "pa-ticket-intake/v1", action: "inspect", kind: "intake", project: "sample", ticket: caller.ticket! };
+  const selection = readTicketInteraction(JSON.stringify(inspect), { store, authenticate: () => caller });
+  const packet = { ...inspect, action: "patch-planning", requestId: "invalid-plan", expectedVersion: selection.version,
+    expectedSnapshotVersion: selection.snapshotVersion, patch: { summary: "New planning content" } };
+  const owner = { store, authenticate: () => ({ ...caller }), assertPlanningOwner: () => {} };
+  const before = readFileSync(join(dir, `${caller.ticket}.json`), "utf8"), audit = store.readAudit();
+  for (const extra of [{ actor: "sinh" }, { status: "done" }, { approval: true }, { patch: { tags: [] } }, { patch: {} }, { patch: { title: "é".repeat(513) } }])
+    assert.throws(() => patchTicketPlanningInteraction(JSON.stringify({ ...packet, ...extra }), owner), /TICKET_/);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify(packet).replace('"summary":"New planning content"', '"summary":"New planning content","summary":"Other"'), owner), /TICKET_INTERACTION_INPUT/);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify({ ...packet, expectedVersion: "b".repeat(64) }), owner), /TICKET_INTERACTION_STALE/);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify(packet), { ...owner, authenticate: () => ({ ...caller, identitySha256: "b".repeat(64) }) }), /TICKET_INTERACTION_STALE/);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify({ ...packet, project: "other" }), owner), /TICKET_INTERACTION_PROJECT/);
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify(packet), { ...owner, assertPlanningOwner: () => { throw new TicketInteractionError("TICKET_INTERACTION_OWNER"); } }), /TICKET_INTERACTION_OWNER/);
+  assert.equal(readFileSync(join(dir, `${caller.ticket}.json`), "utf8"), before); assert.deepEqual(store.readAudit(), audit);
+  let checks = 0;
+  assert.throws(() => patchTicketPlanningInteraction(JSON.stringify(packet), { ...owner, authenticate: () => ++checks === 1 ? caller : { ...caller, identitySha256: "c".repeat(64) } }), /TICKET_INTERACTION_SESSION/);
+  assert.equal(readFileSync(join(dir, `${caller.ticket}.json`), "utf8"), before);
 }));
 
 test("strict raw intake contract shares published fields and rejects authority, duplicates, Unicode and oversized inputs", () => {
@@ -172,7 +232,7 @@ test("ticketless same-project intake is distinct from companion and sensitive in
     assert.throws(() => createTicketInteraction(JSON.stringify({ ...raw, requestId: "sensitive", description: sensitive }), { store, authenticate: () => ticketless }), (error: unknown) => error instanceof TicketInteractionError && error.code === "TICKET_INTERACTION_SENSITIVE" && !error.message.includes(sensitive));
   }
   assert.equal(store.list().length, 2);
-  for (const code of ["TICKET_INTERACTION_INPUT", "TICKET_INTERACTION_SESSION", "TICKET_INTERACTION_PROJECT", "TICKET_INTERACTION_SENSITIVE", "TICKET_INTERACTION_UNCERTAIN"] as const) {
+  for (const code of ["TICKET_INTERACTION_INPUT", "TICKET_INTERACTION_SESSION", "TICKET_INTERACTION_PROJECT", "TICKET_INTERACTION_SENSITIVE", "TICKET_INTERACTION_UNCERTAIN", "TICKET_INTERACTION_OWNER"] as const) {
     const error = new TicketInteractionError(code); assert.ok(error.message.length <= 2000);
     for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(error.message.split(`${label}:`).length - 1, 1);
     assert.match(error.message, /Impact:/); assert.match(error.message, /Actor:/); assert.match(error.message, /New approval:/); assert.match(error.message, /Prerequisite:/);
