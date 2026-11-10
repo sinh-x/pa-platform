@@ -158,7 +158,13 @@ transport-reuse or installed-parity claim is made.
   omitted; common login/challenge markers and unsupported/unfinished extraction
   reject. It is deliberately conservative, not universal paywall/injection
   detection or a full HTML DOM. Non-UTF-8, PDF, binary and script-only resources
-  are unsupported; access controls are never bypassed.
+  are unsupported; access controls are never bypassed. Suppression does not end
+  at a non-void HTML element's trailing slash or a whitespace-obfuscated pseudo
+  end tag. Nested active/raw-text elements retain their suppressed parent, so an
+  apparent parent end tag in script/style/fallback text does not end that parent’s
+  suppression.
+  Ambiguous foreign self-closing markup and unclosed suppressed containers may
+  reject conservatively; this remains a bounded extractor, not a browser parser.
 - `reader.ts`: up to five safe redirects, revalidating URL/DNS at every hop;
   4096-byte raw **and encoded** URL ceilings, 30-second deadline checkpoints and
   cancellation across DNS/TLS/body/extraction, independent 2-MiB compressed/decoded
@@ -258,3 +264,54 @@ ordinary outcome/coverage prose. Before: URL selection stopped at the unavailabl
 launch gate. After (source fixtures only): a selected native reader returns actual
 fixture text/provenance or a typed bounded blocker; the live launch gate remains
 unchanged. Structural message tests are not independent human readability review.
+
+### Extraction hardening check — d-34b8ca
+
+Local continuation over `3b3aa4aecbc7fac5b42fe7c660fafc7fc945cbf4`;
+implementation and regression tests committed as `b3fa541`:
+`extract.ts` and `public-web-reader.test.ts` now cover ignored non-void trailing
+slashes, nested hidden containers, whitespace-obfuscated end tags, nested active/
+raw-text boundaries, unclosed suppression and ordinary void-element controls.
+Before: `<script/>suppressed payload</script><p>Visible article.</p>` returned both
+payload and article. After: only `Visible article.` is returned. An apparent
+`</div>` inside a hidden container's script likewise no longer ends suppression.
+Both defects were reproduced by failing tests before repair. No diagnostic/help
+wording, result schema, admission, network transport or launch gate changed.
+
+Actual local checks (not installed qualification):
+
+- `corepack pnpm --filter @pa-platform/pa-core exec tsx --test --test-concurrency=1`
+  with `src/__tests__/{public-web-reader,public-web-transport,mode-capabilities}.test.ts`:
+  20 passed, zero failures/skips, with `NO_COLOR=1`.
+- `corepack pnpm --filter @pa-platform/pi-pa exec tsx --test --test-concurrency=1`
+  with `src/__tests__/{mode-capability-session,document-session,document-native,document-workspace-dispatch,document-confirmation-native,document-confirmation-entry,interactions-discovery-native,interactions-ticket-native,pi-extension-composition}.test.ts`:
+  36 passed, zero failures/skips, with `NO_COLOR=1`, after the workspace build.
+- `corepack pnpm build`, `corepack pnpm typecheck`, `git diff --check`: passed.
+- `NO_COLOR=1 corepack pnpm test`: incomplete at the 600-second command limit.
+  Completed root tests: 42 passed; core: 1924 passed/14 skipped; OpenCode:
+  106 passed/1 skipped; Pi script tests: 11 passed. No reported failure before
+  interruption; this is **not** a passing full-suite result. Local temporary log:
+  `/tmp/pap289-d-34b8ca-test.log`.
+- Separate `NO_COLOR=1 corepack pnpm --filter @pa-platform/pi-pa test`:
+  incomplete at 360 seconds, no reported failure before interruption; local
+  temporary log `/tmp/pap289-d-34b8ca-pi-test.log`.
+- `NO_COLOR=1 corepack pnpm --filter @pa-platform/runtime-host test`:
+  one passed, zero failures/skips.
+
+No real URL request, installation, PAPC edit, activation, independent review,
+hosted CI or human UAT/readability observation was performed. Public-egress/
+retention approval and matched PAPC qualification remain outstanding. The eventual
+updated-develop rebase and ticket-local build label remain due after implementation
+phases; the upstream `0.1.160` manifests are unchanged by this hardening.
+
+Published r006 phase disposition at this checkpoint (not acceptance):
+
+| Phase | Status |
+| --- | --- |
+| P1 Contract | Runtime candidate and corrected v4 baseline supplied; PAPC/native-owner agreement remains outstanding. |
+| P2 Core | Runtime policy/parser/registry/binding/enforcement source implemented and source-tested. |
+| P3 Reader/composition | Runtime reader/native composition implemented but staged; PAPC policy/instructions/privacy composition and installed same-runtime toggle remain outstanding. |
+| P4 Qualification | Incomplete: independent review, complete validation/CI, exact installed foreground journey, human readability/UAT and adoption remain unproven. |
+
+Thus the runtime source work is implemented, but **not all ticket phases are complete**
+and the public reader is not enabled.
