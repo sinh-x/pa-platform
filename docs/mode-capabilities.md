@@ -308,8 +308,10 @@ changes need owning review; this decision does not authorize them.
 
 Do not patch `review-runtime-provenance.json` or substitute the currently installed
 `0.1.160-pap289.1` build: its `unversioned-dirty-source` metadata remains historical.
-This source change leaves that readable label unchanged. Compare exact commits,
-not labels. After the runtime owner commits the reviewed candidate, use an explicit
+At the operator's follow-up request, the four shared manifests now select
+`0.1.160-pap289.2` for this reader-enabled worktree reference. `runtime-host` keeps
+its independent version. This does not change the installed `.1` trial. Compare
+exact commits, not labels. After the runtime owner commits the reviewed candidate, use an explicit
 full `PAP289_SHA` and physical `PAP289_ROOT` for that clean checkout. Package-only
 recipe (not executed here), using the existing release/validation-lane mechanism:
 
@@ -395,7 +397,14 @@ the new pre-spawn check narrows admission. Catalogue contract/negative/inventory
 checks above passed; the hash is change detection, not independent review.
 Before/after blocker paths are described above. Plain structural message assertions
 passed; independent human readability review and installed behavior were not observed.
-The exact Nix build recipe remains unexecuted, as do installation and live HTTP.
+After implementation commit `303106e62abbdf1fe9d5e035a42df7328c817bd5`, a
+package-only attempt of the exact-Git recipe with a 240-second timeout returned
+exit 124, with no output store path published. Nix began the source, provenance and
+package derivations, then reported interruption. Logs:
+`/tmp/pap289-d-b08f19-package-build.log` and the empty
+`/tmp/pap289-d-b08f19-package-output.txt`. This is an **incomplete build**, not
+verified artifact provenance. It preceded the `.2` label update; no `.2` Nix artifact
+is claimed. Installation and live HTTP remain unperformed.
 
 ## Historical source checkpoints
 
