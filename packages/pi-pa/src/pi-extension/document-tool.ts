@@ -6,6 +6,7 @@ import { mutatePiDocument } from "../document-native.js";
 import { runDocumentConfirmationCommand } from "./document-confirmation-command.js";
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { createWorkspaceTool } from "./workspace-tool.js";
+import { createPublicWebTool } from "./web-read-tool.js";
 import { confirmationDocumentCaller, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
 import { MODE_CAPABILITY_SESSION, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
 import type { PiWorkflowContext } from "../workflow-native.js";
@@ -85,7 +86,8 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { if (policyDeploymentId) pi.setActiveTools?.([]); return; }
     const confirmationProfile = confirmationDocumentCaller(caller);
-    const tools = [createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile), ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : [])];
+    const tools = [createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile), ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
+      ...(caller.capabilities && caller.sessionId && capabilityToolSelected(caller.capabilities.policy, "pa_web_read") ? [createPublicWebTool(caller.deploymentId, caller.sessionId, lifecycle)] : [])];
     if (confirmationProfile) pi.registerCommand?.("pa-approve", { description: "Request/reconcile one native package decision. Arguments: strict confirm or confirm-revoke JSON (same pa_document grammar).", handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext)) : runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext) });
     for (const tool of tools) {
       if (caller.capabilities && !capabilityToolSelected(caller.capabilities.policy, tool.name)) continue;

@@ -9,6 +9,7 @@ import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, MODE_CAPABILI
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { authenticatePiDocumentCaller, confirmationDocumentCaller, workspaceDocumentCaller } from "../document-session.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
+import { createPublicWebTool } from "../pi-extension/web-read-tool.js";
 import { registerPiSessionModules, createPiSessionLifecycle, type PiToolDefinition, type PiRuntime } from "../pi-extension/index.js";
 
 test("native immutable policy drives exposure and actual custom/builtin/delegated boundaries; reload/env do not widen", async () => {
@@ -71,5 +72,27 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     const baseline = register(); assert.equal(baseline.active().length, 10);
     launch("d-289004", [], "{}"); assert.throws(() => authenticatePiDocumentCaller(context));
     assert.equal(effects, 1);
+    launch("d-289005", ["web.public-read"]);
+    const selectedReader = register(); assert.deepEqual(selectedReader.active(), ["pa_web_read"]);
+    assert.match(selectedReader.tools.get("pa_web_read")!.description, /explicitly user-supplied/);
+    const malformed = await selectedReader.tools.get("pa_web_read")!.execute("input", { url: "https://www.public-site.com/", headers: { Authorization: "synthetic" } }, undefined, undefined, context);
+    assert.equal(malformed.isError, true); assert.equal(JSON.parse(malformed.content[0].text).code, "WEB_INPUT");
+    let fetches = 0;
+    const reader = createPublicWebTool("d-289005", context.sessionManager.getSessionId(), undefined, {
+      patterns: () => ({ configPath: "synthetic", patterns: [] }), resolve: async () => ["93.184.216.34"],
+      fetch: async () => { fetches++; return { status: 200, headers: { "content-type": "text/plain" }, body: Buffer.from("The synthetic value is 42."), compressedBytes: 26 }; },
+    });
+    const page = await reader.execute("page-1", { url: "https://www.public-site.com/" }, undefined, undefined, context);
+    assert.equal(page.isError, undefined); assert.match(page.content[0].text, /synthetic value is 42/); assert.equal(fetches, 1);
+    assert.equal(JSON.parse(page.content[0].text).evidence, "pi-tool-result:d-289005/page-1");
+    const switched = { ...context, sessionManager: { getSessionId: () => "different-session" } };
+    assert.equal((await reader.execute("page-2", { url: "https://www.public-site.com/" }, undefined, undefined, switched)).isError, true);
+    // Same runtime/config omission: neither registration/exposure nor direct invocation grants the reader.
+    launch("d-289006", []);
+    const withoutReader = register(); assert.deepEqual(withoutReader.active(), []);
+    assert.equal((await reader.execute("page-3", { url: "https://www.public-site.com/" }, undefined, undefined, context)).isError, true);
+    const omitted = createPublicWebTool("d-289006", context.sessionManager.getSessionId());
+    const denial = await omitted.execute("page-4", { url: "https://www.public-site.com/" }, undefined, undefined, context);
+    assert.equal(JSON.parse(denial.content[0].text).code, "CAPABILITY_OMITTED"); assert.equal(fetches, 1);
   } finally { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); }
 });
