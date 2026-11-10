@@ -7,7 +7,7 @@ import { getValidTeamNames, isCanonicalTicketId, validateAssignee } from "../tic
 import type { TicketStore } from "../tickets/store.js";
 import type { CreateTicketInput, Estimate, TicketPriority, TicketType } from "../tickets/types.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
-import { MAX_INTERACTION_REQUEST_BYTES } from "./contract.js";
+import { MAX_INTERACTION_REQUEST_BYTES, SOURCE_ONLY_AVAILABILITY } from "./contract.js";
 
 /** Opt-in NEW native start only. This token does not upgrade retained document profiles. */
 export const TICKET_INTERACTIONS_PROFILE = "requirements-document-interactions/v4" as const;
@@ -60,13 +60,16 @@ export interface TicketIntakeRequest {
   summary?: string; description?: string; type?: TicketType; priority?: TicketPriority; estimate?: Estimate; assignee?: string;
 }
 /** The schema is the field grammar. UTF-8 byte bounds are intentionally stricter than JSON Schema character bounds. */
-export function parseTicketIntakeRequest(raw: string | Uint8Array): TicketIntakeRequest {
+function readTicketIntakeObject(raw: string | Uint8Array): Record<string, unknown> {
   if ((typeof raw !== "string" && !(raw instanceof Uint8Array)) || (typeof raw === "string" ? Buffer.byteLength(raw) : raw.byteLength) > MAX_INTERACTION_REQUEST_BYTES) return fail("TICKET_INTERACTION_INPUT");
   if (typeof raw === "string" && /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(raw)) return fail("TICKET_INTERACTION_INPUT");
   let value: unknown;
   try { value = parseReviewEvidenceJson(typeof raw === "string" ? Buffer.from(raw) : raw, "ticket-intake"); } catch { return fail("TICKET_INTERACTION_INPUT"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail("TICKET_INTERACTION_INPUT");
-  const row = value as Record<string, unknown>;
+  return value as Record<string, unknown>;
+}
+export function parseTicketIntakeRequest(raw: string | Uint8Array): TicketIntakeRequest {
+  const row = readTicketIntakeObject(raw);
   type Field = { const?: string; enum?: readonly string[]; pattern?: string; maxLength?: number; minLength?: number };
   const fields: Readonly<Record<string, Field>> = ticketIntakeRequestSchema.properties;
   if (ticketIntakeRequestSchema.required.some(key => !Object.hasOwn(row, key)) || Object.entries(row).some(([key, value]) => {
@@ -77,6 +80,38 @@ export function parseTicketIntakeRequest(raw: string | Uint8Array): TicketIntake
       || (field.pattern !== undefined && !new RegExp(field.pattern).test(value));
   }) || (row.kind === "intake" && ["type", "priority", "estimate", "assignee"].some(key => !Object.hasOwn(row, key)))) return fail("TICKET_INTERACTION_INPUT");
   return { ...row } as unknown as TicketIntakeRequest;
+}
+export const ticketIntakeCapabilitiesRequestSchema = Object.freeze({
+  type: "object", additionalProperties: false, required: Object.freeze(["schemaVersion", "action"]),
+  properties: Object.freeze({ schemaVersion: Object.freeze({ const: TICKET_INTAKE_VERSION }), action: Object.freeze({ const: "capabilities" }) }),
+});
+export function parseTicketIntakeOperation(raw: string | Uint8Array): TicketIntakeRequest | { schemaVersion: typeof TICKET_INTAKE_VERSION; action: "capabilities" } {
+  const row = readTicketIntakeObject(raw);
+  if (row.action !== "capabilities") return parseTicketIntakeRequest(raw);
+  if (Object.keys(row).length !== 2 || row.schemaVersion !== TICKET_INTAKE_VERSION) return fail("TICKET_INTERACTION_INPUT");
+  return { schemaVersion: TICKET_INTAKE_VERSION, action: "capabilities" };
+}
+/** Pure metadata: no store construction, probing, configuration/registry access,
+ * effects, or installed/permission claims. The native adapter separately checks
+ * its current caller before returning this interface description. */
+export function ticketIntakeInterface() {
+  return Object.freeze({
+    schemaVersion: "pa-ticket-intake-capabilities/v1", scope: "intake-interface-only",
+    supportedActions: Object.freeze(["capabilities", "create"] as const),
+    requiredNativeProfile: TICKET_INTERACTIONS_PROFILE,
+    schemas: Object.freeze({ capabilities: ticketIntakeCapabilitiesRequestSchema, create: ticketIntakeRequestSchema }),
+    limits: Object.freeze({ requestUtf8Bytes: MAX_INTERACTION_REQUEST_BYTES, resultUtf8Bytes: 51200, resultLines: 2000 }),
+    creation: Object.freeze({ status: "idea", derivedActor: "requirements/analyze", primaryAssociation: "unchanged", project: "exact-registered-key-only",
+      intake: "same-project; explicit type, priority, estimate and assignee required",
+      companion: "explicit requested destination and valid bound primary required; defaults feature/medium/M/sinh",
+      recovery: "Original request ID and content only; changed payload conflicts. An existing intent may still finish interrupted steps.",
+      result: "pa-ticket-intake-result/v1: action, requestId, primaryTicket, ticket{id,project}, reusedIntent, sanitizedFields",
+    }),
+    availability: SOURCE_ONLY_AVAILABILITY, authorityGranted: false,
+    limitations: Object.freeze(["This grammar description is not creation admission or installed qualification.",
+      "Aligned reuse-selection, planning/lifecycle/Git/resource operations and other-role ports remain unimplemented.",
+      "No shell, root/provider/model reassociation or external-file access follows from this port."]),
+  });
 }
 export interface TicketIntakeResult {
   schemaVersion: "pa-ticket-intake-result/v1"; action: "create"; requestId: string; primaryTicket: string | null;

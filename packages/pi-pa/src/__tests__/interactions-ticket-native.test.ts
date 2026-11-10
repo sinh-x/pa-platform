@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, getDeploymentEvents, TicketStore, parseTeamYamlContent, generatePrimer, type RuntimeAdapter } from "@pa-platform/pa-core";
@@ -63,6 +63,18 @@ test("default non-editor composition registers finite intake only for fresh auth
     assert.equal(host.tools.has("bash"), false); assert.equal(host.tools.has("pa_operation"), false);
     const call = async (input: Record<string, unknown>, ctx = context) => tool.execute("source-fixture-call", input, undefined, undefined, ctx);
     const packet = { request: JSON.stringify(request) };
+    const capabilityPacket = { request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities" }) };
+    const ticketSnapshot = () => Object.fromEntries(readdirSync(join(usage, "tickets")).sort().map(name => {
+      const path = join(usage, "tickets", name), stat = statSync(path);
+      return [name, { bytes: readFileSync(path).toString("base64"), mode: stat.mode, mtimeMs: stat.mtimeMs }];
+    }));
+    const snapshot = ticketSnapshot(), capability = await call(capabilityPacket);
+    assert.equal(capability.isError, false); assert.deepEqual(ticketSnapshot(), snapshot, "capability description creates no ticket, lock, intent or audit changes");
+    const grammar = JSON.parse(capability.content[0]!.text); assert.deepEqual(grammar.supportedActions, ["capabilities", "create"]);
+    assert.equal(grammar.schemas.create.properties.project.type, "string"); assert.equal(grammar.availability.installed, "unproven"); assert.equal(grammar.authorityGranted, false);
+    assert.ok(Buffer.byteLength(capability.content[0]!.text) <= 51200);
+    assert.equal((await call({ request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities", requestId: "must-not-allocate" }) })).isError, true);
+    assert.deepEqual(ticketSnapshot(), snapshot);
     const gates = await host.dispatch("tool_call", { toolName: tool.name, input: packet }, context);
     assert.equal(gates.some((result: any) => result?.block === true), false);
     const first = await call(packet); assert.equal(first.isError, false, first.content[0]!.text);
@@ -84,6 +96,7 @@ test("default non-editor composition registers finite intake only for fresh auth
       registerPiSessionModules(retained.runtime, retainedLifecycle, createPiPaModules([])); await retained.dispatch("session_start", {}, context);
       assert.equal(retained.tools.has("pa_ticket_intake"), false); assert.equal(retained.tools.has("pa_capabilities"), false);
       const denied = await call(packet); assert.equal(denied.isError, true); assert.equal(denied.details.code, "TICKET_INTERACTION_SESSION");
+      assert.equal((await call(capabilityPacket)).isError, true);
       await retainedLifecycle.shutdown({}, context);
     }
     assert.equal(store.list().length, 2);

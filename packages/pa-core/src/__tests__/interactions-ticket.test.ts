@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { TicketStore } from "../tickets/store.js";
-import { createTicketInteraction, parseTicketIntakeRequest, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
+import { createTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
 
 const request = { schemaVersion: "pa-ticket-intake/v1", action: "create", requestId: "requested-companion-1", kind: "companion", project: "other", title: "Explicit companion", summary: "Requested work", description: "Source fixture, not customer data" };
 function fixture(run: (store: TicketStore, caller: TicketInteractionCaller, dir: string) => void): void {
@@ -18,6 +18,21 @@ function fixture(run: (store: TicketStore, caller: TicketInteractionCaller, dir:
   const caller: TicketInteractionCaller = { profile: TICKET_INTERACTIONS_PROFILE, deploymentId: "d-abcdef", repoKey: "sample", ticket: parent.id, identitySha256: "a".repeat(64) };
   try { run(store, caller, dir); } finally { process.env = env; rmSync(root, { recursive: true, force: true }); }
 }
+
+test("intake interface discovery is strict bounded metadata, not an effect or installed/admitted claim", () => {
+  const raw = JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities" });
+  assert.equal(parseTicketIntakeOperation(raw).action, "capabilities");
+  assert.equal(parseTicketIntakeOperation(JSON.stringify(request)).action, "create");
+  const metadata = ticketIntakeInterface();
+  assert.deepEqual(metadata.supportedActions, ["capabilities", "create"]);
+  assert.equal(metadata.schemas.create, ticketIntakeRequestSchema);
+  assert.equal(metadata.availability.installed, "unproven"); assert.equal(metadata.availability.admitted, "not-checked");
+  assert.equal(metadata.authorityGranted, false);
+  assert.ok(Buffer.byteLength(JSON.stringify(metadata)) <= 51200);
+  for (const extra of [{ actor: "sinh" }, { project: "other" }, { requestId: "new-effect" }, { command: "anything" }, { approval: true }])
+    assert.throws(() => parseTicketIntakeOperation(JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities", ...extra })), TicketInteractionError);
+  assert.throws(() => parseTicketIntakeOperation('{"schemaVersion":"pa-ticket-intake/v1","action":"capabilities","action":"create"}'), TicketInteractionError);
+});
 
 test("strict raw intake contract shares published fields and rejects authority, duplicates, Unicode and oversized inputs", () => {
   assert.equal(ticketIntakeRequestSchema.additionalProperties, false);

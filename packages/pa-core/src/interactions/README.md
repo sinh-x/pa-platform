@@ -121,8 +121,20 @@ Cross-project metadata does not access that project's files or alter the primary
 association/root/provider/model. Destination must be an exact registered project
 key with an unambiguous prefix, not a path or fuzzy alias.
 
-Synthetic request for an already-bound new-profile session (not a real ticket or
-authorization; replace project/title with the actual explicitly requested work):
+In the new-profile session, first describe the actual finite port with:
+
+```json
+{"request":"{\"schemaVersion\":\"pa-ticket-intake/v1\",\"action\":\"capabilities\"}"}
+```
+
+This strict read returns the creation schema, defaults, limits and only implemented
+actions (`capabilities`, `create`), without constructing TicketStore or creating an
+intent/lock/ticket/audit. It is interface metadata, not installed provenance,
+creation admission or a grant. Each creation still rechecks all effect owners.
+`pa_capabilities` remains a separate broader **source-only target inventory**.
+
+Synthetic creation request for an already-bound new-profile session (not a real
+ticket or authorization; replace project/title with explicitly requested work):
 
 ```json
 {"request":"{\"schemaVersion\":\"pa-ticket-intake/v1\",\"action\":\"create\",\"requestId\":\"requested-companion-1\",\"kind\":\"companion\",\"project\":\"other\",\"title\":\"Requested companion\"}"}
