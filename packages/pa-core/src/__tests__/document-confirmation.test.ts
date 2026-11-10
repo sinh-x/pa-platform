@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, symlinkSync, linkSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { confirmationRepresentation } from "../documents/confirmation-record.js";
 import { digest } from "../workflows/contracts.js";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
 import type { DocumentConfirmationScope } from "../registry/documents.js";
@@ -100,6 +101,45 @@ test("append-only native revocation preserves original JSON and blocks dependent
     assert.equal((await f.call(request)).ok, true); assert.equal(f.calls(), 2);
     assert.deepEqual(readFileSync(join(f.root, approved.approval.path)), original);
     assert.equal((await f.call({ action: "publish", sha256: f.sha256, expectedRevision: f.revision(), decisionId: approved.decisionId })).code, "DOCUMENT_AUTHORITY");
+  } finally { f.close(); }
+});
+for (const boundary of ["partial-pending", "published-hardlink"] as const) test(`exact native ${boundary} file recovery completes bytes without another decision`, async () => {
+  const f = await fixture();
+  try {
+    const expected = f.revision(), append = f.journal.append.bind(f.journal);
+    f.journal.append = (...args) => { const event = append(...args); if (event.data.kind === "confirmation") throw Error("synthetic interruption after native registry commit"); return event; };
+    assert.equal((await f.confirm("content", expected)).ok, false); f.journal.append = append;
+    const event = f.journal.events("example", "EX-1").at(-1)! as any;
+    const bytes = confirmationRepresentation(f.subject, event), folder = join(f.root, `agent-teams/requirements/artifacts/approvals/EX-1`), name = `${event.data.decisionId}.json`;
+    mkdirSync(folder, { recursive: true }); const pending = join(folder, `.${name}.pending`), target = join(folder, name);
+    writeFileSync(pending, boundary === "partial-pending" ? bytes.subarray(0, 97) : bytes, { mode: 0o600 });
+    if (boundary === "published-hardlink") linkSync(pending, target);
+    const recovered = await f.confirm("content", expected); assert.equal(recovered.ok, true, JSON.stringify(recovered)); assert.equal(f.calls(), 1);
+    assert.deepEqual(readFileSync(target), bytes); assert.equal(statSync(target).nlink, 1); assert.equal(f.revision(), 2);
+  } finally { f.close(); }
+});
+test("caller and concurrent journal drift reject native confirmation persistence, while superseding outcomes revoke old effects", async () => {
+  const f = await fixture();
+  try {
+    const native = f.host.confirm!, authenticate = f.host.authenticate;
+    f.host.confirm = async r => { const result = await native(r); f.host.authenticate = () => ({ ...authenticate(), identitySha256: "c".repeat(64) }); return result; };
+    assert.equal((await f.confirm()).code, "DOCUMENT_STALE"); assert.equal(f.revision(), 1);
+    f.host.authenticate = authenticate;
+    f.host.confirm = async r => { const result = await native(r); f.journal.append("example", "EX-1", f.revision(), { kind: "frozen", subjectSha256: f.sha256 }); return result; };
+    assert.equal((await f.confirm()).code, "DOCUMENT_CONFLICT"); assert.equal(f.revision(), 2);
+    f.host.confirm = native; const first = (await f.confirm()).result as any;
+    f.host.confirm = async r => ({ ...await native(r), outcome: "rejected" }); assert.equal((await f.confirm()).ok, true);
+    assert.equal((await f.call({ action: "publish", sha256: f.sha256, decisionId: first.decisionId, expectedRevision: f.revision() })).code, "DOCUMENT_AUTHORITY");
+  } finally { f.close(); }
+});
+test("v3 capabilities distinguish native UI absence and retained-action misuse from old attestation gating", async () => {
+  const f = await fixture();
+  try {
+    const native = f.host.confirm; delete f.host.confirm;
+    assert.equal(((await f.call({ action: "capabilities" })).result as any).capture, "unavailable-native-tui-required");
+    const absent = await f.confirm(); assert.equal(absent.code, "DOCUMENT_UNAVAILABLE"); assert.ok(String(absent.guidance).includes("custom-UI capability")); assert.equal(f.calls(), 0);
+    f.host.confirm = native;
+    const legacy = await f.call({ action: "capture", sha256: f.sha256, expectedRevision: f.revision() }); assert.ok(String(legacy.guidance).includes("retained-interface")); assert.equal(f.calls(), 0);
   } finally { f.close(); }
 });
 test("v1 and v2 never acquire new native confirmation from tool fields or a current config claim", async () => {

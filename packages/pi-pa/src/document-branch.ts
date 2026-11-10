@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
+import { join } from "node:path";
 import {
   captureRepositoryGitSnapshot, LOCAL_GIT_CONTROL_FLAGS, observeReadonlyRepositoryAuthority,
   inspectReadonlyRepositoryMutationLease, requireTicketLinkedBranch, resolveRepoExecutionPath,
-  type TicketStore,
+  getTicketsDir, readArtifactFile, parseReviewEvidenceJson, workflowDigest, type TicketStore,
 } from "@pa-platform/pa-core";
 import { deriveTreehouseLeaseHolder, TreehouseClient } from "./treehouse.js";
 import type { PiDocumentCaller } from "./document-session.js";
@@ -21,7 +22,7 @@ function branchGuidance(code: BranchCode): string {
   return `Branch inspection did not establish selection readiness.\nCondition: The document handoff has finding ${code}.\nSource: Existing ticket/repository/worktree owners.\nReason: ${reasons[code]}\nCorrection: Ask the ticket/launcher or resource owner to inspect and reconcile this exact existing intent. Impact: read-only for inspection. Actor: agent or operator. New approval: not required for unchanged-intent inspection; changed intent or preparation effects need their owning authorization. Prerequisite: preserve current links, repository and lease evidence.\nResume Action: Reobserve after the proven cause changes. Actual preparation/selection/launch remains separate and rechecks current ownership, capacity and execution boundaries.`;
 }
 /** Thin read-only composition of the same owners used at selection/launch.
- * No mutation mutex, branch operation, ticket refresh, lease acquisition or spawn. */
+ * No mutation mutex, branch operation, ticket refresh, lease acquisition or builder spawn. */
 export function inspectPiDocumentBranch(caller: PiDocumentCaller, ticketId: string, tickets: TicketStore, treehouse = new TreehouseClient()): Record<string, unknown> {
   const result = (code: BranchCode, facts: Record<string, unknown> = {}) => ({ schemaVersion: "pa-document-branch-observation/v1", ticket: ticketId, code,
     state: code === "BRANCH_VERIFIED" ? "branch-verified" : code === "PREPARATION_NEEDED" ? "preparation-needed" : "not-verified",
@@ -38,6 +39,19 @@ export function inspectPiDocumentBranch(caller: PiDocumentCaller, ticketId: stri
     if (canonical.repoKey !== caller.repoKey || canonical.repoRoot !== caller.repoRoot || canonical.worktreeRoot !== caller.repoRoot) return result("REPOSITORY_MISMATCH");
   } catch { return result("REPOSITORY_MISMATCH"); }
   try { linked = requireTicketLinkedBranch(ticket, caller.repoKey); } catch { return result("INVALID_LINK"); }
+  // Do not let TicketStore's legacy compatibility normalization conceal absent
+  // explicit state/head or a conflicting legacy sha. Match the selection owner.
+  const ticketPath = join(getTicketsDir(), `${ticketId}.json`);
+  let ticketBytesSha256: string;
+  try {
+    const bytes = readArtifactFile(ticketPath, 1024 * 1024, "ARTIFACT_STALE"), raw = parseReviewEvidenceJson(bytes, "document branch intent") as Record<string, unknown>;
+    const rawLinks = Array.isArray(raw.linkedBranches) ? raw.linkedBranches.filter((r: unknown): r is Record<string, unknown> => Boolean(r && typeof r === "object" && !Array.isArray(r) && (r as Record<string, unknown>).repo === caller.repoKey)) : [];
+    const exact = rawLinks[0];
+    if (raw.id !== ticketId || raw.project !== caller.repoKey || rawLinks.length !== 1 || !exact || exact.branch !== linked.branch || exact.state !== linked.state
+      || (linked.state === "planned" ? exact.baseSha !== undefined || exact.headSha !== undefined || exact.sha !== undefined
+        : exact.baseSha !== linked.baseSha || exact.headSha !== linked.headSha || exact.sha !== undefined && exact.sha !== exact.headSha)) return result("INVALID_LINK");
+    ticketBytesSha256 = workflowDigest(bytes);
+  } catch { return result("INVALID_LINK"); }
   const queue = ticket.status === "pending-implementation" && ticket.assignee === "builder/team-manager" ? "queued" : "not-queued";
   const facts = { branch: linked.branch, linkedState: linked.state, queue };
   if (linked.state === "planned") return result("PREPARATION_NEEDED", facts);
@@ -82,6 +96,7 @@ export function inspectPiDocumentBranch(caller: PiDocumentCaller, ticketId: stri
     if (currentSelected.repoKey !== caller.repoKey || currentSelected.repoRoot !== caller.repoRoot || currentSelected.worktreeRoot !== lease.path || currentSelected.gitDir !== selected.gitDir || currentSelected.gitCommonDir !== selected.gitCommonDir || currentLease.path !== lease.path || currentLease.leaseId !== lease.leaseId || currentLease.leaseHolder !== holder
       || snapshot().digestSha256 !== first.digestSha256 || observeReadonlyRepositoryAuthority(selected.gitDir).identity !== authority.identity
       || git(["rev-parse", "--verify", `refs/heads/${linked.branch}^{commit}`]) !== head
+      || workflowDigest(readArtifactFile(ticketPath, 1024 * 1024, "ARTIFACT_STALE")) !== ticketBytesSha256
       || !isDeepStrictEqual(tickets.get(ticketId)?.linkedBranches, ticket.linkedBranches) || tickets.get(ticketId)?.status !== ticket.status || tickets.get(ticketId)?.assignee !== ticket.assignee) return result("OBSERVATION_CHANGED", facts);
   } catch { return result("OBSERVATION_CHANGED", facts); }
   return result("BRANCH_VERIFIED", { ...facts, baseSha: linked.baseSha, currentHead: head, worktreeRoot: lease.path, dirty: first.dirty, ownership: "observed-unoccupied", requiresRecheckAtSelectionAndLaunch: true });

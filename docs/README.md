@@ -18,6 +18,9 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 
 ## Operational Docs
 
+- [PAP-273 native confirmation and branch bridge](PAP-273-native-confirmation-follow-up.md) records the d-199e82 follow-up, source interfaces, phase results, retained-version behavior and separate installed/UAT gates.
+- [Requirements workspace interfaces](requirements-workspace-interface.md) separates V2 and V3 supporting capabilities and operator/model entry points.
+
 - `advisory-runtime.md` documents PAP-277's result contract, gate inventory, new-run integrity and retained compatibility.
 - `PAP-277-qualification.md` records the exact installed verifier/PAPC interface and separates source checks from unproven rollout acceptance.
 

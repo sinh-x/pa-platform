@@ -2,6 +2,58 @@
 
 Source interface only; not installed/selected capability or end-to-end acceptance.
 
+The sections below retain the original **v2** contract, including its unavailable
+capture. The approved d-199e82 follow-up adds **v3**, not a retroactive v2 upgrade;
+see [the native confirmation/branch bridge follow-up](PAP-273-native-confirmation-follow-up.md).
+
+## V3 successor — actual source interface
+
+Fresh normal Pi requirements/analyze may opt in with
+`document_profile: pa-document-confirmation/v3`; native start must be
+`requirements-document-confirmation/v3`. V1/V2/resumed/retained runs do not upgrade.
+In V3, `pa_document` supports strict requests:
+
+- `confirm(sha256, expectedRevision, scope)` where scope is `content`, `publish` or
+  `publish-and-queue`. One native TUI choice is the final decision; document and
+  technical tabs are optional reading, not acknowledgements. No earlier chat
+  attestation, typed digest, second approval, caller outcome/principal or receipt
+  import is accepted.
+- `confirm-revoke(sha256, expectedRevision, decisionId)` appends a native lifecycle
+  record, preserving original JSON and completed effects.
+- Operator `/pa-approve <raw confirm-or-confirm-revoke JSON>` calls exactly the
+  same service. No standalone approval CLI/subprocess or HTTP server is introduced.
+- `branch-inspect(ticket)` reobserves existing ticket intent through repository,
+  Git, Treehouse and protected ownership readers. It returns specific findings,
+  not preparation, custody, capacity or launch permission. The input does not
+  accept branch/base/worktree paths or mutation options.
+
+Capture requires the authenticated native custom UI. `capabilities` distinguishes
+actual V3 UI availability from the retained V2 attestation limitation. A single
+screen offers complete immutable text and technical/companion bindings with
+Approve / Request changes / Reject / Cancel; Cancel is the default. Local native
+TUI/UID is managed-agent provenance, not independent human identity proof.
+
+Same-request retries retain the **original** expectedRevision, scope, subject and
+revocation target. They reconcile an issued decision/file/ticket link without
+another prompt. Status/show lists original request coordinates after interruption.
+Concurrent identical tool/command requests within the same native caller share
+one in-flight operation; a competing different request conflicts. Durable journal
+CAS still prevents duplicate grants across processes. A crash before issuance
+is not a recorded human decision.
+
+Representations are `pa-document-approval/v1` JSON under native-derived
+`agent-teams/requirements/artifacts/approvals/<ticket>/<decisionId>.json`.
+Deterministic UTF-8 pretty JSON ends with one newline; its digest is outside its
+hashed bytes, in native result/ticket tracking. Registry records/evidence remain
+canonical authority. File/link/comment recovery is read back before reporting
+complete, with no historical primary-document overwrite. Content-only decisions
+cannot publish or queue. Scope never grants execution, builder launch or UAT.
+
+PAPC-077 must update/review the complete supported instruction closure against
+these interfaces before coordinated selection. No external config/pin change,
+Nix installation, installed qualifier result or genuine foreground UAT follows
+from source implementation or the `.6` trial label.
+
 ## Version and launch
 
 The sole new config opt-in is `document_profile: pa-document-workspace/v2` on

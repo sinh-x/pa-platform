@@ -121,3 +121,108 @@ setup, and a bounded Treehouse status fixture that refuses allocation commands.
 Before/after filesystem (including directories/modes/hashes), ticket and lease
 snapshots remain unchanged by inspection. This proves source owner composition,
 not a real installed Treehouse/config pair or foreground handoff acceptance.
+
+## A4 recovery/integration qualification and trial label
+
+Added actual process-death checks immediately after native registry issuance,
+complete file publication, ticket reference and ticket comment boundaries. Fresh
+processes reconcile the original request without another synthetic UI, duplicate
+decision, file replacement, reference or comment. Partial pending-file prefixes
+and the published-but-still-hardlinked boundary also recover only exact native
+bytes/inodes. Changed bytes, aliases and foreign supplied receipt fields reject.
+Supersession records explicitly reference the prior decision and disclose that
+lifecycle in the UI; revocation/old superseded readback never advertises current
+authority. Registry append validates request identity, interaction uniqueness and
+lifecycle references. Receipt effects explicitly deny execution/launch/UAT.
+
+A disposable default-entry test uses real registry/process incarnation anchors
+and the actual module registration, model tool, native custom UI callback,
+immutable representation and operator command. Its start events and keystrokes
+are fixture-generated: **not a real foreground deployment or human approval**.
+Concurrent identical tool/command requests share one native in-flight operation;
+competing different requests conflict. Strict action-shape validation precedes
+that sharing, so an extra caller field cannot piggyback on an issued outcome.
+Durable CAS remains authority across processes; no cross-process UI deduplication
+or hostile same-UID isolation is claimed.
+
+The branch bridge now reads exact unaliased raw ticket evidence as well as the
+existing normalized owner view, matching selection's refusal of missing explicit
+state/head and conflicting legacy SHA. Legacy compatibility normalization cannot
+silently create new verified facts. Later Git/lease/ticket/ownership observations
+are still not grants and never prepare/relink/change the approved baseline.
+
+### Source obligations / case owners
+
+All new cases retain their source owner; the old installed case inventory is not
+replaced by a numerical same-count substitution.
+
+| Requirements | Source owner(s) / actual disposition |
+|---|---|
+| FR/AC-01,02,03 | `packages/pi-pa/src/__tests__/document-confirmation-native.test.ts` (10 tests) and `document-confirmation-entry.test.ts` (1): native single-screen outcomes, full document/technical tabs, narrow Unicode/safety, no UI/RPC/retained/abort/caller negatives, shared command/tool entry and bounded diagnostics |
+| FR/AC-04–09 | `packages/pa-core/src/__tests__/document-confirmation.test.ts` (18): exact scope/subject/native authority, deterministic JSON/ticket readback, source/caller/revision drift, supersession/revocation, imports/tampering/alias rejection and prefix/hardlink recovery |
+| FR/AC-07 | `packages/pa-core/src/__tests__/document-confirmation-process.test.ts` (4), fixture worker `document-confirmation-worker.ts`: actual process exit at registry/file/ref/comment boundaries, no second UI/duplicate effect |
+| FR-B/AC-B01–06 | `packages/pi-pa/src/__tests__/document-branch.test.ts` (8) and core `document-branch-interface.test.ts` (1): actual Git worktrees and native owner observers, planned/materialized/legacy-incomplete/conflicting/foreign/head/base/lease/active-owner/race cases, zero inspection mutations |
+| FR/AC-10 and installed AC-B06 | **NOT RUN**: exact installed pair, actual normal foreground tool/command/branch trial, independent review and human UAT remain separate |
+
+The final source document family has **100 passed, zero failed/skipped**: 42 new
+follow-up cases plus the existing 58-case source family. This is source +
+disposable native mechanics evidence, not installed or human acceptance.
+
+Actual final commands (logs under ai-usage
+`deployments/d-977df3/artifacts/PAP-273-native-followup/`):
+
+- `corepack pnpm typecheck`: exit 0.
+- `corepack pnpm build`: exit 0.
+- Full focused `document-*.test.ts` core/Pi family: exit 0, 100/100, zero skips.
+- `node --test scripts/dev/verify_document_runtime.test.mjs scripts/dev/run_code_tests.test.mjs`:
+  exit 0, 12/12, zero skips. This exercises the **retained v1** 45-anchor/13-entry
+  source-built verifier mechanics, not a new installed V3 qualification result.
+- `corepack pnpm completions`: exit 0, no completion diff.
+- Source `ppa --version` and `opa --version`: `0.1.158-pap273.6`.
+- Four release manifests match; independent runtime-host version is unchanged.
+- Sensitive staged scan is required before each phase/final label commit.
+
+Preserved failed run: adding explicit supersession metadata moved one tested
+phrase below the initial viewport, causing five UI assertions; the fixed screen
+keeps the single-final-decision header and no-execution footer always visible.
+A fixture commit also left an asynchronous Git maintenance lock between snapshots,
+causing one zero-mutation assertion. Fixture Git setup now disables its own
+optional maintenance; production inspection already used existing maintenance/
+fsmonitor control flags. `document-supersession-failed.log` retains the 92-pass/
+6-fail attempt; the subsequent full 100-pass run does not rewrite it.
+
+Touched blocker messages use fixed typed native causes and one bounded five-field
+envelope, not raw exceptions or inferred permissions. Before: V2 capture says
+attested-host unavailable, and bridge unsupported. After: **V3 only** offers the
+native-confirmation protocol, reports actual native-UI absence/retained-action
+misuse accurately, and exposes branch-inspect findings. V1/V2 are intentionally
+unchanged. Operator success distinguishes decision, revocation, inactive historical
+readback and verified linkage; incomplete linkage preserves possible issuance.
+Human readability/visual review remains unperformed.
+
+### Rollout / remaining gates
+
+The new trial suffix is **0.1.158-pap273.6** across root/core/Pi/OpenCode manifests;
+runtime-host remains independently versioned. Version labeling does not update an
+installation or qualify source provenance. Build the clean final label commit as
+an exact Git revision, and verify installed `packageVersion` **and** `sourceSha`.
+The earlier `.5` installation's `unversioned-dirty-source` remains historical and
+is not retrospectively accepted. No lockfile, Nix dependency hash or config pin is
+changed by this label.
+
+A fresh normal requirements/analyze run must deliberately select the complete
+compatible PAPC instruction closure with `pa-document-confirmation/v3`. Source
+support alone neither selects it nor upgrades an existing V1/V2/resumed session.
+PAPC-077 must integrate/review process/primer/template guidance against the actual
+interfaces; PAP-285 selected-config/provenance ownership is unchanged.
+
+The old 62-ID installed verifier remains V1-only; a V3 installed/default-entry
+qualifier and exact joint config/runtime qualification are outstanding. Complete
+aggregate/portable suites, current hosted CI and independent review were **not
+rerun or passed here**; prior live-config assertion failures and Pi/full-suite
+timeouts in the earlier phase report remain open, not waived by focused success.
+No real-ticket native approval/JSON/publication/queue, application data operation,
+Nix build/install/activation/reload, external config edit, resource preparation,
+builder spawn, remote push/merge/release, affected-ticket retry, primary-ref
+replacement, checkout return or product-UAT acceptance was performed. PAP-273's
+administrative queue/history are unchanged.

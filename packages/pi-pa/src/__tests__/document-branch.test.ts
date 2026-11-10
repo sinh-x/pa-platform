@@ -13,7 +13,7 @@ function fixture() {
   for (const path of [repo, config, usage, tickets]) mkdirSync(path);
   process.env.PA_PLATFORM_CONFIG = config; process.env.PA_AI_USAGE_HOME = usage;
   writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
-  const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const git = (args: string[], cwd = repo) => execFileSync("git", ["-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git(["init", "-b", "develop"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base"]);
   const head = git(["rev-parse", "HEAD"]), branch = "feature/EX-1-fixture";
   git(["worktree", "add", "-b", branch, slot]);
@@ -47,6 +47,15 @@ test("branch bridge missing, foreign, ambiguous and planned links retain precise
     f.ticket.linkedBranches = [link, link]; f.save(); assert.equal(f.inspect().code, "CONFLICTING_LINKS");
     f.ticket.linkedBranches = [{ repo: "example", branch: f.branch, state: "planned", linkedAt: link.linkedAt, linkedBy: "fixture" } as any]; f.save();
     const before = f.snapshot(); assert.equal(f.inspect().code, "PREPARATION_NEEDED"); assert.deepEqual(f.snapshot(), before); assert.equal(f.commands.length, 0);
+  } finally { f.close(); }
+});
+test("branch bridge does not normalize conflicting or legacy-incomplete ticket evidence into verified selection", () => {
+  const f = fixture();
+  try {
+    const link = f.ticket.linkedBranches[0]!;
+    link.sha = "f".repeat(40); f.save(); assert.equal(f.inspect().code, "INVALID_LINK");
+    link.sha = f.head; delete (link as any).headSha; f.save(); assert.equal(f.inspect().code, "INVALID_LINK");
+    link.headSha = f.head; delete (link as any).state; f.save(); assert.equal(f.inspect().code, "INVALID_LINK");
   } finally { f.close(); }
 });
 test("branch bridge reports harmless recorded HEAD advancement without relink, reset or replacement approval", () => {

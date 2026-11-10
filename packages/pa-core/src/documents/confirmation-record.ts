@@ -14,12 +14,13 @@ export function confirmationRepresentation(subject: DocumentPackage, event: Docu
   return Buffer.from(JSON.stringify({ schemaVersion: "pa-document-approval/v1", decisionId: d.decisionId,
     repository: subject.repository, ticket: subject.ticket,
     subject: { packageId: subject.packageId, revision: subject.revision, manifestSha256: d.subjectSha256, members: subject.members },
-    decision: d.outcome, operation: d.operation, revokes: d.revokes,
+    decision: d.outcome, operation: d.operation, revokes: d.revokes, supersedes: d.supersedes,
     scope: { content: true, publish: d.scope !== "content", queue: d.scope === "publish-and-queue" },
+    effects: { publication: d.scope === "content" ? null : { allMembers: true, promoteRequirementsOnlyAfterComplete: true }, queueRoute: d.scope === "publish-and-queue" ? subject.effects.route : null, execution: false, checkoutAllocationOrReturn: false, builderLaunch: false, remoteOrRelease: false, productAcceptance: false },
     confirmationMethod: d.method, interactionId: d.interactionId,
     principal: { id: d.principal, provenance: "native-local-uid-not-independent-human-identity" },
     deploymentId: d.deploymentId, sessionId: d.sessionId, recordedAt: d.recordedAt,
-    native: { schemaVersion: d.confirmationVersion, evidenceSha256: d.evidenceSha256, registryRef: `registry-document-event:${subject.repository.key}:${subject.ticket}:${event.revision}`, callerIdentity: d.callerIdentity, requestKey: d.requestKey },
+    native: { schemaVersion: d.confirmationVersion, requestRevision: event.revision - 1, evidenceSha256: d.evidenceSha256, evidenceRef: `registry-document-snapshot:${d.evidenceSha256}`, registryRef: `registry-document-event:${subject.repository.key}:${subject.ticket}:${event.revision}`, callerIdentity: d.callerIdentity, requestKey: d.requestKey },
   }, null, 2) + "\n");
 }
 
@@ -64,7 +65,11 @@ function immutableFile(root: string, folder: string, name: string, bytes: Buffer
       const stat = fstatSync(fd);
       if (stat.ino !== temp.stat.ino || stat.dev !== temp.stat.dev || stat.nlink !== 1 || stat.size !== temp.bytes.length) documentReject("DOCUMENT_CONFLICT");
       let offset = temp.bytes.length;
-      while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset, offset);
+      while (offset < bytes.length) {
+        const count = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (count <= 0) documentReject("DOCUMENT_UNCERTAIN");
+        offset += count;
+      }
       fsyncSync(fd);
     } finally { closeSync(fd); }
     linkSync(path(pending), path(name)); unlinkSync(path(pending)); fsyncSync(directory);

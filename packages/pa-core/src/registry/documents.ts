@@ -6,7 +6,7 @@ export interface DocumentDecision { decisionId: string; subjectSha256: string; o
 export type DocumentConfirmationScope = "content" | "publish" | "publish-and-queue";
 export interface DocumentConfirmation extends DocumentDecision {
   confirmationVersion: "pa-document-confirmation/v1"; method: "pi-native-confirmation";
-  requestKey: string; scope: DocumentConfirmationScope; operation: "capture" | "revoke"; revokes: string | null;
+  requestKey: string; scope: DocumentConfirmationScope; operation: "capture" | "revoke"; revokes: string | null; supersedes: string | null;
   interactionId: string; deploymentId: string; sessionId: string; recordedAt: string;
 }
 export interface DocumentIntent { operationId: string; subjectSha256: string; decisionId: string; operation: "publish" | "queue" }
@@ -19,7 +19,7 @@ export type DocumentEventData = { kind: "frozen"; subjectSha256: string }
 export interface DocumentEvent { schemaVersion: "pa-document-event/v1"; repoKey: string; ticket: string; revision: number; predecessor: string | null; data: DocumentEventData }
 function eventData(value: unknown): DocumentEventData {
   const row = value as Record<string, unknown>;
-  const fields = row?.kind === "confirmation" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity", "confirmationVersion", "method", "requestKey", "scope", "operation", "revokes", "interactionId", "deploymentId", "sessionId", "recordedAt"] : row?.kind === "frozen" ? ["kind", "subjectSha256"] : row?.kind === "decision" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity"]
+  const fields = row?.kind === "confirmation" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity", "confirmationVersion", "method", "requestKey", "scope", "operation", "revokes", "supersedes", "interactionId", "deploymentId", "sessionId", "recordedAt"] : row?.kind === "frozen" ? ["kind", "subjectSha256"] : row?.kind === "decision" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity"]
     : row?.kind === "revoked" ? ["kind", "subjectSha256", "decisionId", "evidenceSha256"] : row?.kind === "intent" ? ["kind", "subjectSha256", "operationId", "decisionId", "operation"]
       : row?.kind === "result" ? ["kind", "subjectSha256", "operationId", "outcome", "code"] : [];
   if (!fields.length) documentReject("DOCUMENT_UNCERTAIN");
@@ -29,6 +29,8 @@ function eventData(value: unknown): DocumentEventData {
     text(r.requestKey, SHA256); oneOf(r.scope, ["content", "publish", "publish-and-queue"]); oneOf(r.operation, ["capture", "revoke"]);
     if (r.operation === "capture" ? r.revokes !== null : typeof r.revokes !== "string") documentReject("DOCUMENT_UNCERTAIN");
     if (r.revokes !== null) text(r.revokes, ID);
+    if (r.supersedes !== null) text(r.supersedes, ID);
+    if (r.operation === "revoke" && r.supersedes !== null) documentReject("DOCUMENT_UNCERTAIN");
     text(r.interactionId, ID); text(r.deploymentId, /^d-[0-9a-f]{6}$/); text(r.sessionId, undefined, 256);
     const recordedAt = text(r.recordedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     if (new Date(recordedAt).toISOString() !== recordedAt) documentReject("DOCUMENT_UNCERTAIN");
@@ -98,6 +100,12 @@ export class RegistryDocumentJournal {
       if (events.length !== expectedRevision) documentReject("DOCUMENT_CONFLICT");
       const subject = this.subject(data.subjectSha256);
       if (subject.repository.key !== repoKey || subject.ticket !== ticket) documentReject("DOCUMENT_AUTHORITY");
+      if (data.kind === "confirmation") {
+        if (data.requestKey !== digest(JSON.stringify([data.subjectSha256, expectedRevision, data.operation, data.scope, data.revokes]))) documentReject("DOCUMENT_AUTHORITY");
+        if (events.some(e => (e.data.kind === "confirmation" || e.data.kind === "decision") && e.data.decisionId === data.decisionId || e.data.kind === "confirmation" && (e.data.requestKey === data.requestKey || e.data.interactionId === data.interactionId))) documentReject("DOCUMENT_CONFLICT");
+        if (data.operation === "capture" && data.supersedes !== (documentDecisionRecords(events, data.subjectSha256).at(-1)?.decisionId ?? null)) documentReject("DOCUMENT_AUTHORITY");
+        if (data.operation === "revoke" && !events.some(e => e.data.kind === "confirmation" && e.data.operation === "capture" && e.data.subjectSha256 === data.subjectSha256 && e.data.decisionId === data.revokes && e.data.outcome === "approved" && !documentRevokedDecisionIds(events).has(e.data.decisionId))) documentReject("DOCUMENT_AUTHORITY");
+      }
       for (const raw of snapshots) {
         if (raw.byteLength > DOCUMENT_LIMITS.memberBytes) documentReject("DOCUMENT_INPUT");
         const sha256 = digest(raw); this.db.prepare("INSERT OR IGNORE INTO document_snapshots (sha256, raw) VALUES (?, ?)").run(sha256, raw); this.snapshot(sha256);

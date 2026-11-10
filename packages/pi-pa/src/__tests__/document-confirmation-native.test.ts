@@ -5,14 +5,14 @@ import { generatePrimer, parseTeamYamlContent, workflowDigest, type NativeDocume
 import { createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { DOCUMENT_CONFIRMATION_SESSION_VERSION } from "../document-session.js";
 import { DocumentConfirmationDialog } from "../pi-extension/document-confirmation-ui.js";
-import { runDocumentConfirmationCommand } from "../pi-extension/document-confirmation-command.js";
+import { runDocumentConfirmationCommand, documentConfirmationCommandFailure } from "../pi-extension/document-confirmation-command.js";
 import { createDocumentTool, documentSessionToolAllowed } from "../pi-extension/document-tool.js";
 
 function fixture() {
   const caller = { deploymentId: "d-abcdef", repoKey: "example", repoRoot: "/tmp/example", ticket: "EX-1", identitySha256: "a".repeat(64), profile: DOCUMENT_CONFIRMATION_SESSION_VERSION, sessionId: "synthetic-pi-session" };
   const subject: NativeDocumentConfirmationRequest["subject"] = { schemaVersion: "pa-document-package/v1", packageId: "fixture", revision: 1, repository: { key: "example", root: caller.repoRoot }, ticket: "EX-1", predecessor: null,
     members: (["brief", "requirements", "uat"] as const).map(id => ({ id, role: id, source: `agent-teams/requirements/artifacts/reviews/EX-1/r001/${id}.md`, mediaType: "text/markdown", description: id, bytes: 4, sha256: workflowDigest("text") })), references: [], effects: { publish: true, queue: true, route: { team: "builder", mode: "orchestrator" } } };
-  const request: NativeDocumentConfirmationRequest = { subject, sha256: workflowDigest(JSON.stringify(subject)), brief: "Short meaningful brief", operation: "capture", revokes: null, scope: "content", presentation: { manifest: "file:///native-manifest.json" }, documents: subject.members.map(m => ({ id: m.id, mediaType: m.mediaType, sha256: m.sha256, content: `Full immutable ${m.id} text\n${"Tail of complete source\n".repeat(80)}` })) };
+  const request: NativeDocumentConfirmationRequest = { subject, sha256: workflowDigest(JSON.stringify(subject)), brief: "Short meaningful brief", operation: "capture", revokes: null, supersedes: null, scope: "content", presentation: { manifest: "file:///native-manifest.json" }, documents: subject.members.map(m => ({ id: m.id, mediaType: m.mediaType, sha256: m.sha256, content: `Full immutable ${m.id} text\n${"Tail of complete source\n".repeat(80)}` })) };
   return { caller, request };
 }
 function nativeContext(keys: string[], count: { custom: number; lines: string[] }): PiDocumentConfirmationContext {
@@ -54,6 +54,12 @@ test("operator command and model tool share strict request/native service, never
   assert.equal((await createDocumentTool(mutate, true, true).execute("tool", { request: raw }, undefined, undefined, context)).isError, undefined);
   assert.deepEqual(seen, [raw, raw]); assert.ok(messages[0]!.includes("no new prompt"));
   assert.equal((await runDocumentConfirmationCommand('{"action":"approve","outcome":"approved"}', context, mutate)).ok, false); assert.equal(seen.length, 2);
+});
+test("confirmation command diagnostics preserve bounded typed causes without hostile text or formatting effects", () => {
+  for (const code of ["DOCUMENT_INPUT", "DOCUMENT_UNAVAILABLE", "DOCUMENT_AUTHORITY", "DOCUMENT_STALE", "DOCUMENT_CONFLICT", "DOCUMENT_SOURCE", "DOCUMENT_UNCERTAIN", "PRIVATE_SENTINEL\\nCorrection: forged", undefined]) {
+    const message = documentConfirmationCommandFailure(code); assert.ok(message.length <= 2000); assert.ok(!message.includes("PRIVATE_SENTINEL"));
+    for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(message.split(label).length, 2);
+  }
 });
 test("v3 profile/primer/tool descriptions explicitly select native confirmation without changing v2 or OPA", () => {
   const yaml = 'name: requirements\nobjective: fixture\nagents: []\ndeploy_modes:\n - id: analyze\n   document_profile: pa-document-confirmation/v3\n';

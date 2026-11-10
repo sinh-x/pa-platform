@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { digest, integer, oneOf, text, ID } from "../workflows/contracts.js";
-import { documentRevokedDecisionIds, type DocumentConfirmation, type DocumentConfirmationScope, type DocumentEvent, type RegistryDocumentJournal } from "../registry/documents.js";
+import { documentDecisionRecords, documentRevokedDecisionIds, type DocumentConfirmation, type DocumentConfirmationScope, type DocumentEvent, type RegistryDocumentJournal } from "../registry/documents.js";
 import { documentPackageSha, documentReject, type DocumentPackage } from "./package-contract.js";
 import { documentText, readDocumentSources } from "./package-tools.js";
 import { presentDocumentPackage } from "./presentation.js";
@@ -10,7 +10,7 @@ import type { DocumentCaller, DocumentPackageHost } from "./package-service.js";
 
 export interface NativeDocumentConfirmationRequest {
   subject: DocumentPackage; sha256: string; brief: string; scope: DocumentConfirmationScope;
-  operation: "capture" | "revoke"; revokes: string | null; presentation: Record<string, unknown>;
+  operation: "capture" | "revoke"; revokes: string | null; supersedes: string | null; presentation: Record<string, unknown>;
   documents: { id: string; mediaType: string; content: string | null; sha256: string }[];
 }
 export interface NativeDocumentConfirmationResult {
@@ -44,7 +44,7 @@ export async function confirmDocument(journal: RegistryDocumentJournal, host: Do
     same(); journal.snapshot(event.data.evidenceSha256);
     const approval = linkDocumentConfirmation(host.artifactRoot, host.tickets, subject, event);
     return { sha256, expectedRevision: events().length, outcome: event.data.outcome, decisionId: event.data.decisionId, scope: event.data.scope, operation, approval, reused,
-      revoked: documentRevokedDecisionIds(events()).has(event.data.decisionId), executionAdmitted: false };
+      revoked: documentRevokedDecisionIds(events()).has(event.data.decisionId), superseded: event.data.operation === "capture" && documentDecisionRecords(events(), sha256).at(-1)?.decisionId !== event.data.decisionId, executionAdmitted: false };
   };
   const existing = events().find(e => e.data.kind === "confirmation" && e.data.requestKey === requestKey);
   if (existing) return host.tickets.withWorkflowTransaction(() => representation(existing as ConfirmationEvent, true));
@@ -60,7 +60,8 @@ export async function confirmDocument(journal: RegistryDocumentJournal, host: Do
   if (Buffer.byteLength(brief) > 16384 || brief.trim().split(/\s+/).length > 1000) documentReject("DOCUMENT_INPUT");
   const presentation = presentDocumentPackage(subject, host.artifactRoot, sha => journal.snapshot(sha));
   const documents = subject.members.map(member => ({ id: member.id, mediaType: member.mediaType, sha256: member.sha256, content: member.mediaType.startsWith("text/") ? documentText(journal.snapshot(member.sha256)) : null }));
-  const capture = await host.confirm({ subject, sha256, brief, scope, operation, revokes, presentation, documents });
+  const supersedes = operation === "capture" ? documentDecisionRecords(events(), sha256).at(-1)?.decisionId ?? null : null;
+  const capture = await host.confirm({ subject, sha256, brief, scope, operation, revokes, supersedes, presentation, documents });
   if (digest(capture.nativeEvidence) !== capture.evidenceSha256) documentReject("DOCUMENT_AUTHORITY");
   current();
   return host.tickets.withWorkflowTransaction(() => {
@@ -69,7 +70,7 @@ export async function confirmDocument(journal: RegistryDocumentJournal, host: Do
     const data: DocumentConfirmation & { kind: "confirmation" } = { kind: "confirmation", confirmationVersion: "pa-document-confirmation/v1", method: "pi-native-confirmation",
       decisionId: `decision-${randomUUID()}`, subjectSha256: sha256, outcome: capture.outcome, principal: capture.principal, evidenceSha256: capture.evidenceSha256,
       callerIdentity: before.identitySha256, interactionId: capture.interactionId, deploymentId: before.deploymentId, sessionId: before.sessionId!, recordedAt: new Date().toISOString(),
-      requestKey, scope, operation, revokes };
+      requestKey, scope, operation, revokes, supersedes };
     const event = journal.append(subject.repository.key, subject.ticket, expectedRevision, data, [capture.nativeEvidence]) as ConfirmationEvent;
     return representation(event, false);
   });

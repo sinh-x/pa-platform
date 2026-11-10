@@ -24,7 +24,7 @@ export function createPiDocumentConfirmation(context: PiDocumentConfirmationCont
     if (!["approved", "rejected", "changes-requested", "cancelled"].includes(outcome)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
     const principal = `local-uid:${userInfo().uid}`;
     const nativeEvidence = Buffer.from(JSON.stringify({ schemaVersion: "pa-native-document-confirmation/v1", confirmationMethod: "pi-native-confirmation", interactionId, principal,
-      caller: before, subjectSha256: request.sha256, scope: request.scope, operation: request.operation, revokes: request.revokes,
+      caller: before, subjectSha256: request.sha256, scope: request.scope, operation: request.operation, revokes: request.revokes, supersedes: request.supersedes,
       displayedDocuments: request.documents.map(d => ({ id: d.id, sha256: d.sha256, mediaType: d.mediaType })), outcome,
       boundary: "trusted-managed-extension-local-tui-not-hostile-same-uid-isolation" }));
     return { outcome, principal, interactionId, evidenceSha256: workflowDigest(nativeEvidence), nativeEvidence };
