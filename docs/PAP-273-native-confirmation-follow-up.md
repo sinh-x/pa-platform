@@ -68,3 +68,30 @@ Actual A1 results: core build and all core document tests passed, **52 passed,
 zero failed/skipped**. Initial TypeScript errors (TicketStore method name and
 union narrowing) were fixed before that passing run. Synthetic native callbacks
 are source fixtures, not real operator approval, installed qualification or UAT.
+
+## A2 delivered
+
+New opt-in `document_profile: pa-document-confirmation/v3` records immutable
+start `requirements-document-confirmation/v3` only for eligible fresh foreground
+Pi requirements/analyze. It keeps bounded workspace/presentation capabilities.
+V1 paged review and V2 unavailable capture remain unchanged; neither current
+config nor tool JSON upgrades old sessions. New native actions are `confirm`
+(sha256, original expectedRevision, scope) and `confirm-revoke` (sha256,
+original expectedRevision, decisionId). `/pa-approve <strict JSON>` invokes that
+same native service, not a subprocess/receipt or a separate approval mechanism.
+
+The trusted extension's custom terminal screen provides overview, complete
+immutable document tabs and optional technical/companion-link tabs. Tab/scrolling
+is reading, not page acknowledgements. One selection records approve, changes,
+reject or cancel; default selection is Cancel. No typed hash, preceding-chat
+attestation or second final approval. Caller/source/journal checks run after UI.
+No-UI/RPC/retained-profile/abort cases fail without approval. Terminal controls
+and bidi-control text are neutralized in this new view. Local UID/TUI remains
+managed-agent provenance, not independent human identity or hostile-UID isolation.
+
+Actual A2 checks: core build + adapter direct typecheck passed; new native UI,
+command/tool equivalence, rejection/abort/caller and dispatch tests **9 passed,
+zero failed/skipped**. UI keyboard events are disposable synthetic test inputs,
+not genuine human approval or visual/readability UAT. Shared command messages
+lead with decision/linkage outcomes; failures preserve possible partial issuance
+and route same-request inspection, not blind retries or duplicate approvals.

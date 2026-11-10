@@ -11,6 +11,7 @@ import type { DocumentCaller, DocumentPackageHost } from "./package-service.js";
 export interface NativeDocumentConfirmationRequest {
   subject: DocumentPackage; sha256: string; brief: string; scope: DocumentConfirmationScope;
   operation: "capture" | "revoke"; revokes: string | null; presentation: Record<string, unknown>;
+  documents: { id: string; mediaType: string; content: string | null; sha256: string }[];
 }
 export interface NativeDocumentConfirmationResult {
   outcome: DocumentConfirmation["outcome"]; principal: string; interactionId: string;
@@ -58,7 +59,8 @@ export async function confirmDocument(journal: RegistryDocumentJournal, host: Do
   const brief = documentText(bytes[subject.members.findIndex(m => m.role === "brief")]!);
   if (Buffer.byteLength(brief) > 16384 || brief.trim().split(/\s+/).length > 1000) documentReject("DOCUMENT_INPUT");
   const presentation = presentDocumentPackage(subject, host.artifactRoot, sha => journal.snapshot(sha));
-  const capture = await host.confirm({ subject, sha256, brief, scope, operation, revokes, presentation });
+  const documents = subject.members.map(member => ({ id: member.id, mediaType: member.mediaType, sha256: member.sha256, content: member.mediaType.startsWith("text/") ? documentText(journal.snapshot(member.sha256)) : null }));
+  const capture = await host.confirm({ subject, sha256, brief, scope, operation, revokes, presentation, documents });
   if (digest(capture.nativeEvidence) !== capture.evidenceSha256) documentReject("DOCUMENT_AUTHORITY");
   current();
   return host.tickets.withWorkflowTransaction(() => {

@@ -6,7 +6,7 @@ import {
   AdvisoryFiles, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, readArtifactFile,
   parseWorkflowRequest, workflowDigest, workflowObject,
 } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller, DOCUMENT_WORKSPACE_SESSION_VERSION, type PiDocumentCaller } from "./document-session.js";
+import { authenticatePiDocumentCaller, assertSameDocumentCaller, workspaceDocumentCaller, DOCUMENT_CONFIRMATION_SESSION_VERSION, type PiDocumentCaller } from "./document-session.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
 
 export const WORKSPACE_LIMITS = Object.freeze({ requestBytes: 65536, fileBytes: 1048576, outputBytes: 32768, timeoutSeconds: 30, processes: 8192, addressSpaceBytes: 8589934592 });
@@ -161,10 +161,12 @@ export class DocumentWorkspace {
 export async function mutatePiWorkspace(raw: string, context: PiWorkflowContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const authenticate = () => authenticatePiDocumentCaller(context);
   const caller = authenticate();
-  if (caller.profile !== DOCUMENT_WORKSPACE_SESSION_VERSION) fail("DOCUMENT_AUTHORITY");
+  if (!workspaceDocumentCaller(caller)) fail("DOCUMENT_AUTHORITY");
   const base = getAiUsageDir();
   if (realpathSync(base) !== base || !relative(caller.repoRoot, base).startsWith("..")) fail("DOCUMENT_AUTHORITY");
   const parent = new AdvisoryFiles(base), folder = `agent-teams/requirements/artifacts/drafts/${caller.deploymentId}`;
   parent.file(`${folder}/workspace`, undefined, true);
-  return new DocumentWorkspace(join(base, folder, "workspace"), caller.repoRoot, authenticate).execute(raw, signal);
+  const result = await new DocumentWorkspace(join(base, folder, "workspace"), caller.repoRoot, authenticate).execute(raw, signal);
+  if (caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION && Object.hasOwn(result, "capture")) result.capture = "use-pa-document-capabilities";
+  return result;
 }

@@ -7,7 +7,8 @@ import {
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, resolveTrustedTicketMutationContext, workflowDigest,
   type DocumentPackageHost,
 } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller, DOCUMENT_WORKSPACE_SESSION_VERSION } from "./document-session.js";
+import { createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "./document-confirmation-native.js";
+import { authenticatePiDocumentCaller, assertSameDocumentCaller, DOCUMENT_CONFIRMATION_SESSION_VERSION, workspaceDocumentCaller } from "./document-session.js";
 import { nativeReviewPages, type PiWorkflowContext } from "./workflow-native.js";
 
 /** Native foreground consent. Model JSON has no outcome, actor or permission field. */
@@ -68,7 +69,10 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   try { if (realpathSync(getTicketsDir()) !== getTicketsDir()) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
-  const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION, capture: createPiDocumentCapture(context, authenticate, signal),
+  const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
+    confirmationProfile: caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION,
+    ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
+    capture: createPiDocumentCapture(context, authenticate, signal),
     assertEffectAvailable(subject) {
       authenticate();
       // A retained controller is sticky even if its decision is cancelled or revoked.
