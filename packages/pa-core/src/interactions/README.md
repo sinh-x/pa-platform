@@ -1,7 +1,10 @@
 # PA interaction foundation (PAP-282)
 
-This directory contains a **partial source implementation**, not the completed
-PAP-282 interface or an installed/adopted runtime claim. The catalogue/discovery
+This directory contains a **partial implementation**, not the completed
+PAP-282 interface or an adopted-profile claim. Installed disposable observations
+for the existing trial are recorded in
+[the PAP-282 verification report](../../../../docs/PAP-282-installed-verification.md);
+byte comparison, commit provenance, live exposure and human UAT remain distinct. The catalogue/discovery
 reader is source-only and never grants permissions. A separate finite ticket
 creation and exact existing-ticket selection service has an opt-in requirements native port described below.
 Neither surface executes CLI commands or alters a retained tool schema. The Pi
@@ -272,5 +275,10 @@ corepack pnpm typecheck
 ```
 
 These source checks do not establish installed exposure, CLI/native end-to-end
-parity, independent review, hosted CI or actual human UAT. P2–P7 and remaining P1
-obligations must still be delivered and verified before umbrella acceptance.
+parity, independent review, hosted CI or actual human UAT. The separate
+`scripts/dev/verify_interactions_runtime.mjs` runs the implemented-slice drivers
+against verified installed modules, without installation or profile activation;
+its comparison mode explicitly retains the trial's unversioned-source limitation.
+See the report linked above for the exact invocation and observed 51/51 result.
+P2–P7 and remaining P1 obligations must still be delivered and verified before
+umbrella acceptance.
