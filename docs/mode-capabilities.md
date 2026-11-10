@@ -326,3 +326,47 @@ verify both `packageVersion` and that commit's `sourceSha` in the installed
 [release-process.md](release-process.md#ticket-local-build-labels). This is not an
 installation, activation, release/tag or phase-completion claim. The requested
 updated-develop rebase remains outstanding, and the reader launch gate stays closed.
+
+### Paired source progress and validation continuation
+
+PAPC-081 accepted the corrected runtime source contract in
+`c-20261110141005340` and committed its explicit twelve-ID baseline, matching
+instructions and on/off fixtures as `95a2bb593a18ef2f8fbbbf337227cb1bf0d1a53e`.
+Its source/installed-module checks are recorded in `c-20261110143038786`; these are
+attributed PAPC evidence, not independent runtime review or installed foreground
+qualification. This supersedes the outstanding *source contract/configuration*
+status above: P1 source agreement and paired P2 implementation are delivered.
+P3 installed reader-on/off/read qualification and P4 remain incomplete. The
+configuration deliberately omits the reader, and the runtime gate remains closed.
+
+A further `NO_COLOR=1 corepack pnpm test` at `62b11ac` reached the 1800-second
+command limit. Root tests passed 42/42; core passed 1924 with 14 skips; OpenCode
+passed 106 with one skip; Pi script tests passed 11/11. The Pi source run reported
+one explicit failure in `pi-native-host.test.ts` before interruption. Full local
+log: `/tmp/pap289-d-34b8ca-test-complete.log`. This remains a failed/incomplete
+validation attempt, not a full-suite pass.
+
+The failing completion-turn test passed alone but failed in its full file. Its
+registration fixture could open the operator registry, retaining that singleton
+when later fixtures changed the database environment. The resulting large list
+was correctly bounded into a truncation object, so `.some` was not available.
+Commit `23e97cb` isolates the initial registration fixture, closes any previous
+singleton before selecting each disposable registry, and asserts the owned path
+before writing completion-test events. Array shape is asserted without removing
+the original lifecycle/registry checks. No production guard or result limit was
+weakened. Pre-repair runs used the operator registry; a native observation confirms
+synthetic `d-pap-167-live` remains projected as running. No history was deleted or
+manually settled; this needs registry-owner reconciliation, not blind cleanup.
+
+Post-repair command:
+`NO_COLOR=1 corepack pnpm --filter @pa-platform/pi-pa exec tsx --test --test-concurrency=1 src/__tests__/pi-native-host.test.ts src/__tests__/mode-capability-session.test.ts src/__tests__/pi-extension-composition.test.ts`
+passed 25/25 without skips. Pi package typecheck, diff check and staged secrets
+scan passed. The full workspace suite has not passed after this repair. Runtime
+implementation bytes and the installed trial label are unchanged by this test-only
+repair; no new installation, HTTP request, role migration or activation occurred.
+
+The operator accepts the installed readable label for continuing this work. That
+choice is recorded separately from exact installed-source provenance and does not
+turn `unversioned-dirty-source` into a verified commit. Next owning decisions are
+public-egress/transcript-retention acceptance and a bounded qualification route;
+no source/fixture pass is substituted for those decisions or genuine human UAT.
