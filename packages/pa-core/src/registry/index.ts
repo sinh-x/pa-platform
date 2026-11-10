@@ -803,6 +803,20 @@ export function queryReadonlyDeploymentStatuses(existingFilesOnly = false): Depl
   finally { db.close(); }
 }
 
+/** Conservative metadata observation, NOT custody settlement or admission.
+ * Historical launch/association edges still count after completion/reassociation;
+ * the limited new planning port cannot infer that a retained owner is released.
+ * Read-only, existing database only: missing/invalid evidence throws, never absent. */
+export function hasOtherTicketDeploymentAssociation(ticketId: string, deploymentId: string): boolean {
+  if (!isCanonicalTicketId(ticketId) || !/^d-[a-f0-9]{6}(?![\s\S])/.test(deploymentId)) throw new Error("Invalid ticket-owner observation input");
+  const db = openReadonlyRegistryDatabase(true);
+  try {
+    return db.prepare("SELECT 1 FROM deployments WHERE ticket_id = ? AND deployment_id <> ? UNION ALL SELECT 1 FROM registry_events WHERE ticket_id = ? AND deployment_id <> ? LIMIT 1")
+      .get(ticketId, deploymentId, ticketId, deploymentId) !== undefined;
+  } catch (error) { throw readonlyRegistryFailure(error); }
+  finally { db.close(); }
+}
+
 /** Helper authentication must never initialize or migrate operator registry state. */
 export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: string, existingFilesOnly = false): {
   status: DeploymentStatus | null; claim: ReviewAuthorizationClaim | null;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import registerPiVimMode from "../../vendor/pi-vimmode/index.ts";
 import registerProperBase from "../../vendor/proper-pi-extensions/proper-base/index.ts";
 import {
@@ -29,11 +29,25 @@ const VIM_FACTORY: BundledEditorFactory = { name: "pi-vimmode", version: "0.9.0"
 const PROPER_FACTORY: BundledEditorFactory = { name: "proper-base", version: "0.5.0", register: registerProperBase };
 const BOTH_EDITOR_MODULES = createPiPaModules([VIM_FACTORY, PROPER_FACTORY]);
 
+let surroundingEnvironment: NodeJS.ProcessEnv;
+beforeEach(() => {
+  surroundingEnvironment = process.env;
+  process.env = { ...surroundingEnvironment };
+  // Isolation must cover lifecycle dispatch as well as factory registration.
+  // No live registry identity belongs to these synthetic legacy hosts.
+  delete process.env.PA_DEPLOYMENT_ID;
+});
+afterEach(() => { process.env = surroundingEnvironment; });
+
 // Editor composition fixtures assert the legacy loadout, independent of the
 // surrounding PA deployment. Dedicated runtime suites verify each optional mode.
 function registerPiSessionModules(...args: Parameters<typeof registerSessionModules>): void {
   const original = process.env;
   process.env = { ...original, PA_TEAM: "fixture", PA_MODE: "fixture" };
+  // A legacy composition fixture must not inherit the surrounding deployment's
+  // native advisory start. Otherwise registry-owned optional tools legitimately
+  // register before this fixture even dispatches session_start.
+  delete process.env.PA_DEPLOYMENT_ID;
   try { registerSessionModules(...args); } finally { process.env = original; }
 }
 

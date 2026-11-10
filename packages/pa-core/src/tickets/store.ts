@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
+import { AdvisoryFiles } from "../operations/files.js";
+import { parseReviewEvidenceJson } from "../validation/review-contract.js";
+import { TicketCreateIntentError, creationDigest, creationKey, creationReservations, publishCreationIntent, readCreationIntent, type TicketCreateIntentIdentity, type TicketCreateIntentHooks } from "./create-intent.js";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -77,6 +81,161 @@ export class TicketStore {
       this.writeTicket(ticket);
       this.appendAudit(id, "created", actor, { status: ["", ticket.status], assignee: ["", ticket.assignee] });
       return ticket;
+    });
+  }
+
+  /** New finite creation primitive. Legacy create/document-intake behavior is
+   * retained; adapters must separately authenticate their selected writer profile.
+   * The SAME ticket mutex owns reservation, ticket and audit reconciliation.
+   * An immutable intent reserves an ID before counter/ticket/audit effects. */
+  createWithIntent(input: CreateTicketInput, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketCreateIntentHooks): { ticket: Ticket; reused: boolean } {
+    const key = creationKey(identity);
+    if (!actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
+    const { key: project, prefix } = resolveProject(input.project);
+    const normalizedInput = { ...input, project };
+    if (hooks.requestBinding !== undefined && (typeof hooks.requestBinding !== "string" || hooks.requestBinding.length !== 64 || !/^[a-f0-9]{64}$/.test(hooks.requestBinding))) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
+    // Keep retained unbound-intent digests unchanged. The optional new adapter
+    // binding detects changed raw requests even when sanitization loses bytes.
+    const payloadSha256 = creationDigest({ input: normalizedInput, actor, ...(hooks.requestBinding === undefined ? {} : { requestBinding: hooks.requestBinding }) });
+    const assertCurrent = (): void => {
+      const result: unknown = hooks.assertCurrent();
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
+    };
+    const observed = (stage: "intent" | "ticket" | "audit"): void => {
+      const result: unknown = hooks.afterPersist?.(stage);
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    };
+    return this.withTransaction(() => {
+      assertCurrent();
+      let record = readCreationIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.actor !== actor)) throw new TicketCreateIntentError("TICKET_CREATE_CONFLICT");
+      if (!record) {
+        const id = this.nextAvailableId(prefix), now = nowUtc();
+        const ticket = this.normalizeTicket({ ...normalizedInput, id, createdAt: now, updatedAt: now, resolvedAt: input.resolvedAt ?? null,
+          subTickets: [], nextSubTicketCounter: 0, linkedBranches: input.linkedBranches ?? [], linkedCommits: input.linkedCommits ?? [] });
+        record = { schemaVersion: "pa-ticket-create-intent/v1", key, ...identity, payloadSha256, ticketSha256: creationDigest(ticket), actor, ticket };
+        assertCurrent();
+        publishCreationIntent(this.dir, record);
+        observed("intent");
+      }
+      const planned = record.ticket;
+      // Never silently normalize malformed persisted candidate bytes.
+      if (!isDeepStrictEqual(this.normalizeTicket(planned as unknown as Record<string, unknown>), planned) || planned.project !== project) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      const expectedAudit: AuditEntry = { ticket_id: planned.id, action: "created", actor, timestamp: planned.createdAt,
+        changes: { status: ["", planned.status], assignee: ["", planned.assignee] } };
+      let audits: AuditEntry[], current: Ticket | undefined;
+      try { audits = this.readCreationAudits().entries.filter(row => row.ticket_id === planned.id && row.action === "created"); current = this.get(planned.id); }
+      catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+      if (audits.length > 1 || (audits.length === 1 && (creationDigest(audits[0]) !== creationDigest(expectedAudit) || !current || current.id !== planned.id || current.project !== project))) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      if (audits.length === 0) {
+        if (current && !isDeepStrictEqual(current, planned)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+        if (!current) {
+          assertCurrent();
+          // The durable reservation is already visible to all ordinary ID allocators.
+          this.advanceCounter(prefix, planned.id);
+          // A symlink/foreign inode or corrupt existing file is not an absent ticket.
+          const files = new AdvisoryFiles(this.dir);
+          try { files.file(`${planned.id}.json`); throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+          files.file(`${planned.id}.json`, JSON.stringify(planned, null, 2));
+          observed("ticket");
+        }
+        assertCurrent();
+        const readback = this.get(planned.id);
+        if (!readback || !isDeepStrictEqual(readback, planned)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+        const previous = this.readCreationAudits().raw;
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${previous}${JSON.stringify(expectedAudit)}\n`);
+        observed("audit");
+      }
+      assertCurrent();
+      const persisted = this.get(planned.id);
+      const finalAudits = this.readCreationAudits().entries.filter(row => row.ticket_id === planned.id && row.action === "created");
+      if (!persisted || persisted.id !== planned.id || persisted.project !== project || finalAudits.length !== 1 || creationDigest(finalAudits[0]) !== creationDigest(expectedAudit)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return { ticket: persisted, reused };
+    });
+  }
+
+  /** Finite scalar planning data primitive, NOT native role/lifecycle authority.
+   * A future admitted adapter must authenticate ownership on every locked callback.
+   * Immutable intent precedes effects; unknown partial state is never rolled back. */
+  patchPlanningWithIntent(id: string, expectedVersion: string, rawPatch: TicketPlanningPatch, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketPlanningHooks): { ticket: Ticket; appliedVersion: string; reused: boolean } {
+    const boundIdentity = Object.freeze({ ...identity }), key = planningKey(boundIdentity), patch = validatePlanningPatch(rawPatch);
+    if (!isCanonicalTicketId(id) || !validPlanningDigest(expectedVersion) || typeof actor !== "string" || !actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)
+      || (hooks.requestBinding !== undefined && !validPlanningDigest(hooks.requestBinding))) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+    const payloadSha256 = creationDigest({ id, expectedVersion, patch, actor, ...(hooks.requestBinding === undefined ? {} : { requestBinding: hooks.requestBinding }) });
+    const assertCurrent = () => {
+      const result: unknown = hooks.assertCurrent();
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+    };
+    const observed = (stage: "intent" | "ticket" | "audit") => {
+      const result: unknown = hooks.afterPersist?.(stage);
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+    };
+    const readAudits = () => {
+      try { return this.readCreationAudits(); } catch { throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN"); }
+    };
+    return this.withTransaction(() => {
+      assertCurrent();
+      let record = readPlanningIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.actor !== actor
+        || record.expectedVersion !== expectedVersion || !isDeepStrictEqual(record.patch, patch))) throw new TicketPlanningIntentError("TICKET_PLAN_CONFLICT");
+      const assertSnapshot = (ticket: Ticket) => {
+        // A copy prevents a trusted validation callback from accidentally editing
+        // the historical record that the owner will subsequently publish/replay.
+        const result: unknown = hooks.assertSnapshot?.(JSON.parse(JSON.stringify(ticket)) as Ticket);
+        if (result instanceof Promise) void result.catch(() => {});
+        if (result !== undefined) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+      };
+      if (record) assertSnapshot(record.before);
+      // A missing final audit is a pending owner effect, including when the
+      // candidate ticket is already visible. Fresh IDs may not bypass it.
+      const audits = readAudits().entries;
+      for (const previous of planningIntents(this.dir)) {
+        if (previous.before.id === id && previous.key !== key && !planningAuditComplete(previous, audits)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+      }
+      if (!record) {
+        const before = this.get(id);
+        assertPlanningScope(before, id);
+        if (ticketPlanningVersion(before) !== expectedVersion) throw new TicketPlanningIntentError("TICKET_PLAN_STALE");
+        assertSnapshot(before);
+        if (Object.entries(patch).every(([field, value]) => before[field as keyof TicketPlanningPatch] === value)) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+        const after = { ...before, ...patch, updatedAt: nowUtc() };
+        record = { schemaVersion: "pa-ticket-planning-intent/v1", key, ...boundIdentity, payloadSha256, actor, expectedVersion,
+          appliedVersion: ticketPlanningVersion(after), patch, before, after };
+        assertCurrent();
+        if (!isDeepStrictEqual(this.get(id), before)) throw new TicketPlanningIntentError("TICKET_PLAN_STALE");
+        validatePlanningPatch(patch); // Recheck current sensitive-input policy under the owner lock.
+        publishPlanningIntent(this.dir, record);
+        observed("intent");
+      }
+      if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+        || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+      if (!planningAuditComplete(record, readAudits().entries)) {
+        const current = this.get(id);
+        if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+        if (isDeepStrictEqual(current, record.before)) {
+          assertCurrent();
+          if (!isDeepStrictEqual(this.get(id), record.before)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+          validatePlanningPatch(patch);
+          new AdvisoryFiles(this.dir).file(`${id}.json`, JSON.stringify(record.after, null, 2));
+          observed("ticket");
+        }
+        assertCurrent();
+        if (!isDeepStrictEqual(this.get(id), record.after)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+        const previous = readAudits().raw;
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${previous}${JSON.stringify(planningAudit(record))}\n`);
+        observed("audit");
+      }
+      assertCurrent();
+      const persisted = this.get(id);
+      if (!persisted || persisted.id !== id || persisted.project !== record.after.project || !planningAuditComplete(record, readAudits().entries)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+      return { ticket: persisted, appliedVersion: record.appliedVersion, reused };
     });
   }
 
@@ -320,6 +479,21 @@ export class TicketStore {
     return readFileSync(path, "utf-8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as AuditEntry);
   }
 
+  private readCreationAudits(): { raw: string; entries: AuditEntry[] } {
+    let bytes: Buffer;
+    try { bytes = new AdvisoryFiles(this.dir).file("audit.jsonl") as Buffer; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { raw: "", entries: [] }; throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+    let raw: string;
+    try { raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+    // A torn final row is unknown; never concatenate a new event onto it.
+    if (raw && !raw.endsWith("\n")) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    try {
+      const entries = raw.split("\n").filter(Boolean).map(line => parseReviewEvidenceJson(Buffer.from(line), "ticket-audit") as AuditEntry);
+      if (entries.some(entry => !entry || typeof entry !== "object" || typeof entry.ticket_id !== "string" || typeof entry.action !== "string" || typeof entry.actor !== "string" || !entry.changes)) throw new Error();
+      return { raw, entries };
+    } catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+  }
+
   private ticketPath(id: string): string {
     if (!isCanonicalTicketId(id)) throw new Error("Ticket ID must be canonical");
     const directory = resolve(this.dir);
@@ -355,17 +529,39 @@ export class TicketStore {
     return this.normalizeTicket(raw);
   }
 
-  private counterPath(): string {
-    return resolve(this.dir, "counter.json");
+  private readCreationCounters(): CounterStore {
+    let bytes: Buffer;
+    try { bytes = new AdvisoryFiles(this.dir).file("counter.json") as Buffer; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+    try {
+      const counters = parseReviewEvidenceJson(bytes, "ticket-counter") as CounterStore;
+      if (!counters || typeof counters !== "object" || Array.isArray(counters)
+        || Object.entries(counters).some(([prefix, value]) => !/^[A-Z][A-Z0-9]*$/.test(prefix) || !Number.isSafeInteger(value) || value < 0)) throw new Error();
+      return { ...counters };
+    } catch { throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+  }
+
+  private nextAvailableId(prefix: string): string {
+    const counters = this.readCreationCounters();
+    const reservations = creationReservations(this.dir);
+    let next = (counters[prefix] ?? 0) + 1;
+    while (reservations.has(`${prefix}-${String(next).padStart(3, "0")}`)) next++;
+    if (!Number.isSafeInteger(next) || next < 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    return `${prefix}-${String(next).padStart(3, "0")}`;
+  }
+
+  private advanceCounter(prefix: string, id: string): void {
+    const counters = this.readCreationCounters();
+    const next = Number(id.slice(prefix.length + 1));
+    if (!Number.isSafeInteger(next) || next < 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    counters[prefix] = Math.max(counters[prefix] ?? 0, next);
+    new AdvisoryFiles(this.dir).file("counter.json", JSON.stringify(counters, null, 2));
   }
 
   private allocateId(prefix: string): string {
-    const path = this.counterPath();
-    const counters = existsSync(path) ? (JSON.parse(readFileSync(path, "utf-8")) as CounterStore) : {};
-    const next = (counters[prefix] ?? 0) + 1;
-    counters[prefix] = next;
-    writeFileSync(path, JSON.stringify(counters, null, 2));
-    return `${prefix}-${String(next).padStart(3, "0")}`;
+    const id = this.nextAvailableId(prefix);
+    this.advanceCounter(prefix, id);
+    return id;
   }
 
   private normalizeTicket(raw: Record<string, unknown>): Ticket {
@@ -439,31 +635,36 @@ export class TicketStore {
 
 function withTicketTransactionMutex<T>(dir: string, operation: () => T): T {
   const mutexPath = resolve(dir, TICKET_TRANSACTION_MUTEX_FILE);
-  const descriptor = openSync(mutexPath, "a", 0o600);
-  closeSync(descriptor);
-  chmodSync(mutexPath, 0o600);
-
-  const signalDirectory = mkdtempSync(join(tmpdir(), "pa-ticket-transaction-"));
-  const readyPath = join(signalDirectory, "ready");
-  const donePath = join(signalDirectory, "done");
-  const script = "trap 'rm -f -- \"$1\"; : > \"$2\"' EXIT; : > \"$1\"; IFS= read -r _";
-  const holder = spawn("flock", ["--exclusive", "--wait", String(TICKET_TRANSACTION_MUTEX_TIMEOUT_MS / 1000), mutexPath, "/bin/sh", "-c", script, "pa-ticket-transaction", readyPath, donePath], {
-    stdio: ["pipe", "ignore", "ignore"],
-  });
-  holder.on("error", () => { /* handshake timeout reports helper startup failure */ });
-  holder.stdin.on("error", () => { /* handshake timeout reports helper failure */ });
+  if (realpathSync(dir) !== resolve(dir)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+  // This owner is now reachable from a finite native writer. Never chmod or
+  // lock through an aliased/special file; pin the verified inode for flock.
+  const descriptor = openSync(mutexPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
-    waitForTicketTransactionPath(readyPath, "acquire");
-    return operation();
-  } finally {
-    holder.stdin.end("release\n");
+    const mutex = fstatSync(descriptor);
+    if (!mutex.isFile() || mutex.nlink !== 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    fchmodSync(descriptor, 0o600);
+    const pinnedMutexPath = `/proc/${process.pid}/fd/${descriptor}`;
+    const signalDirectory = mkdtempSync(join(tmpdir(), "pa-ticket-transaction-"));
+    const readyPath = join(signalDirectory, "ready");
+    const donePath = join(signalDirectory, "done");
+    const script = "trap 'rm -f -- \"$1\"; : > \"$2\"' EXIT; : > \"$1\"; IFS= read -r _";
+    const holder = spawn("flock", ["--exclusive", "--wait", String(TICKET_TRANSACTION_MUTEX_TIMEOUT_MS / 1000), pinnedMutexPath, "/bin/sh", "-c", script, "pa-ticket-transaction", readyPath, donePath], {
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    holder.on("error", () => { /* handshake timeout reports helper startup failure */ });
+    holder.stdin.on("error", () => { /* handshake timeout reports helper failure */ });
     try {
-      waitForTicketTransactionPath(donePath, "release");
-    } catch {
-      holder.kill("SIGKILL");
+      waitForTicketTransactionPath(readyPath, "acquire");
+      const currentMutex = statSync(mutexPath);
+      if (realpathSync(dir) !== resolve(dir) || realpathSync(mutexPath) !== mutexPath || currentMutex.dev !== mutex.dev || currentMutex.ino !== mutex.ino || currentMutex.nlink !== 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return operation();
+    } finally {
+      holder.stdin.end("release\n");
+      try { waitForTicketTransactionPath(donePath, "release"); }
+      catch { holder.kill("SIGKILL"); }
+      rmSync(signalDirectory, { recursive: true, force: true });
     }
-    rmSync(signalDirectory, { recursive: true, force: true });
-  }
+  } finally { closeSync(descriptor); }
 }
 
 function waitForTicketTransactionPath(path: string, action: string): void {
