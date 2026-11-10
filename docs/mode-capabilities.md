@@ -300,9 +300,9 @@ Actual local checks (not installed qualification):
 
 No real URL request, installation, PAPC edit, activation, independent review,
 hosted CI or human UAT/readability observation was performed. Public-egress/
-retention approval and matched PAPC qualification remain outstanding. The eventual
-updated-develop rebase and ticket-local build label remain due after implementation
-phases; the upstream `0.1.160` manifests are unchanged by this hardening.
+retention approval and matched PAPC qualification remain outstanding. At that
+hardening checkpoint, the updated-develop rebase and ticket-local build label were
+still due; the upstream `0.1.160` manifests were unchanged by the extraction fix.
 
 Published r006 phase disposition at this checkpoint (not acceptance):
 
@@ -315,3 +315,14 @@ Published r006 phase disposition at this checkpoint (not acceptance):
 
 Thus the runtime source work is implemented, but **not all ticket phases are complete**
 and the public reader is not enabled.
+
+### Worktree identification label
+
+At the operator's subsequent request, the four shared version manifests now select
+`0.1.160-pap289.1` for a separately installed worktree trial. `ppa --version` should
+then display `ppa 0.1.160-pap289.1`. Build from the clean exact label commit and
+verify both `packageVersion` and that commit's `sourceSha` in the installed
+`share/pa-platform/review-runtime-provenance.json`; see
+[release-process.md](release-process.md#ticket-local-build-labels). This is not an
+installation, activation, release/tag or phase-completion claim. The requested
+updated-develop rebase remains outstanding, and the reader launch gate stays closed.
