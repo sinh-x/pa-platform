@@ -134,7 +134,14 @@ packages; those later lanes are not passing evidence. Original logs are
 `/tmp/pap282-workspace-test.log` and `/tmp/pap282-primer-reproduction.log`.
 Focused logs are `/tmp/pap282-verifier-unit.log`,
 `/tmp/pap282-source-discovery.log`, `/tmp/pap282-typecheck.log`; the public installed
-report is `/tmp/pap282-installed-result.json`, with its own returned evidence root.
+final passing report is `/tmp/pap282-final-installed-result.json`, with evidence
+root `/tmp/pa-interactions-installed-kU9HI5`. A post-commit comparison initially
+blocked on `WORKFLOW_MODULE_INVENTORY`: after the workspace attempt, the local
+comparison output again lacked the installed Vim plugin. That original blocked
+result remains `/tmp/pap282-installed-result.json`. Rebuilding the Pi adapter with
+the installed plugin selection restored complete byte parity; the final
+post-commit installed run passed all 51 tests. No installed bytes or validation
+guards were changed to obtain the pass.
 These temporary paths are local observations, not durable native approval or
 publication receipts. The new verifier unit command is explicit; this tooling-only
 change does not alter root package scripts or claim its new tests were included
