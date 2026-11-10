@@ -16,6 +16,8 @@ export interface TicketCreateIntentRecord extends TicketCreateIntentIdentity {
   ticket: Ticket;
 }
 export interface TicketCreateIntentHooks {
+  /** Trusted adapter's canonical raw-request digest, including fields lost to CLI-compatible sanitization. Idempotency only, never authority. */
+  requestBinding?: string;
   /** Mandatory owner reauthentication INSIDE the shared ticket mutation mutex. */
   assertCurrent(): void;
   /** Trusted embedding/fault-test observation, never tool request data. */

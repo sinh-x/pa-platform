@@ -25,7 +25,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     const modeRecord = asRecord(mode, `deploy_modes[${index}]`);
     rejectRemovedRuntimeConfig(modeRecord, `deploy_modes[${index}].runtimes`);
     validateFlatModePair(modeRecord, index);
-    if (modeRecord["document_profile"] !== undefined && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3"].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
+    if (modeRecord["document_profile"] !== undefined && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", "pa-document-interactions/v4"].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
       throw new Error("document_profile requires requirements/analyze and an exact supported document profile");
     }
     const provider = optionalString(modeRecord["provider"]);
@@ -49,7 +49,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
       global_docs: modeRecord["global_docs"] as string[] | undefined,
       project_guides: parseProjectGuides(modeRecord["project_guides"], index),
       require_ticket: modeRecord["require_ticket"] as boolean | undefined,
-      ...(modeRecord["document_profile"] === undefined ? {} : { document_profile: modeRecord["document_profile"] as "pa-document-package/v1" | "pa-document-workspace/v2" | "pa-document-confirmation/v3" }),
+      ...(modeRecord["document_profile"] === undefined ? {} : { document_profile: modeRecord["document_profile"] as NonNullable<TeamConfig["deploy_modes"]>[number]["document_profile"] }),
     };
   });
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
 import { DocumentPackageError, workflowDigest, type DocumentPackageHost } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller, DOCUMENT_CONFIRMATION_SESSION_VERSION } from "./document-session.js";
+import { authenticatePiDocumentCaller, assertSameDocumentCaller, confirmationDocumentCaller } from "./document-session.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
 import type { DocumentConfirmationUi } from "./pi-extension/document-confirmation-ui.js";
 
@@ -14,7 +14,7 @@ export function createPiDocumentConfirmation(context: PiDocumentConfirmationCont
   authenticate = () => authenticatePiDocumentCaller(context), signal?: AbortSignal): NonNullable<DocumentPackageHost["confirm"]> {
   return async request => {
     const before = authenticate();
-    if (before.profile !== DOCUMENT_CONFIRMATION_SESSION_VERSION || !before.sessionId || context.mode !== "tui" || !context.ui?.custom) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
+    if (!confirmationDocumentCaller(before) || !before.sessionId || context.mode !== "tui" || !context.ui?.custom) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
     if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
     const interactionId = `interaction-${randomUUID()}`;
     const { showDocumentConfirmation } = await import("./pi-extension/document-confirmation-ui.js");

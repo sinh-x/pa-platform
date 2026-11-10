@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { AdvisoryFiles } from "../operations/files.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { TicketCreateIntentError, creationDigest, creationKey, creationReservations, publishCreationIntent, readCreationIntent, type TicketCreateIntentIdentity, type TicketCreateIntentHooks } from "./create-intent.js";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -92,7 +92,10 @@ export class TicketStore {
     if (!actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
     const { key: project, prefix } = resolveProject(input.project);
     const normalizedInput = { ...input, project };
-    const payloadSha256 = creationDigest({ input: normalizedInput, actor });
+    if (hooks.requestBinding !== undefined && (typeof hooks.requestBinding !== "string" || hooks.requestBinding.length !== 64 || !/^[a-f0-9]{64}$/.test(hooks.requestBinding))) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
+    // Keep retained unbound-intent digests unchanged. The optional new adapter
+    // binding detects changed raw requests even when sanitization loses bytes.
+    const payloadSha256 = creationDigest({ input: normalizedInput, actor, ...(hooks.requestBinding === undefined ? {} : { requestBinding: hooks.requestBinding }) });
     const assertCurrent = (): void => {
       const result: unknown = hooks.assertCurrent();
       if (result instanceof Promise) void result.catch(() => {});
@@ -550,31 +553,36 @@ export class TicketStore {
 
 function withTicketTransactionMutex<T>(dir: string, operation: () => T): T {
   const mutexPath = resolve(dir, TICKET_TRANSACTION_MUTEX_FILE);
-  const descriptor = openSync(mutexPath, "a", 0o600);
-  closeSync(descriptor);
-  chmodSync(mutexPath, 0o600);
-
-  const signalDirectory = mkdtempSync(join(tmpdir(), "pa-ticket-transaction-"));
-  const readyPath = join(signalDirectory, "ready");
-  const donePath = join(signalDirectory, "done");
-  const script = "trap 'rm -f -- \"$1\"; : > \"$2\"' EXIT; : > \"$1\"; IFS= read -r _";
-  const holder = spawn("flock", ["--exclusive", "--wait", String(TICKET_TRANSACTION_MUTEX_TIMEOUT_MS / 1000), mutexPath, "/bin/sh", "-c", script, "pa-ticket-transaction", readyPath, donePath], {
-    stdio: ["pipe", "ignore", "ignore"],
-  });
-  holder.on("error", () => { /* handshake timeout reports helper startup failure */ });
-  holder.stdin.on("error", () => { /* handshake timeout reports helper failure */ });
+  if (realpathSync(dir) !== resolve(dir)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+  // This owner is now reachable from a finite native writer. Never chmod or
+  // lock through an aliased/special file; pin the verified inode for flock.
+  const descriptor = openSync(mutexPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
-    waitForTicketTransactionPath(readyPath, "acquire");
-    return operation();
-  } finally {
-    holder.stdin.end("release\n");
+    const mutex = fstatSync(descriptor);
+    if (!mutex.isFile() || mutex.nlink !== 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+    fchmodSync(descriptor, 0o600);
+    const pinnedMutexPath = `/proc/${process.pid}/fd/${descriptor}`;
+    const signalDirectory = mkdtempSync(join(tmpdir(), "pa-ticket-transaction-"));
+    const readyPath = join(signalDirectory, "ready");
+    const donePath = join(signalDirectory, "done");
+    const script = "trap 'rm -f -- \"$1\"; : > \"$2\"' EXIT; : > \"$1\"; IFS= read -r _";
+    const holder = spawn("flock", ["--exclusive", "--wait", String(TICKET_TRANSACTION_MUTEX_TIMEOUT_MS / 1000), pinnedMutexPath, "/bin/sh", "-c", script, "pa-ticket-transaction", readyPath, donePath], {
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    holder.on("error", () => { /* handshake timeout reports helper startup failure */ });
+    holder.stdin.on("error", () => { /* handshake timeout reports helper failure */ });
     try {
-      waitForTicketTransactionPath(donePath, "release");
-    } catch {
-      holder.kill("SIGKILL");
+      waitForTicketTransactionPath(readyPath, "acquire");
+      const currentMutex = statSync(mutexPath);
+      if (realpathSync(dir) !== resolve(dir) || realpathSync(mutexPath) !== mutexPath || currentMutex.dev !== mutex.dev || currentMutex.ino !== mutex.ino || currentMutex.nlink !== 1) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return operation();
+    } finally {
+      holder.stdin.end("release\n");
+      try { waitForTicketTransactionPath(donePath, "release"); }
+      catch { holder.kill("SIGKILL"); }
+      rmSync(signalDirectory, { recursive: true, force: true });
     }
-    rmSync(signalDirectory, { recursive: true, force: true });
-  }
+  } finally { closeSync(descriptor); }
 }
 
 function waitForTicketTransactionPath(path: string, action: string): void {

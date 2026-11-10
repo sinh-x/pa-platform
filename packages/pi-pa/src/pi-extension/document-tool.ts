@@ -6,7 +6,9 @@ import { mutatePiDocument } from "../document-native.js";
 import { runDocumentConfirmationCommand } from "./document-confirmation-command.js";
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { createWorkspaceTool } from "./workspace-tool.js";
-import { DOCUMENT_CONFIRMATION_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
+import { DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, confirmationDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
+import { createPaTicketIntakeTool, ticketIntakeFailure } from "./ticket-intake-tool.js";
+import { createPaCapabilitiesTool } from "./capability-tool.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
 
@@ -33,8 +35,9 @@ export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile =
     },
   };
 }
-export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, workspaceProfile = false): boolean {
+export function documentSessionToolAllowed(call: PiToolCall, repoRoot?: string, workspaceProfile = false, interactionsProfile = false): boolean {
   const name = call.toolName ?? call.name ?? "";
+  if (interactionsProfile && ["pa_ticket_intake", "pa_capabilities"].includes(name)) return true;
   if (workspaceProfile && name === "pa_workspace") return true;
   if (name === "read" && repoRoot && typeof call.input.path === "string") {
     try {
@@ -57,8 +60,25 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     // they cannot authenticate. Register only in a genuine new document route.
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { return; }
-    const confirmationProfile = caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION;
-    const tools = [createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile), ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : [])];
+    const confirmationProfile = confirmationDocumentCaller(caller);
+    const interactionsProfile = caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION;
+    const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile);
+    if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
+    const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : [])];
+    if (interactionsProfile) {
+      const intake = createPaTicketIntakeTool(caller.identitySha256);
+      // Track native registry access through shutdown. A late old-tool call is
+      // denied without touching the closed registry or constructing TicketStore.
+      pi.registerTool?.({ ...intake, execute: async (...args) => {
+        try { return await (lifecycle ? lifecycle.trackRegistryAccess(() => intake.execute(...args)) : intake.execute(...args)); }
+        catch { return ticketIntakeFailure(undefined); }
+      } });
+      const identity = caller.identitySha256;
+      tools.push(createPaCapabilitiesTool(context => {
+        const current = authenticatePiDocumentCaller(context as PiWorkflowContext);
+        return current.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION && current.identitySha256 === identity;
+      }));
+    }
     if (confirmationProfile) pi.registerCommand?.("pa-approve", { description: "Request/reconcile one native package decision. Arguments: strict confirm or confirm-revoke JSON (same pa_document grammar).", handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext)) : runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext) });
     for (const tool of tools) pi.registerTool?.({ ...tool, execute: (...args) => lifecycle ? lifecycle.trackRegistryAccess(() => tool.execute(...args)) : tool.execute(...args) });
   });
@@ -70,6 +90,6 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); }
     catch { return { block: true, reason: "Native document-session identity is unproven; no source/resource capability is granted." }; }
-    return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd, workspaceDocumentCaller(caller)) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
+    return documentSessionToolAllowed(event as PiToolCall, (rawContext as PiWorkflowContext).cwd, workspaceDocumentCaller(caller), caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION) ? undefined : { block: true, reason: "This requirements route supports artifact drafting/context and ticket tools, not shell/source/Git/builder/resource operations. Use pa_document for local supporting operations." };
   });
 };

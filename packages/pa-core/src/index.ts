@@ -1,3 +1,5 @@
+export { createTicketInteraction, parseTicketIntakeRequest, ticketIntakeRequestSchema, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, TICKET_INTAKE_VERSION, type TicketInteractionCaller, type TicketIntakeResult } from "./interactions/tickets.js";
+export { TicketCreateIntentError } from "./tickets/create-intent.js";
 export { INTERACTIONS_VERSION, MAX_INTERACTION_REQUEST_BYTES, InteractionInputError } from "./interactions/contract.js";
 export { createSourceCatalogueReader, InteractionDiscoveryError } from "./interactions/discovery.js";
 export * from "./operations/result.js";

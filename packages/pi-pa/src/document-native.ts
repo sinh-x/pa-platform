@@ -9,7 +9,7 @@ import {
   type DocumentPackageHost, parseDocumentRequest, DOCUMENT_ACTION_FIELDS, workflowObject,
 } from "@pa-platform/pa-core";
 import { createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "./document-confirmation-native.js";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller, DOCUMENT_CONFIRMATION_SESSION_VERSION, workspaceDocumentCaller } from "./document-session.js";
+import { authenticatePiDocumentCaller, assertSameDocumentCaller, confirmationDocumentCaller, workspaceDocumentCaller } from "./document-session.js";
 import { nativeReviewPages, type PiWorkflowContext } from "./workflow-native.js";
 
 /** Native foreground consent. Model JSON has no outcome, actor or permission field. */
@@ -72,9 +72,9 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
   const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
-    confirmationProfile: caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION,
-    ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
-    ...(caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
+    confirmationProfile: confirmationDocumentCaller(caller),
+    ...(confirmationDocumentCaller(caller) ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
+    ...(confirmationDocumentCaller(caller) && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
     capture: createPiDocumentCapture(context, authenticate, signal),
     assertEffectAvailable(subject) {
       authenticate();
@@ -90,7 +90,7 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
     },
   };
   const service = new DocumentPackageService(new RegistryDocumentJournal(getDb()), host);
-  if (caller.profile !== DOCUMENT_CONFIRMATION_SESSION_VERSION) return service.execute(request);
+  if (!confirmationDocumentCaller(caller)) return service.execute(request);
   const parsed = parseDocumentRequest(request);
   if (parsed.action !== "confirm" && parsed.action !== "confirm-revoke") return service.execute(request);
   try { workflowObject(parsed, ["action", ...DOCUMENT_ACTION_FIELDS[parsed.action]!]); }

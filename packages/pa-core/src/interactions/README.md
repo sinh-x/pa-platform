@@ -1,10 +1,12 @@
 # PA interaction foundation (PAP-282)
 
-This directory is a **source-only foundation**, not the completed PAP-282
-interface. It does not execute CLI commands, grant permissions, select a new
-writer profile or alter any retained tool schema. The Pi adapter exposes the
-source reader as `pa_capabilities` only during a native-proven advisory start;
-that registration is not installed qualification or an expanded ticket writer.
+This directory contains a **partial source implementation**, not the completed
+PAP-282 interface or an installed/adopted runtime claim. The catalogue/discovery
+reader is source-only and never grants permissions. A separate finite ticket
+creation service now has an opt-in requirements native port described below.
+Neither surface executes CLI commands or alters a retained tool schema. The Pi
+adapter exposes `pa_capabilities` for native-proven advisory starts and the new
+opt-in document-interactions profile; its target inventory is never live admission.
 
 The approved product scope lives in PAP-282's six-member
 `pap-282-full-cli-interactions/r001` requirements package. This code begins P1;
@@ -24,7 +26,10 @@ it does not replace that package or narrow its acceptance criteria.
   effect variants. `cliForms` are schematic inventory labels, **not runnable
   commands or an argv grammar**. `targetDisposition` is product intent, not
   current availability. No generic forwarding/dispatch exists.
-- `source-inventory.json`: hashes of 39 dispatch/CLI/native owner sources. Tests conservatively
+- `tickets.ts`: strict raw creation request/schema and requirements-only service;
+  current native caller, exact registered project, primary scope, metadata and
+  sensitive-input checks are repeated inside the existing ticket-owner mutex.
+- `source-inventory.json`: hashes of selected dispatch/CLI/native owner sources. Tests conservatively
   require reconciliation when any tracked source changes or a command file is
   added. Hash equality is not semantic coverage, installed provenance or approval.
 
@@ -34,8 +39,8 @@ for native reads: their existing CLI implementations can reconcile lifecycle
 state or remove stale PID state. Signal dry-run
 remains sensitive/operator-only even when it does not persist results.
 
-Every native/delegation binding and operation request/result schema reference is
-currently null. Consumers must not convert a target disposition into an available
+Every native/delegation binding and operation request/result schema reference in
+the source-only catalogue is currently null. Consumers must not convert a target disposition into an available
 tool. `SOURCE_ONLY_AVAILABILITY` keeps configured, installed, session registration,
 availability and admission separate and explicitly unproven/not checked.
 
@@ -50,9 +55,9 @@ as those services are implemented; do not populate references with proposed name
 The source-only reader is not a runtime capability service: role filters,
 visibility/admission observations and installed provenance remain unimplemented.
 The raw JSON TypeBox wrapper is in `packages/pi-pa/src/pi-extension/capability-tool.ts`;
-minimal core exports expose only the reader and bounded input/error contracts.
-Retained document/v1/v2/v3, pinned, unmarked and other non-advisory starts do not
-acquire this new registration or any additional write permissions.
+core exports expose that reader separately from the new finite intake service.
+Retained document/v1/v2/v3, pinned, unmarked and otherwise unselected starts do not
+acquire the new registration or any additional write permissions.
 
 For a changed CLI source, inspect the handler and its affected domain calls,
 reconcile IDs/forms/effect boundaries and add negative tests **before** updating
@@ -60,14 +65,19 @@ its source digest. Never refresh hashes solely to silence a failing test. The
 independent high-risk invariants are additional regression checks, not a complete
 permission engine or exhaustive command parser.
 
-## Ticket-owner creation primitive (not yet a native writer binding)
+## Ticket-owner creation primitive
 
 `TicketStore.createWithIntent` extends the existing ticket owner, not the
 interaction catalogue. It accepts trusted adapter-supplied caller scope, stable
 request ID and a mandatory reauthentication callback under the same mutex used by
-ordinary ticket writers. It is not reachable from a new tool yet; raw request
-validation, role selection, registered-project scope and explicit companion
-intent still belong to the future admitted adapter/service.
+ordinary ticket writers. `tickets.ts` now supplies strict request validation,
+registered-project scope and explicit companion intent; only the separately
+selected new native profile can reach that service through a tool. Existing
+unbound primitive digests remain unchanged. The new adapter also binds the
+canonical raw request digest so a changed kind or text removed by CLI-compatible
+sanitization cannot replay as an unchanged request. The digest is not authority.
+The shared ticket mutex now rejects symbolic/hard-link and special-file aliases
+before changing permissions and pins its verified inode for the flock helper.
 
 The ticket store owns immutable `.ticket-create-<digest>.json` intent records
 beside its existing counter/ticket/audit files. These are idempotency data, **not
@@ -91,12 +101,63 @@ conflicting payloads, stale caller callbacks, corruption and symlinks. They are
 not a genuine native foreground creation journey, exhaustive crash/power-loss
 qualification, source-owner authentication or full CLI/native parity.
 
+## Opt-in native creation slice — source support, not activation
+
+The NEW `requirements/analyze` configuration profile
+`document_profile: pa-document-interactions/v4` selects the native start marker
+`requirements-document-interactions/v4` for an eligible fresh foreground launch.
+It retains v3 package/workspace/confirmation behavior and adds `pa_ticket_intake`
+plus source-only `pa_capabilities`. The caller must match the native registry,
+process incarnation, canonical root, session and registration identity on every
+call and inside the ticket lock. Background, resumed, pinned, inherited, rogue,
+auto/spike and non-requirements starts do not gain this port. Current config is
+not modified or activated by this source change; PAPC composition, exact installed
+pair qualification and operator adoption remain separate.
+
+Retained `pa_ticket` remains read/show/list/comment. Retained document ticketless
+intake, signed package bytes and native decisions are not migrated. Only requested
+idea creation is added, not planning/status/primary/Git/resource/shell operations.
+Cross-project metadata does not access that project's files or alter the primary
+association/root/provider/model. Destination must be an exact registered project
+key with an unambiguous prefix, not a path or fuzzy alias.
+
+Synthetic request for an already-bound new-profile session (not a real ticket or
+authorization; replace project/title with the actual explicitly requested work):
+
+```json
+{"request":"{\"schemaVersion\":\"pa-ticket-intake/v1\",\"action\":\"create\",\"requestId\":\"requested-companion-1\",\"kind\":\"companion\",\"project\":\"other\",\"title\":\"Requested companion\"}"}
+```
+
+A companion requires a valid bound primary; defaults are feature/medium/M/sinh.
+Ordinary `kind=intake` stays in the current project and requires explicit type,
+priority, estimate and assignee, preserving CLI required metadata. Search existing
+work first. The new result returns only actual ID/project, original request ID,
+primary ID, intent-reuse flag and sanitized field names. Text sanitization reuses
+the CLI helper; raw and sanitized content both pass the sensitive-input owner.
+Warnings are versioned data, not prose appended to legacy CLI machine streams.
+After response loss, reconcile the ORIGINAL ID/content. `reusedIntent` does not
+claim recovery performed zero remaining effects. Changed raw payload conflicts;
+unknown owner state is not absence. Public errors are bounded static guidance,
+not raw metadata or exceptions.
+
+Source fixtures exercise real ticket persistence/audit and native registry/process
+identity with a synthetic Pi host, including the source launcher-to-default-port
+path with a simulated provider. They are **not** actual installed/foreground
+human observations. Explicit aligned-existing-ticket reuse, full planning flows,
+all concrete role cells, actual launcher-to-provider/default installed qualification,
+remaining P1 and P3–P7 remain incomplete. No umbrella completion or acceptance follows.
+The external-file-read amendment is outside approved r001 and is not implemented
+or authorized by this creation port.
+
 ## Focused checks
 
 From the repository root:
 
 ```sh
 corepack pnpm exec tsx --test packages/pa-core/src/__tests__/interactions-contract.test.ts packages/pa-core/src/__tests__/interactions-catalogue.test.ts packages/pa-core/src/__tests__/interactions-discovery.test.ts
+corepack pnpm exec tsx --test packages/pa-core/src/__tests__/interactions-ticket.test.ts packages/pa-core/src/__tests__/ticket-create-intent.test.ts
+corepack pnpm --filter @pa-platform/pa-core build
+corepack pnpm exec tsx --test packages/pi-pa/src/__tests__/interactions-ticket-native.test.ts
 corepack pnpm typecheck
 ```
 

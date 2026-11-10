@@ -17,9 +17,9 @@ const operation = (id: string) => {
 test("source catalogue is unique, owner-bound and explicitly not installed or admitted", () => {
   assert.deepEqual(validateInteractionCatalogue(interactionCatalogue), []);
   for (const row of interactionCatalogue) {
-    assert.equal(row.nativeBinding, null, "P1 must not advertise an unregistered new binding");
+    assert.equal(row.nativeBinding, null, "a source-only catalogue must not infer a live registered binding");
     assert.equal(row.delegationBinding, null, "routing intent is not a verified service binding");
-    assert.equal(row.requestSchemaRef, null, "unimplemented family schemas are not fabricated");
+    assert.equal(row.requestSchemaRef, null, "this source-only catalogue does not claim a live family schema binding");
     assert.equal(row.resultSchemaRef, null);
     assert.ok(row.reason.length > 0 && row.supportedNextStep.length > 0);
     assert.ok(row.requiredContext.length > 0);
@@ -60,7 +60,7 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
 });
 
 test("native-only owners are accounted for without inventing CLI commands or grants", () => {
-  for (const id of ["document.native.confirm", "document.native.branch-inspect", "workspace.run", "workflow.native.request-step", "decision.native.adopt", "preparation.retry", "execution.report", "phase-report.observe-delivery", "feature.update", "borrow.approval"]) {
+  for (const id of ["ticket.intake.create", "document.native.confirm", "document.native.branch-inspect", "workspace.run", "workflow.native.request-step", "decision.native.adopt", "preparation.retry", "execution.report", "phase-report.observe-delivery", "feature.update", "borrow.approval"]) {
     const row = operation(id);
     assert.deepEqual(row.channels, ["native"]);
     assert.deepEqual(row.cliForms, []);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, symlinkSync, unlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, symlinkSync, linkSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,6 +22,26 @@ function fixture(run: (store: TicketStore, dir: string) => void): void {
   const dir = join(root, "tickets");
   try { run(new TicketStore(dir), dir); } finally { process.env = env; rmSync(root, { recursive: true, force: true }); }
 }
+
+test("raw request bindings conflict at the original intent while legacy digests remain reusable", () => fixture((store) => {
+  assert.throws(() => store.createWithIntent(input, actor, intent, { requestBinding: "forged", assertCurrent() {} }), /TICKET_CREATE_INPUT/);
+  const first = store.createWithIntent(input, actor, intent, { requestBinding: "a".repeat(64), assertCurrent() {} });
+  assert.equal(store.createWithIntent(input, actor, intent, { requestBinding: "a".repeat(64), assertCurrent() {} }).ticket.id, first.ticket.id);
+  assert.throws(() => store.createWithIntent(input, actor, intent, { requestBinding: "b".repeat(64), assertCurrent() {} }), /TICKET_CREATE_CONFLICT/);
+  assert.throws(() => store.createWithIntent(input, actor, intent, { assertCurrent() {} }), /TICKET_CREATE_CONFLICT/);
+  assert.equal(store.list().length, 1);
+}));
+
+test("ticket transaction mutex rejects symlink and hardlink aliases before chmod or ticket effects", () => {
+  for (const alias of ["symbolic", "hard"] as const) fixture((store, dir) => {
+    const foreign = join(dir, "foreign-mutex.txt"), mutex = join(dir, ".ticket-store-transaction.lock");
+    writeFileSync(foreign, "preserved", { mode: 0o640 });
+    if (alias === "symbolic") symlinkSync(foreign, mutex); else linkSync(foreign, mutex);
+    assert.throws(() => store.createWithIntent(input, actor, intent, { assertCurrent() {} }));
+    assert.equal(readFileSync(foreign, "utf8"), "preserved"); assert.equal(statSync(foreign).mode & 0o777, 0o640);
+    assert.equal(store.list().length, 0);
+  });
+});
 
 test("creation-owner diagnostics are bounded, static and preserve possible partial effects", () => {
   for (const code of ["TICKET_CREATE_INPUT", "TICKET_CREATE_CONFLICT", "TICKET_CREATE_UNCERTAIN"] as const) {
