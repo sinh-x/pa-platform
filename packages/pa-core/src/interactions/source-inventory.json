@@ -30,6 +30,13 @@
     "packages/pi-pa/src/child-reconciliation.ts": "9cf81e91f97a8a2bc283e1a68a443857490e0f17f52dd78413a1e9014d80a03e",
     "packages/pi-pa/src/cli.ts": "f6986ffc20e2c866798dda579f7ab8e29c5e14db8884c4c5902410a9b15f71e7",
     "packages/pi-pa/src/document-cli.ts": "8a3fa327ef08ed3b7d85cc6ea0e600b1d31ce7c6d0dae9b71324f28efa80ec54",
+    "packages/pi-pa/src/pi-extension/advisory.ts": "c8e59c49e4a6f2a164bfb5a63618284e6d51eddc66f77165c21bf67422925fbd",
+    "packages/pi-pa/src/pi-extension/capability-tool.ts": "bd2be6077c2c1dd2bc0c3cff404ad9532406a34ff27af73da4e4fba7d62733ce",
+    "packages/pi-pa/src/pi-extension/dirty-borrow-approval.ts": "ab5953e47ae1ec0b912076345b30d7cdfa56eb6862d38306b6de3cf55dd46b09",
+    "packages/pi-pa/src/pi-extension/document-tool.ts": "6c6c311ffb4ca063bf6f8196765d06f2faf4eddd247456cc25fe7a7d31046e49",
+    "packages/pi-pa/src/pi-extension/prepared-workflow.ts": "6c6bd7df47a39dab078ed7c80a848f3fb08e3f48c4d0fc3754ccc846f2a74713",
+    "packages/pi-pa/src/pi-extension/workflow.ts": "2974ed6cb07be65732fde4c9aabcdebadd8063333aa9eefe0eee352a26b6e37c",
+    "packages/pi-pa/src/pi-extension/workspace-tool.ts": "3a031acd7a0cbb9f1e5a70c0227b9bdeeb2a3e40817d368efaa01486d727e1b8",
     "packages/pi-pa/src/review-preflight.ts": "c0c998b2ea1a509b62f8b6ba3684873906e4fa4ec7f7ac1905f4a9bbfeaa6d16"
   }
 }

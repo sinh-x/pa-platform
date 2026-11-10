@@ -58,6 +58,21 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
   assert.ok(operation("codectx.query.function").aliases.includes("codectx query fn"));
 });
 
+test("native-only owners are accounted for without inventing CLI commands or grants", () => {
+  for (const id of ["document.native.confirm", "document.native.branch-inspect", "workspace.run", "workflow.native.request-step", "decision.native.adopt", "preparation.retry", "execution.report", "phase-report.observe-delivery", "feature.update", "borrow.approval"]) {
+    const row = operation(id);
+    assert.deepEqual(row.channels, ["native"]);
+    assert.deepEqual(row.cliForms, []);
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.nativeForms.length, 1);
+  }
+  assert.equal(operation("execution.report").effectClass, "write", "report publishes durable evidence");
+  assert.equal(operation("document.native.check").effectClass, "read", "structural checks do not freeze snapshots");
+  assert.equal(operation("preparation.status").effectClass, "read");
+  assert.equal(operation("workspace.run").effectClass, "write");
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "workspace.run" ? { ...row, channels: ["cli"] } : row)).includes("invalid-channel"));
+});
+
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   const commandDir = "packages/pa-core/src/cli/commands";

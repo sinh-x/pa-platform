@@ -1,3 +1,5 @@
+export { INTERACTIONS_VERSION, MAX_INTERACTION_REQUEST_BYTES, InteractionInputError } from "./interactions/contract.js";
+export { createSourceCatalogueReader, InteractionDiscoveryError } from "./interactions/discovery.js";
 export * from "./operations/result.js";
 export * from "./operations/evidence.js";
 export * from "./operations/service.js";

@@ -107,6 +107,8 @@ export interface InteractionDescriptor {
   readonly version: typeof INTERACTIONS_VERSION;
   readonly family: string;
   readonly cliForms: readonly string[];
+  readonly nativeForms: readonly string[];
+  readonly channels: readonly ("cli" | "native")[];
   readonly aliases: readonly string[];
   readonly sourceHandler: string;
   readonly effectClass: InteractionEffect;

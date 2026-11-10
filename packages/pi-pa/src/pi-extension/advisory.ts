@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { executeAdvisoryFile, executeOperation, operationExitCode, operationFailure, readAdvisoryStart, resolveAdvisoryOperationHost, type AdvisoryOperationHost } from "@pa-platform/pa-core";
 import { operationAsPiResult } from "./operation-tool.js";
 import type { PiExtensionModule, PiToolDefinition } from "./index.js";
+import { createPaCapabilitiesTool } from "./capability-tool.js";
 
 /** Version dispatch is native registry-owned. Retained built-ins/controllers
  * are not re-registered, reset or translated. All new effects use local custody. */
@@ -42,6 +43,11 @@ export const registerAdvisoryModule: PiExtensionModule = (pi, lifecycle) => {
         },
       });
     }
+    // Additive source metadata only. Retained/unmarked starts keep their old
+    // registrations; this does not select expanded ticket-write permissions.
+    const capabilities = createPaCapabilitiesTool(ctx => { if (!marked()) return false; resolve(ctx); return true; });
+    pi.registerTool({ ...capabilities, execute: (...args) => lifecycle
+      ? lifecycle.trackRegistryAccess(() => capabilities.execute(...args)) : capabilities.execute(...args) });
     installed = true;
   });
   pi.on?.("tool_call", raw => {

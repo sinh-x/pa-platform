@@ -23,7 +23,8 @@ function entry(id: string, forms: readonly string[], effect: InteractionEffect, 
   options: { aliases?: readonly string[]; reason?: string; replacementId?: string } = {}): CatalogueEntry {
   return Object.freeze({
     operationId: id, version: INTERACTIONS_VERSION, family: id.split(".")[0]!,
-    cliForms: Object.freeze([...forms]), aliases: Object.freeze([...(options.aliases ?? [])]),
+    cliForms: Object.freeze([...forms]), nativeForms: Object.freeze([]), channels: Object.freeze(["cli"] as const),
+    aliases: Object.freeze([...(options.aliases ?? [])]),
     sourceHandler: source, effectClass: effect,
     targetDisposition: options.replacementId ? "deprecated" : disposition[route],
     owner, reason: options.reason ?? reasons[route],
@@ -39,6 +40,12 @@ function entry(id: string, forms: readonly string[], effect: InteractionEffect, 
 }
 function family(name: string, owner: string, rows: readonly (readonly [string, readonly string[], InteractionEffect, Route, { aliases?: readonly string[]; reason?: string; replacementId?: string }?])[]): CatalogueEntry[] {
   return rows.map(([id, forms, effect, route, options]) => entry(`${name}.${id}`, forms, effect, route, `${core}${name}.ts`, owner, options));
+}
+
+function nativeEntry(id: string, tool: string, action: string, effect: InteractionEffect, source: string, owner: string): CatalogueEntry {
+  return Object.freeze({ ...entry(id, [], effect, "owner", source, owner),
+    nativeForms: Object.freeze([`${tool}:${action}`]), channels: Object.freeze(["native"] as const),
+  });
 }
 
 export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
@@ -193,6 +200,20 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ...["preflight", "smoke-tools", "teardown-smoke", "setup", "remove"].map(action => entry(`pi.${action}`, [`pi ${action}`], "resource", "operator", `${pi}cli.ts`, "Pi host operator")),
   entry("pi.reconcile-child.inspect", ["pi reconcile-child"], "read", "native", `${pi}child-reconciliation.ts`, "native child reconciliation"),
   entry("pi.reconcile-child.apply", ["pi reconcile-child --apply"], "write", "owner", `${pi}child-reconciliation.ts`, "native foreground child reconciliation"),
+  // Native-only operations are not invented CLI subcommands. Exact profile and
+  // journal semantics remain with these source handlers; no binding is inferred.
+  ...["admit", "revise", "request-step", "reconcile"].map(action => nativeEntry(`workflow.native.${action}`, "pa_workflow", action, "write", `${pi}pi-extension/workflow.ts`, "selected workflow journal")),
+  ...["capture", "recover", "adopt", "revoke"].map(action => nativeEntry(`decision.native.${action}`, "pa_decision", action, "write", `${pi}pi-extension/workflow.ts`, "native foreground decision")),
+  ...["capabilities", "status", "discover", "context", "show", "read", "compare", "branch-inspect", "check"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "read", `${pi}pi-extension/document-tool.ts`, "versioned document session")),
+  ...["ticket-create", "draft", "freeze", "present", "capture", "revoke", "confirm", "confirm-revoke", "publish", "queue"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "write", `${pi}pi-extension/document-tool.ts`, "versioned document package and decision")),
+  ...["capabilities", "read"].map(action => nativeEntry(`workspace.${action}`, "pa_workspace", action, "read", `${pi}pi-extension/workspace-tool.ts`, "versioned document workspace")),
+  ...["write", "import", "run"].map(action => nativeEntry(`workspace.${action}`, "pa_workspace", action, "write", `${pi}pi-extension/workspace-tool.ts`, "confined document workspace")),
+  ...["request", "status", "retry"].map(action => nativeEntry(`preparation.${action}`, "pa_preparation", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "retained preparation owner")),
+  ...["status", "activate", "bind", "deactivate"].map(action => nativeEntry(`workflow-policy.${action}`, "pa_workflow_policy", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "native optional workflow policy")),
+  ...["status", "report", "observe", "plan", "advance", "select", "settle", "attempt", "resolve", "candidate", "accept"].map(action => nativeEntry(`execution.${action}`, "pa_execution", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "retained execution custody")),
+  ...["capture", "observe-delivery", "publish", "status", "settle"].map(action => nativeEntry(`phase-report.${action}`, "pa_phase_report", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "native phase report")),
+  nativeEntry("feature.update", "pa_feature_update", "update", "write", `${pi}pi-extension/prepared-workflow.ts`, "expected-remote feature update"),
+  nativeEntry("borrow.approval", "pa_dirty_borrow_approval", "request", "write", `${pi}pi-extension/dirty-borrow-approval.ts`, "native foreground dirty borrow decision"),
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
@@ -207,8 +228,9 @@ export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): s
     ids.add(row.operationId);
     if (!/^[a-z][a-z0-9.-]{0,127}$/.test(row.operationId) || row.family !== row.operationId.split(".")[0]) issues.add("invalid-identity");
     if (row.version !== INTERACTIONS_VERSION || !INTERACTION_EFFECTS.includes(row.effectClass) || !INTERACTION_DISPOSITIONS.includes(row.targetDisposition)) issues.add("invalid-contract");
-    if (row.cliForms.length === 0) issues.add("missing-cli-form");
-    for (const form of [...row.cliForms, ...row.aliases]) {
+    if (row.cliForms.length === 0 && row.nativeForms.length === 0) issues.add("missing-operation-form");
+    if (row.channels.includes("cli") !== (row.cliForms.length > 0) || row.channels.includes("native") !== (row.nativeForms.length > 0)) issues.add("invalid-channel");
+    for (const form of [...row.cliForms, ...row.nativeForms, ...row.aliases]) {
       if (forms.has(form)) issues.add("duplicate-cli-form");
       forms.add(form);
     }
