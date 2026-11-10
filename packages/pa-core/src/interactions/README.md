@@ -103,6 +103,42 @@ conflicting payloads, stale caller callbacks, corruption and symlinks. They are
 not a genuine native foreground creation journey, exhaustive crash/power-loss
 qualification, source-owner authentication or full CLI/native parity.
 
+## Scalar planning owner foundation — no native mutation port yet
+
+`TicketStore.patchPlanningWithIntent` adds a finite **data-owner** primitive for
+`title`, `summary`, `description`, `priority` and `estimate` only. It is not
+registered in `pa_ticket_intake`, does not add a role permission, and is not the
+complete FR-05 planning journey. Status/assignee, arrays/tags/blockers, comments,
+refs, Git evidence and subtickets are not patch fields. A future native adapter
+must independently authenticate the supported profile, current caller, retained
+ownership and exact project under the same ticket mutex; a callback or snapshot
+hash supplied by a model would not establish those facts.
+
+The primitive accepts the complete normalized ticket version, stable scoped
+request identity, exact finite patch, derived actor and synchronous trusted
+reauthentication callback. Only unclaimed requirements/`sinh` idea or
+requirement-review data without primary/Git evidence is eligible. CAS is a data
+precondition, not lifecycle admission. Unknown fields, invalid/oversized/sensitive
+text, no-op patches, stale versions and protected scope reject. Ordinary CLI
+methods and retained consumers are not redirected through this new method.
+
+Immutable `.ticket-plan-<digest>.json` records precede ticket and audit writes.
+The shared mutex serializes competing CAS updates; each result requires actual
+ticket/audit readback. Original same-intent recovery completes missing proven
+steps, while changed payload/actor/version/raw-input binding conflicts. A missing
+final audit blocks a fresh planning identity for that target. Intervening ordinary
+work is preserved, not rolled back or overwritten to finish an old intent. After
+proven completion, replay returns the current ticket plus the original
+`appliedVersion`, without reverting later changes or appending another audit.
+These records are idempotency data, never approvals or a second permission store.
+
+Source tests cover fault boundaries, real concurrent owner processes, stale CAS,
+same-intent replay, changed caller/policy, pending-intent bypass, corrupt intent,
+symlinks and torn audit. They do not prove crash/power-loss completeness, full
+CLI/native differential parity, current retained-owner eligibility, installed
+native planning or human UAT. Native finite planning and incremental owner flows
+remain first unproven work; no generic raw-update tool is introduced.
+
 ## Opt-in native creation slice — source support, not activation
 
 The NEW `requirements/analyze` configuration profile

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
 import { AdvisoryFiles } from "../operations/files.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { TicketCreateIntentError, creationDigest, creationKey, creationReservations, publishCreationIntent, readCreationIntent, type TicketCreateIntentIdentity, type TicketCreateIntentHooks } from "./create-intent.js";
@@ -154,6 +155,78 @@ export class TicketStore {
       const finalAudits = this.readCreationAudits().entries.filter(row => row.ticket_id === planned.id && row.action === "created");
       if (!persisted || persisted.id !== planned.id || persisted.project !== project || finalAudits.length !== 1 || creationDigest(finalAudits[0]) !== creationDigest(expectedAudit)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
       return { ticket: persisted, reused };
+    });
+  }
+
+  /** Finite scalar planning data primitive, NOT native role/lifecycle authority.
+   * A future admitted adapter must authenticate ownership on every locked callback.
+   * Immutable intent precedes effects; unknown partial state is never rolled back. */
+  patchPlanningWithIntent(id: string, expectedVersion: string, rawPatch: TicketPlanningPatch, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketPlanningHooks): { ticket: Ticket; appliedVersion: string; reused: boolean } {
+    const boundIdentity = Object.freeze({ ...identity }), key = planningKey(boundIdentity), patch = validatePlanningPatch(rawPatch);
+    if (!isCanonicalTicketId(id) || !validPlanningDigest(expectedVersion) || typeof actor !== "string" || !actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)
+      || (hooks.requestBinding !== undefined && !validPlanningDigest(hooks.requestBinding))) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+    const payloadSha256 = creationDigest({ id, expectedVersion, patch, actor, ...(hooks.requestBinding === undefined ? {} : { requestBinding: hooks.requestBinding }) });
+    const assertCurrent = () => {
+      const result: unknown = hooks.assertCurrent();
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+    };
+    const observed = (stage: "intent" | "ticket" | "audit") => {
+      const result: unknown = hooks.afterPersist?.(stage);
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+    };
+    const readAudits = () => {
+      try { return this.readCreationAudits(); } catch { throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN"); }
+    };
+    return this.withTransaction(() => {
+      assertCurrent();
+      let record = readPlanningIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.actor !== actor
+        || record.expectedVersion !== expectedVersion || !isDeepStrictEqual(record.patch, patch))) throw new TicketPlanningIntentError("TICKET_PLAN_CONFLICT");
+      // A missing final audit is a pending owner effect, including when the
+      // candidate ticket is already visible. Fresh IDs may not bypass it.
+      const audits = readAudits().entries;
+      for (const previous of planningIntents(this.dir)) {
+        if (previous.before.id === id && previous.key !== key && !planningAuditComplete(previous, audits)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+      }
+      if (!record) {
+        const before = this.get(id);
+        assertPlanningScope(before, id);
+        if (ticketPlanningVersion(before) !== expectedVersion) throw new TicketPlanningIntentError("TICKET_PLAN_STALE");
+        if (Object.entries(patch).every(([field, value]) => before[field as keyof TicketPlanningPatch] === value)) throw new TicketPlanningIntentError("TICKET_PLAN_INPUT");
+        const after = { ...before, ...patch, updatedAt: nowUtc() };
+        record = { schemaVersion: "pa-ticket-planning-intent/v1", key, ...boundIdentity, payloadSha256, actor, expectedVersion,
+          appliedVersion: ticketPlanningVersion(after), patch, before, after };
+        assertCurrent();
+        if (!isDeepStrictEqual(this.get(id), before)) throw new TicketPlanningIntentError("TICKET_PLAN_STALE");
+        validatePlanningPatch(patch); // Recheck current sensitive-input policy under the owner lock.
+        publishPlanningIntent(this.dir, record);
+        observed("intent");
+      }
+      if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+        || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+      if (!planningAuditComplete(record, readAudits().entries)) {
+        const current = this.get(id);
+        if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+        if (isDeepStrictEqual(current, record.before)) {
+          assertCurrent();
+          if (!isDeepStrictEqual(this.get(id), record.before)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+          validatePlanningPatch(patch);
+          new AdvisoryFiles(this.dir).file(`${id}.json`, JSON.stringify(record.after, null, 2));
+          observed("ticket");
+        }
+        assertCurrent();
+        if (!isDeepStrictEqual(this.get(id), record.after)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+        const previous = readAudits().raw;
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${previous}${JSON.stringify(planningAudit(record))}\n`);
+        observed("audit");
+      }
+      assertCurrent();
+      const persisted = this.get(id);
+      if (!persisted || persisted.id !== id || persisted.project !== record.after.project || !planningAuditComplete(record, readAudits().entries)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
+      return { ticket: persisted, appliedVersion: record.appliedVersion, reused };
     });
   }
 

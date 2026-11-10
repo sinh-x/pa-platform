@@ -43,7 +43,7 @@
     "packages/pa-core/src/cli/core-command.ts": "cd031b376be5226af053a25519a37f0787e740a116312d0802bce6ac0a4515e1",
     "packages/pa-core/src/serve-lifecycle.ts": "55e12e7d1881d3d72f82f46f735ba50c0ca54b16293b931a44c8d3ea4f266cb2",
     "packages/pa-core/src/tickets/create-intent.ts": "eda8a60e05e5cc46d4b71af76aff7e46b6eec1253dbf42625a9bd0ebffd89b26",
-    "packages/pa-core/src/tickets/store.ts": "e631c2c70deba0e6979e30c2f7de855c5ccc653cd546d6a2e6737d479c1e20ce",
+    "packages/pa-core/src/tickets/store.ts": "f8a9c4af3f318d0233f2d103716c8abf968e7529432fcd799dafb43d52c0bc55",
     "packages/pi-pa/src/child-reconciliation.ts": "9cf81e91f97a8a2bc283e1a68a443857490e0f17f52dd78413a1e9014d80a03e",
     "packages/pi-pa/src/cli.ts": "f6986ffc20e2c866798dda579f7ab8e29c5e14db8884c4c5902410a9b15f71e7",
     "packages/pi-pa/src/document-cli.ts": "8a3fa327ef08ed3b7d85cc6ea0e600b1d31ce7c6d0dae9b71324f28efa80ec54",
@@ -54,6 +54,7 @@
     "packages/pi-pa/src/pi-extension/prepared-workflow.ts": "6c6bd7df47a39dab078ed7c80a848f3fb08e3f48c4d0fc3754ccc846f2a74713",
     "packages/pi-pa/src/pi-extension/workflow.ts": "2974ed6cb07be65732fde4c9aabcdebadd8063333aa9eefe0eee352a26b6e37c",
     "packages/pi-pa/src/pi-extension/workspace-tool.ts": "3a031acd7a0cbb9f1e5a70c0227b9bdeeb2a3e40817d368efaa01486d727e1b8",
-    "packages/pi-pa/src/review-preflight.ts": "c0c998b2ea1a509b62f8b6ba3684873906e4fa4ec7f7ac1905f4a9bbfeaa6d16"
+    "packages/pi-pa/src/review-preflight.ts": "c0c998b2ea1a509b62f8b6ba3684873906e4fa4ec7f7ac1905f4a9bbfeaa6d16",
+    "packages/pa-core/src/tickets/planning-intent.ts": "567cc7560c03351f73cc04f945b8864ab6cd4224178580d5f4bfdf59cc98cd3d"
   }
 }
