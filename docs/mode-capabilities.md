@@ -1,6 +1,12 @@
 # Config-owned Pi document capabilities (PAP-289)
 
-Status: config-selected reader **enabled in source for qualification**, not installed
+Current integration disposition: the `d-fbce8c` native foreground read returned
+useful, clipped README content and the operator directed integration to develop.
+See [PAP-289-integration-status.md](PAP-289-integration-status.md) for acceptance,
+exact trial evidence and separate remaining qualification dimensions. The source
+checkpoints below retain their historical statuses.
+
+Status at source checkpoint: config-selected reader **enabled in source for qualification**, not installed
 or qualified by this change. The d-a5f221 amendment's fixed packaged curl/Python
 candidate is documented in [public-web-curl-python.md](public-web-curl-python.md);
 it supersedes the Node-transport/TypeScript-extraction implementation descriptions

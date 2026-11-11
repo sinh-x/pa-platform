@@ -1,6 +1,10 @@
 # Fixed curl + Python reader — PAP-289 amendment
 
-Source candidate for d-cc669b; **not installed qualification or human UAT**.
+Current integration disposition: [PAP-289-integration-status.md](PAP-289-integration-status.md)
+records the later `d-fbce8c` useful native read and operator acceptance for develop.
+The implementation-checkpoint report below is preserved as historical evidence.
+
+Source candidate checkpoint for d-cc669b; **not installed qualification or human UAT**.
 Owning direction: PAP-289 `c-20261111125600417` (d-a5f221), explicitly
 continued by the operator. This preserves r006, the twelve-ID v4 baseline,
 immutable capability selection and the [source-aware response policy](public-web-source-policy.md).
