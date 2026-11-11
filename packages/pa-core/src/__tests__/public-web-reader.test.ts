@@ -69,7 +69,7 @@ test("HTML extraction is inert, bounded, attributed and never claims rendered-pa
   assert.equal(result.evidence, "pi-tool-result:fixture/call-1"); assert.equal(result.textSha256, createHash("sha256").update(result.text).digest("hex"));
   assert.equal(result.coverage.kind, "static-text-not-rendered"); assert.equal(result.coverage.clipped, false); assert.equal(f.requests.length, 1);
   assert.match(result.retrievedAt, /^\d{4}-.*Z$/);
-  for (const html of ['<script>only JS</script>', '<form><input type="password"></form>', '<html>Just a moment... cf-chl-challenge</html>']) assert.throws(() => extractPublicText(html, "text/html"), PublicWebError);
+  for (const html of ['<script>only JS</script>', '<form><input type="password"></form>', '<html>Just a moment... cf-chl-challenge</html>']) await assert.rejects(() => extractPublicText(html, "text/html"), PublicWebError);
 });
 
 test("provider composite call IDs retain exact bounded inert evidence locators; malformed evidence stays pre-network", async () => {
@@ -96,7 +96,7 @@ test("HTML suppression survives self-closing syntax, pseudo end tags and nested 
     const result = await read(fixture(html, "text/html").dependencies);
     assert.equal(result.ok, true, tag);
     if (result.ok) assert.equal(result.text, "Visible article.", tag);
-    assert.throws(() => extractPublicText(`<${tag}/>suppressed payload`, "text/html"), PublicWebError, tag);
+    await assert.rejects(() => extractPublicText(`<${tag}/>suppressed payload`, "text/html"), PublicWebError, tag);
   }
   for (const html of [
     '<div hidden/>suppressed payload</div><p>Visible article.</p>',
@@ -109,15 +109,15 @@ test("HTML suppression survives self-closing syntax, pseudo end tags and nested 
     '<template><iframe>fake </template> end</iframe>suppressed payload</template><p>Visible article.</p>',
     '<div hidden><script>const text = "<style>";</script>suppressed payload</div><p>Visible article.</p>',
   ]) {
-    assert.equal(extractPublicText(html, "text/html").text, "Visible article.", html);
+    assert.equal((await extractPublicText(html, "text/html")).text, "Visible article.", html);
   }
   for (const tag of ["textarea", "title", "xmp", "noembed", "iframe", "noscript"]) {
     const html = `<div hidden><${tag}>fake </div> end</${tag}>suppressed payload</div><p>Visible article.</p>`;
-    assert.equal(extractPublicText(html, "text/html").text, "Visible article.", tag);
+    assert.equal((await extractPublicText(html, "text/html")).text, "Visible article.", tag);
   }
-  assert.throws(() => extractPublicText('<div hidden><plaintext>fake </div> payload', "text/html"), PublicWebError);
+  await assert.rejects(() => extractPublicText('<div hidden><plaintext>fake </div> payload', "text/html"), PublicWebError);
   // Void elements do not own subsequent text, even with a hidden attribute.
-  assert.equal(extractPublicText('<input hidden><img hidden/><p>Visible article.</p>', "text/html").text, "Visible article.");
+  assert.equal((await extractPublicText('<input hidden><img hidden/><p>Visible article.</p>', "text/html")).text, "Visible article.");
 });
 
 test("body/output limits count bytes, code points and serialized tool reply, with explicit clipping", async () => {
@@ -189,5 +189,5 @@ test("end-to-end deadline includes DNS/extraction checkpoints, and sensitive-pol
   const broken = fixture(); broken.dependencies.patterns = () => { throw new Error("private config path must not leak"); };
   const unavailable = await read(broken.dependencies); assert.equal(unavailable.ok, false); if (!unavailable.ok) assert.equal(unavailable.code, "WEB_POLICY");
   assert.equal(broken.requests.length, 0); assert.doesNotMatch(JSON.stringify(unavailable), /private config path/);
-  for (const html of ["Text<!--unfinished", "Text<script>unfinished", 'Text<tag attr="unfinished', "<title>unfinished"]) assert.throws(() => extractPublicText(html, "text/html"), PublicWebError);
+  for (const html of ["Text<!--unfinished", "Text<script>unfinished", 'Text<tag attr="unfinished', "<title>unfinished"]) await assert.rejects(() => extractPublicText(html, "text/html"), PublicWebError);
 });

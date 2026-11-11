@@ -42,6 +42,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Source tests execute the same fixed workers as the Nix runtime; no host
+      # PATH substitute or mocked curl qualifies the process safety boundary.
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Materialize locked public-reader workers
+        run: |
+          nix build --no-link --impure --expr 'let p=(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.x86_64-linux; in [ p.curl p.python3 p.cacert ]'
+
       - name: Typecheck
         run: pnpm run typecheck
 

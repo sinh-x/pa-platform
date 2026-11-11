@@ -117,6 +117,15 @@
           ];
 
           PI_PA_PLUGIN_SELECTION = builtins.toJSON pluginSelection;
+          # Fixed reader workers: exact versions/closure selected by flake.lock.
+          # Written to package metadata at build time, not runtime env overrides.
+          PA_PUBLIC_WEB_BUILD_RUNTIME = builtins.toJSON {
+            curl = "${pkgs.lib.getBin pkgs.curl}/bin/curl";
+            python = "${pkgs.python3}/bin/python3";
+            ca = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            curlVersion = pkgs.curl.version;
+            pythonVersion = pkgs.python3.version;
+          };
 
           passthru = {
             inherit pluginSelection axiSelection selectedAxiTools selectedAxiDependencies treehouse;
@@ -171,6 +180,12 @@
             install -Dm755 scripts/pap-167-pi-retry-smoke.mjs $share/scripts/pap-167-pi-retry-smoke.mjs
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist
+            test -s $share/packages/pa-core/dist/public-web/runtime.json
+            test -s $share/packages/pa-core/dist/public-web/extract.py
+            ${pkgs.python3}/bin/python3 -I -B $share/packages/pa-core/dist/public-web/extract.py text/html <<'EOF' | grep -F 'Packaged reader smoke'
+            <article><h1>Packaged reader smoke</h1></article>
+            EOF
+            ${pkgs.lib.getBin pkgs.curl}/bin/curl -q --version >/dev/null
             cp -r packages/pa-core/node_modules $share/packages/pa-core/node_modules
             cp packages/opencode-pa/package.json $share/packages/opencode-pa/package.json
             cp -r packages/opencode-pa/dist $share/packages/opencode-pa/dist

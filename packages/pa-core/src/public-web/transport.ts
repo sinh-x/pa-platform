@@ -45,7 +45,9 @@ export async function decodePublicBody(raw: Buffer, encoding: string, signal?: A
 export interface PublicTransportDependencies { connect: typeof tlsConnect; request: typeof httpsRequest }
 const transport: PublicTransportDependencies = { connect: tlsConnect, request: httpsRequest };
 
-/** Direct TLS to one previously checked address; no global agent, proxy, cookies or retry. */
+/** Retained Node connector for historical disconnected regression/reference.
+ * The native reader now defaults to fetchCurlPublicHop, not this connector.
+ * Direct TLS to one checked address; no global agent, proxy, cookies or retry. */
 export async function fetchPublicHop(url: URL, address: string, signal: AbortSignal, dependencies: PublicTransportDependencies = transport): Promise<PublicWebResponse> {
   if (url.protocol !== "https:" || url.port || url.username || url.password || !isPublicAddress(address)) throw new PublicWebError("WEB_TARGET");
   if (signal.aborted) throw new PublicWebError("WEB_CANCELLED");

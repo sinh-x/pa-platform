@@ -3,7 +3,8 @@ import { performance } from "node:perf_hooks";
 import { loadSensitivePatterns, type SensitivePatternSet } from "../sensitive-patterns.js";
 import { isPublicAddress, publicHostname, validatePublicUrl } from "./policy.js";
 import { extractPublicText } from "./extract.js";
-import { fetchPublicHop, resolvePublicAddresses } from "./transport.js";
+import { resolvePublicAddresses } from "./transport.js";
+import { fetchCurlPublicHop } from "./curl.js";
 import { PublicWebError, WEB_LIMITS, publicWebFailure, type PublicWebResponse, type PublicWebResult, type PublicWebStage, type PublicWebSuccess, type PublicWebUrlSource } from "./types.js";
 export { WEB_LIMITS, PublicWebError, publicWebDiagnostic } from "./types.js";
 export type { PublicWebResult } from "./types.js";
@@ -13,7 +14,7 @@ export interface PublicWebDependencies {
   patterns: () => SensitivePatternSet;
   now?: () => number;
 }
-const defaults: PublicWebDependencies = { resolve: resolvePublicAddresses, fetch: fetchPublicHop, patterns: loadSensitivePatterns };
+const defaults: PublicWebDependencies = { resolve: resolvePublicAddresses, fetch: fetchCurlPublicHop, patterns: loadSensitivePatterns };
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 function boundResult(result: PublicWebSuccess): PublicWebSuccess {
   const points = Array.from(result.text), fullCount = points.length;
@@ -88,7 +89,7 @@ export async function readPublicWeb(input: string, evidence: string, signal?: Ab
       // Inbound public response content uses the operator-selected source policy,
       // not local-file secret heuristics. This does not relax outbound URL checks,
       // admit another transport/source, execute markup or claim rendered coverage.
-      const extracted = extractPublicText(source, match[1].toLowerCase());
+      const extracted = await extractPublicText(source, match[1].toLowerCase(), controller.signal);
       check();
       const result = boundResult({ schemaVersion: "pa-public-web-result/v1", ok: true, source: "public-web-response", contentPolicy: "public-response-content-allowed/v1", requestedUrl: requested.href, finalUrl: current.href, retrievedAt: new Date().toISOString(), ...extracted,
         evidence, bodySha256: digest(response.body), textSha256: "", digestCoverage: "bodySha256=complete-decoded-response-bytes;textSha256=returned-text-UTF8", cleanup: "settled",

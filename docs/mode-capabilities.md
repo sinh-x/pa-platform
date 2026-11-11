@@ -1,7 +1,10 @@
 # Config-owned Pi document capabilities (PAP-289)
 
 Status: config-selected reader **enabled in source for qualification**, not installed
-or qualified by this change. Current `.4` inbound-content policy and machine
+or qualified by this change. The d-a5f221 amendment's fixed packaged curl/Python
+candidate is documented in [public-web-curl-python.md](public-web-curl-python.md);
+it supersedes the Node-transport/TypeScript-extraction implementation descriptions
+below for the new source candidate, not historical qualification evidence. Current `.4` inbound-content policy and machine
 source labels are defined in [public-web-source-policy.md](public-web-source-policy.md).
 See [current enablement and packaging](#current-enablement-and-packaging--d-b08f19)
 for the policy decision and remaining delivery steps. Historical checkpoints below

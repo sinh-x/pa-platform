@@ -8,7 +8,7 @@ export class PublicWebError extends Error {
 /** Fixed typed facts only: no raw URL, page, exception, credential or formatter effects. */
 export function publicWebDiagnostic(code: PublicWebCode, stage: PublicWebStage, source?: PublicWebUrlSource): string {
   const reasons: Record<PublicWebCode, string> = {
-    WEB_POLICY: "The native sensitive-content policy could not be loaded; no network request is allowed.",
+    WEB_POLICY: "Required reader dependencies or the native sensitive-input policy could not be loaded; this read cannot continue.",
     WEB_INPUT: "The supplied URL or request is outside the supported public HTTPS input contract.",
     WEB_TARGET: "A destination, DNS answer, redirect or TLS peer is outside the public-network safety boundary.",
     WEB_SENSITIVE: "The supplied or redirected URL matched sensitive-input or credential checks; that URL is not requested.",
@@ -19,7 +19,7 @@ export function publicWebDiagnostic(code: PublicWebCode, stage: PublicWebStage, 
     WEB_CANCELLED: "The caller cancelled this read; no complete page text is returned.",
     WEB_TIMEOUT: "The end-to-end deadline expired; no complete page text is returned.",
     WEB_BUSY: "Two reads already own this session's reader capacity; no additional request was started.",
-    WEB_CLEANUP: "Owned network cleanup is unproven; further reads in this session are blocked to avoid duplicate effects.",
+    WEB_CLEANUP: "Owned reader process or network cleanup is unproven; further reads in this session are blocked to avoid duplicate effects.",
   };
   const began = stage === "not-started" ? "not started" : "incomplete";
   const origin = code === "WEB_SENSITIVE" && (source === "supplied-url" || source === "redirect-url") ? `, ${source}` : "";

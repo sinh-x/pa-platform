@@ -1,6 +1,9 @@
 # Public reader source-aware content policy — PAP-289
 
-Status: `.4` source candidate, not installed qualification or human UAT.
+Status: `.4` source-policy checkpoint, not installed qualification or human UAT.
+The later [curl/Python amendment candidate](public-web-curl-python.md) preserves
+this content policy and replaces the extraction/transport workflow. Extraction
+findings below describe the original `.4` checkpoint, not that later candidate.
 Runtime contract: [mode-capabilities.md](mode-capabilities.md).
 
 ## Owning decision and boundary
