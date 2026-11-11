@@ -46,7 +46,9 @@ export async function readPublicWeb(input: string, evidence: string, signal?: Ab
   };
   try {
     check();
-    if (!/^pi-tool-result:[A-Za-z0-9_./:-]{1,256}$/.test(evidence)) throw new PublicWebError("WEB_INPUT");
+    // The opaque transcript locator may contain the provider's composite-ID
+    // separator. It is result data only; never a filesystem or execution target.
+    if (!/^pi-tool-result:[A-Za-z0-9_./:|\-]{1,256}$/.test(evidence)) throw new PublicWebError("WEB_INPUT");
     let patterns: SensitivePatternSet;
     try { patterns = dependencies.patterns(); } catch { throw new PublicWebError("WEB_POLICY"); }
     const requested = validatePublicUrl(input, patterns);

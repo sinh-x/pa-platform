@@ -113,6 +113,9 @@ test("same source launcher admits config-only reader on/off/on with complete bas
         assert.equal(reply.isError, true); assert.equal(denied.code, on ? "WEB_TARGET" : "CAPABILITY_OMITTED");
         if (on) { assert.equal(denied.stage, "not-started"); assert.equal(denied.cleanup, "settled"); }
         assertBlocker(denied.message);
+        // Real OpenAI Responses IDs are composite, not only call_<id>.
+        const composite = await tool.execute("call_fixture|fc_fixture", { url: "https://127.0.0.1/" }, undefined, undefined, context);
+        assert.equal(JSON.parse(composite.content[0]!.text).code, on ? "WEB_TARGET" : "CAPABILITY_OMITTED", "provider ID must reach the existing URL guard, never bypass omission");
         const gates = await host.dispatch("tool_call", { toolName: "pa_web_read", input: { url: "https://127.0.0.1/" } }, context);
         assert.equal(gates.some((entry: any) => entry?.block), !on);
         const before = JSON.stringify(binding);

@@ -135,6 +135,22 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     const page = await reader.execute("page-1", { url: "https://www.public-site.com/" }, undefined, undefined, context);
     assert.equal(page.isError, undefined); assert.match(page.content[0].text, /synthetic value is 42/); assert.equal(fetches, 1);
     assert.equal(JSON.parse(page.content[0].text).evidence, "pi-tool-result:d-289005/page-1");
+    const providerId = "call_f565fca6cce2478bbc77aeccf37d6a2a|fc_020a020a4dae1387016af4483f88bc87d096dfc8e90409de6a";
+    for (const callId of [providerId, `${providerId}/1`, `${"a".repeat(100)}|${"b".repeat(99)}`]) {
+      const retrieved = await reader.execute(callId, { url: "https://github.com/jaredpalmer/kev" }, undefined, undefined, context);
+      assert.equal(retrieved.isError, undefined, retrieved.content[0].text);
+      const result = JSON.parse(retrieved.content[0].text);
+      assert.equal(result.ok, true); assert.match(result.text, /synthetic value is 42/);
+      assert.equal(result.evidence, `pi-tool-result:d-289005/${callId}`);
+    }
+    assert.equal(fetches, 4, "synthetic connector only; no live GitHub request");
+    for (const callId of ["", "a".repeat(201), "call_\nforged", "call_\u001b[31m", "call_\u202e", "call_<markup>"]) {
+      const denied = await reader.execute(callId, { url: "https://github.com/jaredpalmer/kev" }, undefined, undefined, context);
+      assert.equal(denied.isError, true); assert.equal(JSON.parse(denied.content[0].text).code, "WEB_INPUT");
+      assert.equal(fetches, 4); assert.doesNotMatch(denied.content[0].text, /forged|markup/);
+    }
+    const extraInput = await reader.execute(providerId, { url: "https://github.com/jaredpalmer/kev", headers: {} }, undefined, undefined, context);
+    assert.equal(JSON.parse(extraInput.content[0].text).code, "WEB_INPUT"); assert.equal(fetches, 4);
     const switched = { ...context, sessionManager: { getSessionId: () => "different-session" } };
     assert.equal((await reader.execute("page-2", { url: "https://www.public-site.com/" }, undefined, undefined, switched)).isError, true);
     // Same runtime/config omission: neither registration/exposure nor direct invocation grants the reader.
@@ -143,6 +159,6 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     assert.equal((await reader.execute("page-3", { url: "https://www.public-site.com/" }, undefined, undefined, context)).isError, true);
     const omitted = createPublicWebTool("d-289006", context.sessionManager.getSessionId());
     const denial = await omitted.execute("page-4", { url: "https://www.public-site.com/" }, undefined, undefined, context);
-    assert.equal(JSON.parse(denial.content[0].text).code, "CAPABILITY_OMITTED"); assert.equal(fetches, 1);
+    assert.equal(JSON.parse(denial.content[0].text).code, "CAPABILITY_OMITTED"); assert.equal(fetches, 4);
   } finally { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); }
 });

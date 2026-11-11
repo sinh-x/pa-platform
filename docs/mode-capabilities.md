@@ -182,8 +182,11 @@ transport-reuse or installed-parity claim is made.
 Successful results include safe requested/final URLs, UTC time, optional title,
 `bodySha256` of the **complete decoded response bytes**, `textSha256` of the **exact
 returned UTF-8 text**, byte/code-point/redirect coverage and a native tool-result
-locator `pi-tool-result:<deployment>/<toolCallId>`. This locator identifies the
-existing transcript result, not a new persistent cache or an external artifact.
+locator `pi-tool-result:<deployment>/<toolCallId>`. The exact provider tool-call ID
+may include the OpenAI Responses composite separator `|` and a nested `/<n>`
+suffix. It remains bounded inert data, never a filesystem path, shell argument or
+web URL. This locator identifies the existing transcript result, not a new
+persistent cache or an external artifact.
 The coverage kind is always `static-text-not-rendered`; source markup, hidden
 content or a clipped suffix is not claimed visible in the returned text.
 
@@ -290,9 +293,10 @@ not independent human readability review.
 PAPC-081's latest feedback (`c-20261110151652796`) correctly reports that its
 accepted twelve-ID configuration at `95a2bb593a18ef2f8fbbbf337227cb1bf0d1a53e`
 cannot qualify reader-on while the installed runtime unconditionally rejects it.
-This source continuation removes that blocker; it does not change that installed
-artifact or the companion checkout. PAPC's current committed baseline still omits
-the reader, so deploying it unchanged does not grant web access.
+This source continuation removed that blocker; it did not change that installed
+artifact or the companion checkout. At that checkpoint PAPC's committed baseline
+still omitted the reader. Later PAPC activation and the actual native reader trial
+are recorded in the qualification follow-up below.
 
 In this deployment the operator selected **Accept policy; implement enablement**
 after reviewing direct system DNS + HTTPS, network/destination disclosure of
@@ -309,9 +313,11 @@ changes need owning review; this decision does not authorize them.
 Do not patch `review-runtime-provenance.json` or substitute the currently installed
 `0.1.160-pap289.1` build: its `unversioned-dirty-source` metadata remains historical.
 At the operator's follow-up request, the four shared manifests now select
-`0.1.160-pap289.2` for this reader-enabled worktree reference. `runtime-host` keeps
-its independent version. This does not change the installed `.1` trial. Compare
-exact commits, not labels. After the runtime owner commits the reviewed candidate, use an explicit
+`0.1.160-pap289.2` for the first reader-enabled worktree reference. The
+qualification follow-up below advances the source label to `0.1.160-pap289.3`
+for provider tool-call ID compatibility. `runtime-host` keeps its independent
+version. Neither source label changes an existing installation. Compare exact
+commits, not labels. After the runtime owner commits the reviewed candidate, use an explicit
 full `PAP289_SHA` and physical `PAP289_ROOT` for that clean checkout. Package-only
 recipe (not executed here), using the existing release/validation-lane mechanism:
 
@@ -363,6 +369,70 @@ shell or browser to pass. Existing retained/OPA controls, deadlines, cancellatio
 shutdown/reload/replacement, independent review, complete required CI and genuine
 human readability/UAT/adoption remain separate requirements. None was supplied by
 this source-only continuation.
+
+### Qualification follow-up — composite provider tool-call IDs
+
+PAP-289 `c-20261111105014362` records a genuine foreground attempt in
+`d-1842c8`: the native policy binding selects the canonical PAPC commit
+`c0385c1756c203e7754c3ffc5f895a8712e59149`, resource digest
+`11578cebe125e224d66ef39f4b1cc98931cbcba0341c071109201bb99c522eed`,
+all twelve baseline IDs plus the reader, and the tool is actually exposed. That
+supersedes the earlier missing-tool configuration failure, **not** the remaining
+read/qualification requirements. The single read returned `WEB_INPUT`, not-started,
+cleanup settled, with no page request or retrieved content.
+
+Read-only inspection of that deployment's original Pi transcript found the
+`pa_web_read` arguments were exactly the supplied URL, but the provider-generated
+call ID was `call_<id>|fc_<id>`. The pinned Pi AI 0.84.4 Responses adapter constructs
+that exact composite shape. Both `web-read-tool.ts`'s ID validator and
+`public-web/reader.ts`'s evidence-locator validator rejected `|`. Thus a valid
+provider identity was incorrectly reported as bad page input before URL/network
+work. The failure was not evidence of GitHub rejection or an unsafe supplied URL.
+
+The `.3` source repair admits **only** that additional separator in both existing
+finite character sets; it preserves the exact transcript key without splitting,
+replacement, hashing or a new mapping ledger. Existing 200-character call-ID and
+256-character locator-suffix bounds remain, as do control/markup rejection and
+strict URL-only request shape. Native identity/capability checks still precede
+validation, and all URL/DNS/IP/TLS/redirect/credential/content/limit/lifecycle guards
+are unchanged. Composite IDs do not become execution targets or authority.
+
+Before: the observed provider ID and valid supplied URL returned `WEB_INPUT` before
+network work. After (source fixtures only): the same ID reaches the existing URL
+checks; a synthetic public response returns its exact locator, while literal
+loopback still returns `WEB_TARGET`, and omission still returns
+`CAPABILITY_OMITTED`. Diagnostics and result schemas/streams are unchanged. Human
+readability and installed behavior remain separate from structural assertions.
+
+Regression coverage includes the exact observed call ID, nested IDs, boundary
+lengths, controls/markup/oversize IDs rejected without connector calls, unchanged
+plain IDs/extra-field rejection, and real source-launcher/default tool composition
+with a composite ID and an unsafe URL. Initial red runs: core reader 8 passed/1
+failed; Pi native/launcher 3 passed/2 failed. Both validators required repair;
+accepting the delimiter in only the adapter would still fail in core. Synthetic
+fixtures return explicitly synthetic text: no live GitHub request was made.
+
+Actual ordered local checks on `.3` source: `NO_COLOR=1 corepack pnpm build` and
+`NO_COLOR=1 corepack pnpm typecheck` passed. Core
+`corepack pnpm --filter @pa-platform/pa-core exec tsx --test --test-concurrency=1`
+with `src/__tests__/{public-web-reader,public-web-transport,mode-capabilities,interactions-catalogue}.test.ts`
+passed 26/26; Pi equivalent with
+`src/__tests__/{public-web-launch,mode-capability-session,document-session,document-native,document-workspace-dispatch,document-confirmation-native,document-confirmation-entry,interactions-discovery-native,interactions-ticket-native,pi-extension-composition,pi-native-host}.test.ts`
+passed 61/61, all with `NO_COLOR=1`, no failures/skips. Logs:
+`/tmp/pap289-composite-{core,pi}-final.log`; original red logs:
+`/tmp/pap289-composite-{core,pi}-red.log`. Full regression/hosted CI, Nix packaging,
+installed execution and human review were not rerun for this repair. Earlier
+aggregate/build timeouts remain historical incomplete evidence, not passes.
+
+The worktree reference is now `0.1.160-pap289.3` across four shared manifests;
+`runtime-host` remains independently versioned. The installed `.2` artifact is not
+modified by these edits. Next delivery is a separately built/selected repaired
+runtime, then a new normally admitted foreground attempt under the already-recorded
+bounded supplied-URL trial scope. Preserve the original denial, do not substitute
+shell HTTP, and do not infer success: actual page contents/citation, same-installed-
+binary on/off/on, full regressions, independent review and human UAT remain due.
+PAPC's recorded trial-only dirty-source exception remains distinct from verified
+clean-source provenance and is not reopened by this diagnosis.
 
 ### Local source verification for d-b08f19
 

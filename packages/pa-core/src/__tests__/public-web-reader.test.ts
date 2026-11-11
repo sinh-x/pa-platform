@@ -72,6 +72,24 @@ test("HTML extraction is inert, bounded, attributed and never claims rendered-pa
   for (const html of ['<script>only JS</script>', '<form><input type="password"></form>', '<html>Just a moment... cf-chl-challenge</html>']) assert.throws(() => extractPublicText(html, "text/html"), PublicWebError);
 });
 
+test("provider composite call IDs retain exact bounded inert evidence locators; malformed evidence stays pre-network", async () => {
+  const f = fixture(); let lookups = 0;
+  f.dependencies.resolve = async () => { lookups++; return ["93.184.216.34"]; };
+  for (const evidence of ["pi-tool-result:d-1842c8/call_fixture|fc_fixture", "pi-tool-result:d-1842c8/call_fixture|fc_fixture/1", `pi-tool-result:${"a".repeat(255)}|`]) {
+    const result = await readPublicWeb(safe, evidence, undefined, f.dependencies);
+    assert.equal(result.ok, true, evidence);
+    if (result.ok) assert.equal(result.evidence, evidence, "locator preserves the transcript ID without splitting or lossy replacement");
+  }
+  assert.equal(lookups, 3); assert.equal(f.requests.length, 3);
+  for (const evidence of ["pi-tool-result:call\nforged", "pi-tool-result:call\u001b[31m", "pi-tool-result:call\u202e", "pi-tool-result:call<markup>", `pi-tool-result:${"a".repeat(256)}|`, "https://untrusted.example/locator"]) {
+    const result = await readPublicWeb(safe, evidence, undefined, f.dependencies);
+    assert.equal(result.ok, false);
+    if (!result.ok) { assert.equal(result.code, "WEB_INPUT"); assert.equal(result.stage, "not-started"); assert.equal(result.cleanup, "settled"); }
+    assert.equal(lookups, 3); assert.equal(f.requests.length, 3);
+    assert.ok(!JSON.stringify(result).includes("forged"));
+  }
+});
+
 test("HTML suppression survives self-closing syntax, pseudo end tags and nested active text", async () => {
   for (const tag of ["script", "style", "template", "iframe", "object", "form", "noscript"]) {
     const html = `<${tag}/>suppressed payload</${tag}><p>Visible article.</p>`;

@@ -33,7 +33,10 @@ export function createPublicWebTool(deploymentId: string, sessionId: string, lif
         const caller = authenticatePiDocumentCaller(context as PiWorkflowContext);
         if (caller.deploymentId !== deploymentId || caller.sessionId !== sessionId || registeredOwner.sessionId !== sessionId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
         if (!capabilityToolSelected(caller.capabilities.policy, "pa_web_read")) throw new ModeCapabilityError("CAPABILITY_OMITTED");
-        if (Object.keys(input).length !== 1 || typeof input.url !== "string" || !/^[A-Za-z0-9_./:-]{1,200}$/.test(toolCallId)) {
+        // Pi/OpenAI Responses supplies call_<id>|fc_<id> (and nested /<n>)
+        // identities. Preserve that exact transcript key as inert bounded data,
+        // not a path/command, without accepting controls or unbounded IDs.
+        if (Object.keys(input).length !== 1 || typeof input.url !== "string" || !/^[A-Za-z0-9_./:|\-]{1,200}$/.test(toolCallId)) {
           const result = { schemaVersion: "pa-public-web-result/v1", ok: false, code: "WEB_INPUT", stage: "not-started", cleanup: "settled", message: publicWebDiagnostic("WEB_INPUT", "not-started") };
           return { content: [{ type: "text", text: JSON.stringify(result) }], details: {}, isError: true };
         }
