@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { MODE_CAPABILITY_SESSION, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
 import { loadReposYaml } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import { sanitizeTextInput } from "../deploy/control.js";
@@ -15,6 +16,15 @@ export const TICKET_INTERACTIONS_PROFILE = "requirements-document-interactions/v
 export const TICKET_INTAKE_VERSION = "pa-ticket-intake/v1" as const;
 export interface TicketInteractionCaller {
   profile: string; deploymentId: string; repoKey: string; ticket: string | null; identitySha256: string;
+  capabilities?: ModeCapabilityBinding;
+}
+/** Trusted adapter supplies the authenticated native caller, never request JSON.
+ * The policy route keeps its own identity; it is not impersonated as retained v4. */
+export function ticketInteractionProfileSelected(caller: { profile?: string; capabilities?: ModeCapabilityBinding }): boolean {
+  if (caller.profile === TICKET_INTERACTIONS_PROFILE) return caller.capabilities === undefined;
+  if (caller.profile !== MODE_CAPABILITY_SESSION || !caller.capabilities) return false;
+  try { return capabilityToolSelected(parseModeCapabilityBinding(caller.capabilities).policy, "pa_ticket_intake"); }
+  catch { return false; }
 }
 export type TicketInteractionCode = "TICKET_INTERACTION_INPUT" | "TICKET_INTERACTION_SESSION" | "TICKET_INTERACTION_PROJECT" | "TICKET_INTERACTION_SENSITIVE" | "TICKET_INTERACTION_UNCERTAIN" | "TICKET_INTERACTION_SELECTION" | "TICKET_INTERACTION_STALE" | "TICKET_INTERACTION_OWNER";
 const reasons: Record<TicketInteractionCode, string> = {
@@ -150,11 +160,12 @@ export function parseTicketIntakeOperation(raw: string | Uint8Array): TicketInta
 /** Pure metadata: no store construction, probing, configuration/registry access,
  * effects, or installed/permission claims. The native adapter separately checks
  * its current caller before returning this interface description. */
-export function ticketIntakeInterface() {
+export function ticketIntakeInterface(profile: string = TICKET_INTERACTIONS_PROFILE) {
   return Object.freeze({
     schemaVersion: "pa-ticket-intake-capabilities/v1", scope: "intake-interface-only",
     supportedActions: Object.freeze(["capabilities", "inspect", "reuse", "create", "patch-planning"] as const),
-    requiredNativeProfile: TICKET_INTERACTIONS_PROFILE,
+    requiredNativeProfile: profile === MODE_CAPABILITY_SESSION ? MODE_CAPABILITY_SESSION : TICKET_INTERACTIONS_PROFILE,
+    ...(profile === MODE_CAPABILITY_SESSION ? { requiredCapability: "ticket.intake" } : {}),
     schemas: Object.freeze({ capabilities: ticketIntakeCapabilitiesRequestSchema, inspect: ticketIntakeInspectSchema, reuse: ticketIntakeReuseSchema, create: ticketIntakeRequestSchema, "patch-planning": ticketPlanningRequestSchema }),
     selection: Object.freeze({ effect: "read-only", version: "complete ticket snapshot bound to current native caller; not permission",
       reuse: "Exact selected ID/project plus inspected expectedVersion/title/type; no fuzzy matching, mutation, claim or primary reassociation.",
@@ -246,7 +257,7 @@ export function patchTicketPlanningInteraction(raw: string | Uint8Array, owner: 
     ticket: { id: result.ticket.id, project: result.ticket.project }, appliedVersion: result.appliedVersion, reusedIntent: result.reused };
 }
 function validateTicketScope(request: { project: string; kind: "intake" | "companion" }, current: TicketInteractionCaller, caller: TicketInteractionCaller, store: Pick<TicketStore, "get">): void {
-  if (!current || current.profile !== TICKET_INTERACTIONS_PROFILE || !/^d-[a-f0-9]{6}$/.test(current.deploymentId)
+  if (!current || !ticketInteractionProfileSelected(current) || !/^d-[a-f0-9]{6}$/.test(current.deploymentId)
     || !/^[a-f0-9]{64}$/.test(current.identitySha256) || current.identitySha256.length !== 64 || !isDeepStrictEqual(current, caller)) fail("TICKET_INTERACTION_SESSION");
   const repos = loadReposYaml(), destination = repos[request.project];
   if (!Object.hasOwn(repos, current.repoKey) || !Object.hasOwn(repos, request.project) || !destination?.prefix || !/^[A-Z][A-Z0-9]*$/.test(destination.prefix)

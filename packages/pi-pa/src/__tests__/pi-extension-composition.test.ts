@@ -35,7 +35,7 @@ beforeEach(() => {
   process.env = { ...surroundingEnvironment };
   // Isolation must cover lifecycle dispatch as well as factory registration.
   // No live registry identity belongs to these synthetic legacy hosts.
-  delete process.env.PA_DEPLOYMENT_ID;
+  for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE"]) delete process.env[key];
 });
 afterEach(() => { process.env = surroundingEnvironment; });
 
@@ -44,9 +44,8 @@ afterEach(() => { process.env = surroundingEnvironment; });
 function registerPiSessionModules(...args: Parameters<typeof registerSessionModules>): void {
   const original = process.env;
   process.env = { ...original, PA_TEAM: "fixture", PA_MODE: "fixture" };
-  // A legacy composition fixture must not inherit the surrounding deployment's
-  // native advisory start. Otherwise registry-owned optional tools legitimately
-  // register before this fixture even dispatches session_start.
+  // Native optional routes follow immutable registry starts, not role env labels.
+  // This legacy-only fixture must not borrow the surrounding live deployment.
   delete process.env.PA_DEPLOYMENT_ID;
   try { registerSessionModules(...args); } finally { process.env = original; }
 }

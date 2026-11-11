@@ -122,6 +122,8 @@ export function createDefaultOpencodeHooks(): CoreExecutionHooks {
   return createOpencodeHooks();
 }
 
+import { modeCapabilityDiagnostic } from "@pa-platform/pa-core";
+
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter(), diagnostics?: DeployDiagnostics) {
   let priorSession: string | undefined;
   try {
@@ -139,6 +141,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   let selectedMode: DeployMode | undefined;
   try {
     selectedMode = resolveDeployMode(teamConfig, request.mode);
+    if (selectedMode?.capability_policy !== undefined) return { status: "failed" as const, team: request.team, mode: selectedMode.id, reason: modeCapabilityDiagnostic("CAPABILITY_PROFILE") };
     assertDeployResumeMode(teamConfig, request.resume);
   }
   catch (error) {

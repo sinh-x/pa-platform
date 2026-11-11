@@ -24,6 +24,36 @@ The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same fo
 
 The PAP-283 worktree trial label is `0.1.156-pap283.1`, set across those same four manifests for operator trial installation. `ppa --version` must display `ppa 0.1.156-pap283.1`; Nix also uses this label in the package name. `packages/runtime-host` stays independently versioned. Build the clean exact label commit, not a dirty/unversioned path. This version-only change does not alter dependency/lockfile/Nix hashes, resolve the still-pending PAPC opt-in pairing, or grant installation/activation or product acceptance.
 
+The PAP-289 integration candidate restores plain `0.1.160` across the four shared
+manifests for the normal develop auto-patch flow. Operator acceptance follows the
+actual `d-fbce8c` native supplied-page read; evidence boundaries are recorded in
+[PAP-289-integration-status.md](PAP-289-integration-status.md). The historical `.5`
+trial and its provenance are not changed by integration or a later auto bump.
+
+The PAP-289 worktree trial reference label was `0.1.160-pap289.5` across the four
+shared manifests, selected by the operator for installation identification of the
+[fixed curl/Python workflow](public-web-curl-python.md). Expect a separately rebuilt
+CLI to display `ppa 0.1.160-pap289.5`; verify its exact clean source commit and worker
+manifest as well. `runtime-host` is unchanged. The preceding exact-source `.4`
+package attempt timed out; no `.5` package, installation or acceptance is implied.
+
+The preceding PAP-289 worktree reference label was `0.1.160-pap289.4` across the four
+shared manifests. It implements the operator-selected
+[public-response content policy](public-web-source-policy.md), preserving local-file
+and supplied/redirect URL protections. Expect a separately built source CLI to
+display `ppa 0.1.160-pap289.4`. It retains the `.3` repair for composite provider IDs;
+the previous `.2` label followed source reader enablement in
+`303106e62abbdf1fe9d5e035a42df7328c817bd5`. `runtime-host` remains independently versioned.
+Reader enablement and the clean exact-Git build/provenance recipe are documented in
+[mode-capabilities.md](mode-capabilities.md#current-enablement-and-packaging--d-b08f19).
+Use the new clean label commit as the exact build revision; `.4` is not an installed
+artifact, qualification/UAT pass, release/tag or config-pin/dependency-hash change.
+The installed `.3` trial is unchanged. The following historical label-only record
+predates enablement; its outstanding-policy/gate statements describe that earlier
+checkpoint, not the new source candidate.
+
+The PAP-289 worktree trial label is `0.1.160-pap289.1`, set across the same four manifests at the operator's request so a separately installed worktree build is identifiable. Expect `ppa --version` to display `ppa 0.1.160-pap289.1`; verify `packageVersion` and the clean label commit's exact `sourceSha` in `share/pa-platform/review-runtime-provenance.json` as well. `packages/runtime-host` remains independently versioned. This label does not enable the staged public reader or complete PAPC composition, egress/retention approval, independent review/CI, installed qualification or human UAT. No installation, config-pin, dependency/lockfile/Nix hash, release/tag or rebase change follows from this version-only update. Restore the current plain develop version before integration; the requested updated-develop rebase remains outstanding.
+
 The PAP-283 integration candidate restores plain `0.1.156` for the normal `develop` auto-patch flow. The historical labelled artifact remains bound to `e8602d710be6faae65a81e99014c825e91058164`; neither integration nor a subsequent auto bump changes that installed trial or transfers its qualification.
 
 After separately installing the labelled artifact, run the following to compare the selected installed package with that exact trial commit (not a moving branch HEAD):

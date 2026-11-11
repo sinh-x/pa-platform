@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
+import { MODE_CAPABILITY_PROFILE, parseModeCapabilityPolicy, selectedCapabilityTools } from "../mode-capabilities.js";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
@@ -79,7 +80,12 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ] : []),
     ...(document ? [
       "## Requirements supporting capabilities",
-      ...(mode?.document_profile === "pa-document-confirmation/v3" || mode?.document_profile === "pa-document-interactions/v4" ? [
+      ...(mode?.document_profile === MODE_CAPABILITY_PROFILE ? [
+        "Native profile: pa-document-policy/v1. PAPC selects exact capabilities; the native launch binds this selection immutably. This is not a retained v1/v2/v3/v4 session upgrade.",
+        `Selected capability IDs: ${JSON.stringify(parseModeCapabilityPolicy(mode.capability_policy).allow)}. Selected tools: ${JSON.stringify(selectedCapabilityTools(parseModeCapabilityPolicy(mode.capability_policy)))}. An empty set grants no model tools. Omitted tools cannot be invoked by aliases, delegation or reload.`,
+        "Use only selected tools with their native schemas and effect owners. Package confirmation preserves the original request revision/scope; ticket intake preserves original request IDs/content and inspected versions for native CAS recovery. Source discovery is source-only inventory, not installed availability or authority. These semantics do not grant an omitted capability or bypass existing approval, path, secret, workspace or cleanup controls.",
+        "No shell, product/Git writes, builder preparation or resource operations are granted. Existing sessions never widen from config edits. Source support is not installed qualification, public-egress activation or human UAT; follow the separately selected PAPC process.",
+      ] : mode?.document_profile === "pa-document-confirmation/v3" || mode?.document_profile === "pa-document-interactions/v4" ? [
         ...(mode?.document_profile === "pa-document-interactions/v4" ? [
           "Native profile: pa-document-interactions/v4. Additive pa_ticket_intake accepts one raw pa-ticket-intake/v1 creation request with stable requestId, kind=intake|companion, exact registered project and title. Search existing work first. The same port supports action=inspect with exact kind/project/ticket, then action=reuse with inspected expectedVersion/expectedTitle/expectedType. Both are read-only: no claim, mutation or primary reassociation. A changed ticket/caller makes reuse stale; reinspect rather than guessing. Intake requires explicit type/priority/estimate/assignee; companion requires a bound primary and defaults feature/medium/M/sinh. Preserve the original ID/content after response loss; changed content conflicts. Returned ID is actual ticket-owner readback, not a primary association or lifecycle change. For limited action=patch-planning, inspect also returns snapshotVersion; send requestId, exact kind/project/ticket, expectedVersion=version, expectedSnapshotVersion=snapshotVersion, and a nonempty patch of title/summary/description/priority/estimate only. Current caller/project and eligible unclaimed planning scope are rechecked inside the ticket mutex; any other current/historical deployment association blocks this narrow port and needs its original owner. Preserve ORIGINAL ID, both versions and patch on recovery; completed replay preserves later work. Arrays/tags/blockers/status/assignee/refs/Git/resource and other-role ports remain unimplemented. pa_capabilities is SOURCE-ONLY target inventory, not actual installed/admitted support. No shell fallback, root/actor/approval overrides or external file-read grant. No selected config/pair adoption is implied by source support.",
         ] : []),

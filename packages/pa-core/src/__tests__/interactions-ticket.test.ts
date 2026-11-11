@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { TicketStore } from "../tickets/store.js";
+import { MODE_CAPABILITY_SESSION, createModeCapabilityBinding, parseModeCapabilityPolicy } from "../mode-capabilities.js";
 import { patchTicketPlanningInteraction, createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, ticketIntakeRequestSchema, type TicketInteractionCaller } from "../interactions/tickets.js";
 
 const request = { schemaVersion: "pa-ticket-intake/v1", action: "create", requestId: "requested-companion-1", kind: "companion", project: "other", title: "Explicit companion", summary: "Requested work", description: "Source fixture, not customer data" };
 function fixture(run: (store: TicketStore, caller: TicketInteractionCaller, dir: string) => void): void {
+  for (const profile of [TICKET_INTERACTIONS_PROFILE, MODE_CAPABILITY_SESSION]) fixtureProfile(profile, run);
+}
+function fixtureProfile(profile: string, run: (store: TicketStore, caller: TicketInteractionCaller, dir: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-intake-service-")), env = process.env;
   process.env = { ...env, PA_PLATFORM_CONFIG: join(root, "config"), PA_AI_USAGE_HOME: root };
   delete process.env.PA_DEPLOYMENT_ID;
@@ -15,11 +19,24 @@ function fixture(run: (store: TicketStore, caller: TicketInteractionCaller, dir:
   writeFileSync(join(process.env.PA_PLATFORM_CONFIG!, "repos.yaml"), "repos:\n  sample:\n    path: /tmp/sample\n    prefix: SMP\n  other:\n    path: /tmp/other\n    prefix: OTH\n");
   const dir = join(root, "tickets"), store = new TicketStore(dir);
   const parent = store.create({ project: "sample", title: "Primary", summary: "", description: "", status: "idea", priority: "medium", type: "feature", assignee: "sinh", estimate: "M", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] });
-  const caller: TicketInteractionCaller = { profile: TICKET_INTERACTIONS_PROFILE, deploymentId: "d-abcdef", repoKey: "sample", ticket: parent.id, identitySha256: "a".repeat(64) };
+  const caller: TicketInteractionCaller = { profile, deploymentId: "d-abcdef", repoKey: "sample", ticket: parent.id, identitySha256: "a".repeat(64),
+    ...(profile === MODE_CAPABILITY_SESSION ? { capabilities: createModeCapabilityBinding("a".repeat(40), Buffer.from("synthetic config"), parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: ["ticket.intake"] })) } : {}) };
   try { run(store, caller, dir); } finally { process.env = env; rmSync(root, { recursive: true, force: true }); }
 }
 
-test("intake interface discovery is strict bounded metadata, not an effect or installed/admitted claim", () => {
+test("policy intake needs its exact selected binding even inside the ticket owner mutex", () => fixtureProfile(MODE_CAPABILITY_SESSION, (store, caller) => {
+  const omitted = createModeCapabilityBinding("a".repeat(40), Buffer.from("synthetic omitted"), parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: ["capability.discover"] }));
+  const audit = store.readAudit(), count = store.list().length;
+  for (const current of [{ ...caller, capabilities: undefined }, { ...caller, capabilities: omitted }, { ...caller, profile: TICKET_INTERACTIONS_PROFILE }, { ...caller, profile: "requirements-document-confirmation/v3" }]) {
+    assert.throws(() => createTicketInteraction(JSON.stringify(request), { store, authenticate: () => current }), /TICKET_INTERACTION_SESSION/);
+    assert.deepEqual(store.readAudit(), audit); assert.equal(store.list().length, count);
+  }
+  let checks = 0;
+  assert.throws(() => createTicketInteraction(JSON.stringify(request), { store, authenticate: () => ++checks === 1 ? caller : { ...caller, capabilities: omitted } }), /TICKET_INTERACTION_SESSION/);
+  assert.ok(checks >= 2); assert.deepEqual(store.readAudit(), audit); assert.equal(store.list().length, count);
+}));
+
+test("intake interface discovery is strict bounded metadata, not an effect or installed/admitted claim",  () => {
   const raw = JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities" });
   assert.equal(parseTicketIntakeOperation(raw).action, "capabilities");
   assert.equal(parseTicketIntakeOperation(JSON.stringify(request)).action, "create");

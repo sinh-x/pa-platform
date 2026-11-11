@@ -83,6 +83,7 @@ export interface ExecutionPlan {
   readonly repositoryAdmission: RepositoryAdmissionEvidence;
   readonly treehouse?: TreehouseLaunchEvidence;
   readonly ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
+  readonly modeCapabilityBinding?: import("../mode-capabilities.js").ModeCapabilityBinding;
   readonly reviewCheckout?: ReviewCheckoutEvidence;
   readonly rogue_one?: true;
   readonly invocation_channel?: DeploymentInvocationChannel;
@@ -122,8 +123,11 @@ export interface ResolveExecutionPlanOptions {
   treehouse?: TreehouseLaunchEvidence;
   /** Authenticated by the PPA CLI adapter, not accepted from the Agent API. */
   ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
+  modeCapabilityBinding?: import("../mode-capabilities.js").ModeCapabilityBinding;
   reviewCheckout?: ReviewCheckoutEvidence;
 }
+
+import { parseModeCapabilityBinding } from "../mode-capabilities.js";
 
 export function withAuthoritativeRepositoryAdmission(
   plan: ExecutionPlan,
@@ -247,6 +251,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     registryDbPath: options.registryDbPath ?? getRegistryDbPath(),
     terminalMarker: resolve(options.deploymentDir, "terminal.json"),
   });
+  if (options.modeCapabilityBinding && (options.runtime !== "pi" || options.teamConfig.name !== "requirements" || modeName !== "analyze" || options.request.resume || options.request.background || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout || options.mode?.document_profile !== "pa-document-policy/v1" || JSON.stringify(options.mode.capability_policy) !== JSON.stringify(options.modeCapabilityBinding.policy))) throw new Error("capability selection requires its authenticated fresh Pi document route");
   return Object.freeze({
     runtime: options.runtime,
     team: options.teamConfig.name,
@@ -263,6 +268,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.treehouse ? { treehouse: Object.freeze({ ...options.treehouse }) } : {}),
     ...(options.ticketWorktreeSelection ? { ticketWorktreeSelection: Object.freeze({ ...options.ticketWorktreeSelection }) } : {}),
     ...(options.reviewCheckout ? { reviewCheckout: Object.freeze({ ...options.reviewCheckout }) } : {}),
+    ...(options.modeCapabilityBinding ? { modeCapabilityBinding: parseModeCapabilityBinding(options.modeCapabilityBinding) } : {}),
     // Channel is launch evidence for every route, not a rogue-one capability.
     // In particular, setup must retain the CLI owner's channel in its immutable
     // started event; the native consumer must never infer it from a null row.

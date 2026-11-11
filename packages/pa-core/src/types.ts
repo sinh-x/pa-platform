@@ -38,7 +38,8 @@ export interface DeployMode {
   project_guides?: Record<string, string[]>;
   require_ticket?: boolean;
   /** Versioned paired PAPC opt-in; native launch still authenticates the route. */
-  document_profile?: "pa-document-package/v1" | "pa-document-workspace/v2" | "pa-document-confirmation/v3" | "pa-document-interactions/v4";
+  document_profile?: "pa-document-package/v1" | "pa-document-workspace/v2" | "pa-document-confirmation/v3" | "pa-document-interactions/v4" | "pa-document-policy/v1";
+  capability_policy?: import("./mode-capabilities.js").ModeCapabilityPolicy;
 }
 
 export interface HierarchyMember {
@@ -117,6 +118,8 @@ export interface EvaluatorResult {
 }
 
 export interface RegistryEvent {
+  /** Immutable native selection, not effect authority. */
+  mode_capability_binding?: string;
   /** Immutable serialized selection-only context; never a builder capability. */
   ticket_worktree_selection?: string;
   review_checkout?: import("./deploy/correlation.js").ReviewCheckoutCorrelationEvidence;
@@ -219,6 +222,7 @@ export interface ReviewAuthorizationClaim {
 }
 
 export interface DeploymentStatus {
+  mode_capability_binding?: string;
   /** Immutable serialized selection-only context; absent on ordinary launches. */
   ticket_worktree_selection?: string;
   review_checkout?: import("./deploy/correlation.js").ReviewCheckoutCorrelationEvidence;

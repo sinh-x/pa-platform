@@ -761,13 +761,13 @@ function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent)
       primer, agents, models, error, exit_code, ticket_id, previous_ticket_id, actor, reason, provider, rating,
       objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
       treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
-      mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel, ticket_worktree_selection
+      mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel, ticket_worktree_selection, mode_capability_binding
     ) VALUES (
       @review_checkout, @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @previous_ticket_id, @actor, @reason, @provider, @rating,
       @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
       @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
-      @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel, @ticket_worktree_selection
+      @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel, @ticket_worktree_selection, @mode_capability_binding
     )
   `).run(row);
 }
@@ -848,7 +848,7 @@ export function queryReadonlyRepoSetupLaunch(deployId: string): DeploymentStatus
     if (starts.length !== 1) throw new RepoSetupLaunchError("launch-ambiguous");
     if (current.status !== "running") throw new RepoSetupLaunchError("launch-inactive");
     const absent = ["ticket_id", "parent_deployment_id", "builder_authority", "repository_slot", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
-      "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit", "review_checkout", "ticket_worktree_selection", "resumed_from_deployment_id"];
+      "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit", "review_checkout", "ticket_worktree_selection", "mode_capability_binding", "resumed_from_deployment_id"];
     for (const row of [current, starts[0]!]) {
       if (row.team !== "repo-setup" || row.mode !== "setup" || row.runtime !== "pi" || row.binary !== "ppa") throw new RepoSetupLaunchError("launch-role");
       if (row.invocation_channel !== "cli") throw new RepoSetupLaunchError("launch-channel");
@@ -953,6 +953,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       repo_root: started?.repo_root,
       worktree_root: started?.worktree_root,
       ...(started?.ticket_worktree_selection !== undefined ? { ticket_worktree_selection: started.ticket_worktree_selection } : {}),
+      ...(started?.mode_capability_binding !== undefined ? { mode_capability_binding: started.mode_capability_binding } : {}),
       repository_slot: started?.repository_slot,
       parent_deployment_id: started?.parent_deployment_id,
       builder_authority: started?.builder_authority,
@@ -988,12 +989,12 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         review_checkout, deployment_id, team, status, started_at, pid, primer, agents, models,
         ticket_id, objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
         treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
-        mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel, ticket_worktree_selection
+        mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel, ticket_worktree_selection, mode_capability_binding
       ) VALUES (
         @review_checkout, @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
         @ticket_id, @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
         @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
-        @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel, @ticket_worktree_selection
+        @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel, @ticket_worktree_selection, @mode_capability_binding
       ) ON CONFLICT(deployment_id) DO UPDATE SET
         review_checkout = excluded.review_checkout,
         status = excluded.status,
@@ -1008,6 +1009,7 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         repo_root = excluded.repo_root,
         worktree_root = excluded.worktree_root,
         ticket_worktree_selection = excluded.ticket_worktree_selection,
+        mode_capability_binding = excluded.mode_capability_binding,
         repository_slot = excluded.repository_slot,
         parent_deployment_id = excluded.parent_deployment_id,
         builder_authority = excluded.builder_authority,
@@ -1073,13 +1075,13 @@ const START_IDENTITY_COLUMNS = [
   "team", "pid", "status", "summary", "log_file", "primer", "agents", "models", "error", "exit_code", "ticket_id", "provider", "rating",
   "objective", "repo", "repo_root", "worktree_root", "repository_slot", "parent_deployment_id", "builder_authority", "treehouse_path",
   "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit",
-  "mode", "fallback", "resumed_from_deployment_id", "note", "runtime", "binary", "effective_timeout_seconds", "rogue_one", "invocation_channel", "ticket_worktree_selection",
+  "mode", "fallback", "resumed_from_deployment_id", "note", "runtime", "binary", "effective_timeout_seconds", "rogue_one", "invocation_channel", "ticket_worktree_selection", "mode_capability_binding",
 ] as const;
 
 const IMMUTABLE_CORRELATION_FIELDS = [
   "review_checkout",
   "parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
-  "branch_state", "branch_base_sha", "ticket_slot_id", "repository_permit", "ticket_worktree_selection",
+  "branch_state", "branch_base_sha", "ticket_slot_id", "repository_permit", "ticket_worktree_selection", "mode_capability_binding",
 ] as const;
 
 function assertExactStartedReplay(existingRow: Record<string, unknown>, requested: RegistryEvent): void {
@@ -1176,6 +1178,7 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     repo_root: event.repo_root ?? null,
     worktree_root: event.worktree_root ?? null,
     ticket_worktree_selection: event.ticket_worktree_selection ?? null,
+    mode_capability_binding: event.mode_capability_binding ?? null,
     repository_slot: event.repository_slot ?? null,
     parent_deployment_id: event.parent_deployment_id ?? null,
     builder_authority: event.builder_authority ?? null,
@@ -1203,6 +1206,7 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
   return {
     deployment_id: String(row["deployment_id"]),
     ...(row["ticket_worktree_selection"] != null ? { ticket_worktree_selection: String(row["ticket_worktree_selection"]) } : {}),
+    ...(row["mode_capability_binding"] != null ? { mode_capability_binding: String(row["mode_capability_binding"]) } : {}),
     team: String(row["team"]),
     event: row["event"] as RegistryEvent["event"],
     timestamp: normalizeTimestamp(row["timestamp"]),
@@ -1245,6 +1249,7 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
   return {
     deploy_id: String(row["deployment_id"]),
     ...(row["ticket_worktree_selection"] != null ? { ticket_worktree_selection: String(row["ticket_worktree_selection"]) } : {}),
+    ...(row["mode_capability_binding"] != null ? { mode_capability_binding: String(row["mode_capability_binding"]) } : {}),
     team: String(row["team"]),
     status: row["status"] as DeploymentStatus["status"],
     started_at: normalizeTimestamp(row["started_at"]),

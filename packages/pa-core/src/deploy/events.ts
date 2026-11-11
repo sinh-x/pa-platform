@@ -12,6 +12,7 @@ export type DeploymentCorrelationOpts = DeploymentCorrelationEvidence;
 
 export interface StartDeploymentOpts extends DeploymentCorrelationOpts {
   ticketWorktreeSelection?: string;
+  modeCapabilityBinding?: string;
   deploymentId: string;
   team: string;
   primer?: string;
@@ -45,6 +46,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     team: opts.team,
     event: "started",
     ticket_worktree_selection: opts.ticketWorktreeSelection,
+    mode_capability_binding: opts.modeCapabilityBinding,
     timestamp: nowUtc(),
     primer: opts.primer,
     agents: opts.agents,

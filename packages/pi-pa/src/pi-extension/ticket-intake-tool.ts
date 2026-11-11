@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import {
-  patchTicketPlanningInteraction, hasOtherTicketDeploymentAssociation, TicketPlanningIntentError, createTicketInteraction, readTicketInteraction, parseTicketIntakeOperation, ticketIntakeInterface, getAiUsageDir, getTicketsDir, TicketInteractionError, TicketCreateIntentError, TicketStore, TICKET_INTERACTIONS_PROFILE, MAX_INTERACTION_REQUEST_BYTES,
+  patchTicketPlanningInteraction, hasOtherTicketDeploymentAssociation, TicketPlanningIntentError, createTicketInteraction, readTicketInteraction, parseTicketIntakeOperation, ticketIntakeInterface, getAiUsageDir, getTicketsDir, TicketInteractionError, TicketCreateIntentError, TicketStore, ticketInteractionProfileSelected, MAX_INTERACTION_REQUEST_BYTES,
 } from "@pa-platform/pa-core";
 import { authenticatePiDocumentCaller } from "../document-session.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
@@ -24,20 +24,21 @@ export function createPaTicketIntakeTool(initialCallerIdentity?: string): PiTool
         try {
           if (signal?.aborted) throw new Error();
           const caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext);
-          if (caller.profile !== TICKET_INTERACTIONS_PROFILE || caller.identitySha256 !== initialCallerIdentity) throw new Error();
+          if (!ticketInteractionProfileSelected(caller) || caller.identitySha256 !== initialCallerIdentity) throw new Error();
           if (realpathSync(getAiUsageDir()) !== getAiUsageDir()) throw new Error();
           try { if (realpathSync(getTicketsDir()) !== getTicketsDir()) throw new Error(); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-          return { profile: caller.profile, deploymentId: caller.deploymentId, repoKey: caller.repoKey, ticket: caller.ticket, identitySha256: caller.identitySha256 };
+          return { profile: caller.profile!, deploymentId: caller.deploymentId, repoKey: caller.repoKey, ticket: caller.ticket, identitySha256: caller.identitySha256,
+            ...(caller.capabilities ? { capabilities: caller.capabilities } : {}) };
         } catch { throw new TicketInteractionError("TICKET_INTERACTION_SESSION"); }
       };
       try {
-        authenticate(); // No TicketStore construction/private-directory effect before native admission.
+        const caller = authenticate(); // No TicketStore construction/private-directory effect before native admission.
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new TicketInteractionError("TICKET_INTERACTION_INPUT");
         const fields = Object.getOwnPropertyDescriptors(input);
         if (Object.keys(fields).length !== 1 || !fields.request || !("value" in fields.request) || typeof fields.request.value !== "string") throw new TicketInteractionError("TICKET_INTERACTION_INPUT");
         const operation = parseTicketIntakeOperation(fields.request.value); // Reject raw input before private-directory construction.
-        if (operation.action === "capabilities") return { content: [{ type: "text", text: JSON.stringify(ticketIntakeInterface()) }], details: {}, isError: false };
+        if (operation.action === "capabilities") return { content: [{ type: "text", text: JSON.stringify(ticketIntakeInterface(caller.profile)) }], details: {}, isError: false };
         // Inspection must not create a missing ticket directory. Creation alone
         // retains the existing owner constructor's directory initialization.
         if (operation.action !== "create") {

@@ -1,4 +1,4 @@
-export { patchTicketPlanningInteraction, ticketPlanningRequestSchema, type TicketPlanningRequest, type TicketPlanningResult, createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, ticketIntakeRequestSchema, ticketIntakeInspectSchema, ticketIntakeReuseSchema, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, TICKET_INTAKE_VERSION, type TicketInteractionCaller, type TicketIntakeResult, type TicketSelectionRequest, type TicketSelectionResult } from "./interactions/tickets.js";
+export { ticketInteractionProfileSelected, patchTicketPlanningInteraction, ticketPlanningRequestSchema, type TicketPlanningRequest, type TicketPlanningResult, createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, ticketIntakeRequestSchema, ticketIntakeInspectSchema, ticketIntakeReuseSchema, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, TICKET_INTAKE_VERSION, type TicketInteractionCaller, type TicketIntakeResult, type TicketSelectionRequest, type TicketSelectionResult } from "./interactions/tickets.js";
 export { TicketCreateIntentError } from "./tickets/create-intent.js";
 export { INTERACTIONS_VERSION, MAX_INTERACTION_REQUEST_BYTES, InteractionInputError } from "./interactions/contract.js";
 export { createSourceCatalogueReader, InteractionDiscoveryError } from "./interactions/discovery.js";
@@ -20,6 +20,9 @@ export * from "./time.js";
 export * from "./config.js";
 export * from "./timers.js";
 export * from "./yaml-parser.js";
+export * from "./mode-capabilities.js";
+export * from "./mode-capability-selection.js";
+export * from "./public-web/reader.js";
 export * from "./repos.js";
 export * from "./project-command-catalogue.js";
 export * from "./project-command-catalogue-files.js";

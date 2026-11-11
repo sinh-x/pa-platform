@@ -144,7 +144,10 @@ test("default non-editor composition registers finite intake only for fresh auth
   } finally { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); }
 });
 
-test("source launcher selects v4 before default native registration and one bound companion; simulated provider, no installed qualification", async () => {
+for (const selected of [
+  { config: "pa-document-interactions/v4", native: profile },
+  { config: "pa-document-policy/v1", native: "requirements-document-policy/v1" },
+]) test(`source launcher selects ${selected.config} before native registration and one bound companion; simulated provider, no installed qualification`, async () => {
   const env = process.env, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "intake-launch-source-"));
   closeDb();
   try {
@@ -156,19 +159,39 @@ test("source launcher selects v4 before default native registration and one boun
     execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "source fixture"], { cwd: repo, stdio: "pipe" });
     process.chdir(repo);
     writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n example:\n  path: ${repo}\n  prefix: EX\n other:\n  path: /tmp/unused-intake-destination\n  prefix: OTH\n`);
-    writeFileSync(join(teams, "requirements.yaml"), "name: requirements\nobjective: Source fixture\nagents: []\ndeploy_modes:\n - id: analyze\n   require_ticket: true\n   document_profile: pa-document-interactions/v4\n");
+    writeFileSync(join(teams, "requirements.yaml"), `name: requirements\nobjective: Source fixture\nagents: []\ndeploy_modes:\n - id: analyze\n   require_ticket: true\n   document_profile: ${selected.config}\n${selected.config === "pa-document-policy/v1" ? '   capability_policy: {version: pa-mode-capabilities/v1, allow: [ticket.intake, capability.discover]}\n' : ""}`);
+    // Native selected-resource owner reads an actual committed disposable config,
+    // not a synthetic binding injected past launch selection.
+    execFileSync("git", ["init", "-b", "fixture-config"], { cwd: root, stdio: "pipe" });
+    execFileSync("git", ["add", "teams/requirements.yaml"], { cwd: root, stdio: "pipe" });
+    execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source config fixture"], { cwd: root, stdio: "pipe" });
+    const configRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe" }).toString().trim();
     const store = new TicketStore(), parent = store.create({ project: "example", title: "Bound fixture", summary: "", description: "", status: "idea", type: "feature", priority: "medium", estimate: "M", assignee: "sinh", from: "", to: "", tags: [], blockedBy: [], comments: [], doc_refs: [] });
     let spawns = 0, created: string | undefined, bodyError: unknown;
     const adapter: RuntimeAdapter & { preflight(): Promise<void> } = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "source-launch-fixture", async preflight() {}, installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "Synthetic provider; real source extension registration below." }), extractActivity: () => [], resume: async () => { throw Error("no resume"); },
       async spawn(opts) {
         spawns++; const inherited = process.env; process.env = { ...inherited, ...opts.env };
         try {
-          assert.equal(getDeploymentEvents(opts.deployId).find(event => event.event === "started")?.note, profile);
+          const start = getDeploymentEvents(opts.deployId).find(event => event.event === "started")!;
+          assert.equal(start.note, selected.native);
+          if (selected.config === "pa-document-policy/v1") {
+            const binding = JSON.parse(start.mode_capability_binding!);
+            assert.equal(binding.configRevision, configRevision);
+            assert.deepEqual(binding.policy.allow, ["capability.discover", "ticket.intake"]);
+          } else assert.equal(start.mode_capability_binding, undefined);
           assert.equal(recordPiProcessIdentity(opts.deployId, ensureDeployDir(opts.deployId), process.pid), true); opts.onPid?.(process.pid);
           const context: any = { cwd: repo, mode: "tui", sessionManager: { getSessionId: () => opts.sessionId!, getBranch: () => [] }, ui: { setStatus() {}, setWidget() {}, notify() {} } };
-          const host = new FakeComposedHost(), lifecycle = createPiSessionLifecycle(); registerPiSessionModules(host.runtime, lifecycle, createPiPaModules([]));
+          const host = new FakeComposedHost(), lifecycle = createPiSessionLifecycle();
+          let active: string[] = [];
+          host.runtime.setActiveTools = names => { active = names; };
+          registerPiSessionModules(host.runtime, lifecycle, createPiPaModules([]));
           await host.dispatch("session_start", {}, context);
           assert.ok(host.tools.has("pa_ticket_intake"));
+          if (selected.config === "pa-document-policy/v1") {
+            assert.deepEqual(active, ["pa_capabilities", "pa_ticket_intake"]);
+            assert.equal(host.tools.has("pa_document"), false);
+            assert.equal(host.tools.has("pa_workspace"), false);
+          }
           const result = await host.tools.get("pa_ticket_intake")!.execute("source-fixture", { request: JSON.stringify(request) }, undefined, undefined, context);
           assert.equal(result.isError, false, result.content[0]!.text); created = JSON.parse(result.content[0]!.text).ticket.id;
           assert.equal(authenticatePiDocumentCaller(context).ticket, parent.id);

@@ -1,5 +1,6 @@
 import { ADVISORY_RUNTIME_VERSION, resolveAdvisoryTaskBaseline, preparedRepositoryTicketReservationPath } from "@pa-platform/pa-core";
 import { documentSessionVersion, selectsDocumentSession } from "./document-session.js";
+import { MODE_CAPABILITY_PROFILE, ModeCapabilityError, selectModeCapabilities } from "@pa-platform/pa-core";
 import { execFileSync } from "node:child_process";
 import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type RepositoryChildSettlementResult } from "@pa-platform/pa-core";
 import { createHash } from "node:crypto";
@@ -781,6 +782,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   // advisory contract. Neither model prose nor an environment flag selects it.
   let advisoryLaunch = dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
   const documentLaunch = selectsDocumentSession({ team: team.name, mode: mode?.id, pinned: Boolean(pinnedConfig), resume: Boolean(request.resume), inherited: Boolean(inheritedAttempt), rogue: team.name === "rogue-one", background: Boolean(request.background), ticketWorktree: Boolean(request.ticketWorktree), supportedConfig: documentSessionVersion(mode?.document_profile) !== undefined });
+  let modeCapabilities: ReturnType<typeof selectModeCapabilities> | undefined;
+  if (mode?.capability_policy !== undefined) {
+    if (!documentLaunch || mode.document_profile !== MODE_CAPABILITY_PROFILE) return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
+    // All closed-registry capabilities, including the supplied-public-page reader,
+    // use the same committed selection. Tool registration and each invocation still
+    // authenticate this immutable native binding; selection never bypasses owners.
+    try { modeCapabilities = selectModeCapabilities(mode.capability_policy); }
+    catch { return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_BINDING").message }; }
+  }
   // Strict mode rejection precedes resume-file inspection; unsupported historical
   // runtime rejection still precedes workspace/registry allocation and hooks.
   try {
@@ -1088,6 +1098,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
       ...(selectedTicketWorktree ? { ticketWorktreeSelection: selectedTicketWorktree.evidence } : {}),
+      ...(modeCapabilities ? { modeCapabilityBinding: modeCapabilities.binding } : {}),
       ...(reviewCheckout ? { reviewCheckout } : {}),
     });
     assertPiExecutionRootAgreement(plan, plan.environment as Record<string, string>);
@@ -1272,7 +1283,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: documentLaunch ? documentSessionVersion(mode?.document_profile) : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
+  try { modeCapabilities?.assertCurrent(); }
+  catch {
+    const reason = new ModeCapabilityError("CAPABILITY_BINDING").message;
+    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: reason, exitCode: 1 });
+    return { status: "failed", team: team.name, mode: plan.mode, deploymentId, reason };
+  }
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, modeCapabilityBinding: plan.modeCapabilityBinding ? JSON.stringify(plan.modeCapabilityBinding) : undefined, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: documentLaunch ? documentSessionVersion(mode?.document_profile) : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
     : plan.treehouse?.authority === "orchestrator" && !team.deploy_modes?.some((entry) => entry.id === "implement") ? structuredBaseline ? structuredLaunchNote(ORDINARY_NATIVE_EXECUTION_START, structuredBaseline.authority) : ORDINARY_NATIVE_EXECUTION_START : undefined });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     // The service authenticates durable terminal evidence, never a success-only
@@ -1505,6 +1522,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (structuredBaseline) rereadStructured();
     selectedTicketWorktree?.reread();
     retainedResume?.reread();
+    // Preflight/hooks can yield after the native start event. Do not spawn a
+    // policy session if its committed selection changed during that interval.
+    try { modeCapabilities?.assertCurrent(); }
+    catch { return completeFailure(new ModeCapabilityError("CAPABILITY_BINDING").message); }
 
     let publishedPid: number | undefined;
     const publishPid = (pid: number): void => {

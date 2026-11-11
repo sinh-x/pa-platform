@@ -84,31 +84,33 @@ function captureExtension(): {
   return { events, registrations, tools, commands };
 }
 
-test("trusted dirty-borrow approval tool registers only in the exact foreground orchestrator host", () => {
-  const root = mkdtempSync(join(tmpdir(), "pap-191-tool-registration-"));
-  const deployDir = join(root, "deployments", "d-parent");
-  mkdirSync(join(root, ".git"), { recursive: true });
-  mkdirSync(deployDir, { recursive: true });
-  const keys = [PA_PI_EXECUTION_MODE_ENV, "PA_TEAM", "PA_MODE", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_REPO", "PA_TICKET_ID"] as const;
-  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
-  try {
-    process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
-    process.env["PA_TEAM"] = "builder";
-    process.env["PA_MODE"] = "orchestrator";
-    process.env["PA_DEPLOYMENT_ID"] = "d-parent";
-    process.env["PA_DEPLOYMENT_DIR"] = deployDir;
-    process.env["PA_REPO"] = root;
-    process.env["PA_TICKET_ID"] = "PAP-191";
-    assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), true);
-    process.env[PA_PI_EXECUTION_MODE_ENV] = "background";
-    assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), false);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
-    rmSync(root, { recursive: true, force: true });
-  }
+test("trusted dirty-borrow approval tool registers only in the exact foreground orchestrator host", async () => {
+  await withRegistryFixture("pap-191-tool-registration-", async (root) => {
+    const deployDir = join(root, "deployments", "d-parent");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(deployDir, { recursive: true });
+    const keys = [PA_PI_EXECUTION_MODE_ENV, "PA_TEAM", "PA_MODE", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_REPO", "PA_TICKET_ID"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+    try {
+      process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
+      process.env["PA_TEAM"] = "builder";
+      process.env["PA_MODE"] = "orchestrator";
+      process.env["PA_DEPLOYMENT_ID"] = "d-parent";
+      process.env["PA_DEPLOYMENT_DIR"] = deployDir;
+      process.env["PA_REPO"] = root;
+      process.env["PA_TICKET_ID"] = "PAP-191";
+      assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), true);
+      process.env[PA_PI_EXECUTION_MODE_ENV] = "background";
+      assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), false);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+    }
+  });
 });
 
 async function withRegistryFixture(name: string, run: (root: string) => Promise<void>): Promise<void> {
+  // Registry ownership must be settled before changing the singleton's path.
+  closeDb();
   const root = mkdtempSync(join(tmpdir(), name));
   const previous = {
     registry: process.env["PA_REGISTRY_DB"],
@@ -440,8 +442,9 @@ test("foreground registry completion permits another turn and registry read befo
     process.env["PA_DEPLOYMENT_DIR"] = deploymentDir;
     process.env["PA_AI_USAGE_HOME"] = root;
     try {
-      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: "2026-09-04T00:00:00.000Z", runtime: "pi", binary: "ppa" });
       const outgoingDb = getDb();
+      assert.equal(outgoingDb.name, join(root, "registry.db"), "fixture must own its registry before any event write");
+      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: "2026-09-04T00:00:00.000Z", runtime: "pi", binary: "ppa" });
       const { events, tools } = captureExtension();
       const output: string[] = [];
       const errors: string[] = [];
@@ -462,6 +465,7 @@ test("foreground registry completion permits another turn and registry read befo
       assert.ok(registryTool);
       const registryRead = await registryTool.execute("post-completion-read", { action: "list" }, undefined, undefined, context);
       const statuses = JSON.parse(registryRead.content[0]!.text) as Array<{ deploy_id?: string }>;
+      assert.ok(Array.isArray(statuses), `fixture registry result must be an array, not fields: ${Object.keys(statuses).join(",")}`);
       assert.ok(statuses.some((status) => status.deploy_id === deploymentId));
       assert.equal(outgoingDb.open, true, "post-completion turn and read must retain the registry");
 
