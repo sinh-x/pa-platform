@@ -1,7 +1,9 @@
 # Config-owned Pi document capabilities (PAP-289)
 
 Status: config-selected reader **enabled in source for qualification**, not installed
-or qualified by this change. See [current enablement and packaging](#current-enablement-and-packaging--d-b08f19)
+or qualified by this change. Current `.4` inbound-content policy and machine
+source labels are defined in [public-web-source-policy.md](public-web-source-policy.md).
+See [current enablement and packaging](#current-enablement-and-packaging--d-b08f19)
 for the policy decision and remaining delivery steps. Historical checkpoints below
 retain their original staged/closed-gate status; they do not describe this candidate.
 Audience: runtime/PAPC maintainers and independent reviewers. Product authority is
@@ -208,9 +210,13 @@ installed wall-clock SLA under host scheduling or synchronous extraction load.
 
 Direct DNS/HTTPS discloses hostname/path/query to the applicable DNS/network and
 destination operators. The original supplied input and returned text remain in
-the existing model transcript/retention domain. Native sensitive checks prevent
-outbound/returned matches; they cannot retroactively erase an already supplied
-user prompt or detect every possible secret. No new web cache, raw-body audit,
+the existing model transcript/retention domain. Native sensitive checks still block
+sensitive supplied/redirect URLs before admitting them. Following the operator's
+explicit `.4` source-policy selection, public response text/title are allowed even
+when they match local secret-content heuristics; local file/path/content protection
+is unchanged. This is not a claim that credential-looking public content is harmless.
+Checks cannot retroactively erase an already supplied user prompt or detect every
+possible secret. No new web cache, raw-body audit,
 external extraction service or separate retention sink is introduced. Public GET
 can cause remote side effects: the tool instructs agents not to read known action
 URLs and does not pretend to prove that a URL was selected by a human.
@@ -247,7 +253,8 @@ a synthetic provider/host, not the installed foreground application.
 Reader tests use synthetic DNS/TLS/socket/content fixtures; an in-memory Duplex
 also exercises the real Node HTTPS request/response parser without network access.
 Cases cover unsafe/mixed answers and redirects, peer/certificate mismatch, fixed
-headers/proxy non-use, bodies/decompression/Unicode/output, secret canaries,
+headers/proxy non-use, bodies/decompression/Unicode/output, outbound/error secret
+canaries (and explicit public-response allowance),
 cancellation, deadline checkpoints, concurrency, unknown cleanup and native on/off
 admission. They are not a real DNS/TLS/public request, installed foreground session,
 human readability review or UAT.
@@ -276,7 +283,7 @@ retained messages and machine contracts are unchanged. The registry binding fiel
 are intentional additive machine-contract changes, not wording-only alterations.
 
 Reader messages are returned tool-result paths: invalid input, native
-policy unavailable, unsafe target, sensitive data, unsupported content, bounds,
+policy unavailable, unsafe target, sensitive URLs, unsupported content, bounds,
 HTTP/network failure, cancellation, timeout, busy capacity and unknown cleanup.
 `publicWebDiagnostic` is pure fixed typed text with the same five-label/2000-unit
 blocker contract, never raw exceptions or URLs. Success and clipping warnings are
@@ -315,8 +322,9 @@ Do not patch `review-runtime-provenance.json` or substitute the currently instal
 At the operator's follow-up request, the four shared manifests now select
 `0.1.160-pap289.2` for the first reader-enabled worktree reference. The
 qualification follow-up below advances the source label to `0.1.160-pap289.3`
-for provider tool-call ID compatibility. `runtime-host` keeps its independent
-version. Neither source label changes an existing installation. Compare exact
+for provider tool-call ID compatibility. The later source-aware response policy
+uses `0.1.160-pap289.4`; see [public-web-source-policy.md](public-web-source-policy.md).
+`runtime-host` keeps its independent version. Neither source label changes an existing installation. Compare exact
 commits, not labels. After the runtime owner commits the reviewed candidate, use an explicit
 full `PAP289_SHA` and physical `PAP289_ROOT` for that clean checkout. Package-only
 recipe (not executed here), using the existing release/validation-lane mechanism:
@@ -424,7 +432,8 @@ passed 61/61, all with `NO_COLOR=1`, no failures/skips. Logs:
 installed execution and human review were not rerun for this repair. Earlier
 aggregate/build timeouts remain historical incomplete evidence, not passes.
 
-The worktree reference is now `0.1.160-pap289.3` across four shared manifests;
+At that compatibility checkpoint the worktree reference was `0.1.160-pap289.3`
+across four shared manifests (superseded by the `.4` source-policy change);
 `runtime-host` remains independently versioned. The installed `.2` artifact is not
 modified by these edits. Next delivery is a separately built/selected repaired
 runtime, then a new normally admitted foreground attempt under the already-recorded

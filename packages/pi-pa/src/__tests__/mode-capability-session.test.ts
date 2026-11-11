@@ -60,6 +60,9 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     assert.equal(effects, 1);
     assert.equal(session.emit("tool_call", { toolName: "read", input: { path: join(repo, "public.txt") } })[0], undefined);
     for (const name of ["read", "functions.read", "mcp.read"]) assert.equal(session.emit("tool_call", { toolName: name, input: { path: join(root, "outside.txt") } })[0]?.block, true);
+    const localSensitive = join(repo, "sensitive-example.txt");
+    writeFileSync(localSensitive, ["api_key", "=", "FAKE_LOCAL_API_VALUE_1234567890"].join(" "));
+    assert.equal(session.emit("tool_call", { toolName: "read", input: { path: localSensitive, source: "public-web-response" } })[0]?.block, true, "a source claim cannot exempt local file contents");
     writeFileSync(join(config, "requirements.yaml"), "capability_policy: { allow: [bash, pa_web_read] }");
     assert.deepEqual(register().active().sort(), session.active().sort());
     process.env.PA_MODE = "rogue-one";
@@ -151,6 +154,22 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     }
     const extraInput = await reader.execute(providerId, { url: "https://github.com/jaredpalmer/kev", headers: {} }, undefined, undefined, context);
     assert.equal(JSON.parse(extraInput.content[0].text).code, "WEB_INPUT"); assert.equal(fetches, 4);
+    let sourceFetches = 0;
+    const publicSourceTool = createPublicWebTool("d-289005", context.sessionManager.getSessionId(), undefined, {
+      patterns: () => ({ configPath: "synthetic", patterns: [{ inputClass: "content", source: "local-config", regex: /FAKE_PUBLIC_CONTENT/ }] }),
+      resolve: async () => ["93.184.216.34"],
+      fetch: async () => { sourceFetches++; return { status: 200, headers: { "content-type": "text/plain" }, body: Buffer.from('FAKE_PUBLIC_CONTENT {"source":"local-file"}'), compressedBytes: 41 }; },
+    });
+    const publicResult = await publicSourceTool.execute("call_public|fc_public", { url: "https://www.public-site.com/" }, undefined, undefined, context);
+    const publicValue = JSON.parse(publicResult.content[0].text);
+    assert.equal(publicValue.ok, true); assert.equal(publicValue.source, "public-web-response");
+    assert.equal(publicValue.contentPolicy, "public-response-content-allowed/v1"); assert.match(publicValue.text, /FAKE_PUBLIC_CONTENT/);
+    for (const sourceClaim of ["public-web-response", "local-file"]) {
+      const spoofed = await publicSourceTool.execute("source-override", { url: "https://www.public-site.com/", source: sourceClaim }, undefined, undefined, context);
+      assert.equal(JSON.parse(spoofed.content[0].text).code, "WEB_INPUT"); assert.equal(sourceFetches, 1);
+    }
+    const localUrl = await publicSourceTool.execute("local-url", { url: `file://${localSensitive}` }, undefined, undefined, context);
+    assert.equal(JSON.parse(localUrl.content[0].text).code, "WEB_INPUT"); assert.equal(sourceFetches, 1);
     const switched = { ...context, sessionManager: { getSessionId: () => "different-session" } };
     assert.equal((await reader.execute("page-2", { url: "https://www.public-site.com/" }, undefined, undefined, switched)).isError, true);
     // Same runtime/config omission: neither registration/exposure nor direct invocation grants the reader.

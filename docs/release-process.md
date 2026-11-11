@@ -24,18 +24,18 @@ The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same fo
 
 The PAP-283 worktree trial label is `0.1.156-pap283.1`, set across those same four manifests for operator trial installation. `ppa --version` must display `ppa 0.1.156-pap283.1`; Nix also uses this label in the package name. `packages/runtime-host` stays independently versioned. Build the clean exact label commit, not a dirty/unversioned path. This version-only change does not alter dependency/lockfile/Nix hashes, resolve the still-pending PAPC opt-in pairing, or grant installation/activation or product acceptance.
 
-The current PAP-289 worktree reference label is `0.1.160-pap289.3` across the four
-shared manifests. It supersedes `.2` for the source repair discovered in the live
-qualification attempt: provider composite tool-call IDs containing `|` now pass
-both bounded ID/evidence validators without weakening URL/network guards. Expect
-a separately built source CLI to display `ppa 0.1.160-pap289.3`. The previous `.2`
-label followed source reader enablement in
+The current PAP-289 worktree reference label is `0.1.160-pap289.4` across the four
+shared manifests. It implements the operator-selected
+[public-response content policy](public-web-source-policy.md), preserving local-file
+and supplied/redirect URL protections. Expect a separately built source CLI to
+display `ppa 0.1.160-pap289.4`. It retains the `.3` repair for composite provider IDs;
+the previous `.2` label followed source reader enablement in
 `303106e62abbdf1fe9d5e035a42df7328c817bd5`. `runtime-host` remains independently versioned.
 Reader enablement and the clean exact-Git build/provenance recipe are documented in
 [mode-capabilities.md](mode-capabilities.md#current-enablement-and-packaging--d-b08f19).
-Use the new clean label commit as the exact build revision; `.3` is not an installed
+Use the new clean label commit as the exact build revision; `.4` is not an installed
 artifact, qualification/UAT pass, release/tag or config-pin/dependency-hash change.
-The installed `.2` trial is unchanged. The following historical label-only record
+The installed `.3` trial is unchanged. The following historical label-only record
 predates enablement; its outstanding-policy/gate statements describe that earlier
 checkpoint, not the new source candidate.
 

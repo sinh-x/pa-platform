@@ -141,11 +141,14 @@ test("body/output limits count bytes, code points and serialized tool reply, wit
   await assert.rejects(() => decodePublicBody(Buffer.from("safe"), "unsupported"), PublicWebError);
 });
 
-test("secrets and typed failure details never leak; unsupported/error responses are not page text", async () => {
+test("sensitive outbound URLs and typed failure details stay blocked; unsupported/error responses are not page text", async () => {
   const canary = "synthetic-secret-canary";
   const f = fixture(canary); f.dependencies.patterns = () => ({ configPath: "synthetic", patterns: [{ inputClass: "content", source: "local-config", regex: /synthetic-secret-canary/ }] });
-  const result = await read(f.dependencies); assert.equal(result.ok, false); assert.ok(!JSON.stringify(result).includes(canary));
+  const result = await read(f.dependencies); assert.equal(result.ok, true);
+  if (result.ok) { assert.equal(result.text, canary); assert.equal(result.source, "public-web-response"); }
   const input = await read(f.dependencies, safe + "?q=" + canary); assert.equal(input.ok, false); assert.equal(f.requests.length, 1);
+  if (!input.ok) { assert.equal(input.code, "WEB_SENSITIVE"); assert.equal(input.source, "supplied-url"); }
+  assert.ok(!JSON.stringify(input).includes(canary));
   for (const status of [401, 403, 404, 429, 500, 204, 206]) {
     const e = fixture(); e.dependencies.fetch = async () => ({ status, headers: { "content-type": "text/plain" }, body: Buffer.from(canary), compressedBytes: 23 });
     const failure = await read(e.dependencies); assert.equal(failure.ok, false); assert.ok(!JSON.stringify(failure).includes(canary));
