@@ -1,5 +1,6 @@
 import { readFileSync, accessSync, constants } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 import { PublicWebError } from "./types.js";
 
 export interface PublicWebRuntime { curl: string; python: string; ca: string; script: string }
@@ -8,7 +9,7 @@ export function publicWebRuntime(): PublicWebRuntime {
   try {
     const data = JSON.parse(readFileSync(new URL("../../dist/public-web/runtime.json", import.meta.url), "utf8"));
     for (const key of ["curl", "python", "ca"]) {
-      if (typeof data[key] !== "string" || !data[key].startsWith("/nix/store/") || /[\r\n\0]/.test(data[key])) throw new Error();
+      if (typeof data[key] !== "string" || !(data.kind === "development-host-tools" ? isAbsolute(data[key]) : data[key].startsWith("/nix/store/")) || /[\r\n\0]/.test(data[key])) throw new Error();
       accessSync(data[key], key === "ca" ? constants.R_OK : constants.X_OK);
     }
     const script = fileURLToPath(new URL("../../dist/public-web/extract.py", import.meta.url));

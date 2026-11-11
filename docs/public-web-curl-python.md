@@ -100,13 +100,18 @@ script and writes `dist/public-web/runtime.json` with absolute locked paths and
 versions. Nix supplies these only as build inputs; source builds evaluate the same
 Git flake **offline**. No download/install, runtime executable discovery or manual
 installed-metadata patch is performed by this helper. Missing dependencies fail
-closed. Node-only development/CI now also needs the locked Nix workers; CI source
-changes explicitly materialize them, but hosted CI has not run here.
+closed. For the established Nix-free code-only lane, builds without Nix explicitly
+snapshot absolute host curl/Python paths and versions with manifest kind
+`development-host-tools`, and print that these are not pinned/installed qualification.
+Only the build helper resolves PATH; runtime still uses fixed package metadata.
+Nix production builds always supply the locked paths. Ordinary CI remains Nix-free;
+hosted CI has not run here.
 
 The Nix output retains script/manifest and dependency store references, with an
-install-time extraction/curl smoke check. The existing `.4` readable version is
-not a new unique artifact identity for these edits; compare exact source commits.
-Select a new trial label through its normal owner before a subsequent installation.
+install-time extraction/curl smoke check. At the operator's follow-up request, the four shared manifests now use
+`0.1.160-pap289.5` for installation identification; `runtime-host` is unchanged.
+A rebuilt source CLI must display `ppa 0.1.160-pap289.5`. Compare exact source
+commits and actual installed provenance, not the label alone.
 No default config pin, active PAPC configuration or installed runtime is changed.
 
 ## Messages and evidence
@@ -153,8 +158,28 @@ an overly strict single-newline fixture expectation, corrected to the intended
 paragraph boundary. Final process harness passes all five cases, including cleanup
 uncertainty; the full 46-test core run includes it.
 
-Full regression/completion/packaging/scan results are recorded in the continuation
-handoff; no completion is inferred from focused tests. Installed foreground exact-
+Broader checks: completions passed with zero generated diff; staged secrets scan
+passed after replacing an intentionally long synthetic key-shaped fixture with the
+explicit short `EXAMPLE` placeholder (existing all-seven-class source-policy tests
+remain). Full `pnpm test` failed at root: 41 passed/1 failed because the initial CI
+edit violated the existing Nix-free ordinary-CI invariant. That edit was reverted;
+code-only builds now explicitly identify development host workers instead. No full
+workspace pass is claimed after this correction. An exact-source offline Nix build
+of implementation checkpoint `a35358da295152d47c406d26be7a987fe5418983` timed out
+at 240 seconds, exit 124, without an output store path; it is not package/provenance
+success and predates the `.5` label/correction. Logs:
+`/tmp/pap289-workers-{full-test,nix,completions,secrets-final}.log` and empty
+`/tmp/pap289-workers-nix-output.txt`. After the CI correction and `.5` label:
+workspace build passed, rebuilt source CLI reported `ppa 0.1.160-pap289.5`, all four
+shared manifests and unchanged runtime-host 0.1.88 were asserted, the same core
+selection passed 46/46 again, and the two focused CI-lane test files passed 6/6.
+The repeat workspace typecheck reached the final runtime-host dependency build
+but was interrupted by the 100-second combined command limit: incomplete, not a
+fresh pass (the earlier implementation typecheck passed). Logs:
+`/tmp/pap289-workers-label-{build,typecheck,core}.log` and
+`/tmp/pap289-workers-ci-recheck.log`. Nix-free host-worker metadata remains a
+code-only development path, not proof of locked installed dependencies; actual
+hosted CI is still outstanding. No completion is inferred from focused tests. Installed foreground exact-
 URL read/answer/citation, same-installed-runtime on/off/on, independent security/
 code review, hosted CI, genuine human readability/UAT/adoption and develop
 integration remain outstanding. Preserve the earlier native denials, wrapper-only

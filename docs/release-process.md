@@ -24,7 +24,14 @@ The PAP-277 worktree trial label is `0.1.155-pap277.1`, set across those same fo
 
 The PAP-283 worktree trial label is `0.1.156-pap283.1`, set across those same four manifests for operator trial installation. `ppa --version` must display `ppa 0.1.156-pap283.1`; Nix also uses this label in the package name. `packages/runtime-host` stays independently versioned. Build the clean exact label commit, not a dirty/unversioned path. This version-only change does not alter dependency/lockfile/Nix hashes, resolve the still-pending PAPC opt-in pairing, or grant installation/activation or product acceptance.
 
-The current PAP-289 worktree reference label is `0.1.160-pap289.4` across the four
+The current PAP-289 worktree reference label is `0.1.160-pap289.5` across the four
+shared manifests, selected by the operator for installation identification of the
+[fixed curl/Python workflow](public-web-curl-python.md). Expect a separately rebuilt
+CLI to display `ppa 0.1.160-pap289.5`; verify its exact clean source commit and worker
+manifest as well. `runtime-host` is unchanged. The preceding exact-source `.4`
+package attempt timed out; no `.5` package, installation or acceptance is implied.
+
+The preceding PAP-289 worktree reference label was `0.1.160-pap289.4` across the four
 shared manifests. It implements the operator-selected
 [public-response content policy](public-web-source-policy.md), preserving local-file
 and supplied/redirect URL protections. Expect a separately built source CLI to
