@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { diagnosePublication } from "./publication-recovery.js";
 import { confirmDocument, type NativeDocumentConfirmationRequest, type NativeDocumentConfirmationResult } from "./confirmation-service.js";
 import { presentDocumentPackage } from "./presentation.js";
 import { closeSync, lstatSync, opendirSync } from "node:fs";
@@ -22,6 +23,8 @@ export interface DocumentPackageHost {
   /** Native launch dispatch only, not imported package/request metadata. */
   workspaceProfile?: boolean;
   confirmationProfile?: boolean;
+  /** Qualified policy-profile document.package selection only, never config text. */
+  recoveryProfile?: boolean;
   inspectBranch?(ticket: string): Record<string, unknown> | Promise<Record<string, unknown>>;
   confirm?(request: NativeDocumentConfirmationRequest): Promise<NativeDocumentConfirmationResult>;
   authenticate(): DocumentCaller;
@@ -176,6 +179,8 @@ export class DocumentPackageService {
           const previous = this.subject(r.previousSha256);
           if (previous.ticket !== subject.ticket) documentReject("DOCUMENT_AUTHORITY");
           result = compareDocumentPackages(previous, subject, hash => this.journal.snapshot(hash));
+        } else if (action === "publication-diagnose") {
+          result = diagnosePublication(this.journal, this.host, subject, r);
         } else if (action === "confirm" || action === "confirm-revoke") {
           result = await confirmDocument(this.journal, this.host, subject, () => this.caller(subject), r);
         } else if (action === "capture" || action === "revoke") {

@@ -61,6 +61,7 @@ export const DOCUMENT_ACTION_FIELDS: Readonly<Record<string, readonly string[]>>
   capabilities: [], status: ["ticket"], "branch-inspect": ["ticket"], "ticket-create": ["title", "content", "intakeId"], discover: ["path"], context: ["path"], draft: ["path", "content", "expectedSha256"],
   check: ["package"], freeze: ["package", "expectedRevision"], show: ["sha256"], present: ["sha256"], read: ["sha256", "path", "offset"], compare: ["sha256", "previousSha256"],
   confirm: ["sha256", "expectedRevision", "scope"], "confirm-revoke": ["sha256", "expectedRevision", "decisionId"],
+  "publication-diagnose": ["sha256", "expectedRevision", "operationId", "decisionId"],
   capture: ["sha256", "expectedRevision"], revoke: ["sha256", "expectedRevision", "decisionId"], publish: ["sha256", "expectedRevision", "decisionId"], queue: ["sha256", "expectedRevision", "decisionId"],
 });
 export function documentInterfaceDescription(): Record<string, unknown> {
@@ -68,7 +69,7 @@ export function documentInterfaceDescription(): Record<string, unknown> {
     cli: "description-only-no-decision-or-effect-import", availability: "requires-native-authenticated-Pi-requirements-session", preview: "unavailable-use-full-markdown", sourceAuthority: false, installedQualification: "not-asserted" };
 }
 export function parseDocumentRequest(input: string): Record<string, unknown> {
-  return documentGuard(() => object(parseWorkflowRequest(input), ["action"], ["package", "sha256", "expectedRevision", "previousSha256", "decisionId", "path", "content", "expectedSha256", "offset", "title", "intakeId", "ticket", "scope"]));
+  return documentGuard(() => object(parseWorkflowRequest(input), ["action"], ["package", "sha256", "expectedRevision", "previousSha256", "decisionId", "path", "content", "expectedSha256", "offset", "title", "intakeId", "ticket", "scope", "operationId"]));
 }
 export function documentPackageSha(subject: DocumentPackage): string { return digest(JSON.stringify(parseDocumentPackage(subject))); }
 export function documentDestination(subject: DocumentPackage, member: DocumentMember): string {

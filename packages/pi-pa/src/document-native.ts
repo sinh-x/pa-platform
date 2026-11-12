@@ -4,7 +4,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
-  DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
+  MODE_CAPABILITY_SESSION, capabilityToolSelected, DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, resolveTrustedTicketMutationContext, workflowDigest,
   type DocumentPackageHost, parseDocumentRequest, DOCUMENT_ACTION_FIELDS, workflowObject,
 } from "@pa-platform/pa-core";
@@ -73,6 +73,7 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
   const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
     confirmationProfile: confirmationDocumentCaller(caller),
+    recoveryProfile: caller.profile === MODE_CAPABILITY_SESSION && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"),
     ...(confirmationDocumentCaller(caller) ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
     ...(confirmationDocumentCaller(caller) && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
     capture: createPiDocumentCapture(context, authenticate, signal),
