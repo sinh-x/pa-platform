@@ -25,8 +25,8 @@ export const MODE_CAPABILITIES = Object.freeze([
   { id: "ticket.status", tool: "pa_ticket_status", owner: "ticket-status-owner", actions: "inspect,set; administrative status only, native/CLI shared CAS and original intent" },
   { id: "workflow.request", tool: "pa_workflow", owner: "workflow-native", actions: "existing read/admit/revise/request-step/reconcile; unchanged protected owner gates" },
   { id: "decision.request", tool: "pa_decision", owner: "workflow-native", actions: "existing show/verify/native capture/revoke/recover/adopt; genuine foreground consent only" },
-  { id: "ordinary.bash", tool: "bash", owner: "pi-builtin", actions: "ordinary shell; shared adapter/host safety; task policy forbids repository/Git mutation" },
-  { id: "ordinary.read", tool: "read", owner: "pi-builtin", actions: "ordinary host file read and continuation, including the whole normal ai-usage workspace" },
+  { id: "ordinary.bash", tool: "bash", owner: "local-source-tools", actions: "ordinary Pi shell with shared safety and checked local output before delivery/spill; no repository/Git mutation authority" },
+  { id: "ordinary.read", tool: "read", owner: "local-source-tools", actions: "ordinary Pi read/continuation across normal ai-usage; trusted local path/content checks and redaction before pagination" },
   { id: "ordinary.edit", tool: "edit", owner: "pi-builtin", actions: "ordinary exact edit; author mutable ai-usage artifacts, not repository files" },
   { id: "ordinary.write", tool: "write", owner: "pi-builtin", actions: "ordinary file write; author mutable ai-usage artifacts, not repository files" },
 ].map(entry => Object.freeze({ ...entry, profile: MODE_CAPABILITY_PROFILE })));

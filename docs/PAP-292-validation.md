@@ -1,6 +1,11 @@
 # PAP-292 source delivery and qualification status
 
 2026-11-12 UTC. **PARTIAL DELIVERY; not full system-adoption readiness.**
+
+Later local-source confidentiality follow-up: [source-aware checks and validation](local-source-content-security.md),
+worktree label `0.1.161-pap292.1`. The original source checkpoints/results below
+remain historical; neither they nor d-09f8df's exposed-content incident become a
+clean qualification pass because the source was subsequently fixed.
 Engineering contract and missing T/W operation ledger: [implementation](PAP-292-implementation.md).
 This report is agent narrative, not native approval, independent review or human UAT.
 
