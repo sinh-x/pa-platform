@@ -177,10 +177,33 @@ remain historical failures/limitations. A new source build cannot retract prior
 transcripts, private audits or model exposure; credential-owner review is still
 needed. Do not share raw logs. No rotation/revocation or deletion was performed.
 
-Full workspace regression was NOT rerun for this follow-up; earlier aggregate
-failure/incomplete evidence remains. No Nix artifact/provenance verification,
-updated installed foreground trial, hosted CI, independent review or human UAT.
-A readable worktree version is not exact source provenance or full PAP-292 closure.
-After separately rebuilding/installing the clean label commit, verify the version
-AND actual sourceSha, then use inert local-file canaries in a fresh foreground
-session. Never retest by reading the previously exposed credential.
+At the S3 checkpoint, full workspace regression had NOT been rerun, and the updated
+installed trial/hosted CI/independent review/human UAT were outstanding. Those
+historical limits do not become passes merely because source changed.
+
+## Subsequent installed smoke and integration
+
+The operator installed the labelled candidate; the agent monitored that existing
+installation and ran fresh automated foreground requirements/analyze **d-2bdb5d**.
+PPA reported **0.1.161-pap292.1**, Pi 1.4.0; nine key installed modules matched the
+compiled worktree. Native binding selected PAPC 8deb96c, no rogue-one/fallback.
+The report records nine bounded PASS and two BLOCKED. Inert ordinary read and
+shell-output canaries were redacted with safe surrounding context; an in-file
+public-source claim granted no exemption. A fake-key body-only read was redacted
+before pagination and an absent protected .env path was denied. Original inert
+file digests/lengths were unchanged. No real credential-bearing source was read.
+Synthetic PAP-295 remains cancelled with history retained.
+
+Managed provenance reading was unavailable; separately observed metadata says
+unversioned-dirty-source. Exact source remains unverified. Native decision-read
+coverage had no real subject; workflow listing succeeded. The operator set aside
+provenance as a blocker for the bounded smoke and requested integration, not a
+fabricated PASS or human UAT receipt. Native registry status remains partial
+(no staged completion payload), despite normal CLI exit. The earlier exposure
+still needs separate credential-owner review.
+
+See [validation disposition](PAP-292-validation.md#installed-follow-up-and-integration-disposition)
+for private evidence paths/digests and remaining limits. Integration restores the
+plain develop version 0.1.161 without changing the installed trial, config pin or
+dependencies. No full PAP-292 closure, universal DLP, independent review or human
+acceptance is implied. Never retest by reading the previously exposed credential.

@@ -1,6 +1,6 @@
 {
   "name": "pa-platform",
-  "version": "0.1.161-pap292.1",
+  "version": "0.1.161",
   "private": true,
   "type": "module",
   "scripts": {

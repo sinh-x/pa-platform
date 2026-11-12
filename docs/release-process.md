@@ -20,8 +20,11 @@ an identifiable test install. A separately rebuilt PPA must display
 source-test results. This does not install, activate or qualify an artifact, alter
 config pins/dependencies/Nix hashes, redact historical transcripts, or complete
 PAP-292. Use the clean exact label commit for packaging and verify its actual
-`sourceSha` separately from this readable version. Restore the then-current plain
-develop version before normal integration.
+`sourceSha` separately from this readable version. The integration candidate
+restores plain **0.1.161** across the four shared manifests for the normal develop
+auto-patch flow; the installed labelled trial remains unchanged. Its bounded
+installed smoke and explicit provenance limitation are recorded in
+[PAP-292 validation](PAP-292-validation.md#installed-follow-up-and-integration-disposition).
 
 For an explicitly approved worktree-only build label, update the same four manifests together. The PAP-271 operator-selected development build used `0.1.153-pap271.1`, displayed by `ppa --version` and used as the Nix package version. Its integration candidate restores the plain `develop` version for the normal auto-patch flow; the installed development build retains its readable label. Rebuilding/selecting the package is still required; editing source manifests does not change an existing installation.
 

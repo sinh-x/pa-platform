@@ -111,18 +111,88 @@ same-UID tools are not a supported raw-state workaround. General native ticket
 collection/ref/assignment/retention and CLI protected-effect bridges remain missing;
 source discovery continues to say installed/registered/admitted is unproven.
 
-## Installation and acceptance verdict
+## Installed follow-up and integration disposition
 
-The source is buildable with focused checks above. It is **not fully qualified
-for system adoption**: complete regression, independent review/CI, immutable package
-provenance, matched installed/foreground parity, all catalogue variants and human
-UAT are unproven. A build/source check is not installation/adoption authority.
-The user intends to install personally after readiness confirmation; the agent
-performed no system/user installation and asserts no full readiness. Verify exact
-`sourceSha` of any subsequently built artifact and its actual selected PAPC binding,
-separately from the unchanged packaged-default config pin.
+The operator separately ran `sudo sys test .`; the agent monitored that existing
+rebuild, not a second installation. The selected PPA then reported
+`0.1.161-pap292.1`, Pi `1.4.0`. Nine installed security/capability modules matched
+the worktree's compiled bytes. This is bounded component evidence, not proof of
+whole-package commit provenance. Trial source checkpoint:
+`5a09cc033326ee42ed9e6dd109e04370d5cec291`.
 
-Full PAP-292 remains partial: P1 independent owner/security review, P3 universal
-bridges and P5 installed/human acceptance are outstanding. No native requirements
+Fresh automated foreground deployment **d-2bdb5d** used normal requirements/analyze,
+`rogue_one=false`, `fallback=false`, and native PAPC binding
+`8deb96ccd8077342262864b0152f9ab6a5d9d7ae`. Its Q-01–Q-11 report records
+**9 bounded PASS, 2 BLOCKED**, no observed raw-canary failure:
+
+- Ordinary tools, cross-project/historical discovery, complete long UTF-8 reading,
+  native/CLI status CAS/replay/negative cases and preserved cancellation passed.
+- Inert local read/shell redaction, in-file source-spoof resistance, private-key
+  body-only pagination protection and absent protected-path denial passed. No real
+  credential/config/incident-log read was used to test the fix.
+- Sole fixture **PAP-295** remains cancelled; original ticket/intent history remains.
+- Q-01: managed provenance read returned LOCAL_SOURCE_UNAVAILABLE (file metadata
+  showed link count 3). No reader workaround followed. Separately observed package
+  metadata says sourceSha=unversioned-dirty-source; exact source stays UNVERIFIED.
+- Q-04: workflow listing succeeded; an unsupported capabilities action was retained
+  as a contract rejection. No real decision subject existed for a supported native
+  read/verify check, so that admission observation is BLOCKED, not a proven defect.
+- CLI exited 0 after the controller closed its own idle session. Native registry
+  is **partial**: foreground session exited without a staged completion payload.
+  This status is preserved, not replaced with a completed/publication claim.
+
+Durable local evidence (private ai-usage, not committed raw transcripts):
+`deployments/d-2bdb5d/qualification-pap-292/report.md`, SHA-256
+`964f444d696f90f0550bcbdf7c6108df031e1da59f073341211cc10ae3cced3a`;
+adjacent `requests.json`, SHA-256
+`2c671433366af1a08944844c4688e386a3a709e7d966aec3c7342b711069f620`.
+The external controller/installation observations are under
+`agent-teams/requirements/artifacts/drafts/d-f441ea/qualification/installed-smoke-monitor/`.
+These are automated observations, not independent review or human UAT.
+
+The operator explicitly set aside unversioned provenance as a blocker for this
+smoke/integration and subsequently requested commit, PR and merge to develop.
+That instruction does not turn missing provenance or decision coverage into PASS,
+waive repository CI/review gates, or approve production acceptance. The integration
+candidate restores the then-current plain develop version **0.1.161** across four
+manifests for the normal auto-patch flow; the installed trial remains unchanged.
+Packaged-default config pin, dependency/lockfile/Nix hashes and runtime-host version
+are unchanged.
+
+### Final integration checks and companion merge
+
+- PAPC [PR #53](https://github.com/sinh-x/pa-platform-config/pull/53) merged to
+  develop at `4ba2b865ed56baec84d52fb423956d79c343163c`; canonical local develop
+  and origin/develop matched afterward. Its feature follow-up `f8cf1cf` retained
+  the helper word bound and exact authorized capability-delta assertion, not a
+  relaxed provider/model/other-mode baseline. All hosted PR lanes passed.
+- The operator explicitly approved refreshing ONLY the document-source CI variable
+  to reachable trial commit `5a09cc033326ee42ed9e6dd109e04370d5cec291`; JSON/template/
+  advisory pins remain unchanged. This is source CI selection, not native approval,
+  package pinning or installation. Final PAPC affected tests: 56/56 plus 10/10 PASS;
+  contract/config validation and staged scan passed. Unrelated local files preserved.
+- Final runtime typecheck/build/completions PASS; completion files unchanged.
+  Logs: `/tmp/pap292-integration-{typecheck,build,completions}-final.log`.
+  CI patch-helper dry run accepts plain 0.1.161 and plans 0.1.162, without writes.
+- Final runtime focused lane: **74 PASS, zero failures, one existing installed-output
+  SKIP**, `/tmp/pap292-integration-focused-final.log`. Covers source/sensitive/safety/
+  capabilities/catalogue/status and Pi local-security/parity/composition/session/
+  native status plus PAP-156 characterization.
+- The integration full-suite attempt timed out during Pi after the combined command's
+  1200-second bound. Root 42/42 passed; core 1943 PASS/14 existing SKIP, zero failed;
+  OPA 106 PASS/1 existing SKIP; runtime-host 11/11 passed. Pi reported a stale frozen
+  fixture counting built-in read/bash and their new secured overrides twice. The
+  fixture now models SDK replacement-by-name, independently rejects duplicate custom
+  registrations and requires exactly one secured override each. Historical fixture
+  bytes and exact effective loadout are unchanged; its corrected focused lane passes.
+  The original failure/timeout remains in `/tmp/pap292-integration-full-test.log`.
+  No complete full-workspace regression PASS is claimed.
+- Final staged secret scan and whitespace check are required before the handoff
+  commit; runtime PR CI remains separate from the local/installed observations.
+
+Full PAP-292 remains partial: independent owner/security review, universal PAP-290
+bridges, broader installed/profile variants and human acceptance are outstanding.
+The original source failures above remain historical evidence, not silently erased
+by the later source/security or installed smoke checks. No native requirements
 approval, ticket completion, queue, launch or active-session migration is fabricated.
 Rollback affects NEW selection only, preserving original intents/decisions/history.
