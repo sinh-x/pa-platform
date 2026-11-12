@@ -59,7 +59,8 @@ export class TicketPackagePublication {
       let file: ReturnType<typeof identity> | null = null;
       let state: "absent" | "exact" | "conflict" | "unknown" = "unknown";
       try {
-        parent = openArtifactDirectory(join(this.artifactRoot, "agent-teams/requirements/artifacts"), "ARTIFACT_STALE");
+        let expectedParent = join(this.artifactRoot, "agent-teams/requirements/artifacts");
+        parent = openArtifactDirectory(expectedParent, "ARTIFACT_STALE");
         let missing = false;
         for (const part of ["packages", subject.ticket, subject.packageId, `r${String(subject.revision).padStart(3, "0")}`]) {
           const stat = fstatSync(parent);
@@ -68,7 +69,7 @@ export class TicketPackagePublication {
           let next: number;
           try { next = openSync(`/proc/self/fd/${parent}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; missing = true; break; }
-          closeSync(parent); parent = next;
+          closeSync(parent); parent = next; expectedParent = join(expectedParent, part);
         }
         if (missing) state = "absent";
         else {
@@ -89,7 +90,7 @@ export class TicketPackagePublication {
         }
         // Detect directory replacement/mutation even on an absence observation.
         const pinned = ancestors.at(-1);
-        if (!pinned || JSON.stringify(pinned) !== JSON.stringify(identity(fstatSync(parent)))) documentReject("DOCUMENT_STALE");
+        if (!pinned || realpathSync(`/proc/self/fd/${parent}`) !== expectedParent || JSON.stringify(pinned) !== JSON.stringify(identity(fstatSync(parent)))) documentReject("DOCUMENT_STALE");
       } catch { state = "unknown"; }
       finally { if (parent !== undefined) closeSync(parent); }
       return { id: member.id, path, mediaType: member.mediaType, bytes: member.bytes, sha256: member.sha256, state, file, ancestors,

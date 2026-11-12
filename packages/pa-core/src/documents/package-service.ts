@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { diagnosePublication } from "./publication-recovery.js";
+import { diagnosePublication, retirePublication, type NativeRetirementRequest, type NativeRetirementResult } from "./publication-recovery.js";
 import { confirmDocument, type NativeDocumentConfirmationRequest, type NativeDocumentConfirmationResult } from "./confirmation-service.js";
 import { presentDocumentPackage } from "./presentation.js";
 import { closeSync, lstatSync, opendirSync } from "node:fs";
@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { openArtifactDirectory, readArtifactFile } from "../artifacts/manifest.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
-import { documentDecisionRecords, documentRevokedDecisionIds, documentCompletedOperation, documentPending, type DocumentDecision, type DocumentIntent, type RegistryDocumentJournal } from "../registry/documents.js";
+import { documentDecisionRecords, documentRevokedDecisionIds, documentCompletedOperation, documentPending, documentRetiredSubjects, type DocumentDecision, type DocumentIntent, type RegistryDocumentJournal } from "../registry/documents.js";
 import type { TicketStore } from "../tickets/store.js";
 import { TicketPackagePublication } from "../tickets/package-publication.js";
 import type { OperationResult } from "../operations/result.js";
@@ -25,6 +25,7 @@ export interface DocumentPackageHost {
   confirmationProfile?: boolean;
   /** Qualified policy-profile document.package selection only, never config text. */
   recoveryProfile?: boolean;
+  retire?(request: NativeRetirementRequest): Promise<NativeRetirementResult>;
   inspectBranch?(ticket: string): Record<string, unknown> | Promise<Record<string, unknown>>;
   confirm?(request: NativeDocumentConfirmationRequest): Promise<NativeDocumentConfirmationResult>;
   authenticate(): DocumentCaller;
@@ -181,6 +182,8 @@ export class DocumentPackageService {
           result = compareDocumentPackages(previous, subject, hash => this.journal.snapshot(hash));
         } else if (action === "publication-diagnose") {
           result = diagnosePublication(this.journal, this.host, subject, r);
+        } else if (action === "publication-retire") {
+          result = await retirePublication(this.journal, this.host, subject, r);
         } else if (action === "confirm" || action === "confirm-revoke") {
           result = await confirmDocument(this.journal, this.host, subject, () => this.caller(subject), r);
         } else if (action === "capture" || action === "revoke") {
@@ -215,6 +218,7 @@ export class DocumentPackageService {
           result = this.host.tickets.withWorkflowTransaction(() => {
             this.revision(subject, expectedRevision); this.caller(subject); this.host.assertEffectAvailable(subject);
             let events = this.events(subject), pending = documentPending(events);
+            if (documentRetiredSubjects(events).has(sha256)) documentReject("DOCUMENT_AUTHORITY");
             if (pending.some(i => i.operationId !== operationId)) documentReject("DOCUMENT_UNCERTAIN");
             const predecessor = this.predecessor(subject);
             const authorize = () => { this.caller(subject); this.host.assertEffectAvailable(subject); this.approved(subject, decisionId, action); readDocumentSources(subject, this.host.artifactRoot); };

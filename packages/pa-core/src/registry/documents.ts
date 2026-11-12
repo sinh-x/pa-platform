@@ -10,20 +10,41 @@ export interface DocumentConfirmation extends DocumentDecision {
   interactionId: string; deploymentId: string; sessionId: string; recordedAt: string;
 }
 export interface DocumentIntent { operationId: string; subjectSha256: string; decisionId: string; operation: "publish" | "queue" }
+export interface DocumentRetirementConsent {
+  consentId: string; subjectSha256: string; operationId: string; decisionId: string;
+  requestId: string; requestKey: string; expectedRevision: number; originalRequestSha256: string; observationSha256: string; observationEvidenceSha256: string;
+  outcome: DocumentDecision["outcome"]; principal: string; interactionId: string; evidenceSha256: string;
+  callerIdentity: string; deploymentId: string; sessionId: string; recordedAt: string;
+}
+export function retirementRequestKey(r: Pick<DocumentRetirementConsent, "subjectSha256" | "operationId" | "decisionId" | "requestId" | "expectedRevision" | "originalRequestSha256" | "observationSha256">): string {
+  return digest(JSON.stringify([r.subjectSha256, r.operationId, r.decisionId, r.requestId, r.expectedRevision, r.originalRequestSha256, r.observationSha256]));
+}
 export type DocumentEventData = { kind: "frozen"; subjectSha256: string }
   | ({ kind: "decision" } & DocumentDecision)
   | ({ kind: "confirmation" } & DocumentConfirmation)
   | { kind: "revoked"; subjectSha256: string; decisionId: string; evidenceSha256: string }
   | ({ kind: "intent" } & DocumentIntent)
+  | ({ kind: "retirement-consent" } & DocumentRetirementConsent)
+  | { kind: "retired"; subjectSha256: string; operationId: string; consentId: string; observationSha256: string }
   | { kind: "result"; subjectSha256: string; operationId: string; outcome: "completed" | "failed" | "unknown"; code: string };
 export interface DocumentEvent { schemaVersion: "pa-document-event/v1"; repoKey: string; ticket: string; revision: number; predecessor: string | null; data: DocumentEventData }
 function eventData(value: unknown): DocumentEventData {
   const row = value as Record<string, unknown>;
-  const fields = row?.kind === "confirmation" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity", "confirmationVersion", "method", "requestKey", "scope", "operation", "revokes", "supersedes", "interactionId", "deploymentId", "sessionId", "recordedAt"] : row?.kind === "frozen" ? ["kind", "subjectSha256"] : row?.kind === "decision" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity"]
+  const fields = row?.kind === "retirement-consent" ? ["kind", "consentId", "subjectSha256", "operationId", "decisionId", "requestId", "requestKey", "expectedRevision", "originalRequestSha256", "observationSha256", "observationEvidenceSha256", "outcome", "principal", "interactionId", "evidenceSha256", "callerIdentity", "deploymentId", "sessionId", "recordedAt"]
+    : row?.kind === "retired" ? ["kind", "subjectSha256", "operationId", "consentId", "observationSha256"] : row?.kind === "confirmation" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity", "confirmationVersion", "method", "requestKey", "scope", "operation", "revokes", "supersedes", "interactionId", "deploymentId", "sessionId", "recordedAt"] : row?.kind === "frozen" ? ["kind", "subjectSha256"] : row?.kind === "decision" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity"]
     : row?.kind === "revoked" ? ["kind", "subjectSha256", "decisionId", "evidenceSha256"] : row?.kind === "intent" ? ["kind", "subjectSha256", "operationId", "decisionId", "operation"]
       : row?.kind === "result" ? ["kind", "subjectSha256", "operationId", "outcome", "code"] : [];
   if (!fields.length) documentReject("DOCUMENT_UNCERTAIN");
   const r = object(value, fields); text(r.subjectSha256, SHA256);
+  if (r.kind === "retirement-consent") {
+    for (const field of ["consentId", "operationId", "decisionId", "requestId", "interactionId"]) text(r[field], ID);
+    for (const field of ["requestKey", "originalRequestSha256", "observationSha256", "observationEvidenceSha256", "evidenceSha256", "callerIdentity"]) text(r[field], SHA256);
+    integer(r.expectedRevision, 0, 1022); oneOf(r.outcome, ["approved", "rejected", "changes-requested", "cancelled"]);
+    text(r.principal); text(r.deploymentId, /^d-[0-9a-f]{6}$/); text(r.sessionId, undefined, 256);
+    const at = text(r.recordedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    if (new Date(at).toISOString() !== at) documentReject("DOCUMENT_UNCERTAIN");
+  }
+  if (r.kind === "retired") { text(r.operationId, ID); text(r.consentId, ID); text(r.observationSha256, SHA256); }
   if (r.kind === "confirmation") {
     if (r.confirmationVersion !== "pa-document-confirmation/v1" || r.method !== "pi-native-confirmation") documentReject("DOCUMENT_UNCERTAIN");
     text(r.requestKey, SHA256); oneOf(r.scope, ["content", "publish", "publish-and-queue"]); oneOf(r.operation, ["capture", "revoke"]);
@@ -100,6 +121,17 @@ export class RegistryDocumentJournal {
       if (events.length !== expectedRevision) documentReject("DOCUMENT_CONFLICT");
       const subject = this.subject(data.subjectSha256);
       if (subject.repository.key !== repoKey || subject.ticket !== ticket) documentReject("DOCUMENT_AUTHORITY");
+      if ((data.kind === "intent" || data.kind === "result") && documentRetiredSubjects(events).has(data.subjectSha256)) documentReject("DOCUMENT_AUTHORITY");
+      if (data.kind === "retirement-consent") {
+        if (data.expectedRevision !== expectedRevision || retirementRequestKey(data) !== data.requestKey || events.some(e => e.data.kind === "retirement-consent" && (e.data.requestId === data.requestId || e.data.consentId === data.consentId || e.data.interactionId === data.interactionId))) documentReject("DOCUMENT_CONFLICT");
+        const intent = events.find(e => e.data.kind === "intent" && e.data.operationId === data.operationId);
+        if (!intent || intent.data.kind !== "intent" || intent.data.subjectSha256 !== data.subjectSha256 || intent.data.decisionId !== data.decisionId || intent.data.operation !== "publish" || digest(JSON.stringify(intent)) !== data.originalRequestSha256 || subject.predecessor !== null || documentPending(events).length !== 1 || documentPending(events)[0]?.operationId !== data.operationId || documentCompletedOperation(events, data.subjectSha256, "publish") || documentCompletedOperation(events, data.subjectSha256, "queue")) documentReject("DOCUMENT_AUTHORITY");
+      }
+      if (data.kind === "retired") {
+        const consent = events.at(-1);
+        if (!consent || consent.data.kind !== "retirement-consent" || consent.data.outcome !== "approved" || consent.data.consentId !== data.consentId || consent.data.subjectSha256 !== data.subjectSha256 || consent.data.operationId !== data.operationId || consent.data.observationSha256 !== data.observationSha256 || documentRetiredSubjects(events).has(data.subjectSha256) || !documentPending(events).some(i => i.operationId === data.operationId)) documentReject("DOCUMENT_AUTHORITY");
+        this.snapshot(consent.data.evidenceSha256); this.snapshot(consent.data.observationEvidenceSha256);
+      }
       if (data.kind === "confirmation") {
         if (data.requestKey !== digest(JSON.stringify([data.subjectSha256, expectedRevision, data.operation, data.scope, data.revokes]))) documentReject("DOCUMENT_AUTHORITY");
         if (events.some(e => (e.data.kind === "confirmation" || e.data.kind === "decision") && e.data.decisionId === data.decisionId || e.data.kind === "confirmation" && (e.data.requestKey === data.requestKey || e.data.interactionId === data.interactionId))) documentReject("DOCUMENT_CONFLICT");
@@ -111,6 +143,7 @@ export class RegistryDocumentJournal {
         const sha256 = digest(raw); this.db.prepare("INSERT OR IGNORE INTO document_snapshots (sha256, raw) VALUES (?, ?)").run(sha256, raw); this.snapshot(sha256);
       }
       if ((data.kind === "decision" || data.kind === "confirmation" || data.kind === "revoked") && digest(this.snapshot(data.evidenceSha256)) !== data.evidenceSha256) documentReject("DOCUMENT_UNCERTAIN");
+      if (data.kind === "retirement-consent") { this.snapshot(data.evidenceSha256); this.snapshot(data.observationEvidenceSha256); }
       const last = this.db.prepare("SELECT sha256 FROM document_events WHERE repo_key = ? AND ticket = ? ORDER BY revision DESC LIMIT 1").get(repoKey, ticket) as { sha256: string } | undefined;
       const event: DocumentEvent = { schemaVersion: "pa-document-event/v1", repoKey, ticket, revision: expectedRevision + 1, predecessor: last?.sha256 ?? null, data };
       const body = JSON.stringify(event);
@@ -133,7 +166,10 @@ export function documentCompletedOperation(events: DocumentEvent[], sha256: stri
   const completed = new Set(events.flatMap(e => e.data.kind === "result" && e.data.outcome === "completed" ? [e.data.operationId] : []));
   return events.some(e => e.data.kind === "intent" && e.data.subjectSha256 === sha256 && e.data.operation === operation && completed.has(e.data.operationId));
 }
+export function documentRetiredSubjects(events: DocumentEvent[]): Set<string> {
+  return new Set(events.flatMap(e => e.data.kind === "retired" ? [e.data.subjectSha256] : []));
+}
 export function documentPending(events: DocumentEvent[]): DocumentIntent[] {
-  const completed = new Set(events.flatMap(e => e.data.kind === "result" && e.data.outcome === "completed" ? [e.data.operationId] : []));
+  const completed = new Set(events.flatMap(e => e.data.kind === "retired" || e.data.kind === "result" && e.data.outcome === "completed" ? [e.data.operationId] : []));
   return events.flatMap(e => e.data.kind === "intent" && !completed.has(e.data.operationId) ? [e.data] : []);
 }
