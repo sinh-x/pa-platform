@@ -22,6 +22,10 @@ export const MODE_CAPABILITIES = Object.freeze([
   { id: "session.todo", tool: "todo", owner: "todo", actions: "session-local task grammar" },
   { id: "context.read", tool: "read", owner: "document-tool", actions: "guarded project/artifact/config file read" },
   { id: "web.public-read", tool: "pa_web_read", owner: "public-web-reader", actions: "one supplied public HTTPS URL; no search/crawl" },
+  { id: "ordinary.bash", tool: "bash", owner: "pi-builtin", actions: "ordinary shell; shared adapter/host safety; task policy forbids repository/Git mutation" },
+  { id: "ordinary.read", tool: "read", owner: "pi-builtin", actions: "ordinary host file read and continuation, including the whole normal ai-usage workspace" },
+  { id: "ordinary.edit", tool: "edit", owner: "pi-builtin", actions: "ordinary exact edit; author mutable ai-usage artifacts, not repository files" },
+  { id: "ordinary.write", tool: "write", owner: "pi-builtin", actions: "ordinary file write; author mutable ai-usage artifacts, not repository files" },
 ].map(entry => Object.freeze({ ...entry, profile: MODE_CAPABILITY_PROFILE })));
 export type ModeCapabilityId = typeof MODE_CAPABILITIES[number]["id"];
 export interface ModeCapabilityPolicy { readonly version: typeof MODE_CAPABILITY_POLICY_VERSION; readonly allow: readonly string[] }
@@ -54,12 +58,15 @@ export function parseModeCapabilityPolicy(value: unknown): ModeCapabilityPolicy 
     if (!MODE_CAPABILITIES.some(entry => entry.id === id)) throw new ModeCapabilityError("CAPABILITY_UNKNOWN");
     ids.push(id);
   }
+  // Two read contracts must never depend on registration order or silently
+  // widen a retained context.read selection. Choose exactly one explicitly.
+  if (ids.includes("context.read") && ids.includes("ordinary.read")) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
   // Stable set semantics; never mutate the caller's array or inherit defaults.
   return Object.freeze({ version: MODE_CAPABILITY_POLICY_VERSION, allow: Object.freeze(ids.sort()) });
 }
 export function selectedCapabilityTools(policy: ModeCapabilityPolicy): readonly string[] {
   const checked = parseModeCapabilityPolicy(policy);
-  return Object.freeze(checked.allow.map(id => MODE_CAPABILITIES.find(entry => entry.id === id)!.tool));
+  return Object.freeze([...new Set(checked.allow.map(id => MODE_CAPABILITIES.find(entry => entry.id === id)!.tool))]);
 }
 export function capabilityToolSelected(policy: ModeCapabilityPolicy, tool: string): boolean {
   // Exact canonical tool names only. No namespace, alias, prefix or wildcard matching.

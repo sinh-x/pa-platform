@@ -16,10 +16,11 @@ const config = (value: unknown = policy(), profile = MODE_CAPABILITY_PROFILE) =>
 
 test("closed registry is exact replacement selection with immutable deterministic results", () => {
   assert.equal(new Set(MODE_CAPABILITIES.map(c => c.id)).size, MODE_CAPABILITIES.length);
-  assert.equal(new Set(MODE_CAPABILITIES.map(c => c.tool)).size, MODE_CAPABILITIES.length);
+  assert.equal(new Set(MODE_CAPABILITIES.map(c => c.tool)).size, MODE_CAPABILITIES.length - 1);
+  assert.throws(() => parseModeCapabilityPolicy(policy(["context.read", "ordinary.read"])), /CAPABILITY_POLICY_INVALID/);
   assert.deepEqual(selectedCapabilityTools(parseModeCapabilityPolicy(policy())), []);
-  const all = parseModeCapabilityPolicy(policy(MODE_CAPABILITIES.map(c => c.id).reverse()));
-  assert.equal(all.allow.length, 13);
+  const all = parseModeCapabilityPolicy(policy(MODE_CAPABILITIES.map(c => c.id).filter(id => id !== "context.read").reverse()));
+  assert.equal(all.allow.length, MODE_CAPABILITIES.length - 1);
   assert.ok(Object.isFrozen(all)); assert.ok(Object.isFrozen(all.allow));
   assert.deepEqual(all.allow, [...all.allow].sort());
   for (const entry of MODE_CAPABILITIES) {
@@ -78,7 +79,7 @@ test("selected committed resource binds exact bytes/revision and rejects drift/f
 });
 
 test("policy primer names the exact selection without misidentifying it as a retained profile", () => {
-  for (const ids of [[], ["ticket.intake", "capability.discover"], MODE_CAPABILITIES.map(c => c.id)]) {
+  for (const ids of [[], ["ticket.intake", "capability.discover"], MODE_CAPABILITIES.map(c => c.id).filter(id => id !== "context.read") ]) {
     const teamConfig = parseTeamYamlContent(config(policy(ids)));
     const primer = generatePrimer({ runtime: "pi", teamConfig, mode: "analyze", requirementsDocument: true, skillsDir: "/nonexistent-fixture-skills" });
     assert.match(primer, /Native profile: pa-document-policy\/v1/);

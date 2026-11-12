@@ -70,7 +70,7 @@ export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall,
   if (caller.deploymentId !== deploymentId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
   const name = call.toolName ?? call.name ?? "";
   if (!capabilityToolSelected(caller.capabilities.policy, name)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
-  if (name === "read" && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  if (name === "read" && !caller.capabilities.policy.allow.includes("ordinary.read") && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
 }
 export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
   const policyDeploymentId = policyDocumentDeployment();
