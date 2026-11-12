@@ -6,10 +6,11 @@ import { creationDigest, creationKey, type TicketCreateIntentIdentity } from "./
 import { ACTIVE_STATUSES, TERMINAL_STATUSES, type AuditEntry, type Ticket, type TicketStatus } from "./types.js";
 import { isCanonicalTicketId } from "./validate.js";
 export const TICKET_STATUSES: readonly TicketStatus[] = Object.freeze([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
-export type TicketStatusCode = "TICKET_STATUS_INPUT" | "TICKET_STATUS_SESSION" | "TICKET_STATUS_OWNER" | "TICKET_STATUS_STALE" | "TICKET_STATUS_CONFLICT" | "TICKET_STATUS_UNCERTAIN";
+export type TicketStatusCode = "TICKET_STATUS_ROUTE" | "TICKET_STATUS_INPUT" | "TICKET_STATUS_SESSION" | "TICKET_STATUS_OWNER" | "TICKET_STATUS_STALE" | "TICKET_STATUS_CONFLICT" | "TICKET_STATUS_UNCERTAIN";
 export class TicketStatusError extends Error {
   constructor(readonly code: TicketStatusCode) {
     const reasons: Record<TicketStatusCode, string> = {
+      TICKET_STATUS_ROUTE: "This selected requirements session must use its finite status owner, not a legacy status update or soft-delete route. Use the Pi ticket-status interface with an inspected version and original request ID.",
       TICKET_STATUS_INPUT: "The bounded status-only request or lifecycle precondition is invalid. No actor, approval or unrelated field is accepted.",
       TICKET_STATUS_SESSION: "The selected native caller, immutable status capability or current process identity cannot be authenticated.",
       TICKET_STATUS_OWNER: "A retained workflow or another deployment has live or unproven ownership. Status maintenance cannot take it over.",

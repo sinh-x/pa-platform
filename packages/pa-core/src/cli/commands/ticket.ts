@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { queryDeploymentStatus } from "../../registry/index.js";
+import { TicketStatusError } from "../../tickets/status-intent.js";
 import { resolve } from "node:path";
 import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
@@ -232,6 +234,16 @@ function printTicketHelp(io: Required<CliIo>): void {
   io.stdout("Run 'ticket <subcommand> --help' for detailed usage.");
 }
 
+/** Legacy CLI status writes must not bypass the selected finite owner's CAS or
+ * live-owner checks just because ordinary shell is now available. Retained
+ * operator/non-policy routes and native protected publication owners are unchanged. */
+function selectedStatusOwnerRequired(): boolean {
+  const id = process.env.PA_DEPLOYMENT_ID;
+  if (!id) return false;
+  const status = queryDeploymentStatus(id);
+  return status?.runtime === "pi" && status.team === "requirements" && status.mode === "analyze" && !!status.mode_capability_binding;
+}
+
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
   const store = new TicketStore(undefined, resolveTrustedTicketMutationContext());
@@ -286,6 +298,7 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     const parsed = parseTicketUpdateArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
     if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
+    if (parsed.input.status !== undefined && selectedStatusOwnerRequired()) return printError(new TicketStatusError("TICKET_STATUS_ROUTE").message, io);
     if (parsed.archive) {
       const current = store.get(id);
       if (!current) return printError(`Ticket not found: ${id}`, io);
@@ -354,6 +367,7 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("ticket delete requires id", io);
     const opts = parseTicketDeleteArgs(rest.slice(1));
     if ("error" in opts) return printError(opts.error, io);
+    if (!opts.force && selectedStatusOwnerRequired()) return printError(new TicketStatusError("TICKET_STATUS_ROUTE").message, io);
     if (opts.force && !opts.yes) return printError("--force requires --yes in pa-core non-interactive mode", io);
     try {
       store.delete(id, opts.actor, opts.force);

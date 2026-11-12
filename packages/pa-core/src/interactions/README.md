@@ -282,3 +282,26 @@ its comparison mode explicitly retains the trial's unversioned-source limitation
 See the report linked above for the exact invocation and observed 51/51 result.
 P2–P7 and remaining P1 obligations must still be delivered and verified before
 umbrella acceptance.
+
+## PAP-292 additive status integration
+
+The source catalogue now records `ticket.status.inspect` (read) and
+`ticket.status.set` (write) on native and Pi CLI channels. Bindings remain null:
+source discovery never claims live registration or permission. The actual finite
+owner is tickets/status-service.ts plus TicketStore.setStatusWithIntent; the
+adapters are pa_ticket_status and ppa ticket-status --request JSON. Retained
+pa_ticket/intake grammars are unchanged. Selected policy callers cannot bypass
+this status owner's CAS/ownership through legacy ticket update --status or soft
+delete; operator/non-policy CLI semantics remain unchanged. Broad same-UID shell
+is not a hostile-process sandbox or a supported raw-state workaround.
+
+The six renewed historical source digests cover capability registry/primer,
+canonical native/CLI process authentication, selected tool admission, the additive
+store primitive and CLI dispatch. ticket.ts additionally refuses the two legacy
+status routes for policy callers. Four new status owner/adapter sources are now
+tracked. Tests cover native and actual subprocess CLI-first writes, original
+intent replay, all nine statuses/81 enum edges, stale/changed requests, real CAS
+contention, reauthentication-time drift and live-PID terminal-owner rejection.
+This is semantic reconciliation by the implementer, not independent review or
+full PAP-290 operation parity. See docs/PAP-292-implementation.md for remaining
+catalogue, installed qualification and UAT gaps.

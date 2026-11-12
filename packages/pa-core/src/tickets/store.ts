@@ -271,7 +271,9 @@ export class TicketStore {
         if (status === "done" && before.subTickets.some(sub => sub.status !== "done")) return statusFail("TICKET_STATUS_INPUT");
         const after = before.status === status ? before : statusCandidate(before, status, nowUtc());
         record = { schemaVersion: "pa-ticket-status-intent/v1", key, scope: identity.scope, requestId: identity.requestId, payloadSha256, actor, expectedVersion, status, before, after };
-        check(); publishStatusIntent(this.dir, record); observed("intent");
+        check();
+        if (!isDeepStrictEqual(this.get(id), before)) statusFail("TICKET_STATUS_STALE");
+        publishStatusIntent(this.dir, record); observed("intent");
       }
       if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
         || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) statusFail("TICKET_STATUS_UNCERTAIN");
@@ -280,6 +282,7 @@ export class TicketStore {
         if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) statusFail("TICKET_STATUS_UNCERTAIN");
         if (isDeepStrictEqual(current, record.before)) {
           check();
+          if (!isDeepStrictEqual(this.get(id), record.before)) statusFail("TICKET_STATUS_UNCERTAIN");
           new AdvisoryFiles(this.dir).file(`${id}.json`, JSON.stringify(record.after, null, 2)); observed("ticket");
         }
         check();

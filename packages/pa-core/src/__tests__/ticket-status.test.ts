@@ -43,6 +43,14 @@ test("status owner covers all 81 enum edges, lifecycle denials, CAS and original
       const denied = new TicketStore(join(root, "tickets"), context);
       assert.throws(() => denied.setStatusWithIntent(ticket.id, statusVersion(store.get(ticket.id)!), "cancelled", "synthetic", { scope: "a".repeat(64), requestId: `denied-${seq++}` }, { assertCurrent() {} }), /parent flow/);
     }
+    for (const boundary of [2, 3]) {
+      const t = store.create(input); let checks = 0;
+      assert.throws(() => store.setStatusWithIntent(t.id, statusVersion(t), "requirement-review", "requirements/analyze", { scope: "c".repeat(64), requestId: `reauth-${boundary}` }, {
+        assertCurrent() { if (++checks === boundary) store.update(t.id, { summary: "Changed during native reauthentication" }); },
+      }), boundary === 2 ? /TICKET_STATUS_STALE/ : /TICKET_STATUS_UNCERTAIN/);
+      assert.equal(store.get(t.id)!.summary, "Changed during native reauthentication");
+      assert.equal(store.get(t.id)!.status, "idea");
+    }
     for (const stage of ["intent", "audit"] as const) {
       const t = store.create(input), version = statusVersion(t), intent = { scope: "b".repeat(64), requestId: stage };
       assert.throws(() => store.setStatusWithIntent(t.id, version, "requirement-review", "requirements/analyze", intent, { assertCurrent() {}, afterPersist(s) { if (s === stage) throw Error("fault"); } }), /fault/);

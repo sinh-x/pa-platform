@@ -38,6 +38,11 @@ test("native-first and actual CLI subprocess-first share status owner, CAS, repl
       const ticket = create(), inspect = { schemaVersion: "pa-ticket-status/v1", action: "inspect", project: "example", ticket: ticket.id };
       const read = await call(inspect); assert.notEqual(read.isError, true, read.content[0].text);
       const inspected = JSON.parse(read.content[0].text);
+      for (const args of [["ticket", "update", ticket.id, "--status", "done"], ["ticket", "delete", ticket.id]]) {
+        const legacy = spawnSync(process.execPath, [`--import=${import.meta.resolve("tsx")}`, cli, ...args], { cwd: repo, env: process.env, encoding: "utf8" });
+        assert.equal(legacy.status, 1); assert.match(legacy.stderr, /TICKET_STATUS_ROUTE/);
+        assert.ok(legacy.stderr.length <= 2000); assert.equal(store.get(ticket.id)!.status, "idea");
+      }
       const request = { ...inspect, action: "set", requestId: `${first}-first`, expectedVersion: inspected.version, status: "requirement-review" };
       const result = first === "native" ? await call(request) : cliCall(request);
       if (first === "native") assert.notEqual((result as any).isError, true, JSON.stringify(result));
