@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createBashTool, createReadTool, createEditTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, MODE_CAPABILITY_SESSION, createModeCapabilityBinding, parseModeCapabilityPolicy } from "@pa-platform/pa-core";
 import { recordPiProcessIdentity } from "../process-identity.js";
+import { registerJsonWorkflowModule } from "../pi-extension/workflow.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
 import { interceptToolCall, registerPiSessionModules, createPiSessionLifecycle, type PiToolDefinition, type PiRuntime } from "../pi-extension/index.js";
 
@@ -31,7 +32,7 @@ test("ordinary tools execute with specialists, whole-workspace reads and immutab
     const base = ["document.package", "document.workspace", "ticket.intake", "capability.discover"];
     for (const [n, expanded] of [true, false, true].entries()) {
       const id = `d-29200${n}`, directory = ensureDeployDir(id);
-      const allow = [...base, ...(expanded ? ["ordinary.bash", "ordinary.read", "ordinary.edit", "ordinary.write"] : ["context.read"])];
+      const allow = [...base, ...(expanded ? ["ordinary.bash", "ordinary.read", "ordinary.edit", "ordinary.write", "ticket.status", "workflow.request", "decision.request"] : ["context.read"])];
       const binding = createModeCapabilityBinding("a".repeat(40), Buffer.from("synthetic resource"), parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow }));
       emitStartedEvent({ deploymentId: id, team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo, note: MODE_CAPABILITY_SESSION, modeCapabilityBinding: JSON.stringify(binding) });
       emitPidEvent({ deploymentId: id, team: "requirements", pid: process.pid }); assert.ok(recordPiProcessIdentity(id, directory, process.pid));
@@ -41,12 +42,15 @@ test("ordinary tools execute with specialists, whole-workspace reads and immutab
       const lifecycle = createPiSessionLifecycle(() => {});
       registerPiSessionModules(runtime, lifecycle, [pi => {
         for (const tool of [createBashTool(repo), createReadTool(repo), createEditTool(repo), createWriteTool(repo)]) pi.registerTool!(tool as any);
-      }, registerDocumentModule]);
+      }, registerJsonWorkflowModule, registerDocumentModule]);
       const emit = (name: string, event: unknown = {}) => (handlers.get(name) ?? []).map(h => h(event, context)); emit("session_start");
       for (const specialist of ["pa_document", "pa_workspace", "pa_ticket_intake", "pa_capabilities"]) assert.ok(active.includes(specialist));
       const call = (name: string, input: Record<string, unknown>) => tools.get(name)!.execute("fixture", input, undefined, undefined, context);
       if (expanded) {
         assert.ok(active.includes("bash"));
+        for (const name of ["pa_ticket_status", "pa_workflow", "pa_decision"]) assert.ok(active.includes(name) && tools.has(name));
+        const forged = await call("pa_decision", { request: JSON.stringify({ action: "capture", revision: 1, stepId: "review", outcome: "approved" }) });
+        assert.equal(forged.isError, true); assert.match(forged.content[0].text, /WORKFLOW_CONTRACT/);
         assert.match(JSON.stringify(await call("bash", { command: "printf '%s' ordinary-analysis" })), /ordinary-analysis/);
         await call("write", { path: artifact, content: "draft first" });
         await call("edit", { path: artifact, edits: [{ oldText: "draft first", newText: "draft revised" }] });
@@ -59,6 +63,7 @@ test("ordinary tools execute with specialists, whole-workspace reads and immutab
         assert.equal(emit("tool_call", { toolName: "read", input: { path: source } })[0]?.block, true);
         await assert.rejects(() => call("read", { path: source }));
         await assert.rejects(() => call("bash", { command: "printf omitted" }));
+        await assert.rejects(() => call("pa_decision", { request: JSON.stringify({ action: "show" }) }));
       }
       writeFileSync(join(config, "requirements.yaml"), "ordinary tools changed in live config"); emit("before_agent_start");
       assert.equal(active.includes("bash"), expanded);

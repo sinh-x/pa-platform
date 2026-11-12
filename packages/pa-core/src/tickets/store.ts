@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { statusFail, statusKey, statusVersion, statusCandidate, statusIntents, readStatusIntent, publishStatusIntent, statusAudit, statusAuditComplete, TICKET_STATUSES, type TicketStatusHooks } from "./status-intent.js";
 import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
 import { AdvisoryFiles } from "../operations/files.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
@@ -236,6 +237,60 @@ export class TicketStore {
       const persisted = this.get(id);
       if (!persisted || persisted.id !== id || persisted.project !== record.after.project || !planningAuditComplete(record, readAudits().entries)) throw new TicketPlanningIntentError("TICKET_PLAN_UNCERTAIN");
       return { ticket: persisted, appliedVersion: record.appliedVersion, reused };
+    });
+  }
+
+  /** Status-only finite owner. Durable intent precedes ticket/audit writes under
+   * the same mutex as legacy writers and protected publication. No approval effect. */
+  setStatusWithIntent(id: string, expectedVersion: string, status: TicketStatus, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketStatusHooks): { ticket: Ticket; appliedVersion: string; reused: boolean } {
+    const key = statusKey(identity);
+    if (!isCanonicalTicketId(id) || !/^[a-f0-9]{64}$/.test(expectedVersion) || !TICKET_STATUSES.includes(status)
+      || !actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)) return statusFail("TICKET_STATUS_INPUT");
+    const payloadSha256 = creationDigest({ id, expectedVersion, status, actor });
+    const check = () => {
+      const checked: unknown = hooks.assertCurrent();
+      if (checked instanceof Promise) void checked.catch(() => {});
+      if (checked !== undefined) statusFail("TICKET_STATUS_SESSION");
+      assertLifecycleOwnership(status, this.context);
+    };
+    const observed = (stage: "intent" | "ticket" | "audit") => {
+      const result: unknown = hooks.afterPersist?.(stage);
+      if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) statusFail("TICKET_STATUS_UNCERTAIN");
+    };
+    return this.withTransaction(() => {
+      check();
+      let record = readStatusIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.expectedVersion !== expectedVersion || record.actor !== actor || record.status !== status)) statusFail("TICKET_STATUS_CONFLICT");
+      for (const pending of statusIntents(this.dir)) if (pending.before.id === id && pending.key !== key && !statusAuditComplete(pending, this.readCreationAudits().entries)) statusFail("TICKET_STATUS_UNCERTAIN");
+      if (!record) {
+        const before = this.get(id);
+        if (!before) return statusFail("TICKET_STATUS_INPUT");
+        if (statusVersion(before) !== expectedVersion) return statusFail("TICKET_STATUS_STALE");
+        if (status === "done" && before.subTickets.some(sub => sub.status !== "done")) return statusFail("TICKET_STATUS_INPUT");
+        const after = before.status === status ? before : statusCandidate(before, status, nowUtc());
+        record = { schemaVersion: "pa-ticket-status-intent/v1", key, scope: identity.scope, requestId: identity.requestId, payloadSha256, actor, expectedVersion, status, before, after };
+        check(); publishStatusIntent(this.dir, record); observed("intent");
+      }
+      if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+        || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) statusFail("TICKET_STATUS_UNCERTAIN");
+      if (!statusAuditComplete(record, this.readCreationAudits().entries)) {
+        const current = this.get(id);
+        if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) statusFail("TICKET_STATUS_UNCERTAIN");
+        if (isDeepStrictEqual(current, record.before)) {
+          check();
+          new AdvisoryFiles(this.dir).file(`${id}.json`, JSON.stringify(record.after, null, 2)); observed("ticket");
+        }
+        check();
+        if (!isDeepStrictEqual(this.get(id), record.after)) statusFail("TICKET_STATUS_UNCERTAIN");
+        const previous = this.readCreationAudits().raw;
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${previous}${JSON.stringify(statusAudit(record))}\n`); observed("audit");
+      }
+      check();
+      const current = this.get(id);
+      if (!current || current.id !== id || current.project !== record.after.project || !statusAuditComplete(record, this.readCreationAudits().entries)) return statusFail("TICKET_STATUS_UNCERTAIN");
+      return { ticket: current, appliedVersion: statusVersion(record.after), reused };
     });
   }
 
