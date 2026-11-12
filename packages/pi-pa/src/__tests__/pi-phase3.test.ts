@@ -16,6 +16,8 @@ import registerPiPaExtension, {
 import { readPiTerminalStatus } from "../terminal-status.js";
 import { BUNDLED_EDITOR_FACTORIES } from "../pi-extension/bundled-editors.js";
 import { registerRepoSetupModule } from "../pi-extension/repo-setup.js";
+import { registerLocalSourceToolsModule } from "../pi-extension/local-source-tools.js";
+import { registerLocalContentResultModule } from "../pi-extension/local-content-security.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
@@ -81,7 +83,9 @@ test("trusted entrypoint registers only selected editors while preserving attrib
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 10);
+  assert.equal(PI_PA_MODULES.length, 12);
+  assert.ok(PI_PA_MODULES.includes(registerLocalSourceToolsModule), "secured built-in overrides retain shared admission");
+  assert.ok(PI_PA_MODULES.includes(registerLocalContentResultModule), "local result protection is a separate module, not a role grant");
   assert.ok(PI_PA_MODULES.includes(registerDocumentModule), "document tools register lazily only after native session authentication");
   assert.ok(PI_PA_MODULES.includes(registerRepoSetupModule), "the bounded setup module is registered, but inactive for the ordinary fixture role");
   const expectedEditorCommands = BUNDLED_EDITOR_FACTORIES.flatMap((factory) => {
@@ -89,7 +93,7 @@ test("trusted entrypoint registers only selected editors while preserving attrib
     if (factory.startsWith("proper-base@")) return ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"];
     return [];
   });
-  assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"]);
+  assert.deepEqual(registered, ["read", "bash", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"]);
   assert.deepEqual(commands, [...expectedEditorCommands, "pa-context", "pa-git-context"]);
   assert.deepEqual(shortcuts, ["alt+i", "alt+g"]);
 });

@@ -1,4 +1,10 @@
-# Config-owned Pi document capabilities (PAP-289)
+# Config-owned Pi document capabilities (PAP-289 / PAP-292)
+
+PAP-292 adds explicitly selected ordinary analysis tools and finite status/workflow
+request reach; see [its contract](PAP-292-implementation.md) and
+[partial-delivery qualification status](PAP-292-validation.md). The historical
+PAP-289 checkpoints below do not imply full PAP-292 acceptance. Legacy context.read
+keeps its guarded behavior and cannot be selected together with ordinary.read.
 
 Current integration disposition: the `d-fbce8c` native foreground read returned
 useful, clipped README content and the operator directed integration to develop.
@@ -72,6 +78,13 @@ cannot replace them with paths, modules, commands, headers or authority fields.
 | `session.todo` | `todo` | session-local task lifecycle |
 | `context.read` | `read` | existing canonical project/artifact/config path and content guards |
 | `web.public-read` | `pa_web_read` | `public-web/reader.ts` + `web-read-tool.ts`; supplied-public-HTTPS reader, selected only through the immutable native policy |
+| `ordinary.bash` | `bash` | Pi ordinary shell, existing shared host/adapter safety; no analyst repository/Git mutation authority |
+| `ordinary.read` | `read` | Pi ordinary read/continuation, including whole normal ai-usage; mutually exclusive with context.read |
+| `ordinary.edit` | `edit` | Pi ordinary exact edit; mutable ai-usage artifacts, not repository writing |
+| `ordinary.write` | `write` | Pi ordinary writer; mutable ai-usage artifacts, not repository writing |
+| `ticket.status` | `pa_ticket_status` | finite same-project status service shared with Pi ticket-status CLI; snapshot CAS/original intent/owner/lifecycle checks, not publication/queue |
+| `workflow.request` | `pa_workflow` | existing workflow owner/schema/decision gates, not a second controller |
+| `decision.request` | `pa_decision` | existing genuine foreground decision/recovery/adoption owner; no imported outcomes |
 
 A configuration preserving the current v4 baseline explicitly lists all twelve
 non-web IDs. The original ten-ID example omitted v4 intake and source discovery;

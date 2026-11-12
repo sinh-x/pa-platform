@@ -60,7 +60,10 @@ test("default non-editor composition registers finite intake only for fresh auth
     const tool = host.tools.get("pa_ticket_intake") as PiToolDefinition; assert.ok(tool);
     assert.ok(host.tools.has("pa_document")); assert.ok(host.tools.has("pa_workspace")); assert.ok(host.tools.has("pa_capabilities")); assert.ok(host.commands.has("pa-approve"));
     assert.equal(confirmationDocumentCaller(authenticatePiDocumentCaller(context)), true);
-    assert.equal(host.tools.has("bash"), false); assert.equal(host.tools.has("pa_operation"), false);
+    assert.equal(host.tools.has("bash"), true, "secured replacement is registered, not a retained-profile grant");
+    assert.ok((await host.dispatch("tool_call", { toolName: "bash", input: { command: "printf denied" } }, context)).some((r: any) => r?.block));
+    await assert.rejects(() => host.tools.get("bash")!.execute("retained-direct-denied", { command: "printf denied" }, undefined, undefined, context), /CAPABILITY_OMITTED/);
+    assert.equal(host.tools.has("pa_operation"), false);
     const call = async (input: Record<string, unknown>, ctx = context) => tool.execute("source-fixture-call", input, undefined, undefined, ctx);
     const packet = { request: JSON.stringify(request) };
     const capabilityPacket = { request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities" }) };

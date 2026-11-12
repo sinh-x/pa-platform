@@ -59,6 +59,16 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
   assert.ok(operation("codectx.query.function").aliases.includes("codectx query fn"));
 });
 
+test("status owner routes are inventoried without promoting source discovery to authority", () => {
+  for (const action of ["inspect", "set"]) {
+    const row = operation(`ticket.status.${action}`);
+    assert.deepEqual(row.channels, ["cli", "native"]);
+    assert.deepEqual(row.nativeForms, [`pa_ticket_status:${action}`]);
+    assert.equal(row.effectClass, action === "inspect" ? "read" : "write");
+    assert.equal(row.nativeBinding, null);
+  }
+});
+
 test("native-only owners are accounted for without inventing CLI commands or grants", () => {
   for (const id of ["ticket.intake.create", "document.native.confirm", "document.native.branch-inspect", "workspace.run", "workflow.native.request-step", "decision.native.adopt", "preparation.retry", "execution.report", "phase-report.observe-delivery", "feature.update", "borrow.approval"]) {
     const row = operation(id);

@@ -103,7 +103,7 @@ function createBuiltInSensitivePatterns(): SensitivePattern[] {
     content(/\bbearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i),
     content(/\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}\b/),
     content(/\b\d{5,}:[A-Za-z0-9_-]{35,}\b/),
-    content(/\b(?:api[_-]?key|access[_-]?token|secret[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{16,}/i),
+    content(/\b(?:api[_-]?key|access[_-]?token|secret[_-]?key)['\"]?\s*[:=]\s*['\"]?[^\s'\"]{16,}/i),
   ];
 }
 

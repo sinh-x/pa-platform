@@ -1,4 +1,6 @@
 export * from "./store.js";
+export * from "./status-intent.js";
+export * from "./status-service.js";
 export * from "./doc-ref.js";
 export * from "./validate.js";
 export * from "./git-validation.js";

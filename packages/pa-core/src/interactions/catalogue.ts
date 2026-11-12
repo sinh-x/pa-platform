@@ -137,6 +137,12 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
     ["subticket.planning", ["ticket subticket update"], "write", "native"],
     ["subticket.lifecycle", ["ticket subticket complete", "ticket subticket update --status"], "write", "owner"],
   ]),
+  ...(["inspect", "set"] as const).map(action => Object.freeze({
+    ...entry(`ticket.status.${action}`, [`ticket-status --request {action:${action}}`, ...(action === "inspect" ? ["ticket-status --help"] : [])], action === "inspect" ? "read" : "write", "owner", `${pi}ticket-status.ts`, "ticket status intent/CAS owner", {
+      reason: "Additive selected Pi requirements status-only port; native and CLI share process authentication, lifecycle/owner checks and original intent. This source description is not installed availability, publication, queue or acceptance authority.",
+    }),
+    nativeForms: Object.freeze([`pa_ticket_status:${action}`]), channels: Object.freeze(["cli", "native"] as const),
+  })),
   ...family("bulletin", "bulletin administration", [
     ["list", ["bulletin list"], "read", "native"], ["create", ["bulletin create"], "write", "operator"], ["resolve", ["bulletin resolve"], "write", "operator"],
   ]),

@@ -12,6 +12,20 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-292 local-source security follow-up uses **`0.1.161-pap292.1`** across
+`package.json`, `pa-core`, `opencode-pa` and `pi-pa`, at the operator's request for
+an identifiable test install. A separately rebuilt PPA must display
+`ppa 0.1.161-pap292.1`. `runtime-host` remains independently versioned. See
+[local-source content security](local-source-content-security.md) for scope and
+source-test results. This does not install, activate or qualify an artifact, alter
+config pins/dependencies/Nix hashes, redact historical transcripts, or complete
+PAP-292. Use the clean exact label commit for packaging and verify its actual
+`sourceSha` separately from this readable version. The integration candidate
+restores plain **0.1.161** across the four shared manifests for the normal develop
+auto-patch flow; the installed labelled trial remains unchanged. Its bounded
+installed smoke and explicit provenance limitation are recorded in
+[PAP-292 validation](PAP-292-validation.md#installed-follow-up-and-integration-disposition).
+
 For an explicitly approved worktree-only build label, update the same four manifests together. The PAP-271 operator-selected development build used `0.1.153-pap271.1`, displayed by `ppa --version` and used as the Nix package version. Its integration candidate restores the plain `develop` version for the normal auto-patch flow; the installed development build retains its readable label. Rebuilding/selecting the package is still required; editing source manifests does not change an existing installation.
 
 The PAP-273 native-confirmation/branch-inspection follow-up trial label is `0.1.158-pap273.6`, set across the same four manifests. It supersedes `.5` for this worktree's next separately selected test installation; installed `.5` is not changed by source edits. New `pa-document-confirmation/v3` opt-in and retained-profile boundaries are documented in `PAP-273-native-confirmation-follow-up.md`. Build from the clean exact label commit and check both `packageVersion` and its `sourceSha`, not a dirty/path-derived source. This suffix is not installed qualification, config activation, acceptance, release/tag or a dependency-hash change.

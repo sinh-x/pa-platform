@@ -33,10 +33,18 @@ export interface DocumentSessionDependencies {
 }
 /** Native launch event, running registry, process incarnation and session, not an env selector. */
 export function authenticatePiDocumentCaller(context: PiPreparationContext, env: NodeJS.ProcessEnv = process.env, overrides: Partial<DocumentSessionDependencies> = {}): PiDocumentCaller {
+  return authenticateDocumentProcess(context, env, overrides, false);
+}
+/** CLI status adapter only: process lineage and immutable selection are genuine;
+ * there is no TUI session or human decision host on this route. */
+export function authenticatePiDocumentCliProcess(env: NodeJS.ProcessEnv = process.env): PiDocumentCaller {
+  return authenticateDocumentProcess({ cwd: process.cwd(), mode: "cli" }, env, {}, true);
+}
+function authenticateDocumentProcess(context: PiPreparationContext | { cwd: string; mode: "cli"; sessionManager?: never }, env: NodeJS.ProcessEnv, overrides: Partial<DocumentSessionDependencies>, cli: boolean): PiDocumentCaller {
   const d: DocumentSessionDependencies = { status: queryDeploymentStatus, events: getDeploymentEvents, physical: realpathSync, repository: resolveRepoExecutionPath,
     fingerprint: readProcessFingerprint, inLineage: processIsWithinFingerprintLineage, cwd: () => process.cwd(), pid: process.pid, anchor: readPiProcessIdentity, ...overrides };
   const deny = (): never => { throw new DocumentPackageError("DOCUMENT_AUTHORITY"); };
-  if (context.mode !== "tui" || env.PA_PI_EXECUTION_MODE !== "foreground" || !/^d-[0-9a-f]{6}$/.test(env.PA_DEPLOYMENT_ID ?? "")) deny();
+  if ((!cli && context.mode !== "tui") || env.PA_PI_EXECUTION_MODE !== "foreground" || !/^d-[0-9a-f]{6}$/.test(env.PA_DEPLOYMENT_ID ?? "")) deny();
   const deploymentId = env.PA_DEPLOYMENT_ID!, status = d.status(deploymentId), events = d.events(deploymentId), starts = events.filter(event => event.event === "started"), start = starts[0];
   if (!status || ((start?.note === DOCUMENT_INTERACTIONS_SESSION_VERSION || start?.note === MODE_CAPABILITY_SESSION) && (start.resumed_from_deployment_id || start.parent_deployment_id || start.fallback)) || starts.length !== 1 || !start || !DOCUMENT_SESSION_VERSIONS.some(version => version === start.note) || start.runtime !== "pi" || start.binary !== "ppa"
     || status.status !== "running" || status.runtime !== "pi" || status.team !== "requirements" || status.mode !== "analyze" || status.rogue_one || status.builder_authority
@@ -57,7 +65,7 @@ export function authenticatePiDocumentCaller(context: PiPreparationContext, env:
   }
   if (ticket !== (status.ticket_id || null)) return deny();
   const repo = d.repository(undefined, root), owner = d.fingerprint(status.pid), current = d.fingerprint(d.pid), sessionId = context.sessionManager?.getSessionId();
-  if (repo.repoRoot !== root || repo.worktreeRoot !== root || repo.repositoryCwd !== root || !owner || !current || !d.inLineage(d.pid, owner) || !sessionId || !isDeepStrictEqual(owner, d.anchor(deploymentId, getDeployPaths(deploymentId).deployDir))) return deny();
+  if (repo.repoRoot !== root || repo.worktreeRoot !== root || repo.repositoryCwd !== root || !owner || !current || !d.inLineage(d.pid, owner) || (!cli && !sessionId) || !isDeepStrictEqual(owner, d.anchor(deploymentId, getDeployPaths(deploymentId).deployDir))) return deny();
   let capabilities: ModeCapabilityBinding | undefined;
   if (start.note === MODE_CAPABILITY_SESSION) {
     try {
@@ -71,7 +79,7 @@ export function authenticatePiDocumentCaller(context: PiPreparationContext, env:
   return { deploymentId, repoKey: repo.repoKey, repoRoot: root, ticket: status.ticket_id || null,
     ...(capabilities ? { capabilities, profile: MODE_CAPABILITY_SESSION, sessionId } : {}),
     ...(start.note === DOCUMENT_WORKSPACE_SESSION_VERSION ? { profile: DOCUMENT_WORKSPACE_SESSION_VERSION } : start.note === DOCUMENT_CONFIRMATION_SESSION_VERSION || start.note === DOCUMENT_INTERACTIONS_SESSION_VERSION ? { profile: start.note, sessionId } : {}),
-    identitySha256: workflowDigest(JSON.stringify({ deploymentId, owner, current, sessionId, root, ticket: status.ticket_id || null, startedAt: status.started_at })) };
+    identitySha256: workflowDigest(JSON.stringify({ deploymentId, owner, current, sessionId, ...(cli ? { channel: "cli-process" } : {}), root, ticket: status.ticket_id || null, startedAt: status.started_at })) };
 }
 export function assertSameDocumentCaller(before: PiDocumentCaller, after: PiDocumentCaller): void {
   if (!isDeepStrictEqual(before, after)) throw new DocumentPackageError("DOCUMENT_STALE");

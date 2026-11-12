@@ -7,6 +7,7 @@ import { runDocumentConfirmationCommand } from "./document-confirmation-command.
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { createWorkspaceTool } from "./workspace-tool.js";
 import { createPublicWebTool } from "./web-read-tool.js";
+import { createTicketStatusTool } from "./ticket-status-tool.js";
 import { confirmationDocumentCaller, DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
 import { createPaTicketIntakeTool, ticketIntakeFailure } from "./ticket-intake-tool.js";
 import { createPaCapabilitiesTool } from "./capability-tool.js";
@@ -61,6 +62,18 @@ export function guardedDocumentReadAllowed(call: PiToolCall, repoRoot?: string):
   return false;
 }
 /** Capture native route once; later environment edits cannot turn off the guard. */
+export function documentToolDeployment(): string | undefined {
+  const id = process.env.PA_DEPLOYMENT_ID;
+  return id && getDeploymentEvents(id).some(event => event.event === "started" && DOCUMENT_SESSION_VERSIONS.some(version => version === event.note)) ? id : undefined;
+}
+/** Registration of a secured built-in replaces an existing tool; it does NOT
+ * grant that tool to a retained document profile or bypass direct-call admission. */
+export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
+  const caller = authenticatePiDocumentCaller(context);
+  if (caller.deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  if (caller.capabilities) return assertPolicyDocumentTool(deploymentId, call, context);
+  if (!documentSessionToolAllowed(call, caller.repoRoot, workspaceDocumentCaller(caller), caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
+}
 export function policyDocumentDeployment(): string | undefined {
   const id = process.env.PA_DEPLOYMENT_ID;
   return id && getDeploymentEvents(id).some(event => event.event === "started" && event.note === MODE_CAPABILITY_SESSION) ? id : undefined;
@@ -70,7 +83,7 @@ export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall,
   if (caller.deploymentId !== deploymentId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
   const name = call.toolName ?? call.name ?? "";
   if (!capabilityToolSelected(caller.capabilities.policy, name)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
-  if (name === "read" && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  if (name === "read" && !caller.capabilities.policy.allow.includes("ordinary.read") && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
 }
 export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
   const policyDeploymentId = policyDocumentDeployment();
@@ -94,6 +107,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
     if (caller.capabilities) document.description = "Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
     const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
+      ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_ticket_status") ? [createTicketStatusTool(caller.identitySha256)] : []),
       ...(caller.capabilities && caller.sessionId && capabilityToolSelected(caller.capabilities.policy, "pa_web_read") ? [createPublicWebTool(caller.deploymentId, caller.sessionId, lifecycle)] : [])];
     if (interactionsProfile || caller.capabilities) {
       tools.push(createPaTicketIntakeTool(caller.identitySha256));
