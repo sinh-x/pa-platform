@@ -62,6 +62,18 @@ export function guardedDocumentReadAllowed(call: PiToolCall, repoRoot?: string):
   return false;
 }
 /** Capture native route once; later environment edits cannot turn off the guard. */
+export function documentToolDeployment(): string | undefined {
+  const id = process.env.PA_DEPLOYMENT_ID;
+  return id && getDeploymentEvents(id).some(event => event.event === "started" && DOCUMENT_SESSION_VERSIONS.some(version => version === event.note)) ? id : undefined;
+}
+/** Registration of a secured built-in replaces an existing tool; it does NOT
+ * grant that tool to a retained document profile or bypass direct-call admission. */
+export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
+  const caller = authenticatePiDocumentCaller(context);
+  if (caller.deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  if (caller.capabilities) return assertPolicyDocumentTool(deploymentId, call, context);
+  if (!documentSessionToolAllowed(call, caller.repoRoot, workspaceDocumentCaller(caller), caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
+}
 export function policyDocumentDeployment(): string | undefined {
   const id = process.env.PA_DEPLOYMENT_ID;
   return id && getDeploymentEvents(id).some(event => event.event === "started" && event.note === MODE_CAPABILITY_SESSION) ? id : undefined;

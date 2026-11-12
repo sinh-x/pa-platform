@@ -7,11 +7,14 @@ import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { boundJson } from "./tool-result.js";
 import { createPaTicketTool } from "./ticket-tool.js";
+import { ticketIntakeFailure } from "./ticket-intake-tool.js";
 import { registerAdvisoryModule } from "./advisory.js";
 import { registerOperationModule } from "./operation-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
-import { registerDocumentModule, policyDocumentDeployment, assertPolicyDocumentTool } from "./document-tool.js";
+import { registerDocumentModule, documentToolDeployment, policyDocumentDeployment, assertNativeDocumentTool } from "./document-tool.js";
+import { filterLocalToolResult, localProgressResult, safeLocalToolError, registerLocalContentResultModule } from "./local-content-security.js";
+import { registerLocalSourceToolsModule } from "./local-source-tools.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import { registerRepoSetupModule } from "./repo-setup.js";
 export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
@@ -135,21 +138,36 @@ export function registerPiSessionModules(
   lifecycle: PiSessionLifecycle,
   modules: readonly PiExtensionModule[] = PI_PA_MODULES,
 ): void {
-  const deploymentId = policyDocumentDeployment();
-  // Defense in depth for direct/delegated calls to custom implementations. Built-in
-  // tools additionally pass the document module's tool_call gate. No chosen-role list.
-  const guardedRuntime = deploymentId ? new Proxy(pi, {
+  const deploymentId = documentToolDeployment(), policyDeploymentId = policyDocumentDeployment();
+  // Capability admission precedes execution. Source-aware output protection also
+  // covers direct/delegated custom calls outside document profiles. No role list.
+  const guardedRuntime = new Proxy(pi, {
     get(target, property) {
-      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => lifecycle.trackRegistryAccess(() => {
-        // Guard authentication itself reads the registry. Reject late calls before
-        // that read, not only inside the selected implementation's lifecycle.
-        assertPolicyDocumentTool(deploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
-        return tool.execute(...args);
+      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => lifecycle.trackRegistryAccess(async () => {
+        // Reject late calls before native authentication can reopen the registry.
+        // Policy custom tools retain the existing common guard. Retained custom
+        // services keep their own finite failure contracts; only the newly
+        // registered built-in replacements need this added direct-call gate.
+        if (deploymentId && (policyDeploymentId || ["read", "bash"].includes(tool.name))) assertNativeDocumentTool(deploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
+        const safety = interceptToolCall({ toolName: tool.name, input: args[1] });
+        if (!safety.allowed) throw safeLocalToolError(tool.name, new Error(safety.reason ?? "Shared safety did not admit this tool call."));
+        const update = args[3];
+        // Partial custom output may split a secret across updates. Never forward
+        // unchecked fragments to the TUI or its runtime capture.
+        const checkedArgs = [...args] as Parameters<PiToolDefinition["execute"]>;
+        if (update) checkedArgs[3] = () => update(localProgressResult());
+        try { return filterLocalToolResult(tool.name, await tool.execute(...checkedArgs)); }
+        catch (error) { throw safeLocalToolError(tool.name, error); }
+      }).catch(error => {
+        // Preserve retained intake's existing bounded late-call result without
+        // reopening its registry after shutdown. Policy callers keep rejection.
+        if (!policyDeploymentId && tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
+        throw error;
       }) });
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) : pi;
+  });
   const moduleRuntime = captureModuleShutdownHandlers(guardedRuntime, lifecycle);
   for (const registerModule of modules) registerModule(moduleRuntime, lifecycle);
   pi.on?.("session_shutdown", (event, context) => lifecycle.shutdown(event, context));
@@ -218,6 +236,8 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
 };
 
 export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
+  registerLocalSourceToolsModule,
+  registerLocalContentResultModule,
   registerPaToolsModule,
   registerTemplateModule,
   registerJsonWorkflowModule,

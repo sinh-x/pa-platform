@@ -1,5 +1,6 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, normalize, relative, resolve } from "node:path";
+import { loadSensitivePatterns, type SensitivePatternSet } from "./sensitive-patterns.js";
 
 export interface SafetyPatterns {
   destructiveCommands: string[];
@@ -32,8 +33,8 @@ export function isDestructiveCommand(command: string): boolean {
   return matches(maskQuotedMarkup(command), PA_SAFETY_PATTERNS.destructiveCommands);
 }
 
-export function isBlockedFilePath(filePath: string): boolean {
-  return findBlockedPathAlias(filePath) !== undefined;
+export function isBlockedFilePath(filePath: string, patterns?: SensitivePatternSet): boolean {
+  return findBlockedPathAlias(filePath, undefined, patterns) !== undefined;
 }
 
 const QUOTED_MARKUP = /<\/?[A-Za-z][A-Za-z0-9:_-]*>/g;
@@ -87,6 +88,7 @@ export type SafetyEffect = "none" | "read" | "write" | "delete";
 export type SafetyDecisionCode =
   | "allowed"
   | "protected-path"
+  | "sensitive-policy-unavailable"
   | "direct-deletion"
   | "destructive-command"
   | "arbitrary-output"
@@ -152,8 +154,12 @@ interface TempRoot {
 /** Evaluate a value according to its declared semantic context. */
 export function evaluateSafetyPolicy(input: SafetyPolicyInput, options: SafetyPolicyOptions = {}): SafetyDecision {
   if (input.kind === "prose") return ALLOWED;
-  if (input.kind === "path") return classifyPathOperand(input.value, options);
-  return classifyShellCommand(input.value, options);
+  try {
+    if (input.kind === "path") return classifyPathOperand(input.value, options);
+    return classifyShellCommand(input.value, options);
+  } catch {
+    return deny("sensitive-policy-unavailable", "none", "Local sensitive path rules could not be evaluated; access is not admitted.");
+  }
 }
 
 /** Classify a value already identified as a path-bearing field or operand. */
@@ -579,20 +585,26 @@ function isShellCommandStart(words: ShellWord[], index: number): boolean {
   return index === 0 || isShellCommandBoundary(words[index - 1]);
 }
 
-function findBlockedPathAlias(filePath: string, cwd = process.cwd()): string | undefined {
+function findBlockedPathAlias(filePath: string, cwd = process.cwd(), supplied?: SensitivePatternSet): string | undefined {
   const lexical = normalizeLexicalPath(filePath);
   if (matches(lexical, PA_SAFETY_PATTERNS.blockedFilePatterns)) return lexical;
   if (!lexical || lexical.includes("\0") || DYNAMIC_TARGET.test(lexical)) return undefined;
-
-  try {
-    const absolute = isAbsolute(lexical) ? lexical : resolve(cwd, lexical);
-    const canonical = normalizeLexicalPath(realpathSync(absolute));
-    return matches(canonical, PA_SAFETY_PATTERNS.blockedFilePatterns) ? canonical : undefined;
-  } catch {
-    // Only existing readable targets can be canonicalized. The normalized lexical
-    // spelling above remains authoritative for absent or inaccessible targets.
+  const patterns = supplied ?? loadSensitivePatterns();
+  const configuredBlock = (path: string) => patterns.patterns.some(pattern => {
+    if (pattern.inputClass !== "filename" && pattern.inputClass !== "path") return false;
+    const regex = new RegExp(pattern.regex.source, pattern.regex.flags.replace(/[gy]/g, ""));
+    return regex.test(pattern.inputClass === "filename" ? basename(path) : path);
+  });
+  const absolute = isAbsolute(lexical) ? lexical : resolve(cwd, lexical);
+  if (configuredBlock(lexical) || configuredBlock(absolute)) return lexical;
+  let canonical: string;
+  try { canonical = normalizeLexicalPath(realpathSync(absolute)); }
+  catch {
+    // Missing/inaccessible targets retain their logical path admission; a policy
+    // load/compile failure above is NOT collapsed into an allowed missing file.
     return undefined;
   }
+  return matches(canonical, PA_SAFETY_PATTERNS.blockedFilePatterns) || configuredBlock(canonical) ? canonical : undefined;
 }
 
 function normalizeLexicalPath(filePath: string): string {

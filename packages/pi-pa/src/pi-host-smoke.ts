@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { appendRegistryEvent, closeDb, verifyRegistryNativeAddon } from "@pa-platform/pa-core";
-import { createBashTool, createReadTool } from "@earendil-works/pi-coding-agent";
 import registerPiPaExtension, {
   MAX_TOOL_BYTES,
   MAX_TOOL_LINES,
   boundJson,
   createPaTools,
   interceptToolCall,
+  type PiToolDefinition,
 } from "./pi-extension/index.js";
 import { BUNDLED_EDITOR_FACTORIES } from "./pi-extension/bundled-editors.js";
 import { createQuestionTool } from "./pi-extension/question.js";
@@ -83,16 +83,17 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     });
 
     const registered: string[] = [];
+    const registeredTools = new Map<string, PiToolDefinition>();
     const commands: string[] = [];
     const shortcuts: string[] = [];
     const handlers: string[] = [];
     registerPiPaExtension({
-      registerTool: (tool) => registered.push(tool.name),
+      registerTool: (tool) => { registered.push(tool.name); registeredTools.set(tool.name, tool as unknown as PiToolDefinition); },
       registerCommand: (name) => commands.push(name),
       registerShortcut: (shortcut) => shortcuts.push(shortcut),
       on: (event) => { handlers.push(event); },
     });
-    const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"];
+    const expectedRegistered = ["read", "bash", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"];
     assertEqual(registered, expectedRegistered, "registered PA tools");
     if (registered.filter((name) => name === "todo").length !== 1) throw new Error("managed extension smoke did not register Todo exactly once");
     assertManagedExtensionCommands(commands, BUNDLED_EDITOR_FACTORIES);
@@ -101,12 +102,13 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
       if (!handlers.includes(handler)) throw new Error(`managed extension smoke did not register ${handler}`);
     }
 
-    const read = createReadTool(root);
-    const readResult = await read.execute("pap156-read", { path: fixturePath });
+    const context = { cwd: root, mode: "print", sessionManager: { getSessionId: () => "managed-tools-fixture", getSessionFile: () => undefined } };
+    const read = registeredTools.get("read")!;
+    const readResult = await read.execute("pap156-read", { path: fixturePath }, undefined, undefined, context);
     assertIncludes(toolText(readResult), "pap-156 managed read fixture", "read result");
 
-    const bash = createBashTool(root);
-    const bashResult = await bash.execute("pap156-bash", { command: "printf pap-156-managed-bash" });
+    const bash = registeredTools.get("bash")!;
+    const bashResult = await bash.execute("pap156-bash", { command: "printf pap-156-managed-bash" }, undefined, undefined, context);
     assertIncludes(toolText(bashResult), "pap-156-managed-bash", "bash result");
 
     const questionResult = await createQuestionTool().execute(

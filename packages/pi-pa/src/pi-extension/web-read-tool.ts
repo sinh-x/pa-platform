@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { markNativePublicContent } from "./local-content-security.js";
 import { ModeCapabilityError, PublicWebSession, capabilityToolSelected, publicWebDiagnostic, type PublicWebDependencies } from "@pa-platform/pa-core";
 import { authenticatePiDocumentCaller } from "../document-session.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
@@ -41,7 +42,9 @@ export function createPublicWebTool(deploymentId: string, sessionId: string, lif
           return { content: [{ type: "text", text: JSON.stringify(result) }], details: {}, isError: true };
         }
         const result = await reader.read(input.url, `pi-tool-result:${deploymentId}/${toolCallId}`, signal, dependencies);
-        return { content: [{ type: "text", text: JSON.stringify(result) }], details: {}, ...(!result.ok ? { isError: true } : {}) };
+        const content = [{ type: "text" as const, text: JSON.stringify(result) }];
+        if (result.ok) markNativePublicContent(content);
+        return { content, details: {}, ...(!result.ok ? { isError: true } : {}) };
       } catch (error) {
         const failure = error instanceof ModeCapabilityError ? error : new ModeCapabilityError("CAPABILITY_BINDING");
         return { content: [{ type: "text", text: JSON.stringify({ schemaVersion: "pa-public-web-result/v1", ok: false, code: failure.code, message: failure.message }) }], details: {}, isError: true };
