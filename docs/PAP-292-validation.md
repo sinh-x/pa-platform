@@ -187,8 +187,16 @@ are unchanged.
   bytes and exact effective loadout are unchanged; its corrected focused lane passes.
   The original failure/timeout remains in `/tmp/pap292-integration-full-test.log`.
   No complete full-workspace regression PASS is claimed.
-- Final staged secret scan and whitespace check are required before the handoff
-  commit; runtime PR CI remains separate from the local/installed observations.
+- Staged secret scan and whitespace check passed before handoff commit e0644c5.
+  Hosted runtime CI on the preceding trial SHA then identified three test-harness
+  assumptions: the frozen fixture above, a second legacy module/registration count,
+  and a CLI path resolved from CWD instead of the test module. The second fixture
+  now explicitly accounts for both secured overrides/result modules; CLI source
+  resolution is module-relative. No runtime permission/parser/effect guard changed.
+  Corrected root-CWD harness lane: 16 PASS/1 existing installed SKIP; package-CWD
+  actual native/CLI lane: 1/1 PASS. Logs `/tmp/pap292-ci-harness-{root,package}.log`.
+  Historical hosted failures remain recorded; fresh PR CI is separate from these
+  local/installed observations and must assess the current head.
 
 Full PAP-292 remains partial: independent owner/security review, universal PAP-290
 bridges, broader installed/profile variants and human acceptance are outstanding.

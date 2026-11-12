@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, MODE_CAPABILITY_SESSION, createModeCapabilityBinding, parseModeCapabilityPolicy, TicketStore, emitCompletedEvent } from "@pa-platform/pa-core";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { authenticatePiDocumentCaller } from "../document-session.js";
@@ -12,7 +13,7 @@ import { runTicketStatusCommand } from "../ticket-status.js";
 
 test("native-first and actual CLI subprocess-first share status owner, CAS, replay and genuine process identity", async () => {
   const env = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "status-native-")); closeDb();
-  const cli = resolve("packages/pi-pa/src/cli.ts");
+  const cli = fileURLToPath(new URL("../cli.ts", import.meta.url));
   try {
     const repo = join(root, "repo"), usage = join(root, "usage"), config = join(root, "config");
     for (const path of [repo, usage, config]) mkdirSync(path);
