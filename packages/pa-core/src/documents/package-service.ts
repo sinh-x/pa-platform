@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { publicationRecoveryGuidance } from "./recovery-presentation.js";
 import { diagnosePublication, retirePublication, type NativeRetirementRequest, type NativeRetirementResult } from "./publication-recovery.js";
 import { confirmDocument, type NativeDocumentConfirmationRequest, type NativeDocumentConfirmationResult } from "./confirmation-service.js";
 import { presentDocumentPackage } from "./presentation.js";
@@ -72,8 +73,22 @@ export class DocumentPackageService {
     const revoked = documentRevokedDecisionIds(events);
     return { sha256, expectedRevision: events.length, package: subject, decisions: documentDecisionRecords(events, sha256).map(d => ({ decisionId: d.decisionId, outcome: d.outcome, evidenceSha256: d.evidenceSha256, revoked: revoked.has(d.decisionId), ...("confirmationVersion" in d ? { confirmationVersion: d.confirmationVersion, scope: d.scope } : {}) })).slice(-32),
       ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events).filter(c => c.sha256 === sha256) } : {}),
-      pending: documentPending(events), results: events.flatMap(e => e.data.kind === "result" && e.data.subjectSha256 === sha256 ? [{ revision: e.revision, ...e.data }] : []).slice(-16),
+      ...this.recovery(events), pending: documentPending(events), results: events.flatMap(e => e.data.kind === "result" && e.data.subjectSha256 === sha256 ? [{ revision: e.revision, ...e.data }] : []).slice(-16),
       snapshotRef: `registry-document-package:${sha256}`, approvalIsAcceptance: false };
+  }
+  private recovery(events: ReturnType<RegistryDocumentJournal["events"]>) {
+    return this.host.recoveryProfile ? { retiredSubjects: [...documentRetiredSubjects(events)], retirementRequests: events.flatMap(e => e.data.kind === "retirement-consent" ? [{
+      sha256: e.data.subjectSha256, operationId: e.data.operationId, decisionId: e.data.decisionId, requestId: e.data.requestId, requestKey: e.data.requestKey,
+      expectedRevision: e.data.expectedRevision, originalRequestSha256: e.data.originalRequestSha256, observationSha256: e.data.observationSha256,
+      consentId: e.data.consentId, consentRevision: e.revision, outcome: e.data.outcome, evidenceSha256: e.data.evidenceSha256, observationEvidenceSha256: e.data.observationEvidenceSha256,
+      settled: events.some(s => s.data.kind === "retired" && e.data.kind === "retirement-consent" && s.data.consentId === e.data.consentId),
+    }] : []).slice(-32) } : {};
+  }
+  private continuation(subject: DocumentPackage) {
+    const retired = this.events(subject).filter(e => e.data.kind === "retired").at(-1);
+    if (!retired || retired.data.subjectSha256 === documentPackageSha(subject)) return;
+    const previous = this.journal.subject(retired.data.subjectSha256);
+    if (subject.packageId !== previous.packageId || subject.revision <= previous.revision) documentReject("DOCUMENT_AUTHORITY");
   }
   private confirmations(events: ReturnType<RegistryDocumentJournal["events"]>) {
     return events.flatMap(e => e.data.kind === "confirmation" ? [{ decisionId: e.data.decisionId, sha256: e.data.subjectSha256, outcome: e.data.outcome, operation: e.data.operation, scope: e.data.scope, expectedRevision: e.revision - 1, revokes: e.data.revokes, linkage: "inspect-or-reconcile-same-request" }] : []).slice(-32);
@@ -85,10 +100,10 @@ export class DocumentPackageService {
       // Validate exact action shape before any operation. No extra keys or imported grants.
       const fields = DOCUMENT_ACTION_FIELDS;
       if (!Object.hasOwn(fields, action)) documentReject();
-      documentGuard(() => object(r, ["action", ...fields[action]!]));
+      documentGuard(() => object(r, ["action", ...fields[action]!], action === "publication-diagnose" ? ["offset"] : []));
       try { assertNoSensitiveMatch("content", raw); } catch { documentReject("DOCUMENT_INPUT"); }
       const caller = this.caller(); let result: unknown;
-      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: this.host.confirmationProfile ? (this.host.confirm ? "pi-native-confirmation/v1-use-confirm" : "unavailable-native-tui-required") : this.host.workspaceProfile ? "unavailable-host-attestation-required" : "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: this.host.workspaceProfile ? "safe-static-html-companion" : "unavailable-use-markdown", workflowRequired: false, sourceWriting: false, ...(this.host.confirmationProfile ? { branchBridge: this.host.inspectBranch ? "read-only-existing-owner-inspection" : "unavailable" } : {}) };
+      if (action === "capabilities") result = { snapshot: "available", check: "structural-only", compare: "available", context: "selected-file-or-directory-only",  template: "use-pa-template-unsigned", capture: this.host.confirmationProfile ? (this.host.confirm ? "pi-native-confirmation/v1-use-confirm" : "unavailable-native-tui-required") : this.host.workspaceProfile ? "unavailable-host-attestation-required" : "native-foreground", publish: "owner-checked-per-call", queue: "owner-checked-per-call", preview: this.host.workspaceProfile ? "safe-static-html-companion" : "unavailable-use-markdown", workflowRequired: false, sourceWriting: false, ...(this.host.recoveryProfile ? { publicationRecovery: { diagnose: "publication-diagnose", retire: this.host.retire ? "publication-retire" : "unavailable-native-tui-required", scope: "fresh-unpublished-publish-intent-only", diagnosisPageSize: 8, diagnosisOffset: "optional-member-offset", consentIsContentApproval: false } } : {}), ...(this.host.confirmationProfile ? { branchBridge: this.host.inspectBranch ? "read-only-existing-owner-inspection" : "unavailable" } : {}) };
       else if (action === "status" || action === "branch-inspect") {
         const ticket = workflowTicket(r.ticket);
         if ((caller.ticket !== null && caller.ticket !== ticket) || this.host.tickets.get(ticket)?.project !== caller.repoKey) documentReject("DOCUMENT_AUTHORITY");
@@ -104,7 +119,7 @@ export class DocumentPackageService {
           if (!this.host.confirmationProfile || !this.host.inspectBranch) documentReject("DOCUMENT_UNAVAILABLE");
           result = await this.host.inspectBranch(ticket);
           if (!isDeepStrictEqual(caller, this.caller()) || !isDeepStrictEqual(record.linkedBranches, this.host.tickets.get(ticket)?.linkedBranches)) documentReject("DOCUMENT_STALE");
-        } else result = { ticket, ...handoff, ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events) } : {}), expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
+        } else result = { ticket, ...handoff, ...this.recovery(events), ...(this.host.confirmationProfile ? { confirmations: this.confirmations(events) } : {}), expectedRevision: events.length, snapshots: events.flatMap(e => e.data.kind === "frozen" ? [{ sha256: e.data.subjectSha256, registryRevision: e.revision }] : []).slice(-64), pending: documentPending(events), historyIsBounded: true };
       } else if (action === "ticket-create") {
         const title = text(r.title, undefined, 256), tag = `document-intake-${text(r.intakeId, ID)}`;
         if (typeof r.content !== "string" || !r.content.trim() || Buffer.byteLength(r.content) > 32768 || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(r.content)) documentReject();
@@ -164,7 +179,7 @@ export class DocumentPackageService {
         const subject = parseDocumentPackage(r.package); this.caller(subject);
         const bytes = readDocumentSources(subject, this.host.artifactRoot), checks = checkDocumentPackage(subject, bytes);
         if (action === "check") result = checks;
-        else { const expected = this.revision(subject, r.expectedRevision); this.caller(subject); this.journal.freeze(subject, expected, bytes); result = { ...this.view(subject), checks, state: "unapproved-snapshot" }; }
+        else { this.continuation(subject); const expected = this.revision(subject, r.expectedRevision); this.caller(subject); this.journal.freeze(subject, expected, bytes); result = { ...this.view(subject), checks, state: "unapproved-snapshot" }; }
       } else {
         const subject = this.subject(r.sha256), sha256 = documentPackageSha(subject);
         if (action === "show") result = this.view(subject);
@@ -181,7 +196,10 @@ export class DocumentPackageService {
           if (previous.ticket !== subject.ticket) documentReject("DOCUMENT_AUTHORITY");
           result = compareDocumentPackages(previous, subject, hash => this.journal.snapshot(hash));
         } else if (action === "publication-diagnose") {
-          result = diagnosePublication(this.journal, this.host, subject, r);
+          const diagnosis = diagnosePublication(this.journal, this.host, subject, r), offset = r.offset === undefined ? 0 : integer(r.offset, 0, subject.members.length - 1);
+          result = { ...diagnosis, observation: { ...diagnosis.observation, members: diagnosis.observation.members.slice(offset, offset + 8) }, offset,
+            nextOffset: offset + 8 < subject.members.length ? offset + 8 : null,
+            message: "Inspection completed. Publication is still unresolved. Review destination and custody findings before requesting retirement." };
         } else if (action === "publication-retire") {
           result = await retirePublication(this.journal, this.host, subject, r);
         } else if (action === "confirm" || action === "confirm-revoke") {
@@ -219,6 +237,7 @@ export class DocumentPackageService {
             this.revision(subject, expectedRevision); this.caller(subject); this.host.assertEffectAvailable(subject);
             let events = this.events(subject), pending = documentPending(events);
             if (documentRetiredSubjects(events).has(sha256)) documentReject("DOCUMENT_AUTHORITY");
+            this.continuation(subject);
             if (pending.some(i => i.operationId !== operationId)) documentReject("DOCUMENT_UNCERTAIN");
             const predecessor = this.predecessor(subject);
             const authorize = () => { this.caller(subject); this.host.assertEffectAvailable(subject); this.approved(subject, decisionId, action); readDocumentSources(subject, this.host.artifactRoot); };
@@ -264,7 +283,7 @@ export class DocumentPackageService {
       const unattestedCapture = this.host.workspaceProfile && !this.host.confirmationProfile && code === "DOCUMENT_UNAVAILABLE" && (requestedAction === "capture" || requestedAction === "revoke");
       const nativeUnavailable = this.host.confirmationProfile && code === "DOCUMENT_UNAVAILABLE" && ["confirm", "confirm-revoke", "capture", "revoke"].includes(requestedAction ?? "");
       const nativeGuidance = { guidance: `Package decision not started; safe authoring and presentation remain available.\nCondition: This native confirmation request is unavailable.\nSource: Versioned Pi native confirmation owner (DOCUMENT_UNAVAILABLE).\nReason: ${requestedAction === "capture" || requestedAction === "revoke" ? "capture/revoke are retained-interface actions, not the v3 native confirmation protocol." : "The eligible foreground native custom-UI capability is unavailable."}\nCorrection: Inspect pa_document capabilities and use the supported confirm/confirm-revoke interface only in an authenticated v3 foreground host. Impact: read-only for inspection. Actor: agent or operator. New approval: not required to inspect; the actual final decision still requires its native selection. Prerequisite: preserve the current immutable package and original request identity.\nResume Action: Request the supported native operation after its host prerequisite is available; do not import outcomes, attest earlier chat or fall back into a retained profile.` };
-      const guidance = nativeUnavailable ? nativeGuidance : unattestedCapture ? { guidance: "Package decision not started; safe authoring and presentation remain available.\nCondition: This new-profile decision request cannot issue authority.\nSource: Native human-input provenance check (DOCUMENT_UNAVAILABLE).\nReason: The Pi host does not supply the required attested original human-event identity. Chat text or another approval dialog cannot repair this capability gap.\nCorrection: Ask the Pi host/runtime maintainer to provide supported attested-event capture. Impact: none for this request. Actor: agent or operator. New approval: not required to ask; implementation and activation need their own authority. Prerequisite: preserve the current package and prior decisions.\nResume Action: Request capture only after supported host capability and exact-package checks are available; admission is rechecked. Do not substitute a tool-supplied outcome or upgrade retained sessions." } : {};
+      const guidance = requestedAction === "publication-diagnose" || requestedAction === "publication-retire" ? { guidance: publicationRecoveryGuidance(code) } : nativeUnavailable ? nativeGuidance : unattestedCapture ? { guidance: "Package decision not started; safe authoring and presentation remain available.\nCondition: This new-profile decision request cannot issue authority.\nSource: Native human-input provenance check (DOCUMENT_UNAVAILABLE).\nReason: The Pi host does not supply the required attested original human-event identity. Chat text or another approval dialog cannot repair this capability gap.\nCorrection: Ask the Pi host/runtime maintainer to provide supported attested-event capture. Impact: none for this request. Actor: agent or operator. New approval: not required to ask; implementation and activation need their own authority. Prerequisite: preserve the current package and prior decisions.\nResume Action: Request capture only after supported host capability and exact-package checks are available; admission is rechecked. Do not substitute a tool-supplied outcome or upgrade retained sessions." } : {};
       return { schemaVersion: "pa-document-result/v1", ok: false, code, facts, ...guidance, correctionOwner: nativeUnavailable ? "pi-native-confirmation-owner" : unattestedCapture ? "pi-human-input-host-owner" : code === "DOCUMENT_AUTHORITY" ? "native-owner" : "document-operation-owner", scope: "this-operation-only", executionAdmitted: false };
     }
   }

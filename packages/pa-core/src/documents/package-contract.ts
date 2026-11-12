@@ -66,7 +66,7 @@ export const DOCUMENT_ACTION_FIELDS: Readonly<Record<string, readonly string[]>>
   capture: ["sha256", "expectedRevision"], revoke: ["sha256", "expectedRevision", "decisionId"], publish: ["sha256", "expectedRevision", "decisionId"], queue: ["sha256", "expectedRevision", "decisionId"],
 });
 export function documentInterfaceDescription(): Record<string, unknown> {
-  return { schemaVersion: "pa-document-interface/v1", packageVersion: DOCUMENT_PACKAGE_VERSION, nativeTool: "pa_document", actions: DOCUMENT_ACTION_FIELDS, limits: DOCUMENT_LIMITS,
+  return { schemaVersion: "pa-document-interface/v1", packageVersion: DOCUMENT_PACKAGE_VERSION, nativeTool: "pa_document", actions: DOCUMENT_ACTION_FIELDS, optionalFields: { "publication-diagnose": ["offset"] }, recoveryAvailability: "qualified-policy-profile-document.package-only; retained-profiles-unavailable", limits: DOCUMENT_LIMITS,
     cli: "description-only-no-decision-or-effect-import", availability: "requires-native-authenticated-Pi-requirements-session", preview: "unavailable-use-full-markdown", sourceAuthority: false, installedQualification: "not-asserted" };
 }
 export function parseDocumentRequest(input: string): Record<string, unknown> {

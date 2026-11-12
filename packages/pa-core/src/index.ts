@@ -39,6 +39,7 @@ export * from "./documents/index.js";
 export * from "./documents/package-contract.js";
 export * from "./documents/package-tools.js";
 export * from "./documents/package-service.js";
+export { publicationRecoveryGuidance } from "./documents/recovery-presentation.js";
 export type { NativeRetirementRequest, NativeRetirementResult, PublicationDiagnosis } from "./documents/publication-recovery.js";
 export type { NativeDocumentConfirmationRequest, NativeDocumentConfirmationResult } from "./documents/confirmation-service.js";
 export * from "./registry/documents.js";

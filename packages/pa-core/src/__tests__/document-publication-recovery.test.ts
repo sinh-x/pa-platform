@@ -159,4 +159,67 @@ test("safe partial files/refs retain their exact bytes and inodes through retire
   } finally { f.close(); }
 });
 
-export { pendingFixture, retirementFixture };
+test("retirement resumes corrected SAME-package review with fresh native approval; old partials stay historical", async () => {
+  const { f, retire } = await retirementFixture(); try {
+    assert.equal((await f.call(retire)).ok, true);
+    const retiredEvents = f.journal.events("example", "EX-1");
+    const next = structuredClone(f.subject); next.revision++;
+    const member = next.members[1]!; member.source = member.source.replace("requirements.md", "requirements-corrected.md");
+    const bytes = Buffer.from("# FR-1 — corrected scope\n# AC-1 — corrected delivery\nCoverage: TS-1\n");
+    writeFileSync(join(f.root, member.source), bytes); member.bytes = bytes.length; member.sha256 = (await import("../workflows/contracts.js")).digest(bytes);
+    assert.equal((await f.call({ action: "freeze", package: { ...next, packageId: "alternate-lineage" }, expectedRevision: f.revision() })).code, "DOCUMENT_AUTHORITY");
+    f.store.update("EX-1", { status: "requirement-review" }, "test");
+    assert.equal((await f.call({ action: "check", package: next })).ok, true);
+    assert.equal((await f.call({ action: "freeze", package: next, expectedRevision: f.revision() })).ok, true);
+    const sha256 = documentPackageSha(next);
+    assert.equal((await f.call({ action: "publish", sha256, decisionId: retire.decisionId, expectedRevision: f.revision() })).code, "DOCUMENT_AUTHORITY");
+    for (const m of next.members) assert.equal((await f.call({ action: "read", sha256, path: m.id, offset: 0 })).ok, true);
+    f.host.confirmationProfile = true; f.host.workspaceProfile = true;
+    f.host.confirm = async () => { const nativeEvidence = Buffer.from("fresh-corrected-package-native-source-test"); return { outcome: "approved", principal: "source-test", interactionId: "interaction-corrected", nativeEvidence, evidenceSha256: (await import("../workflows/contracts.js")).digest(nativeEvidence) }; };
+    assert.equal((await f.call({ action: "present", sha256 })).ok, true);
+    const confirmed = await f.call({ action: "confirm", sha256, expectedRevision: f.revision(), scope: "publish-and-queue" });
+    assert.equal(confirmed.ok, true, JSON.stringify(confirmed));
+    const decisionId = (confirmed.result as any).decisionId;
+    assert.notEqual(decisionId, retire.decisionId);
+    assert.equal((await f.call({ action: "publish", sha256, expectedRevision: f.revision(), decisionId })).ok, true);
+    assert.equal((await f.call({ action: "queue", sha256, expectedRevision: f.revision(), decisionId })).ok, true);
+    assert.equal(f.store.get("EX-1")!.doc_refs.filter(r => r.primary)[0]!.path, documentDestination(next, next.members[1]!));
+    assert.equal(next.predecessor, null);
+    assert.deepEqual(f.journal.events("example", "EX-1").slice(0, retiredEvents.length), retiredEvents);
+    assert.equal((await f.call(retire)).ok, true);
+    assert.equal((await f.call({ action: "publish", sha256: f.sha256, expectedRevision: f.revision(), decisionId: retire.decisionId })).code, "DOCUMENT_AUTHORITY");
+  } finally { f.close(); }
+});
+
+test("completed truth cannot be retired; lost publication reply settles observation-only", async () => {
+  const f = documentRuntimeFixture(); try {
+    const decisionId = await f.prepare(), append = f.journal.append.bind(f.journal);
+    f.journal.append = (...args) => { if (args[3].kind === "result") throw Error("lost result"); return append(...args); };
+    assert.equal((await f.call({ action: "publish", sha256: f.sha256, decisionId, expectedRevision: f.revision() })).ok, false);
+    f.journal.append = append; f.host.recoveryProfile = true;
+    const auth = f.host.authenticate; f.host.authenticate = () => ({ ...auth(), sessionId: "source-test" });
+    let prompts = 0; f.host.retire = async () => { prompts++; throw Error("must not prompt"); };
+    const operationId = documentPending(f.journal.events("example", "EX-1"))[0]!.operationId;
+    const request = { action: "publication-diagnose", sha256: f.sha256, decisionId, operationId, expectedRevision: f.revision() };
+    const diagnosis = (await f.call(request)).result as any;
+    assert.equal(diagnosis.observation.publication, "complete"); assert.equal(diagnosis.eligible, false);
+    const audit = f.store.readAudit();
+    assert.equal((await f.call({ ...request, action: "publication-retire", requestId: "do-not-retire", originalRequestSha256: diagnosis.originalRequestSha256, observationSha256: diagnosis.observationSha256 })).code, "DOCUMENT_CONFLICT");
+    assert.equal(prompts, 0);
+    assert.equal((await f.call({ action: "publish", sha256: f.sha256, decisionId, expectedRevision: f.revision() })).ok, true);
+    assert.deepEqual(f.store.readAudit(), audit); assert.equal(documentRetiredSubjects(f.journal.events("example", "EX-1")).size, 0);
+  } finally { f.close(); }
+});
+
+test("status/show recover exact retirement request coordinates, not caller authority", async () => {
+  const { f, retire } = await retirementFixture(); try {
+    assert.equal((await f.call(retire)).ok, true);
+    for (const request of [{ action: "status", ticket: "EX-1" }, { action: "show", sha256: f.sha256 }]) {
+      const result = (await f.call(request)).result as any;
+      assert.deepEqual(result.retiredSubjects, [f.sha256]);
+      const issued = result.retirementRequests[0];
+      for (const key of ["expectedRevision", "requestId", "originalRequestSha256", "observationSha256", "operationId", "decisionId"]) assert.equal(issued[key], (retire as any)[key]);
+      assert.equal(issued.settled, true);
+    }
+  } finally { f.close(); }
+});

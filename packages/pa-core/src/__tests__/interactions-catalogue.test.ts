@@ -81,6 +81,9 @@ test("native-only owners are accounted for without inventing CLI commands or gra
   assert.equal(operation("document.native.check").effectClass, "read", "structural checks do not freeze snapshots");
   assert.equal(operation("preparation.status").effectClass, "read");
   assert.equal(operation("workspace.run").effectClass, "write");
+  assert.equal(operation("document.native.publication-diagnose").effectClass, "read");
+  assert.equal(operation("document.native.publication-retire").effectClass, "write");
+  assert.deepEqual(operation("document.native.publication-retire").channels, ["native"]);
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "workspace.run" ? { ...row, channels: ["cli"] } : row)).includes("invalid-channel"));
 });
 

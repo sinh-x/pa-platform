@@ -50,7 +50,7 @@ export class TicketPackagePublication {
    * It never creates a directory or repairs a ref, and needs no draft sources. */
   diagnose(subject: DocumentPackage) {
     const ticket = this.ticket(subject);
-    if (ticket.doc_refs.length > 256 || Buffer.byteLength(JSON.stringify(ticket.doc_refs)) > 32768) documentReject("DOCUMENT_UNCERTAIN");
+    if (ticket.doc_refs.length > 256 || Buffer.byteLength(JSON.stringify(ticket.doc_refs)) > 8192) documentReject("DOCUMENT_UNCERTAIN");
     const identity = (s: Stats) => ({ dev: String(s.dev), ino: String(s.ino), size: s.size, mode: s.mode, uid: s.uid, nlink: s.nlink, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs });
     const members = subject.members.map(member => {
       const path = documentDestination(subject, member), refs = ticket.doc_refs.filter(r => r.path === path);
