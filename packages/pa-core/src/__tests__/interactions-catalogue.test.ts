@@ -65,6 +65,19 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
   assert.ok(operation("codectx.query.function").aliases.includes("codectx query fn"));
 });
 
+test("PPA auto refresh writes only coordination data and never becomes a native approval/launch binding", () => {
+  for (const id of ["auto.help", "auto.list", "auto.status"]) assert.equal(operation(id).effectClass, "read");
+  const scan = operation("auto.scan");
+  assert.equal(scan.effectClass, "write"); assert.deepEqual(scan.cliForms, ["auto scan", "auto --json"]);
+  assert.equal(operation("auto.foreground").effectClass, "launch");
+  assert.equal(operation("auto.tick").effectClass, "write");
+  assert.equal(operation("auto.units").effectClass, "read");
+  assert.deepEqual(operation("auto.foreground").nativeForms, []);
+  assert.deepEqual(scan.nativeForms, []); assert.deepEqual(scan.channels, ["cli"]); assert.equal(scan.nativeBinding, null);
+  assert.match(scan.reason, /not a pure read/);
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "auto.scan" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(row => row.operationId !== "auto.scan")).includes("missing-effect-variant"));
+});
 test("status owner routes are inventoried without promoting source discovery to authority", () => {
   for (const action of ["inspect", "set"]) {
     const row = operation(`ticket.status.${action}`);

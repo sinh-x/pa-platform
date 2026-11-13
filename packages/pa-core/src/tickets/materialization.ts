@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type { AutoTaskBaseline } from "../auto/intent.js";
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -26,10 +27,12 @@ export interface MaterializeTicketBranchOptions {
   approvedPreparationBaseSha?: string;
   /** Native ordinary launcher only. Reauthenticated against durable task/sign-off
    * evidence inside the transaction; never an agent/environment SHA override. */
-  intendedTaskBaseline?: OrdinaryTaskBaseline | StructuredTaskBaseline | AdvisoryTaskBaseline;
+  intendedTaskBaseline?: OrdinaryTaskBaseline | StructuredTaskBaseline | AdvisoryTaskBaseline | AutoTaskBaseline;
   /** Trusted structured consumer adapter; rereads registry authority inside the existing owner transaction.
    * No public JSON/CLI callback, SHA override or implicit legacy translation. */
   rereadStructuredTaskBaseline?: () => StructuredTaskBaseline;
+  /** New native auto decision owner only; not a receipt/argv baseline override. */
+  rereadAutoTaskBaseline?: () => AutoTaskBaseline;
   /** Existing live launcher capacity owner, never supplied by tool/CLI JSON. */
   ordinaryOwner?: RepositoryTicketSlotHandoff & { deploymentId: string };
   /** Live existing repository owner; avoids recursive mutex acquisition during preparation. */
@@ -437,7 +440,7 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
     }
 
     if (ordinary) {
-      const current = ordinary.schemaVersion === "structured-task-baseline/v1"
+      const current = ordinary.schemaVersion === "auto-task-baseline/v1" ? options.rereadAutoTaskBaseline?.() : ordinary.schemaVersion === "structured-task-baseline/v1"
         ? options.rereadStructuredTaskBaseline?.()
         : ordinary.schemaVersion === "advisory-task-baseline/v1" ? resolveAdvisoryTaskBaseline(options) : resolveOrdinaryTaskBaseline(options);
       if (!current || JSON.stringify(current) !== JSON.stringify(ordinary)) throw ordinaryBaselineError("CHANGED");

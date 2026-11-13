@@ -4,6 +4,7 @@ import {
   JsonWorkflowError, assertRetainedConfigIdentity, workflowPackageReview, type StructuredTaskBaseline, type WorkflowState, type PackagePermission, type EffectIntent,
 } from "@pa-platform/pa-core";
 import { ProjectCommandContract } from "./project-command-contract.js";
+import { piAutoWorkerIntent, assertPiAutoScope } from "./auto-authority.js";
 
 const deny = () => { throw new JsonWorkflowError("WORKFLOW_AUTHORITY", "structured-consumer", "workflow-owner"); };
 /** Native work is tied to exactly one already persisted source intent; declaring
@@ -118,6 +119,18 @@ export function taskRequiredCommands(state: WorkflowState): readonly string[] {
 }
 /** Fresh authority at every source/check/phase boundary. Native custody remains a separate necessary gate. */
 export function authorizePiStructuredWork(repoKey: string, repoRoot: string, ticket: string, branch: string, permission: PackagePermission, plan?: { paths: readonly string[]; checks: readonly string[]; requirements?: readonly string[] }, authority?: StructuredTaskBaseline["authority"]): WorkflowState | null {
+  const automatic = piAutoWorkerIntent(repoKey, repoRoot, ticket, branch);
+  if (automatic) {
+    if (authority || !automatic.localEffects.includes(permission)) return deny();
+    if (plan) {
+      const profile = ProjectCommandContract.inspect(repoKey, repoRoot);
+      if (!profile) return deny();
+      const commands = plan.checks.map(name => profile.checks.find(check => check.id === name || check.command === name)?.command);
+      if (commands.some(command => !command)) return deny();
+      assertPiAutoScope(automatic, { paths: plan.paths, checks: commands as string[] });
+    }
+    return null;
+  }
   return withExistingWorkflowJournal(journal => {
     const state = journal ? adoptedWorkflow(journal, repoKey, ticket) : null;
     assertWorkflowMarkerAvailable(repoKey, ticket, state !== null, undefined, state?.runId);

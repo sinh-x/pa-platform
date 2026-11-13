@@ -52,7 +52,8 @@ export class DocumentPackageService {
   }
   private approved(subject: DocumentPackage, decisionId: string, operation?: "publish" | "queue"): DocumentDecision {
     const events = this.events(subject), sha256 = documentPackageSha(subject);
-    const latest = documentDecisionRecords(events, sha256).at(-1);
+    const latest = events.flatMap(e => e.data.subjectSha256 === sha256 && (e.data.kind === "decision" || e.data.kind === "confirmation" && e.data.operation === "capture"
+      || e.data.kind === "auto-start" && (e.data.documentScope === "publish-and-queue" || operation === "queue" && e.data.documentScope === "queue-only")) ? [e.data] : []).at(-1);
     const decision = latest?.decisionId === decisionId && !documentRevokedDecisionIds(events).has(decisionId) ? latest : undefined;
     if (!decision || decision.outcome !== "approved") documentReject("DOCUMENT_AUTHORITY");
     if ("confirmationVersion" in decision) {
@@ -230,7 +231,8 @@ export class DocumentPackageService {
         } else {
           const expectedRevision = this.revision(subject, r.expectedRevision), decisionId = text(r.decisionId, ID);
           if (action !== "publish" && action !== "queue") documentReject();
-          if (action === "queue" && !subject.effects.queue) documentReject("DOCUMENT_AUTHORITY");
+          const autoQueue = action === "queue" && this.events(subject).some(e => e.data.kind === "auto-start" && e.data.decisionId === decisionId && e.data.subjectSha256 === sha256 && e.data.outcome === "approved" && e.data.documentScope !== "none");
+          if (action === "queue" && !subject.effects.queue && !autoQueue) documentReject("DOCUMENT_AUTHORITY");
           const operationId = `effect-${digest(JSON.stringify([sha256, decisionId, action]))}`;
           // Serialize intent, external effects and completion with ALL ticket writers.
           result = this.host.tickets.withWorkflowTransaction(() => {
@@ -258,6 +260,7 @@ export class DocumentPackageService {
             }
             try {
               if (action === "publish") this.publication.publish(subject, hash => this.journal.snapshot(hash), authorize, predecessor);
+              else if (autoQueue) this.publication.queueAutoStart(subject, authorize, predecessor);
               else this.publication.queue(subject, authorize, predecessor);
               events = this.events(subject);
               this.journal.append(subject.repository.key, subject.ticket, events.length, { kind: "result", subjectSha256: sha256, operationId, outcome: "completed", code: "COMPLETED" });
