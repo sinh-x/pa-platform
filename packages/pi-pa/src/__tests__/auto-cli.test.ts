@@ -30,7 +30,7 @@ test("list and status are pure readers; opening and scan only refresh the unsign
   const f = fixture();
   for (const args of [["list"], ["status"], [], ["scan"]]) assert.equal(runAutoCommand(args, f.io, f.host), 0);
   assert.deepEqual(f.counts(), [2, 2, 2]);
-  assert.match(f.out.join("\n"), /selection and execution are not enabled/);
+  assert.match(f.out.join("\n"), /this list does not select, approve or execute/);
   assert.equal(f.err.length, 0);
 });
 test("JSON is one envelope on stdout without prose; failures preserve exit and stderr contracts", () => {

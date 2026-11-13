@@ -68,7 +68,9 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
 test("PPA auto refresh writes only coordination data and never becomes a native approval/launch binding", () => {
   for (const id of ["auto.help", "auto.list", "auto.status"]) assert.equal(operation(id).effectClass, "read");
   const scan = operation("auto.scan");
-  assert.equal(scan.effectClass, "write"); assert.deepEqual(scan.cliForms, ["auto", "auto scan"]);
+  assert.equal(scan.effectClass, "write"); assert.deepEqual(scan.cliForms, ["auto scan", "auto --json"]);
+  assert.equal(operation("auto.foreground").effectClass, "launch");
+  assert.deepEqual(operation("auto.foreground").nativeForms, []);
   assert.deepEqual(scan.nativeForms, []); assert.deepEqual(scan.channels, ["cli"]); assert.equal(scan.nativeBinding, null);
   assert.match(scan.reason, /not a pure read/);
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "auto.scan" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));

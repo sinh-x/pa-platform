@@ -22,14 +22,14 @@ export function autoWaitlistDiagnostic(code: AutoWaitlistError["code"]): string 
     AUTO_LIMIT: "The bounded scan or snapshot exceeded its limit; a complete fresh waitlist is unavailable.",
     AUTO_STORE: "The coordination snapshot could not be safely read or saved. Existing state may remain; no product work is requested by this command.",
     AUTO_BUSY: "Another scan is active or its original outcome is unsettled. The retained snapshot must not be treated as newly observed.",
-    AUTO_UNAVAILABLE: "This source phase provides inspection only. Supported background drafting, human review and exact dispatch contracts are not enabled.",
+    AUTO_UNAVAILABLE: "The requested action lacks compatible paired support or admitted native owner evidence. The original item is retained; no fallback authority is inferred.",
   };
   const safeCode = typeof code === "string" && Object.hasOwn(reasons, code) ? code : "AUTO_STORE";
   return `Auto action not completed; no automatic work was requested.\nCondition: The requested auto action is blocked.\nSource: PPA auto coordination check (${safeCode}).\nReason: ${reasons[safeCode]}\nCorrection: Inspect ppa auto status and ppa auto --help, then ask the runtime/config owner about unresolved evidence. Impact: read-only for inspection, none for asking. Actor: operator. New approval: not required to inspect or ask; repairs need their owner. Prerequisite: preserve the existing snapshot and original owner evidence.\nResume Action: Repeat read-only inspection after the owner establishes support or fresh observations. Do not clear evidence, repeat approvals or launch a replacement worker to hide uncertainty.`;
 }
 export function formatAutoWaitlist(view: AutoWaitlistView, page = 1, section: AutoSection = "candidates"): string {
   const s = view.state?.snapshot, result = autoWaitlistPage(view, page, section);
-  const lines = ["PPA auto — inspection only; selection and execution are not enabled.",
+  const lines = ["PPA auto waitlist — this list does not select, approve or execute work.",
     `PAP/PAPC waitlist: ${view.freshness}. Observed: ${s?.observedAt ?? "no complete snapshot"}.`,
     "Nothing starts from a recommendation or this list. No approval has been requested."];
   if (view.state?.lastAttempt.outcome === "failed") lines.push("Warning: the latest scan failed. Any retained entries are stale; inspect the original source owners.");

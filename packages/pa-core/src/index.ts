@@ -1,4 +1,9 @@
+export * from "./auto/coordination.js";
+export { openReadonlyRegistryDatabase } from "./registry/db.js";
 export * from "./auto/waitlist.js";
+export { CommittedConfigSource } from "./selected-config-source.js";
+export { assertUnmanagedOperator } from "./operator-origin.js";
+export { operatorTerminal } from "./operator-terminal.js";
 export * from "./auto/source.js";
 export * from "./auto/store.js";
 export * from "./auto/presentation.js";
@@ -68,7 +73,7 @@ export * from "./serve-lifecycle.js";
 export * from "./semantic/index.js";
 export * from "./decision-payload.js";
 export * from "./artifacts/phase-report.js";
-export { readArtifactFile } from "./artifacts/manifest.js";
+export { readArtifactFile, openArtifactDirectory } from "./artifacts/manifest.js";
 export * from "./evaluator/index.js";
 export * from "./skills/index.js";
 export * from "./knowledge/index.js";

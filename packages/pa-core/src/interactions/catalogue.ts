@@ -192,7 +192,8 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   entry("auto.help", ["auto --help"], "read", "native", `${pi}auto-cli.ts`, "PPA auto inspection metadata"),
   entry("auto.list", ["auto list", "auto list --section", "auto list --page"], "read", "native", `${pi}auto-cli.ts`, "PPA auto retained unsigned waitlist", { reason: "Reads only a retained snapshot; no initialization, selection, approval, drafting or worker launch is supported." }),
   entry("auto.status", ["auto status"], "read", "native", `${pi}auto-cli.ts`, "PPA auto observation freshness", { reason: "Reads snapshot freshness and inspection-only availability; no timer, active item or execution grant is inferred." }),
-  entry("auto.scan", ["auto", "auto scan"], "write", "owner", `${pi}auto-cli.ts`, "PPA auto unsigned coordination snapshot", { reason: "Read-only product observations run in a fixed bounded scanner child, but refresh writes an external coordination snapshot and scanner lock. It is not a pure read, Pi agent launch, human decision, selection or execution grant." }),
+  entry("auto.scan", ["auto scan", "auto --json"], "write", "owner", `${pi}auto-cli.ts`, "PPA auto unsigned coordination snapshot", { reason: "Read-only product observations run in a fixed bounded scanner child, but refresh writes an external coordination snapshot and scanner lock. It is not a pure read, Pi agent launch, human decision, selection or execution grant." }),
+  entry("auto.foreground", ["auto"], "launch", "owner", `${pi}auto-foreground.ts`, "PPA auto native human foreground controller", { reason: "Interactive opening can explicitly select one global item, request bounded unsigned Pi drafting and control the original item. Human-only native review and separate exact start authority remain required; noninteractive opening only scans. No native tool or imported approval binding is exposed." }),
   ...family("artifact", "owned artifact session", [
     ["render", ["artifact render"], "write", "owner"], ["review.start", ["artifact review start"], "resource", "owner"],
     ["review.status", ["artifact review status"], "read", "owner"], ["review.stop", ["artifact review stop"], "resource", "owner"],
@@ -238,7 +239,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

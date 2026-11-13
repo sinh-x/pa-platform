@@ -16,9 +16,12 @@ import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./chi
 import { TICKET_RECOVERY_USAGE, runTicketRecoveryInspectionCommand } from "./ticket-recovery.js";
 import { TICKET_WORKTREE_RECOVERY_USAGE, runTicketWorktreeRecoveryCommand } from "./ticket-worktree-recovery.js";
 import { AUTO_USAGE, runAutoCommand } from "./auto-cli.js";
+import { runAutoForeground } from "./auto-foreground.js";
 
 if (process.argv[2] === "auto") {
-  process.exitCode = runAutoCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
+  process.exitCode = process.argv.length === 3 && process.stdin.isTTY
+    ? await runAutoForeground()
+    : runAutoCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
 } else if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   process.exitCode = runWorkflowCommand(process.argv[2], process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) }, piWorkflowReadHost());
 } else if (process.argv[2] === "ticket-status") {
