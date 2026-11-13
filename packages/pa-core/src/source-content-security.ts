@@ -16,7 +16,7 @@ export class SourceContentSecurityError extends Error {
   constructor(readonly code: SourceContentCode) {
     const reasons: Record<SourceContentCode, string> = {
       LOCAL_SOURCE_UNAVAILABLE: "A complete stable local read could not be established; the source may be absent or changed, or the read interrupted. No unexamined content is delivered.",
-      LOCAL_SOURCE_UNSUPPORTED_FILE: "The opened source did not meet supported regular-file/single-link policy. Selected immutable Pi documentation eligibility has not been established. No content is delivered.",
+      LOCAL_SOURCE_UNSUPPORTED_FILE: "The source did not meet a supported regular-file/link policy or the finite selected-document text policy. Qualified selected Pi documentation eligibility was not established. No content is delivered.",
       LOCAL_SOURCE_BLOCKED: "The local source matches protected-path or configured filename/path rules. Content redaction does not authorize reading it.",
       LOCAL_CONTENT_LIMIT: "The complete local content exceeds the bounded security scan. No unexamined text is returned.",
       LOCAL_CONTENT_POLICY: "The local sensitive-content policy could not be evaluated. Raw content is withheld, not allowed by default.",

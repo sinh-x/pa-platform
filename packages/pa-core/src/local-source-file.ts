@@ -1,5 +1,6 @@
 import fs, { type BigIntStats } from "node:fs";
 import { basename, dirname } from "node:path";
+import { assertImmutableDocumentText, assertSelectedPiDocumentPath, type SelectedPiDocumentBinding } from "./immutable-document-policy.js";
 import { assertLocalFileSource, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError } from "./source-content-security.js";
 import type { SensitivePatternSet } from "./sensitive-patterns.js";
 
@@ -34,6 +35,17 @@ function unavailable(error: unknown): never {
  * Logical single-link aliases retain their path checks; no physical component
  * symlink is followed. No caller root, filesystem backend or trust override. */
 export function acquireLocalSourceFile(path: string, patterns?: SensitivePatternSet, signal?: AbortSignal): LocalSourceFile {
+  return acquirePinnedSource(path, patterns, signal);
+}
+
+/** Internal selected-host ingress mechanics. The binding is not provenance by
+ * itself: only the native fixed-build producer may supply it to its private
+ * consumer. Ordinary tools never accept roots/bindings or use this route. */
+export function acquireSelectedPiDocument(path: string, binding: SelectedPiDocumentBinding, patterns?: SensitivePatternSet, signal?: AbortSignal): LocalSourceFile {
+  return acquirePinnedSource(path, patterns, signal, binding);
+}
+
+function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signal?: AbortSignal, binding?: SelectedPiDocumentBinding): LocalSourceFile {
   const directories: Array<{ fd: number; path: string; name: string; stat: BigIntStats }> = [];
   const ownedDirectories: number[] = [];
   let fd: number | undefined, closed = false;
@@ -50,29 +62,46 @@ export function acquireLocalSourceFile(path: string, patterns?: SensitivePattern
   };
   try {
     if (signal?.aborted || process.platform !== "linux") fail("LOCAL_SOURCE_UNAVAILABLE");
+    if (binding) { binding.assertStable(); assertSelectedPiDocumentPath(path, binding.packageRoot); }
     assertLocalFileSource(path, patterns);
     const physical = fs.realpathSync(path);
     assertLocalFileSource(physical, patterns);
+    // Existing ordinary aliases stay compatible; selected immutable documents
+    // get no mutable logical symlink/normalization route into the exception.
+    if (binding && physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    const immutableMetadata = (entry: string, observed: BigIntStats) => {
+      if (!binding) return;
+      if (observed.uid !== 0n || observed.nlink === 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      if (entry === "/nix/store") {
+        if ((observed.mode & 0o022n) !== 0n && !((observed.mode & 0o1000n) !== 0n && (observed.mode & 0o002n) === 0n)) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      } else if (entry.startsWith("/nix/store/")) {
+        if ((observed.mode & 0o222n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      } else if ((observed.mode & 0o022n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    };
     const root = fs.openSync("/", fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
     ownedDirectories.push(root);
     directories.push({ fd: root, path: "/", name: "", stat: fs.fstatSync(root, { bigint: true }) });
+    immutableMetadata("/", directories[0]!.stat);
     let parent = root, current = "";
     for (const name of dirname(physical).split("/").filter(Boolean)) {
       const next = fs.openSync(`/proc/self/fd/${parent}/${name}`, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
       // Register ownership before any observation that can fail.
       ownedDirectories.push(next);
       directories.push({ fd: next, path: current += `/${name}`, name, stat: fs.fstatSync(next, { bigint: true }) });
+      immutableMetadata(current, directories[directories.length - 1]!.stat);
       parent = next;
     }
     fd = fs.openSync(`/proc/self/fd/${parent}/${basename(physical)}`, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     const before = fs.fstatSync(fd, { bigint: true });
     if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
-    if (before.nlink !== 1n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    if (binding) immutableMetadata(physical, before);
+    else if (before.nlink !== 1n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
     const assertStable = () => {
       try {
         if (closed || signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE");
+        if (binding) { binding.assertStable(); assertSelectedPiDocumentPath(path, binding.packageRoot); }
         assertLocalFileSource(path, patterns);
         assertLocalFileSource(physical, patterns);
         if (fs.realpathSync(path) !== physical) fail("LOCAL_SOURCE_UNAVAILABLE");
@@ -99,7 +128,10 @@ export function acquireLocalSourceFile(path: string, patterns?: SensitivePattern
     }
     assertStable();
     if (length !== Number(before.size)) fail("LOCAL_SOURCE_UNAVAILABLE");
-    return { bytes: bytes.subarray(0, length), assertStable, close };
+    const complete = bytes.subarray(0, length);
+    if (binding) assertImmutableDocumentText(complete);
+    assertStable();
+    return { bytes: complete, assertStable, close };
   } catch (error) {
     close();
     return unavailable(error);
