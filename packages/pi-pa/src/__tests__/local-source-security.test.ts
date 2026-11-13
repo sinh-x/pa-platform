@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -46,6 +46,48 @@ test("ordinary read checks source and complete local bytes before pagination; no
   }
   const paths = interceptToolCall({ toolName: "bash", input: { command: `cat ${JSON.stringify(blocked)}` } });
   assert.equal(paths.allowed, false, "configured file rules also protect known shell operands");
+}));
+
+// Phase-1 historical reproduction, NOT the repaired positive acceptance case.
+// Replace the denial expectation only after the selected-host design is reviewed;
+// the original result is retained in docs/PAP-298-phase-1-design.md and Git history.
+test("PAP-298 baseline: guarded direct and registered reads reject inert read-only hard links", async t => fixture(async f => {
+  const body = "ordinary inert documentation\nsecond ordinary line\n";
+  const ordinary = join(f.root, "ordinary-document.txt"), linked = join(f.root, "linked-document.txt");
+  writeFileSync(ordinary, body);
+  writeFileSync(linked, body);
+  linkSync(linked, join(f.root, "second-document-name.txt"));
+  chmodSync(linked, 0o444);
+  const before = statSync(linked, { bigint: true });
+  assert.equal(before.isFile(), true);
+  assert.equal(before.nlink, 2n);
+  assert.equal(before.mode & 0o222n, 0n);
+  assert.equal(statSync(ordinary).nlink, 1);
+
+  const tools = new Map<string, PiToolDefinition>();
+  const lifecycle = createPiSessionLifecycle(() => {});
+  registerPiSessionModules({ registerTool: tool => tools.set(tool.name, tool) }, lifecycle, [registerLocalSourceToolsModule]);
+  try {
+    for (const [route, tool] of [["direct", createSecureLocalReadTool()], ["registered", tools.get("read")!]] as const) {
+      const allowed = await invoke(tool, { path: ordinary }, f.context);
+      assert.notEqual(allowed.isError, true, text(allowed));
+      assert.equal(text(allowed), body);
+      const updates: PiToolResult[] = [];
+      const denied = await invoke(tool, { path: linked }, f.context, result => updates.push(result));
+      assert.equal(denied.isError, true);
+      assert.equal(denied.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+      assert.equal(denied.details.outputWithheld, true);
+      assert.equal(denied.details.effectState, "not-established");
+      assert.equal(denied.details.fullOutputPath, undefined);
+      assert.doesNotMatch(JSON.stringify([denied, updates]), /ordinary inert documentation|second ordinary line/);
+      t.diagnostic(`${route}: single-link text delivered; regular mode=0444 nlink=2 denied as ${denied.details.code}; no document text/update/spill delivered`);
+    }
+    // Metadata only after denial: never obtain denied bytes via another reader.
+    const after = statSync(linked, { bigint: true });
+    for (const field of ["dev", "ino", "size", "uid", "gid", "mode", "nlink", "mtimeNs", "ctimeNs"] as const) {
+      assert.equal(after[field], before[field], `fixture ${field} must remain unchanged`);
+    }
+  } finally { await lifecycle.shutdown(); }
 }));
 
 test("local bash buffers split/UTF-8 chunks before updates, truncation or spill; preserves real exit failures", async () => fixture(async f => {
