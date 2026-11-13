@@ -24,10 +24,18 @@ presentation. This is not a public-web policy reversal or an approval grant.
   existing rejection behavior and real bytes; do not redact an approval subject
   into a different silently accepted document.
 - Matchers include configured patterns. Malformed/unavailable policy fails closed.
-  Full local scans are bounded to 16MiB UTF-8. File reads use the existing Linux
-  descriptor-pinned regular/single-link file reader; unsupported aliases, changing
-  files and oversized sources fail closed. Excess matches/output are withheld,
-  not a claim that an unscanned file is safe. These are explicit security limits.
+  Full local scans are bounded to 16MiB UTF-8. Pi file ingress now uses a dedicated
+  Linux descriptor-pinned regular/single-link source reader, separate from strict
+  artifact adoption. All hard-linked sources remain denied pending reviewed
+  selected-host provenance (PAP-298/SR-1); there is no general Nix exception.
+  Unsupported regular-file/link policy returns `LOCAL_SOURCE_UNSUPPORTED_FILE`;
+  missing/changing/interrupted or unknown reads remain `LOCAL_SOURCE_UNAVAILABLE`,
+  and oversized sources return `LOCAL_CONTENT_LIMIT`. Complete admitted bytes are
+  acquired once before media classification; no path-based MIME preflight reads
+  a rejected hard link or blocks on a FIFO. Descriptors remain pinned and source
+  identity/path association is rechecked before delivery, including after Pi's
+  asynchronous formatting/image work. Excess matches/output are withheld, not a
+  claim that an unscanned file is safe. These are explicit security limits.
 - The native public reader's existing inbound public-text allowance remains;
   supplied/redirect URL checks still precede network work. A source label inside
   local content or tool input is never the native public reader's authority.

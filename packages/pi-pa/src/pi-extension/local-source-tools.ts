@@ -1,7 +1,6 @@
-import { access } from "node:fs/promises";
-import { constants, realpathSync } from "node:fs";
-import { createBashToolDefinition, createLocalBashOperations, createReadToolDefinition, detectSupportedImageMimeTypeFromFile, type BashOperations } from "@earendil-works/pi-coding-agent";
-import { assertLocalFileSource, checkSourceContent, loadSensitivePatterns, MAX_LOCAL_SECURITY_BYTES, readArtifactFile, SourceContentSecurityError } from "@pa-platform/pa-core";
+import { createBashToolDefinition, createLocalBashOperations, createReadToolDefinition, type BashOperations } from "@earendil-works/pi-coding-agent";
+import { acquireLocalSourceFile, checkSourceContent, loadSensitivePatterns, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError, type LocalSourceFile } from "@pa-platform/pa-core";
+import { detectAdmittedImageMimeType } from "./local-image-type.js";
 import { filterLocalToolResult, localContentFailure, safeLocalToolError } from "./local-content-security.js";
 import { interceptToolCall } from "./safety.js";
 import type { PiExtensionModule, PiToolDefinition, PiToolResult } from "./index.js";
@@ -13,30 +12,48 @@ export function createSecureLocalReadTool(): PiToolDefinition {
   return { ...base,
     description: `${base.description} Local source filename/path rules apply before access. Allowed local text is scanned before pagination; sensitive matching lines are redacted. Redacted content is a projection, not original bytes.`,
     execute: async (id: string, input: Record<string, unknown>, signal: AbortSignal | undefined, update: Parameters<PiToolDefinition["execute"]>[3], rawContext: unknown) => {
+      let source: LocalSourceFile | undefined;
       try {
-        const context = rawContext as { cwd: string }, patterns = loadSensitivePatterns();
-        let projection: "allow" | "redact" | "withhold" = "allow", image = false;
-        const guarded = createReadToolDefinition(context.cwd, { operations: {
-          access: async path => { assertLocalFileSource(path, patterns); await access(path, constants.R_OK); },
-          detectImageMimeType: async path => { assertLocalFileSource(path, patterns); const mime = await detectSupportedImageMimeTypeFromFile(path); image = !!mime; return mime; },
-          readFile: async path => {
-            assertLocalFileSource(path, patterns);
-            // Existing artifact-file owner checks regular file/inode/alias and
-            // size bounds. No raw body is sent to a hook, audit or temp spill.
-            const physical = realpathSync(path);
-            const bytes = readArtifactFile(physical, MAX_LOCAL_SECURITY_BYTES, "ARTIFACT_STALE");
-            const checked = checkSourceContent({ source: { kind: "local-file", path }, content: bytes.toString("utf8") }, patterns);
+        try {
+          const context = rawContext as { cwd: string };
+          let patterns: ReturnType<typeof loadSensitivePatterns>;
+          try { patterns = loadSensitivePatterns(); }
+          catch { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY"); }
+          let projection: "allow" | "redact" | "withhold" = "allow";
+          let prepared: { path: string; mime: string | null; bytes: Buffer } | undefined;
+          const prepare = (path: string) => {
+            if (prepared) {
+              if (prepared.path !== path) throw new SourceContentSecurityError("CONTENT_SOURCE_INVALID");
+              source!.assertStable();
+              return prepared;
+            }
+            // Acquire/admit once BEFORE media detection; the path-based Pi MIME
+            // helper would read rejected aliases and block on a FIFO (SR-2).
+            source = acquireLocalSourceFile(path, patterns, signal);
+            const checked = checkSourceContent({ source: { kind: "local-file", path }, content: source.bytes.toString("utf8") }, patterns);
             projection = checked.disposition;
-            if (image && projection !== "allow") throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY");
-            return image ? bytes : Buffer.from(checked.content);
-          },
-        } });
-        const result = await guarded.execute(id, input as any, signal, update as any, rawContext as any) as unknown as PiToolResult;
-        if (projection !== "allow") {
-          result.content.push({ type: "text", text: "Local file content was redacted before pagination; displayed text and line ranges describe a security projection, not original bytes." });
-          result.details = { ...result.details, paLocalContentSecurity: { source: "local-file", projection } };
-        }
-        return filterLocalToolResult("read", result, patterns);
+            const mime = detectAdmittedImageMimeType(source.bytes);
+            if (mime && projection !== "allow") throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY");
+            prepared = { path, mime, bytes: mime ? source.bytes : Buffer.from(checked.content) };
+            return prepared;
+          };
+          const guarded = createReadToolDefinition(context.cwd, { operations: {
+            access: async path => { prepare(path); },
+            detectImageMimeType: async path => prepare(path).mime,
+            readFile: async path => prepare(path).bytes,
+          } });
+          const result = await guarded.execute(id, input as any, signal, update as any, rawContext as any) as unknown as PiToolResult;
+          if (projection !== "allow") {
+            result.content.push({ type: "text", text: "Local file content was redacted before pagination; displayed text and line ranges describe a security projection, not original bytes." });
+            result.details = { ...result.details, paLocalContentSecurity: { source: "local-file", projection } };
+          }
+          const filtered = filterLocalToolResult("read", result, patterns);
+          // Keep descriptors pinned across Pi's async image/formatting work and
+          // withhold even checked content if path/identity/cancellation changed.
+          source?.assertStable();
+          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
+          return filtered;
+        } finally { source?.close(); }
       } catch (error) { return localContentFailure(error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE")); }
     },
   } as unknown as PiToolDefinition;

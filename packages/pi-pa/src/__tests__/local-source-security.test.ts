@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chmodSync, linkSync, mkdtempSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import fs from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
+import sharp from "sharp";
 import { ExtensionRunner } from "@earendil-works/pi-coding-agent";
 import { closeDb, MAX_LOCAL_SECURITY_BYTES, loadSensitivePatterns } from "@pa-platform/pa-core";
 import { createSecureLocalReadTool, createSecureLocalBashTool, registerLocalSourceToolsModule } from "../pi-extension/local-source-tools.js";
@@ -48,10 +52,10 @@ test("ordinary read checks source and complete local bytes before pagination; no
   assert.equal(paths.allowed, false, "configured file rules also protect known shell operands");
 }));
 
-// Phase-1 historical reproduction, NOT the repaired positive acceptance case.
-// Replace the denial expectation only after the selected-host design is reviewed;
-// the original result is retained in docs/PAP-298-phase-1-design.md and Git history.
-test("PAP-298 baseline: guarded direct and registered reads reject inert read-only hard links", async t => fixture(async f => {
+// Phase 1's original unavailable result is retained in commit 3e73a1f and
+// docs/PAP-298-phase-1-design.md. This is still NOT selected-Pi positive acceptance:
+// unqualified hard links remain denied, now before any data/media read.
+test("PAP-298: guarded direct and registered reads reject unqualified hard links with a typed cause", async t => fixture(async f => {
   const body = "ordinary inert documentation\nsecond ordinary line\n";
   const ordinary = join(f.root, "ordinary-document.txt"), linked = join(f.root, "linked-document.txt");
   writeFileSync(ordinary, body);
@@ -75,10 +79,13 @@ test("PAP-298 baseline: guarded direct and registered reads reject inert read-on
       const updates: PiToolResult[] = [];
       const denied = await invoke(tool, { path: linked }, f.context, result => updates.push(result));
       assert.equal(denied.isError, true);
-      assert.equal(denied.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+      assert.equal(denied.details.code, "LOCAL_SOURCE_UNSUPPORTED_FILE");
       assert.equal(denied.details.outputWithheld, true);
       assert.equal(denied.details.effectState, "not-established");
       assert.equal(denied.details.fullOutputPath, undefined);
+      assert.ok(text(denied).length <= 2000); assert.doesNotMatch(text(denied), /\u001b/);
+      for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(text(denied).split(`${label}:`).length, 2);
+      assert.doesNotMatch(text(denied), new RegExp(f.root));
       assert.doesNotMatch(JSON.stringify([denied, updates]), /ordinary inert documentation|second ordinary line/);
       t.diagnostic(`${route}: single-link text delivered; regular mode=0444 nlink=2 denied as ${denied.details.code}; no document text/update/spill delivered`);
     }
@@ -88,6 +95,125 @@ test("PAP-298 baseline: guarded direct and registered reads reject inert read-on
       assert.equal(after[field], before[field], `fixture ${field} must remain unchanged`);
     }
   } finally { await lifecycle.shutdown(); }
+}));
+
+test("read acquires once before MIME; unsupported links cause no sniff or data read", async t => fixture(async f => {
+  const target = statSync(f.file), linked = join(f.root, "linked.txt");
+  writeFileSync(linked, "inert linked document"); linkSync(linked, join(f.root, "linked-alias.txt"));
+  const linkedInode = statSync(linked).ino, originalOpen = fs.promises.open, originalRead = fs.readSync;
+  let ordinaryReads = 0, deniedReads = 0, pathOpens = 0;
+  t.mock.method(fs.promises, "open", (async (...args: Parameters<typeof originalOpen>) => {
+    if (args[0] === f.file || args[0] === linked) pathOpens++;
+    return originalOpen(...args);
+  }) as typeof originalOpen);
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => {
+    const stat = fs.fstatSync(args[0]);
+    if (stat.ino === target.ino && stat.dev === target.dev) ordinaryReads++;
+    if (stat.ino === linkedInode && stat.dev === target.dev) deniedReads++;
+    return originalRead(...args);
+  }) as typeof originalRead);
+  syncBuiltinESMExports();
+  try {
+    const tool = createSecureLocalReadTool();
+    const allowed = await invoke(tool, { path: f.file }, f.context);
+    assert.notEqual(allowed.isError, true, text(allowed));
+    const denied = await invoke(tool, { path: linked }, f.context);
+    assert.equal(denied.details.code, "LOCAL_SOURCE_UNSUPPORTED_FILE");
+    assert.equal(deniedReads, 0); assert.equal(pathOpens, 0);
+    assert.equal(ordinaryReads, 2, "one acquisition: body then bounded EOF probe, never a MIME re-read");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+}));
+
+test("actual direct and registered FIFO reads settle without a writer under an isolated watchdog", async () => fixture(async f => {
+  const fifo = join(f.root, "inert-pipe.txt"); execFileSync("mkfifo", [fifo]);
+  const child = spawnSync(process.execPath, ["--import=tsx", "--input-type=module", "--eval", `
+    import { createSecureLocalReadTool, registerLocalSourceToolsModule } from ${JSON.stringify(new URL("../pi-extension/local-source-tools.ts", import.meta.url).href)};
+    import { createPiSessionLifecycle, registerPiSessionModules } from ${JSON.stringify(new URL("../pi-extension/index.ts", import.meta.url).href)};
+    const tools = new Map(), lifecycle = createPiSessionLifecycle(() => {});
+    registerPiSessionModules({ registerTool: t => tools.set(t.name, t) }, lifecycle, [registerLocalSourceToolsModule]);
+    const start = Date.now(), outcomes = [];
+    for (const tool of [createSecureLocalReadTool(), tools.get("read")]) {
+      const result = await tool.execute("inert-fifo", { path: ${JSON.stringify(fifo)} }, undefined, undefined, { cwd: ${JSON.stringify(f.root)} });
+      outcomes.push({ code: result.details.code, isError: result.isError, outputWithheld: result.details.outputWithheld });
+    }
+    await lifecycle.shutdown();
+    console.log(JSON.stringify({ outcomes, elapsed: Date.now() - start }));
+  `], { cwd: process.cwd(), env: process.env, encoding: "utf8", timeout: 8000, killSignal: "SIGKILL" });
+  assert.equal(child.status, 0, `FIFO child must settle, not time out: ${child.error?.message ?? child.stderr}`);
+  const observed = JSON.parse(child.stdout);
+  assert.ok(observed.elapsed < 2000);
+  assert.deepEqual(observed.outcomes, Array(2).fill({ code: "LOCAL_SOURCE_UNSUPPORTED_FILE", isError: true, outputWithheld: true }));
+}));
+
+test("single-link PNG keeps Pi image delivery; multi-linked media remains denied", async () => fixture(async f => {
+  const image = join(f.root, "inert.png");
+  writeFileSync(image, await sharp({ create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer());
+  const tool = createSecureLocalReadTool(), result = await invoke(tool, { path: image }, f.context);
+  assert.notEqual(result.isError, true, text(result));
+  assert.ok(result.content.some(block => (block as { type: string }).type === "image"), `actual Pi image processing/delivery remains in use: ${text(result)}`);
+  linkSync(image, join(f.root, "second-image.png"));
+  const denied = await invoke(tool, { path: image }, f.context);
+  assert.equal(denied.details.code, "LOCAL_SOURCE_UNSUPPORTED_FILE");
+  assert.ok(denied.content.every(block => block.type === "text"));
+}));
+
+test("read rejects inode replacement during acquisition and abort without unchecked updates or leaks", async t => fixture(async f => {
+  const originalRead = fs.readSync, originalOpen = fs.openSync, originalClose = fs.closeSync, target = statSync(f.file);
+  const owned = new Set<number>();
+  t.mock.method(fs, "openSync", ((...args: Parameters<typeof originalOpen>) => { const fd = originalOpen(...args); owned.add(fd); return fd; }) as typeof originalOpen);
+  t.mock.method(fs, "closeSync", (fd: number) => { owned.delete(fd); return originalClose(fd); });
+  let changed = false;
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => {
+    const stat = fs.fstatSync(args[0]), count = originalRead(...args);
+    if (!changed && stat.ino === target.ino && stat.dev === target.dev) {
+      changed = true; fs.renameSync(f.file, join(f.root, "old-source.txt")); writeFileSync(f.file, "unchecked replacement text");
+    }
+    return count;
+  }) as typeof originalRead);
+  const updates: PiToolResult[] = [];
+  const result = await invoke(createSecureLocalReadTool(), { path: f.file }, f.context, r => updates.push(r));
+  assert.equal(result.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify([result, updates]), /ordinary before|unchecked replacement text|INERT_LOCAL_CANARY/);
+  const controller = new AbortController(); controller.abort();
+  const aborted = await createSecureLocalReadTool().execute("inert-abort", { path: f.file }, controller.signal, undefined, f.context);
+  assert.equal(aborted.isError, true); assert.doesNotMatch(text(aborted), /unchecked replacement text/);
+  assert.equal(owned.size, 0, "every descriptor opened by the synchronous reader closes");
+}));
+
+test("read revalidates between async callbacks; abort after ingress suppresses checked text", async t => fixture(async f => {
+  for (const action of ["replace", "abort"] as const) {
+    const controller = new AbortController(), originalRead = fs.readSync, target = statSync(f.file);
+    let scheduled = false;
+    t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => {
+      const stat = fs.fstatSync(args[0]), count = originalRead(...args);
+      if (!scheduled && stat.ino === target.ino && stat.dev === target.dev) {
+        scheduled = true;
+        queueMicrotask(() => {
+          if (action === "abort") controller.abort();
+          else { fs.renameSync(f.file, join(f.root, "old-between-callbacks.txt")); writeFileSync(f.file, "replacement between callbacks"); }
+        });
+      }
+      return count;
+    }) as typeof originalRead);
+    try {
+      const result = await createSecureLocalReadTool().execute("inert-after-ingress", { path: f.file }, controller.signal, undefined, f.context);
+      assert.equal(result.isError, true); assert.equal(result.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+      assert.doesNotMatch(text(result), /ordinary before|replacement between callbacks|INERT_LOCAL_CANARY/);
+    } finally { t.mock.restoreAll(); }
+  }
+}));
+
+test("read distinguishes unknown I/O from unsupported policy without exposing private exceptions", async t => fixture(async f => {
+  const target = statSync(f.file), originalRead = fs.readSync;
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => {
+    if (fs.fstatSync(args[0]).ino === target.ino) throw new Error(`inert private failure ${f.root} ${f.canary}`);
+    return originalRead(...args);
+  }) as typeof originalRead);
+  const unavailable = await invoke(createSecureLocalReadTool(), { path: f.file }, f.context);
+  assert.equal(unavailable.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify(unavailable), /inert private failure|INERT_LOCAL_CANARY/);
+  const missing = await invoke(createSecureLocalReadTool(), { path: join(f.root, "missing.txt") }, f.context);
+  assert.equal(missing.details.code, "LOCAL_SOURCE_UNAVAILABLE");
 }));
 
 test("local bash buffers split/UTF-8 chunks before updates, truncation or spill; preserves real exit failures", async () => fixture(async f => {
@@ -189,7 +315,8 @@ test("invalid policy fails closed before file/shell delivery, hostile getters ar
   assert.equal(checked.isError, true); assert.equal(getterCalls, 0);
   writeFileSync(join(f.config, "sensitive-patterns.yaml"), "contents:\n - '[INERT_INVALID_PATTERN'\n");
   const read = await invoke(createSecureLocalReadTool(), { path: f.file }, f.context);
-  assert.equal(read.isError, true); assert.doesNotMatch(text(read), /INERT_LOCAL_CANARY|INERT_INVALID_PATTERN/);
+  assert.equal(read.isError, true); assert.equal(read.details.code, "LOCAL_CONTENT_POLICY");
+  assert.doesNotMatch(text(read), /INERT_LOCAL_CANARY|INERT_INVALID_PATTERN/);
   let spawns = 0;
   const shell = createSecureLocalBashTool({ exec: async () => { spawns++; return { exitCode: 0 }; } });
   const result = await invoke(shell, { command: "inert-fixture" }, f.context);
