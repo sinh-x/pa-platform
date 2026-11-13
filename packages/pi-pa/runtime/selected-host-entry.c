@@ -22,16 +22,16 @@ static int denied(void) {
 
 static int conflict(const char *entry) {
   const char *equal = strchr(entry, '=');
-  if (!equal || equal[1] == '\0') return 0;
-  /* Reject whole startup namespaces, not just today's --require spelling.
-   * No inherited option is scrubbed and then silently re-authorized. */
-  return strncmp(entry, "NODE_", 5) == 0
-    || strncmp(entry, "LD_", 3) == 0
-    || strncmp(entry, "DYLD_", 5) == 0
-    || strncmp(entry, "NIX_LD", 6) == 0
-    || strncmp(entry, "GLIBC_TUNABLES=", 15) == 0
-    || strncmp(entry, "PI_PACKAGE_DIR=", 15) == 0
-    || strncmp(entry, "PA_PI_START_NODE_OPTIONS=", 24) == 0;
+  if (!equal) return 1;
+  /* Fixed offline qualification only: a finite environment, not an expanding
+   * denylist of Node/OpenSSL/libc startup hooks. Unknown keys reject, even empty.
+   * Production provider/session environment requires its own reviewed contract. */
+  static const char *const allowed[] = { "HOME", "PI_CODING_AGENT_DIR", "XDG_CACHE_HOME",
+    "TMPDIR", "NO_COLOR", "TERM" };
+  size_t length = (size_t)(equal - entry);
+  for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i)
+    if (strlen(allowed[i]) == length && strncmp(entry, allowed[i], length) == 0) return 0;
+  return 1;
 }
 
 int main(int argc, char **argv) {

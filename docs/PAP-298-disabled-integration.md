@@ -142,6 +142,63 @@ contract now covers actual native revocation as well. Baseline late success beco
 a truthful unavailable result; unknown underlying mutable effects are not called
 absent. Module source inventory renewed after checking affected consumers.
 
+## Phase 4c — review corrections (not independently approved)
+
+Independent reviewer d-b1d653 wrote an exact14971b5 report, then its deployment
+**timed out** at720s (native status failed, not successful review completion).
+Report: `/home/sinh/Documents/ai-usage/deployments/d-b1d653/artifacts/PAP-298/security-review-14971b5.md`.
+Findings are retained, not an approval. SR-4 MEDIUM reproduces native OpenSSL engine
+code execution before JavaScript via inherited OPENSSL_CONF. O-1 records later
+promise-hop delivery after the inner checkpoint; cancellation through caller
+observation is NOT established. The new final candidate needs renewed review.
+
+Correction: the static fixed-help entry now accepts **only** HOME,
+PI_CODING_AGENT_DIR, XDG_CACHE_HOME, TMPDIR, NO_COLOR and TERM. Every unknown key
+rejects, including empty values. This finite offline environment is NOT a proposed
+production provider environment. An actual inert OpenSSL constructor regression
+proves direct fixed-Node initialization writes its marker/exit106, then the entry
+rejects the same config before the constructor runs. No arbitrary environment
+silently becomes authorized. This repairs the observed SR-4 vector in source;
+independent disposition remains pending.
+
+Parent also reproduced synchronous shutdown reentry: a registered read's abort
+listener calls shutdown again before the old async-IIFE promise was memoized,
+causing two disposals and two registry closes. Original external probe exit1 is
+retained. Shutdown now memoizes its promise BEFORE invoking callbacks while keeping
+abort synchronous. The exact same probe now exits0 with one disposal/close; an
+in-repository native-host regression asserts reentry observes the same promise.
+O-1's later promise-hop observation is **not fixed or approved by this correction**;
+keep it open for an explicit publication-boundary decision/fencing and tests.
+
+Actual correction checks: reader+native-host **43/43**, composition/inventory
+**16/16**, adapter `corepack pnpm --filter @pa-platform/pi-pa exec tsc -p tsconfig.json --noEmit`
+exit0. Fresh Nix **11/11** (positive host cases remain explicit namespace denials);
+ordinary-host **11/11** includes genuine fixed help and actual OpenSSL control.
+New artifact `/nix/store/i0z0j1iw7m4y5n0vj6yx05vkmalnyhb0-pa-selected-pi-qualification-1.4.0`.
+The first correction Nix check failed because its test driver lacked cc; added a
+test-only compiler input, reran successfully. Original failure preserved.
+Source inventory renewed after reviewing the finite environment/lifecycle owners.
+
+Broad run on pre-correction14971b5: `corepack pnpm test`, bounded720s but intentionally
+interrupted after root42/42 and core1978pass14skip/0fail to repair the new defects.
+Driver exit143, **INCOMPLETE**, not an aggregate pass. Logs
+`/tmp/pap298-integration-workspace{.log,.exit,-interruption.txt}`. Historical600s
+incomplete run remains historical. No full correction workspace suite/build,
+completions, CI or independent final review is claimed. Earlier whole-workspace
+build/typecheck/completions passed before this correction only.
+
+Correction evidence SHA-256:
+
+```text
+75453fd7564f49351d6b51169dc3567ea4ef0d479786a57cd555314e5a051c3d /tmp/pap298-repair-host.log
+6f164b3ee6a0794110aae1cfb0ebbdc6e0b15428585732e57bfd7e9a1775b7b7 /tmp/pap298-repair-nix.log
+0307b490e25477d0c4a6622df9bd0e38ba846b649e0c59ab07ef603b97c7ab32 /tmp/pap298-repair-nix-final.log
+6126a17f7316f650767c168ff8d2e8c11ccd389002c373ba573f92f429c8978b /tmp/pap298-repair-focused.log
+fccf1d6eddcf9c538f232560275fa4994c9451a50ac87b8c6f7b73127b381713 /tmp/pap298-repair-composition.log
+4f01157aa1c3ceb3b6b5586a259c2a2c527c5667e790d4c490e3bca7e5da06e6 /tmp/pap298-shutdown-reentry-baseline.log
+28702bbdce769b886ab82f6f71e354b10b287bd2261be9fbacd0003e132920a2 /tmp/pap298-shutdown-reentry-fixed.log
+```
+
 ## Remaining enabling boundary
 
 Configured installed README/extensions guarded reads still returned

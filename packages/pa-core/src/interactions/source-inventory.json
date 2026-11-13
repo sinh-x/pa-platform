@@ -4,7 +4,7 @@
   "sources": {
     "nix/selected-pi-host.nix": "4454d74ac2288d3fe3ff190ef001f358a5bb314a3f3f0dd149fc9603412f74bc",
     "nix/selected-pi-qualification.nix": "5731934424cd83d83db6abd4f68d057efc441ca59b3bb126c297531b86ffe99c",
-    "packages/pi-pa/runtime/selected-host-entry.c": "155e4659dce8225df7d200894028e9ca15e26f50e4d44c41b1be54338c33485b",
+    "packages/pi-pa/runtime/selected-host-entry.c": "5b5cf2f7d460f89b80d2250932a95f19744349b771625a3a7b7508c866877678",
     "packages/pi-pa/runtime/selected-host-qualification.mjs": "f78fa6f988609749ff75329c728147eb13891a68ffca606f061f7f294a01d94a",
     "packages/pa-core/src/index.ts": "8d6ce93447300d7f273457a9200f3db36b1d193ab6337cad70109f5c2caa876d",
     "packages/pa-core/src/source-content-security.ts": "4c0be6d8c6ae3d77490ba99a07337a67512a9681fa85751111ed05262c539d80",
@@ -77,6 +77,6 @@
     "packages/pa-core/src/registry/index.ts": "9508aa1ec42f0613a22f78380aaa90a87c45ff24a71fb2b98495a15e14754845",
     "packages/pa-core/src/mode-capabilities.ts": "d1f0659e63c3e3c6c42903c0c6b485518ba89d6875c5183c8a832cebf68df353",
     "packages/pa-core/src/mode-capability-selection.ts": "ec1d0559f38eebc5c25b1a658d5e096ffe414ab1f7bf1495d9e580b6c7fe8a5c",
-    "packages/pi-pa/src/pi-extension/index.ts": "b904a8c6c97a2f303a75a58090b0af8f40ba59bba46108236009d0e00cf79977"
+    "packages/pi-pa/src/pi-extension/index.ts": "ac3cb3249ded190c16b5a1505129ec9291274e5b64293651eabb7e9976df188f"
   }
 }

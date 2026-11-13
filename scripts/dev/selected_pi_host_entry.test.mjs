@@ -55,8 +55,25 @@ test("actual Node --require/--import preloads never execute through the static e
 
 test("dynamic-loader and deferred startup namespaces deny before selected Node", () => fixture(({ execute }) => {
   for (const key of ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG", "DYLD_INSERT_LIBRARIES",
-    "NIX_LD", "NIX_LD_LIBRARY_PATH", "GLIBC_TUNABLES", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "PI_PACKAGE_DIR", "PA_PI_START_NODE_OPTIONS"])
+    "NIX_LD", "NIX_LD_LIBRARY_PATH", "GLIBC_TUNABLES", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "PI_PACKAGE_DIR", "PA_PI_START_NODE_OPTIONS",
+    "OPENSSL_CONF", "OPENSSL_ENGINES", "OPENSSL_MODULES", "GCONV_PATH", "LOCPATH", "UNREVIEWED_STARTUP_KEY"])
     denied(execute({ [key]: "/inert/nonexistent-startup-conflict" }));
+}));
+
+test("actual OpenSSL engine constructor cannot execute through the finite-environment entry", () => fixture(({ directory, execute }) => {
+  const effect = join(directory, "engine-ran"), source = join(directory, "engine.c"), library = join(directory, "engine.so"), config = join(directory, "openssl.cnf");
+  writeFileSync(source, `#include <stdio.h>\n__attribute__((constructor)) static void inert(void) { FILE *f=fopen(${JSON.stringify(effect)},"w"); if(f) { fputs("inert",f); fclose(f); } }\n`);
+  const compile = spawnSync(process.env.CC || "cc", ["-shared", "-fPIC", source, "-o", library], { encoding: "utf8" });
+  assert.equal(compile.status, 0, compile.error?.message ?? compile.stderr);
+  writeFileSync(config, `nodejs_conf = init\n[init]\nengines = engines\n[engines]\ninert = inert\n[inert]\nengine_id = inert\ndynamic_path = ${library}\ninit = 0\n`);
+  const node = process.env.PA_TEST_PI_NODE;
+  assert.ok(node);
+  const control = spawnSync(node, ["-e", ""], { env: { OPENSSL_CONF: config }, encoding: "utf8", timeout: 10000 });
+  assert.equal(control.status, 106, "control reaches the deliberately incomplete inert engine");
+  assert.equal(existsSync(effect), true, "control proves this native startup fixture actually executes");
+  rmSync(effect);
+  denied(execute({ OPENSSL_CONF: config, OPENSSL_ENGINES: directory }));
+  assert.equal(existsSync(effect), false, "entry rejects before native constructor execution");
 }));
 
 test("arguments and a mutable copied entry cannot choose another operation or claim entry custody", () => fixture(({ directory, execute }) => {

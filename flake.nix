@@ -362,7 +362,9 @@
             let
               host = selectedPiHostFor system;
               qualification = selectedPiQualificationFor system;
-            in pkgs.runCommand "pa-selected-pi-host-qualification-check" {} ''
+            in pkgs.runCommand "pa-selected-pi-host-qualification-check" {
+              nativeBuildInputs = [ pkgs.stdenv.cc ];
+            } ''
               ${pkgs.coreutils}/bin/stat --format='qualification namespace: %n uid=%u mode=%a' /nix /nix/store ${qualification}/lib/qualify.mjs ${host.pi}
               export PA_TEST_PI_QUALIFICATION=${qualification}
               export PA_TEST_PI_NODE=${host.node}/bin/node

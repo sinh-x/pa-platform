@@ -119,7 +119,12 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
     shutdown(event?: unknown, context?: unknown): Promise<void> {
       if (shutdownPromise) return shutdownPromise;
       closing = true;
-      shutdownPromise = (async () => {
+      // Memoize BEFORE synchronous shutdown/abort callbacks can re-enter.
+      // Keep immediate revocation; deferring the whole cleanup would reopen a
+      // publication window between shutdown() and its first microtask.
+      let resolveShutdown!: () => void, rejectShutdown!: (error: unknown) => void;
+      shutdownPromise = new Promise<void>((resolve, reject) => { resolveShutdown = resolve; rejectShutdown = reject; });
+      void (async () => {
         const disposal = shutdownSteps.map((step) => {
           try { return Promise.resolve(step(event, context)); }
           catch (error) { return Promise.reject(error); }
@@ -127,7 +132,7 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
         await Promise.allSettled(disposal);
         await Promise.allSettled([...registryAccess]);
         closeRegistry();
-      })();
+      })().then(resolveShutdown, rejectShutdown);
       return shutdownPromise;
     },
   };
