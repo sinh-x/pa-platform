@@ -1,7 +1,6 @@
 import { createBashToolDefinition, createLocalBashOperations, createReadToolDefinition, type BashOperations } from "@earendil-works/pi-coding-agent";
-import { acquireLocalSourceFile, checkSourceContent, loadSensitivePatterns, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError, type LocalSourceFile } from "@pa-platform/pa-core";
-import { detectAdmittedImageMimeType } from "./local-image-type.js";
-import { admitLocalReadPaths } from "./local-read-paths.js";
+import { acquireLocalSourceFile, checkSourceContent, loadSensitivePatterns, MAX_LOCAL_SECURITY_BYTES } from "@pa-platform/pa-core";
+import { bindLocalReadTool } from "./bound-local-read.js";
 import { filterLocalToolResult, localContentFailure, safeLocalToolError } from "./local-content-security.js";
 import { interceptToolCall } from "./safety.js";
 import type { PiExtensionModule, PiToolDefinition, PiToolResult } from "./index.js";
@@ -9,60 +8,7 @@ import type { PiExtensionModule, PiToolDefinition, PiToolResult } from "./index.
 /** Reuse Pi schemas, formatting, images and pagination. Only the local byte
  * ingress is changed: scan the complete file before any offset/limit selection. */
 export function createSecureLocalReadTool(): PiToolDefinition {
-  const base = createReadToolDefinition(process.cwd());
-  return { ...base,
-    description: `${base.description} Local source filename/path rules apply before access. Allowed local text is scanned before pagination; sensitive matching lines are redacted. Redacted content is a projection, not original bytes.`,
-    execute: async (id: string, input: Record<string, unknown>, signal: AbortSignal | undefined, update: Parameters<PiToolDefinition["execute"]>[3], rawContext: unknown) => {
-      let source: LocalSourceFile | undefined;
-      try {
-        try {
-          const context = rawContext as { cwd: string };
-          let patterns: ReturnType<typeof loadSensitivePatterns>;
-          try { patterns = loadSensitivePatterns(); }
-          catch { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY"); }
-          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
-          // Pi resolves/probes spellings before operations.access (SR-3). Admit
-          // the original, normalized and finite fallback candidates first.
-          const admittedPaths = admitLocalReadPaths(input.path, context.cwd, patterns);
-          let projection: "allow" | "redact" | "withhold" = "allow";
-          let prepared: { path: string; mime: string | null; bytes: Buffer } | undefined;
-          const prepare = (path: string) => {
-            if (!admittedPaths.has(path)) throw new SourceContentSecurityError("CONTENT_SOURCE_INVALID");
-            if (prepared) {
-              if (prepared.path !== path) throw new SourceContentSecurityError("CONTENT_SOURCE_INVALID");
-              source!.assertStable();
-              return prepared;
-            }
-            // Acquire/admit once BEFORE media detection; the path-based Pi MIME
-            // helper would read rejected aliases and block on a FIFO (SR-2).
-            source = acquireLocalSourceFile(path, patterns, signal);
-            const checked = checkSourceContent({ source: { kind: "local-file", path }, content: source.bytes.toString("utf8") }, patterns);
-            projection = checked.disposition;
-            const mime = detectAdmittedImageMimeType(source.bytes);
-            if (mime && projection !== "allow") throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY");
-            prepared = { path, mime, bytes: mime ? source.bytes : Buffer.from(checked.content) };
-            return prepared;
-          };
-          const guarded = createReadToolDefinition(context.cwd, { operations: {
-            access: async path => { prepare(path); },
-            detectImageMimeType: async path => prepare(path).mime,
-            readFile: async path => prepare(path).bytes,
-          } });
-          const result = await guarded.execute(id, input as any, signal, update as any, rawContext as any) as unknown as PiToolResult;
-          if (projection !== "allow") {
-            result.content.push({ type: "text", text: "Local file content was redacted before pagination; displayed text and line ranges describe a security projection, not original bytes." });
-            result.details = { ...result.details, paLocalContentSecurity: { source: "local-file", projection } };
-          }
-          const filtered = filterLocalToolResult("read", result, patterns);
-          // Keep descriptors pinned across Pi's async image/formatting work and
-          // withhold even checked content if path/identity/cancellation changed.
-          source?.assertStable();
-          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
-          return filtered;
-        } finally { source?.close(); }
-      } catch (error) { return localContentFailure(error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE")); }
-    },
-  } as unknown as PiToolDefinition;
+  return bindLocalReadTool(createReadToolDefinition, acquireLocalSourceFile);
 }
 /** Buffer local process bytes BEFORE Pi streaming/truncation/temp spill. Arbitrary
  * shell output has no authenticated remote-source exemption, even when it prints

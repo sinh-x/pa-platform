@@ -32,7 +32,7 @@ export function assertSelectedPiDocumentPath(path: string, packageRoot: string):
 export function assertImmutableDocumentText(bytes: Uint8Array): void {
   const prefix = Buffer.from(bytes.subarray(0, 12));
   const ascii = prefix.toString("latin1");
-  if (ascii.startsWith("GIF87a") || ascii.startsWith("GIF89a") || ascii.startsWith("BM")
+  if (ascii.startsWith("GIF") || ascii.startsWith("BM")
     || ascii.startsWith("\x89PNG\r\n\x1a\n") || prefix[0] === 0xff && prefix[1] === 0xd8
     || ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") unsupported();
   let text: string;

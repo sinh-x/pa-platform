@@ -315,6 +315,15 @@
       # Qualification inputs only. No default wrapper/PATH/launcher selection.
       lib.selectedPiHostFor = selectedPiHostFor;
       lib.selectedPiQualificationFor = selectedPiQualificationFor;
+      lib.selectedPiDocumentMechanicsFixtureFor = system:
+        import ./packages/pa-core/src/__tests__/fixtures/immutable-document.nix { pkgs = pkgsFor system; };
+      # Build-only inert qualification; no production selector or runtime root.
+      lib.selectedPiDocumentQualificationFor = system: { foundation ? paPlatformFor system {} }:
+        import ./nix/selected-pi-document-qualification.nix {
+          pkgs = pkgsFor system;
+          host = selectedPiHostFor system;
+          inherit foundation;
+        };
 
       packages = forAllSystems (system:
         let

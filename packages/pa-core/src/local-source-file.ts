@@ -5,8 +5,8 @@ import { assertLocalFileSource, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityE
 import type { SensitivePatternSet } from "./sensitive-patterns.js";
 
 /** Owned acquisition, not artifact adoption or permission to publish raw bytes.
- * Call assertStable immediately before delivery and close in finally. No multi-
- * link exception exists here: selected-host provenance remains a separate gate. */
+ * Call assertStable immediately before delivery and close in finally. Ordinary
+ * ingress is single-link; selected-host provenance is a separate consumer gate. */
 export interface LocalSourceFile {
   readonly bytes: Buffer;
   assertStable(): void;
@@ -66,9 +66,6 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     assertLocalFileSource(path, patterns);
     const physical = fs.realpathSync(path);
     assertLocalFileSource(physical, patterns);
-    // Existing ordinary aliases stay compatible; selected immutable documents
-    // get no mutable logical symlink/normalization route into the exception.
-    if (binding && physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     const immutableMetadata = (entry: string, observed: BigIntStats) => {
       if (!binding) return;
       if (observed.uid !== 0n || observed.nlink === 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
@@ -81,22 +78,26 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     const root = fs.openSync("/", fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
     ownedDirectories.push(root);
     directories.push({ fd: root, path: "/", name: "", stat: fs.fstatSync(root, { bigint: true }) });
-    immutableMetadata("/", directories[0]!.stat);
     let parent = root, current = "";
     for (const name of dirname(physical).split("/").filter(Boolean)) {
       const next = fs.openSync(`/proc/self/fd/${parent}/${name}`, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
       // Register ownership before any observation that can fail.
       ownedDirectories.push(next);
       directories.push({ fd: next, path: current += `/${name}`, name, stat: fs.fstatSync(next, { bigint: true }) });
-      immutableMetadata(current, directories[directories.length - 1]!.stat);
       parent = next;
     }
     fd = fs.openSync(`/proc/self/fd/${parent}/${basename(physical)}`, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     const before = fs.fstatSync(fd, { bigint: true });
     if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
-    if (binding) immutableMetadata(physical, before);
-    else if (before.nlink !== 1n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    if (before.nlink !== 1n) {
+      if (!binding || physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      // Decide the link route on the very descriptor whose bytes are acquired.
+      // Single-link aliases/images retain ordinary behavior; only the multi-
+      // link route requires exact spelling, immutable ancestry and text bytes.
+      for (const directory of directories) immutableMetadata(directory.path, directory.stat);
+      immutableMetadata(physical, before);
+    }
     if (before.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
     const assertStable = () => {
       try {
@@ -129,7 +130,7 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     assertStable();
     if (length !== Number(before.size)) fail("LOCAL_SOURCE_UNAVAILABLE");
     const complete = bytes.subarray(0, length);
-    if (binding) assertImmutableDocumentText(complete);
+    if (binding && before.nlink > 1n) assertImmutableDocumentText(complete);
     assertStable();
     return { bytes: complete, assertStable, close };
   } catch (error) {
