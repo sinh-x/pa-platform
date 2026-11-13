@@ -1,6 +1,7 @@
 import { createBashToolDefinition, createLocalBashOperations, createReadToolDefinition, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { acquireLocalSourceFile, checkSourceContent, loadSensitivePatterns, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError, type LocalSourceFile } from "@pa-platform/pa-core";
 import { detectAdmittedImageMimeType } from "./local-image-type.js";
+import { admitLocalReadPaths } from "./local-read-paths.js";
 import { filterLocalToolResult, localContentFailure, safeLocalToolError } from "./local-content-security.js";
 import { interceptToolCall } from "./safety.js";
 import type { PiExtensionModule, PiToolDefinition, PiToolResult } from "./index.js";
@@ -19,9 +20,14 @@ export function createSecureLocalReadTool(): PiToolDefinition {
           let patterns: ReturnType<typeof loadSensitivePatterns>;
           try { patterns = loadSensitivePatterns(); }
           catch { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY"); }
+          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
+          // Pi resolves/probes spellings before operations.access (SR-3). Admit
+          // the original, normalized and finite fallback candidates first.
+          const admittedPaths = admitLocalReadPaths(input.path, context.cwd, patterns);
           let projection: "allow" | "redact" | "withhold" = "allow";
           let prepared: { path: string; mime: string | null; bytes: Buffer } | undefined;
           const prepare = (path: string) => {
+            if (!admittedPaths.has(path)) throw new SourceContentSecurityError("CONTENT_SOURCE_INVALID");
             if (prepared) {
               if (prepared.path !== path) throw new SourceContentSecurityError("CONTENT_SOURCE_INVALID");
               source!.assertStable();

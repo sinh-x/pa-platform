@@ -13,6 +13,10 @@ presentation. This is not a public-web policy reversal or an approval grant.
 - Local source admission checks existing shared protected paths and configured
   filename/path rules on both logical and resolved paths. A blocked file stays
   blocked even if its text looks harmless. Redaction does not grant file access.
+  Guarded Pi reads admit original, normalized and finite fallback spellings before
+  Pi's existence probes. Ambiguous requests fail closed if any candidate is
+  protected, even when another spelling exists; source-policy realpath checks
+  remain necessary and are not described as zero filesystem I/O.
 - Allowed local text is scanned with built-in and selected local content rules.
   Matching lines become `[REDACTED local sensitive content]`. Unmatched ordinary
   context stays readable. Private-key headers also suppress their body/footer or

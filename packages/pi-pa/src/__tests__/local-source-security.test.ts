@@ -97,6 +97,61 @@ test("PAP-298: guarded direct and registered reads reject unqualified hard links
   } finally { await lifecycle.shutdown(); }
 }));
 
+test("protected direct and registered requests perform no upstream existence or payload probe", async t => fixture(async f => {
+  const blocked = join(f.root, "blocked-source.txt"), alias = join(f.root, "innocent-blocked-alias.txt");
+  writeFileSync(blocked, "INERT_BLOCKED_PREFLIGHT_BODY"); symlinkSync(blocked, alias);
+  writeFileSync(join(f.root, ".env"), "INERT_BLOCKED_ENV_BODY");
+  const originalAccess = fs.promises.access, originalRead = fs.readSync;
+  let probes = 0, reads = 0;
+  t.mock.method(fs.promises, "access", (async (...args: Parameters<typeof originalAccess>) => { probes++; return originalAccess(...args); }) as typeof originalAccess);
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => { reads++; return originalRead(...args); }) as typeof originalRead);
+  syncBuiltinESMExports();
+  const tools = new Map<string, PiToolDefinition>(), lifecycle = createPiSessionLifecycle(() => {});
+  registerPiSessionModules({ registerTool: tool => tools.set(tool.name, tool) }, lifecycle, [registerLocalSourceToolsModule]);
+  try {
+    for (const path of [blocked, alias, join(f.root, ".env")]) {
+      const direct = await invoke(createSecureLocalReadTool(), { path }, f.context);
+      assert.equal(direct.details.code, "LOCAL_SOURCE_BLOCKED");
+      assert.doesNotMatch(text(direct), /INERT_BLOCKED_/);
+      // The registered session's existing safety owner may reject even earlier.
+      await assert.rejects(() => invoke(tools.get("read")!, { path }, f.context), /SAFETY_PROTECTED_PATH/);
+    }
+    assert.equal(probes, 0, "no upstream F_OK probe before source admission");
+    assert.equal(reads, 0, "no payload was read");
+  } finally { await lifecycle.shutdown(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+}));
+
+test("protected fallback and original spellings deny before Pi probes any candidate", async t => fixture(async f => {
+  const originalAccess = fs.promises.access;
+  let probes = 0;
+  t.mock.method(fs.promises, "access", (async (...args: Parameters<typeof originalAccess>) => { probes++; return originalAccess(...args); }) as typeof originalAccess);
+  syncBuiltinESMExports();
+  try {
+    for (const [request, blockedPattern] of [["Café.txt", "Café"], ["Café.txt", "Café"], ["Capture 10.30 PM.png", "\u202f"], ["Capture d'écran.txt", "\u2019"], ["raw\u00a0space.txt", "\u00a0"]]) {
+      writeFileSync(join(f.config, "sensitive-patterns.yaml"), `filenames:\n - '${blockedPattern}'\n`);
+      const result = await invoke(createSecureLocalReadTool(), { path: request }, f.context);
+      assert.equal(result.details.code, "LOCAL_SOURCE_BLOCKED", request);
+    }
+    assert.equal(probes, 0, "the complete finite candidate set must be admitted before delegation");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+}));
+
+test("read normalization and finite safe fallback spellings preserve supported text delivery", async () => fixture(async f => {
+  const tool = createSecureLocalReadTool();
+  const variants = [
+    { path: "relative-note.txt", request: "@relative-note.txt" },
+    { path: "unicode space.txt", request: "unicode\u00a0space.txt" },
+    { path: "Café.txt", request: "Café.txt" },
+    { path: "Capture 10.30\u202fPM.txt", request: "Capture 10.30 PM.txt" },
+    { path: "Capture d’écran.txt", request: "Capture d'écran.txt" },
+  ];
+  for (const { path, request } of variants) {
+    writeFileSync(join(f.root, path), "ordinary safe spelling fixture");
+    const result = await invoke(tool, { path: request }, f.context);
+    assert.notEqual(result.isError, true, text(result)); assert.equal(text(result), "ordinary safe spelling fixture");
+  }
+}));
+
 test("read acquires once before MIME; unsupported links cause no sniff or data read", async t => fixture(async f => {
   const target = statSync(f.file), linked = join(f.root, "linked.txt");
   writeFileSync(linked, "inert linked document"); linkSync(linked, join(f.root, "linked-alias.txt"));
