@@ -10,7 +10,11 @@ export interface AutoTerminal {
   /** Unsigned proposal data only; never an outcome/principal/approval port. */
   input?(prompt: string): Promise<string | null>;
 }
-const visible = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+export const autoVisibleTerminalText = (value: unknown): string => typeof value !== "string" ? "[unprintable text]" : value.replace(/\r\n/g, "\n").replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, c => {
+  if (c === "\n" || c === "\t") return c;
+  const point = c.codePointAt(0)!; return point > 0xffff ? `\\u{${point.toString(16)}}` : `\\u${point.toString(16).padStart(4, "0")}`;
+});
+const visible = autoVisibleTerminalText;
 /** TTY is transport, not identity: the existing unmanaged-origin owner also
  * rejects environment-cleared descendants of managed agents on every read. */
 export function nativeAutoTerminal(): AutoTerminal {
@@ -43,6 +47,15 @@ export interface AutoNativeCapture {
   outcome: "approved" | "rejected" | "changes-requested" | "cancelled";
   principal: string; interactionId: string; evidenceSha256: string; evidence: Buffer;
 }
+export function displayAutoFullPackage(terminal: AutoTerminal, subject: DocumentPackage, documents: readonly Uint8Array[]): void {
+  terminal.authenticate();
+  if (!checkDocumentPackage(subject, documents).structuralPass || subject.members.some(m => !m.mediaType.startsWith("text/"))) throw new AutoWaitlistError("AUTO_SOURCE");
+  terminal.display(`Immutable full package inventory (metadata, not approval):\n${JSON.stringify(subject, null, 2)}`);
+  for (let i = 0; i < subject.members.length; i++) {
+    const m = subject.members[i]!;
+    terminal.display(`--- FULL ${m.role} (${m.id}, SHA-256 ${m.sha256}) ---\nSource locator (effective ai-usage root): ${m.source}\n${new TextDecoder("utf-8", { fatal: true }).decode(documents[i]!)}\n--- END ${m.id} ---`);
+  }
+}
 /** ONE native foreground decision. Documents are fully available in terminal,
  * default Cancel; no per-page approval, transcript phrase or JSON receipt import.
  * The returned capture is a trusted adapter port, not accepted CLI arguments. */
@@ -51,10 +64,7 @@ export async function captureAutoFullReview(review: AutoFullReview, terminal: Au
   if (!checkDocumentPackage(review.subject, review.documents).structuralPass || review.subject.members.some(m => !m.mediaType.startsWith("text/"))
     || workflowDigest(JSON.stringify(review.startIntent)) !== review.startSha256) throw new AutoWaitlistError("AUTO_SOURCE");
   terminal.display(`${review.subject.ticket}: full package and finite implementation-start review.\nDocument scope: ${review.documentScope}. Start is a separate finite intent.\nNo push, PR, merge, release, ticket-done, checkout return or human-UAT sign-off.\nSubject SHA-256: ${review.subjectSha256}\nStart SHA-256: ${review.startSha256}`);
-  for (let i = 0; i < review.subject.members.length; i++) {
-    const m = review.subject.members[i]!;
-    terminal.display(`--- FULL ${m.role} (${m.id}, SHA-256 ${m.sha256}) ---\n${new TextDecoder("utf-8", { fatal: true }).decode(review.documents[i]!)}\n--- END ${m.id} ---`);
-  }
+  displayAutoFullPackage(terminal, review.subject, review.documents);
   terminal.display(`Exact start bindings (including configured provider/model, finite deadline, branch and checks):\n${JSON.stringify(review.startIntent, null, 2)}`);
   const selected = await terminal.choose("Decide on exactly the full documents and start bindings displayed above. Nothing is approved by default.", [
     review.documentScope === "publish-and-queue" ? "Approve the exact document scope AND separate finite implementation-start intent" : "Approve the finite implementation-start and displayed ticket effects; unchanged content is not reapproved", "Reject this proposal without rejecting the ticket", "Request changes to the proposal",

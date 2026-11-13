@@ -6,7 +6,11 @@ On 2026-11-13 in d-573872, after P1 commit `dcf722f`, the operator selected
 **Plan a paired PAPC follow-up** rather than runtime-only development or stopping
 for review. This document plans that follow-up. It is not package approval,
 configuration selection, permission to create a ticket/branch/worktree, or service
-activation. No companion ticket exists as a result of this plan.
+activation. Companion **PAPC-086** was subsequently created through operator-confirmed
+intake. Later the operator requested runtime P2–P5 implementation while reserving
+manual integration/activation; see [runtime phases](PAP-302-runtime-phases.md) and
+the [qualification handoff](PAP-302-qualification-handoff.md). Outstanding config
+work blocks dependent execution/activation, not runtime implementation behind gates.
 
 Continue implementation only in each ticket's separately selected worktree.
 Never edit either repository's `develop` checkout. The PAP-302 worktree remains
@@ -34,26 +38,28 @@ foreground-only. Existing `analyze-auto` has no such native profile and explicit
 requires ticket claim/tag/comment and a later interactive analyze handoff. Neither
 is the service's compatible bounded draft-only producer. Preserve both.
 
-## Proposed companion task — intake still required
+## Companion PAPC-086 — created; separate delivery/selection required
 
 - Project: registered `pa-platform-config` / PAPC.
-- Proposed title: **Add opt-in PAP-302 auto draft and review contract selection**.
+- Title: **Add opt-in PAP-302 auto draft and review contract selection**.
 - Depends on: PAP-302's new runtime contract implementations and source tests.
 - Delivers: additive mode/instructions, exact paired contract/version declaration,
   fixture tests, retained-profile negatives, qualification/adoption checklist.
 - Excludes: source runtime implementation, installed enablement, live canaries,
   approval of any future ticket, alternate providers/models, remote operations.
-- Assignee, priority, estimate, ticket creation, branch/base and worktree selection
-  need the actual intake/repository owners; PAP-302's metadata is not inherited.
+- Intake explicitly confirmed feature / medium / provisional L / sinh / idea.
+  Branch/base and its own worktree selection still need the repository owners;
+  this PAP-302 session makes no PAPC configuration/activation changes.
 
 ## Contract work, in dependency order
 
 ### A. Freeze the producer and foreground host interface together
 
-Runtime and config owners must agree exact versioned names/schemas before either
-side selects them. Proposed names such as `auto-draft/v1` are placeholders only.
-The compatibility declaration must bind both producer and review/start host; an
-unknown/mismatched version blocks dependent effects but not P1 inspection.
+Runtime now implements `pa-auto-pair/v1`, producer `pa-auto-draft/v1` and native
+review/start `pa-auto-start/v1`. The exact committed selection file and resource
+requirements are in the [qualification handoff](PAP-302-qualification-handoff.md).
+An unknown/mismatched/disabled version blocks dependent effects, not inspection or
+further gated runtime development. These source names do not select a live pair.
 
 Producer invariants:
 
@@ -104,10 +110,12 @@ phase in its respective ticket worktree and cross-reference exact candidate IDs.
 
 ### C. P4–P5 qualification and opt-in rollout
 
-Only after A/B, implement timer/notifier controls with no default activation:
+P4 implements timer/notifier adapters behind disabled/paused defaults:
 30-minute/no-catch-up scans, serialized overlap, informational bounded freedesktop
-notifications, durable warning on unavailable desktop, and pause preventing new
-dispatch without pretending to kill a worker.
+requests, durable warning on unavailable desktop, and pause preventing new dispatch
+without pretending to kill a worker. A/B delivery and actual qualification are
+required before manual installation/enablement; source implementation was not
+blocked waiting for external configuration.
 
 Required separate evidence: all TS-1–TS-14 source cases, real two-process selection
 races (not just P1 scanner races), fault injection at decision/publication/queue/
@@ -124,7 +132,9 @@ automatic process kill, counter reset, evidence deletion, checkout return or don
 
 ## Next owner action
 
-Use this plan for companion intake and exact runtime/config contract review.
-No runnable activation, publication, queue or launch instruction is supplied.
-P2–P5 remain undelivered until their actual effects and separate qualification
-obligations are implemented and observed; this planning commit closes none of them.
+Use PAPC-086's own selected worktree and the current handoff for exact config/runtime
+review. P2–P4 source is committed and P5 source hardening/verification is recorded;
+this historical plan is not the current implementation-status owner. Complete
+paired delivery, full regression, independent/installed/desktop/canary/human
+qualification and operator adoption remain open. No activation, publication, queue
+or launch authority follows from this plan.

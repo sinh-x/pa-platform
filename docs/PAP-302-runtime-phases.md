@@ -4,7 +4,7 @@ The operator explicitly requested P2–P5 implementation after creating companio
 **PAPC-086**, and reserved final activation/integration for manual handling. This
 supersedes the earlier planning-only stop, not the retained safety/approval owners.
 All edits remain in the PAP-302 ticket worktree. No PAPC configuration, user service,
-provider session, live ticket worker, checkout, remote operation or activation is
+provider session, live ticket worker, managed product checkout, remote operation or activation is
 performed by this development session.
 
 ## P2 — global coordination, bounded drafting and foreground support
@@ -87,8 +87,10 @@ Native source/check boundaries reauthenticate the saved same deployment through
 registry/process/custody evidence, exact selected pair, native decision/revocation,
 material ticket and reviewed file/check scope. They do not accept a PA environment
 flag as authority. Pausing stops new dispatch, not an already-admitted worker.
-A terminal success is labelled local review-ready, never checks/CI/human acceptance;
-uncertain/failure outcomes hold the slot and their original evidence.
+P5 hardens the initial P3 completion observer: terminal success alone is not
+review-ready. Original native candidate/check/commit and process/cleanup proof are
+required; local receipts still do not certify the full matrix/CI/human acceptance.
+Uncertain/failure outcomes hold the slot and their original evidence.
 
 Recovery has durable owner stages: claimed, ticket-effects, launch-requested.
 Same-intent prelaunch publication/queue can finish through their existing owners.
@@ -140,3 +142,45 @@ preserves the required literal systemd escape. Repeated P4 check: **26/26 passed
 zero skips/cancellations, including compiled disabled tick/unit routes, no
 initialization, missing desktop, dedup/reply-loss, interval and regression cases.
 Evidence: `/tmp/pap302-p4-tests.log`, `/tmp/pap302-p4-tests-final.log`.
+
+## P5 — source hardening, regression review and manual handoff
+
+See the [qualification handoff](PAP-302-qualification-handoff.md) for exact new
+contracts, safety fixes, before/after messages, AC/TS coverage limits, original
+failures/timeouts and the manual integration/activation sequence.
+
+P5 self-review adds durable native review claims and observed-interaction recovery,
+immutable versioned material questions, exact multiline objectives, bounded stdin
+producer transport, explicit unsigned revision, registered check-profile pinning,
+stronger native identity/freshness and real local candidate/check/commit receipts.
+Terminal success without original process/cleanup/native proof remains held, not
+review-ready. These are source changes, not independent review or installed proof.
+
+Final focused source checks passed **73/73 core auto/interaction** and **29/29 Pi
+auto**, zero failures/skips/cancellations. Actual native check/repair/commit receipt
+reading passed **1/1** with simulated provider/Treehouse. Native-host/public-web
+regressions passed **25/25** after the schema assertion repair; runtime-host **1/1**.
+Workspace typecheck/build/completions passed. Final logs:
+`/tmp/pap302-p5-core-focused-final.log`, `/tmp/pap302-p5-pi-auto-final.log`,
+`/tmp/pap302-p5-native-result.log`, `/tmp/pap302-p5-pi-repaired.log`,
+`/tmp/pap302-p5-host.log`, `/tmp/pap302-p5-{typecheck,build,completions}.log`.
+Final core/Pi builds and the full workspace typecheck also passed after the last
+foreground wording/propagation fix (`/tmp/pap302-p5-typecheck-final.log`). Source
+inventory verification found zero mismatches. Whitespace checks and staged
+`corepack pnpm secrets:scan` passed; `/tmp/pap302-p5-secrets.log`.
+
+**The complete regression is not green/completed.** The repeated full command
+passed root harness 42/42, core 2,020 pass / 14 skipped, OPA 106 pass / 1 skipped,
+and Pi scripts 11/11, then exceeded the 2,400-second command limit in Pi source
+checks. A second stale schema-17 assertion was corrected and its whole file passed
+in the 25-case rerun. A remaining Pi group emitted 124 outcomes with no failure/skip
+markers but timed out at 600 seconds without a final summary. Separately, workflow
+config/startup passed 10/10 and 3/3. Partial output is not a passing completed run.
+Preserved logs and skip reasons are in the handoff; neither timeout was hidden.
+
+P5 source work/handoff does not complete the outstanding independent safety/code
+review, hosted CI, complete final regression, exact installed pair, genuine human
+prompt-count/reading-view qualification, actual desktop delivery, useful PAP/PAPC
+canaries or Sinh UAT/adoption. No service was installed/enabled, no desktop request
+sent, and no live provider/implementation worker was launched for this feature.
+PAPC-086 pairing and final integration/activation remain manual.

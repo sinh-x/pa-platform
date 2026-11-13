@@ -4,7 +4,7 @@ import { RegistryAutoJournal, type AutoItem } from "../auto/coordination.js";
 import { autoStartSha256, parseAutoStartIntent, type AutoStartIntent, type AutoTaskBaseline } from "../auto/intent.js";
 import { documentPackageSha } from "./package-contract.js";
 import { checkDocumentPackage } from "./package-tools.js";
-import { RegistryDocumentJournal, documentRevokedDecisionIds, documentPending, type DocumentAutoStart } from "../registry/documents.js";
+import { RegistryDocumentJournal, documentRevokedDecisionIds, documentPending, type DocumentAutoReview, type DocumentAutoStart } from "../registry/documents.js";
 import { digest } from "../workflows/contracts.js";
 export interface AutoStartCaptureHost {
   authenticate(): string;
@@ -25,7 +25,7 @@ export class AutoStartDecisionService {
     }
     const subject = this.documents.subject(intent.subjectSha256);
     if (intent.itemId !== item.itemId || intent.ticket !== item.ticket || intent.repository.key !== item.project || intent.repository.root !== item.repoRoot
-      || subject.ticket !== item.ticket || documentPackageSha(subject) !== item.subjectSha256) throw new AutoWaitlistError("AUTO_SOURCE");
+      || subject.ticket !== item.ticket || subject.repository.key !== intent.repository.key || subject.repository.root !== intent.repository.root || subject.revision !== intent.documentRevision || documentPackageSha(subject) !== item.subjectSha256) throw new AutoWaitlistError("AUTO_SOURCE");
     return this.coordination.db.transaction(() => {
       if (host.authenticate() !== identity) throw new AutoWaitlistError("AUTO_UNAVAILABLE"); host.assertCurrent(item, intent);
       const events = this.documents.events(item.project, item.ticket);
@@ -50,8 +50,28 @@ export class AutoStartDecisionService {
     host.assertCurrent(item, intent);
     const subject = this.documents.subject(intent.subjectSha256), bytes = subject.members.map(m => this.documents.snapshot(m.sha256));
     if (!checkDocumentPackage(subject, bytes).structuralPass) throw new AutoWaitlistError("AUTO_SOURCE");
-    const captured = await host.capture(item, intent);
-    if (host.authenticate() !== identity || digest(captured.evidence) !== captured.evidenceSha256) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+    const claim = this.coordination.db.transaction(() => {
+      if (host.authenticate() !== identity || this.coordination.item(item.itemId).revision !== item.revision) throw new AutoWaitlistError("AUTO_BUSY");
+      const events = this.documents.events(item.project, item.ticket);
+      const prior = events.flatMap(e => e.data.kind === "auto-review" && e.data.itemId === item.itemId && e.data.startSha256 === item.startSha256 ? [e.data] : []);
+      if (prior.some(e => e.phase === "withdrawn")) throw new AutoWaitlistError("AUTO_BUSY");
+      const observed = prior.find(e => e.phase === "observed");
+      if (observed) return observed;
+      if (prior.length) throw new AutoWaitlistError("AUTO_BUSY");
+      const requested: DocumentAutoReview = { subjectSha256: item.subjectSha256!, itemId: item.itemId, startSha256: item.startSha256!, reviewId: `review-${randomUUID()}`,
+        phase: "requested", callerIdentity: identity, evidenceSha256: null, outcome: null, principal: null, interactionId: null };
+      this.documents.append(item.project, item.ticket, events.length, { kind: "auto-review", ...requested });
+      return requested;
+    }).immediate();
+    let observed = claim;
+    if (claim.phase === "requested") {
+      const captured = await host.capture(item, intent);
+      if (host.authenticate() !== identity || digest(captured.evidence) !== captured.evidenceSha256) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+      observed = { ...claim, phase: "observed", outcome: captured.outcome, principal: captured.principal, interactionId: captured.interactionId, evidenceSha256: captured.evidenceSha256 };
+      // Persist the actual interaction before mutable admission checks/CAS. A
+      // stale subject or lost decision reply must not erase/duplicate a prompt.
+      this.documents.append(item.project, item.ticket, this.documents.events(item.project, item.ticket).length, { kind: "auto-review", ...observed }, [captured.evidence]);
+    }
     host.assertCurrent(item, intent);
     return this.coordination.db.transaction(() => {
       if (host.authenticate() !== identity) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
@@ -61,15 +81,18 @@ export class AutoStartDecisionService {
       host.assertCurrent(current, intent);
       const decision: DocumentAutoStart = { autoStartVersion: "pa-auto-start/v1", method: "ppa-auto-foreground", decisionId: `decision-${randomUUID()}`,
         subjectSha256: intent.subjectSha256, itemId: item.itemId, startSha256: item.startSha256!, documentScope: intent.documentScope,
-        outcome: captured.outcome, principal: captured.principal, interactionId: captured.interactionId, evidenceSha256: captured.evidenceSha256,
-        callerIdentity: identity, recordedAt: new Date().toISOString(), requestKey: digest(JSON.stringify([item.itemId, intent.subjectSha256, item.startSha256, intent.documentScope])) };
+        outcome: observed.outcome!, principal: observed.principal!, interactionId: observed.interactionId!, evidenceSha256: observed.evidenceSha256!,
+        callerIdentity: observed.callerIdentity, recordedAt: new Date().toISOString(), requestKey: digest(JSON.stringify([item.itemId, intent.subjectSha256, item.startSha256, intent.documentScope])) };
       const events = this.documents.events(item.project, item.ticket);
-      this.documents.append(item.project, item.ticket, events.length, { kind: "auto-start", ...decision }, [captured.evidence]);
+      this.documents.append(item.project, item.ticket, events.length, { kind: "auto-start", ...decision });
       return this.reflect(current, decision, host);
     }).immediate();
   }
   private reflect(item: AutoItem, decision: DocumentAutoStart, host: AutoStartCaptureHost): AutoItem {
     host.authenticate(); this.documents.snapshot(decision.evidenceSha256);
+    if (["closed", "declined"].includes(item.state)) return item;
+    if (item.startSha256 !== decision.startSha256 || item.subjectSha256 !== decision.subjectSha256) throw new AutoWaitlistError("AUTO_BUSY");
+    if (documentRevokedDecisionIds(this.documents.events(item.project, item.ticket)).has(decision.decisionId)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
     if (item.decisionId === decision.decisionId) return item;
     const unsettled = [item.draft, item.dispatch].some(e => e && !["completed", "failed"].includes(e.state));
     return this.coordination.change(item.itemId, item.revision, b => ({ ...b, decisionId: decision.decisionId,
@@ -85,6 +108,11 @@ export class AutoStartDecisionService {
     return this.coordination.db.transaction(() => {
       const current = this.coordination.item(item.itemId);
       if (current.revision !== item.revision || current.dispatch) throw new AutoWaitlistError("AUTO_BUSY");
+      const reviews = this.documents.events(item.project, item.ticket).flatMap(e => e.data.kind === "auto-review" && e.data.phase === "requested" && e.data.itemId === item.itemId && e.data.startSha256 === current.startSha256 ? [e.data] : []);
+      for (const review of reviews) {
+        if (!this.documents.events(item.project, item.ticket).some(e => e.data.kind === "auto-review" && e.data.reviewId === review.reviewId && e.data.phase === "withdrawn"))
+          this.documents.append(item.project, item.ticket, this.documents.events(item.project, item.ticket).length, { ...review, phase: "withdrawn", callerIdentity: identity, evidenceSha256: consent.evidenceSha256, outcome: "cancelled", principal: consent.principal, interactionId: null }, [consent.evidence]);
+      }
       if (current.decisionId && current.subjectSha256) this.documents.append(item.project, item.ticket, this.documents.events(item.project, item.ticket).length,
         { kind: "revoked", subjectSha256: current.subjectSha256, decisionId: current.decisionId, evidenceSha256: consent.evidenceSha256 }, [consent.evidence]);
       return this.coordination.change(item.itemId, item.revision, b => ({ ...b, state: "awaiting-review", startSha256: null, decisionId: null, reason: "question" }), () => { if (host.authenticate() !== identity) throw new AutoWaitlistError("AUTO_UNAVAILABLE"); });

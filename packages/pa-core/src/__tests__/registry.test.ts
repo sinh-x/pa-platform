@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
 import { hasOtherTicketDeploymentAssociation, queryReadonlyHelperRegistry } from "../registry/index.js";
+import { RegistryAutoJournal } from "../auto/coordination.js";
 import type { RegistryEvent } from "../types.js";
 import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
 
@@ -1125,8 +1126,13 @@ test("registry schema-v13 migration expands the production event constraint with
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "17" });
-    for (const table of ["document_subjects", "document_snapshots", "document_events"]) {
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "19" });
+    const control = new RegistryAutoJournal(db).control();
+    assert.equal(control.scansEnabled, false); assert.equal(control.dispatchEnabled, false); assert.equal(control.paused, true);
+    for (const table of ["auto_items", "auto_effect_claims", "auto_control", "auto_wake", "auto_notice_state", "auto_notices"]) {
+      assert.equal((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n, 0);
+    }
+    for (const table of ["document_subjects", "document_snapshots", "document_events", "auto_events", "auto_control_events"]) {
       assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
       assert.equal((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n, 0);
       const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?").all(table);

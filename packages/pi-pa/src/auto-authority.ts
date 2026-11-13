@@ -1,9 +1,12 @@
 import {
   AutoWaitlistError, RegistryAutoJournal, RegistryDocumentJournal, AutoStartDecisionService, openReadonlyRegistryDatabase,
-  queryDeploymentStatus, getDeploymentEvents, readProcessFingerprint, processIsWithinFingerprintLineage,
+  queryDeploymentStatus, getDeploymentEvents, getDeployPaths, readProcessFingerprint, processIsWithinFingerprintLineage,
   autoMaterialTicketSha256, documentPending, TicketStore, type AutoStartIntent,
 } from "@pa-platform/pa-core";
 import { selectedPiAutoPair } from "./auto-contract.js";
+import { readPiProcessIdentity } from "./process-identity.js";
+import { isDeepStrictEqual } from "node:util";
+import { ProjectCommandContract } from "./project-command-contract.js";
 
 /** Source/check consumers call this AFTER their ordinary native custody checks.
  * Environment selects no grant: real registry, current process incarnation and
@@ -18,14 +21,16 @@ export function piAutoWorkerIntent(repoKey: string, repoRoot: string, ticket: st
   const status = queryDeploymentStatus(id), start = getDeploymentEvents(id).find(e => e.event === "started"), current = readProcessFingerprint(process.pid), owner = status?.pid ? readProcessFingerprint(status.pid) : undefined;
   if (!status || !start || status.status !== "running" || status.runtime !== "pi" || status.team !== "builder" || status.mode !== "orchestrator"
     || status.rogue_one || status.ticket_id !== ticket || status.repo_root !== repoRoot || status.builder_authority !== "orchestrator" || !owner || !current || !processIsWithinFingerprintLineage(process.pid, owner)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+  const anchor = readPiProcessIdentity(id, getDeployPaths(id).deployDir);
+  if (!isDeepStrictEqual(anchor, owner)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
   const documents = new RegistryDocumentJournal(journal.db), decisions = new AutoStartDecisionService(documents, journal);
   const intent = decisions.authorize(item, {
     authenticate: () => { if (!readProcessFingerprint(process.pid)) throw new AutoWaitlistError("AUTO_UNAVAILABLE"); return `native-auto-worker:${id}`; },
     assertCurrent(currentItem, intent) {
-      const pair = selectedPiAutoPair(), record = new TicketStore().get(ticket);
-      if (!record || autoMaterialTicketSha256(record) !== intent.materialTicketSha256 || intent.branch.name !== branch
+      const pair = selectedPiAutoPair(), record = new TicketStore().get(ticket), profile = ProjectCommandContract.inspect(repoKey, repoRoot);
+      if (!record || record.assignee !== "builder/team-manager" || !profile || profile.sha256 !== intent.validation.profileSha256 || autoMaterialTicketSha256(record) !== intent.materialTicketSha256 || intent.branch.name !== branch
         || pair.configRoot !== intent.configRoot || pair.configRevision !== intent.configRevision || pair.resourcesSha256 !== intent.configResourcesSha256
-        || pair.implementation.provider !== intent.provider || pair.implementation.model !== intent.model || start.provider !== intent.provider
+        || pair.implementation.provider !== intent.provider || pair.implementation.model !== intent.model || start.provider !== intent.provider || start.models?.team !== intent.model
         || currentItem.dispatch?.deploymentId !== id || documentPending(documents.events(repoKey, ticket)).length) throw new AutoWaitlistError("AUTO_SOURCE");
       pair.assertCurrent();
     },

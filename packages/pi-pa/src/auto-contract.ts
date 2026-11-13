@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   CommittedConfigSource, AutoWaitlistError, loadTeamConfig, resolveDeployMode, resolveRuntimeConfig,
-  parseReviewEvidenceJson, type AutoItem,
+  parseReviewEvidenceJson, assertLocalFileSource, assertNoSensitiveMatch, type AutoItem,
 } from "@pa-platform/pa-core";
 import { resolvePiRuntimeConfig } from "./runtime-normalization.js";
 
@@ -19,27 +19,31 @@ export interface PiAutoPair {
 export function selectedPiAutoPair(): PiAutoPair {
   try {
     const source = CommittedConfigSource.selected();
-    const r = parseReviewEvidenceJson(source.read("contracts/auto-waitlist-v1.json")!, "auto.pair") as Record<string, unknown>;
+    const read = (path: string) => { assertLocalFileSource(join(source.root, path)); return source.read(path); };
+    const r = parseReviewEvidenceJson(read("contracts/auto-waitlist-v1.json")!, "auto.pair") as Record<string, unknown>;
     if (!r || Object.keys(r).sort().join(",") !== ["schemaVersion", "producer", "review", "draftMode", "resources", "enabled"].sort().join(",")
       || r.schemaVersion !== AUTO_PAIR_VERSION || r.producer !== "pa-auto-draft/v1" || r.review !== "pa-auto-start/v1" || r.enabled !== true
       || typeof r.draftMode !== "string" || !/^auto-draft(?:-[a-z0-9-]+)?$/.test(r.draftMode)
       || !Array.isArray(r.resources) || !r.resources.length || r.resources.length > 64 || r.resources.some(p => typeof p !== "string")) throw new Error();
-    for (const name of ["requirements", "builder"]) source.read(`teams/${name}.yaml`);
-    for (const path of r.resources as string[]) source.read(path);
+    for (const name of ["requirements", "builder"]) read(`teams/${name}.yaml`);
+    for (const path of r.resources as string[]) read(path);
     const resolve = (teamName: string, modeName: string) => {
       const team = loadTeamConfig(teamName), mode = resolveDeployMode(team, modeName);
       if (!mode || mode.id !== modeName || !mode.provider || !mode.model) throw new Error();
       // The producer is a new data-only route, not analyze or analyze-auto.
       if (teamName === "requirements" && mode.document_profile !== undefined) throw new Error();
       const config = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request: {}, team, mode }));
-      if (!config.provider || !config.model) throw new Error();
-      if (mode.objective) source.read(mode.objective);
+      if (!config.provider || !/^[a-z][a-z0-9-]{0,63}$/.test(config.provider) || !config.model || !/^[A-Za-z0-9_][A-Za-z0-9_./:-]{0,255}$/.test(config.model)) throw new Error();
+      assertNoSensitiveMatch("content", `${config.provider}/${config.model}`);
+      if (mode.objective) read(mode.objective);
       return { provider: config.provider, model: config.model };
     };
     const draft = resolve("requirements", r.draftMode), implementation = resolve("builder", "orchestrator");
     const draftMode = resolveDeployMode(loadTeamConfig("requirements"), r.draftMode);
     if (!draftMode?.objective) throw new Error();
-    const draftInstructions = new TextDecoder("utf-8", { fatal: true }).decode(source.read(draftMode.objective)!);
+    const draftInstructions = new TextDecoder("utf-8", { fatal: true }).decode(read(draftMode.objective)!);
+    if (!draftInstructions.trim() || Buffer.byteLength(draftInstructions) > 65536) throw new Error();
+    assertNoSensitiveMatch("content", draftInstructions);
     source.assertCurrent();
     const resourcesSha256 = createHash("sha256").update(JSON.stringify(source.resources().map(f => [f.path, f.sha256]))).digest("hex");
     return { schemaVersion: AUTO_PAIR_VERSION, configRoot: source.root, configRevision: source.revision, resourcesSha256,

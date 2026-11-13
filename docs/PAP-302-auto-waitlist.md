@@ -10,10 +10,14 @@ The published `pap-302-auto-waitlist/r001/{brief,requirements,uat}.md` package i
 the ai-usage requirements artifact store defines five delivery phases. Its
 publish-only decision is **not** an implementation-start grant for future items.
 
-**P1 implements inspection, not an enabled automation service.** P2–P5 remain
-undelivered. No selection, human approval, drafting, builder, user timer,
-notification, enablement, push, PR, merge, release, ticket-done or checkout-return
-effect is exposed by these commands. There is no manual-deploy substitute.
+**Historical P1 checkpoint:** this section records inspection-only behavior and
+its original evidence. Later runtime P2–P4 implementation and P5 source hardening
+are described in [runtime phases](PAP-302-runtime-phases.md). Companion **PAPC-086**
+exists; compatible selection and final integration/activation remain manual. This
+historical record must not be read as current denial of implemented source support
+or as qualification of the still-disabled service. See the
+[qualification handoff](PAP-302-qualification-handoff.md), including incomplete full
+regressions and unperformed independent/installed/desktop/canary/human gates.
 
 ## P1 interfaces
 
@@ -149,32 +153,24 @@ storage, external storage, actual concurrent scanner processes, actual scanner
 crash, bounded diagnostics and actual compiled public CLI routes, including a
 successful real read-only scanner subprocess across both disposable projects.
 
-## Remaining delivery contracts
+## Subsequent runtime work and remaining delivery
 
-The operator selected a [paired PAPC follow-up plan](PAP-302-paired-follow-up-plan.md)
-after P1. P2–P5 are deferred, **not removed from PAP-302 scope**. A cancelled
-session checklist entry was replaced with an explicit pending follow-up; it was
-not a ticket/product cancellation.
+The operator selected the [paired plan](PAP-302-paired-follow-up-plan.md), created
+**PAPC-086** with confirmed intake metadata, then explicitly requested runtime
+P2–P5 implementation while reserving manual integration/activation. P2–P4 are now
+separate commits; P5 adds source hardening, verification and a qualification
+handoff. A prior cancelled checklist entry never removed these phases from scope.
 
-P2 requires durable global selection/hold states plus an actually supported,
-bounded unsigned background producer and a genuine versioned foreground review
-host. Existing `requirements/analyze` selection explicitly rejects background
-runs. The selected PAPC `analyze-auto` routine is not a drop-in producer: it
-requires ticket claiming/tagging/comment/optional branch-plan effects and a later
-interactive analyze session. It has no native document-session profile. Those
-retained semantics must not be silently relabelled as this service's draft-only
-contract.
+The new finite native producer and foreground/start owners are additive. Existing
+requirements/analyze and analyze-auto profiles are not repurposed; retained document
+content/publication/queue receipts retain `builderLaunch: false`. There is no shell
+confirmation/imported receipt, parallel approval ledger, rogue-one dispatch or
+manual-deploy substitute.
 
-P3 must extend actual native decision/admission/launch owners with exact finite
-start intent and original-effect reconciliation. Existing document confirmation
-scopes remain content/publication/queue only; `builderLaunch: false` is explicit.
-The current CLI document description is not a foreground grant. A new approval
-ledger, shell confirmation phrase or rogue-one dispatch would not satisfy P3.
-
-The selected PAPC config is outside this ticket worktree. Paired mode/instruction
-changes require their own authorized task/worktree and exact contract/version
-agreement; this implementation makes none. P4 timer/notifier activation must
-wait for the dependent service contracts. P5 independent review, hosted CI,
-installed pairing, foreground prompt-count evidence, real desktop delivery,
-one-ticket canaries in both repositories and Sinh's UAT/adoption remain separate,
-unperformed gates. No source test proves those outcomes.
+PAPC-086's separately selected worktree owns compatible configuration. Unfinished
+pairing blocks dependent execution/activation, **not further runtime coding**.
+Default controls remain paused/disabled; no units were installed/enabled and no real
+notification or provider/implementation canary was requested here. Complete final
+regression, independent review, hosted CI, installed pairing, actual foreground
+prompt counts/reading view, desktop delivery, canaries and Sinh's UAT/adoption remain
+open as documented in the [qualification handoff](PAP-302-qualification-handoff.md).

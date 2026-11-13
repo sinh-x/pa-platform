@@ -4,7 +4,7 @@ import { getDb } from "../registry/db.js";
 import { RegistryAutoJournal } from "../auto/coordination.js";
 import { AUTO_LOCAL_EFFECTS, AUTO_EXCLUDED_EFFECTS, autoStartSha256, parseAutoStartIntent, type AutoStartIntent } from "../auto/intent.js";
 import { routeAutoTicket } from "../auto/waitlist.js";
-import { RegistryDocumentJournal, documentDecisionRecords } from "../registry/documents.js";
+import { RegistryDocumentJournal, documentDecisionRecords, documentPendingAutoReviews } from "../registry/documents.js";
 import { AutoStartDecisionService, type AutoStartCaptureHost } from "../documents/auto-start.js";
 import { digest } from "../workflows/contracts.js";
 import type { DocumentPackage } from "../documents/package-contract.js";
@@ -17,7 +17,7 @@ function fixture(outcome: "approved" | "rejected" | "cancelled" | "changes-reque
   const item = coordination.select(entry, "/synthetic", () => entry, () => {});
   const intent: AutoStartIntent = { schemaVersion: "pa-auto-start/v1", itemId: item.itemId, ticket: item.ticket, repository: subject.repository as AutoStartIntent["repository"], materialTicketSha256: "a".repeat(64), ticketVersion: "a".repeat(64), initialStatus: "requirement-review", initialAssignee: "sinh", subjectSha256, documentRevision: 1,
     runtime: "pi", team: "builder", mode: "orchestrator", provider: "openai-codex", model: "configured-fixture", configRoot: "/synthetic/config", configRevision: "b".repeat(40), configResourcesSha256: "c".repeat(64), objective: "Local fixture work only", timeoutSeconds: 1800, deadlineAt: new Date(Date.now() + 1_800_000).toISOString(),
-    branch: { name: "feature/PAP-1-auto", baseSha: "b".repeat(40), state: "planned", headSha: null }, validation: { matrixSha256: "d".repeat(64), commands: ["corepack pnpm test"] }, sourceScope: { files: ["src/fixture.ts"], directories: [], newPaths: [] }, localEffects: AUTO_LOCAL_EFFECTS, excludedEffects: AUTO_EXCLUDED_EFFECTS, documentScope: scope };
+    branch: { name: "feature/PAP-1-auto", baseSha: "b".repeat(40), state: "planned", headSha: null }, validation: { matrixSha256: "d".repeat(64), profileSha256: "e".repeat(64), commands: ["corepack pnpm test"] }, sourceScope: { files: ["src/fixture.ts"], directories: [], newPaths: [] }, localEffects: AUTO_LOCAL_EFFECTS, excludedEffects: AUTO_EXCLUDED_EFFECTS, documentScope: scope };
   let prompts = 0, live = true;
   const host: AutoStartCaptureHost = { authenticate: () => { if (!live) throw new Error("stale native caller"); return "e".repeat(64); }, assertCurrent() {}, capture: async () => {
     prompts++; const evidence = Buffer.from(`Synthetic native-port fixture ${prompts}, not a genuine human decision`);
@@ -73,7 +73,52 @@ test("explicit withdrawal preserves the old decision and denies its reuse withou
     const revised = await f.service.requestChanges(approved, f.host);
     assert.equal(revised.startSha256, null); assert.equal(revised.decisionId, null); assert.equal(revised.state, "awaiting-review");
     assert.throws(() => f.service.authorize(approved, f.host));
+    await assert.rejects(() => f.service.review(approved, f.host));
+    assert.equal(f.coordination.active()!.startSha256, null);
     assert.ok(f.documents.events(f.item.project, f.item.ticket).some(e => e.data.kind === "revoked"));
+  } finally { f.db.close(); }
+});
+test("two concurrent reviewers claim one native interaction before opening any prompt", async () => {
+  const f = fixture(); try {
+    const proposal = f.service.propose(f.item, f.intent, f.host), capture = f.host.capture;
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }), wait = new Promise<void>(resolve => { release = resolve; });
+    f.host.capture = async (...args) => { entered(); await wait; return capture(...args); };
+    const first = f.service.review(proposal, f.host); await started;
+    await assert.rejects(() => f.service.review(proposal, f.host)); release();
+    assert.equal((await first).state, "approved-pending-dispatch"); assert.equal(f.prompts(), 1);
+    assert.equal(documentPendingAutoReviews(f.documents.events(f.item.project, f.item.ticket)).length, 0);
+  } finally { f.db.close(); }
+});
+test("a prompt observed before freshness failure is retained and finalized unchanged without another prompt", async () => {
+  const f = fixture(); try {
+    let fresh = true; const capture = f.host.capture;
+    f.host.assertCurrent = () => { if (!fresh) throw new Error("Synthetic material drift after actual fixture interaction"); };
+    f.host.capture = async (...args) => { const result = await capture(...args); fresh = false; return result; };
+    const proposal = f.service.propose(f.item, f.intent, f.host);
+    await assert.rejects(() => f.service.review(proposal, f.host)); assert.equal(f.service.decision(proposal), null);
+    assert.equal(f.documents.events(f.item.project, f.item.ticket).filter(e => e.data.kind === "auto-review" && e.data.phase === "observed").length, 1);
+    fresh = true; assert.equal((await f.service.review(proposal, f.host)).state, "approved-pending-dispatch"); assert.equal(f.prompts(), 1);
+  } finally { f.db.close(); }
+});
+test("lost foreground reply retains original pending interaction until explicit native withdrawal, never implicit reprompt", async () => {
+  const f = fixture(); try {
+    let calls = 0; f.host.capture = async () => { calls++; throw new Error("Synthetic lost foreground reply"); };
+    const proposal = f.service.propose(f.item, f.intent, f.host);
+    await assert.rejects(() => f.service.review(proposal, f.host)); await assert.rejects(() => f.service.review(proposal, f.host)); assert.equal(calls, 1);
+    assert.equal(documentPendingAutoReviews(f.documents.events(f.item.project, f.item.ticket)).length, 1);
+    const evidence = Buffer.from("Synthetic explicit withdrawal; not an approval or infrastructure repair");
+    f.host.withdraw = async () => ({ outcome: "approved", principal: "fixture", evidence, evidenceSha256: digest(evidence) });
+    await f.service.requestChanges(proposal, f.host);
+    assert.equal(documentPendingAutoReviews(f.documents.events(f.item.project, f.item.ticket)).length, 0);
+    assert.equal(f.service.decision(proposal), null);
+  } finally { f.db.close(); }
+});
+test("multiline objective is exact bounded prose, not a scalar or shell grant", () => {
+  const f = fixture(); try {
+    const objective = "Exact title\n\nScoped requirements with a genuine newline.\nLocal checks only.";
+    assert.equal(parseAutoStartIntent(Buffer.from(JSON.stringify({ ...f.intent, objective }))).objective, objective);
+    for (const invalid of ["bad\u0000text", "bad\u202etext", "x".repeat(16385)]) assert.throws(() => parseAutoStartIntent(Buffer.from(JSON.stringify({ ...f.intent, objective: invalid }))));
   } finally { f.db.close(); }
 });
 test("start schema rejects imported authority, runtime fallback and broadened local effects", () => {

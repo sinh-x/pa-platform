@@ -4,10 +4,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, workflowDigest, TicketStore, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { closeDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, workflowDigest, TicketStore, type RuntimeAdapter, type AutoItem, type AutoStartIntent } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
+import { inspectAutoNativeResult } from "../auto-result.js";
+import { ProjectCommandContract } from "../project-command-contract.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { TreehouseClient } from "../treehouse.js";
 import { seedOrdinaryTaskBaseline } from "./ordinary-task-fixture.js";
@@ -121,6 +123,20 @@ async function fixture(variant: "advisory" | "waw" | "ttl012" | "ttl014" | "appr
             assert.equal(session.service.status(session.actor).plan, null, "baseline authentication is not an implicit legacy script grant");
           }
           assert.equal(session.service.status(session.actor).custody.state, "idle");
+          if (variant === "project-commands") {
+            // Pure factual reader on REAL native check/repair/commit receipts.
+            // This synthetic item has NO auto decision and grants no launch or
+            // service readiness; provider/Treehouse remain simulated above.
+            const item = { project: "fixture", repoRoot: repo, ticket: "PAP-268", dispatch: { deploymentId: opts.deployId } } as AutoItem;
+            const profile = ProjectCommandContract.inspect("fixture", repo)!;
+            const intent = { branch: { name: branch }, validation: { profileSha256: profile.sha256, commands: profile.checks.map(c => c.command) } } as AutoStartIntent;
+            const actual = inspectAutoNativeResult(item, intent, authority);
+            assert.equal(actual.state, "proven", JSON.stringify(actual)); assert.ok(actual.commitRef); assert.equal(actual.checks.length, 2); assert.ok(actual.checks.every(c => c.state === "passed" && c.outputRef));
+            assert.equal(actual.candidateSha, git(["rev-parse", "HEAD"], checkout));
+            assert.equal(inspectAutoNativeResult(item, { ...intent, validation: { ...intent.validation, profileSha256: "f".repeat(64) } }, authority).state, "unproven");
+            const source = readFileSync(join(checkout, "README.md")); writeFileSync(join(checkout, "README.md"), "manual unproven drift\n");
+            assert.equal(inspectAutoNativeResult(item, intent, authority).state, "unproven"); writeFileSync(join(checkout, "README.md"), source);
+          }
           assert.equal(existsSync(join(directory, "prepared-consumption.json")), false);
           assert.equal(getDeploymentEvents(opts.deployId).filter((event) => event.event === "started").length, 1);
         } catch (error) { bodyFailure = error; throw error; }

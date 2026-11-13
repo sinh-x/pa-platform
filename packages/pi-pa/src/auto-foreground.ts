@@ -1,18 +1,24 @@
 import {
-  AutoCoordinator, AutoWaitlistError, AutoWaitlistStore, RegistryAutoJournal, RegistryDocumentJournal, RegistryAutoNotifications,
+  AutoCoordinator, AutoWaitlistError, AutoWaitlistStore, RegistryAutoJournal, RegistryDocumentJournal, RegistryAutoNotifications, AutoStartDecisionService,
   getDb, openReadonlyRegistryDatabase, scanAutoWaitlist, formatAutoWaitlist, autoWaitlistDiagnostic,
   resolveRepoExecutionPath, type AutoControl, type AutoItem,
 } from "@pa-platform/pa-core";
 import { autoDraftOwner } from "./auto-draft.js";
 import { runPiAutoScanWorker } from "./auto-scan-client.js";
-import { nativeAutoTerminal, type AutoTerminal } from "./auto-terminal.js";
+import { inspectAutoNativeResult } from "./auto-result.js";
+import { nativeAutoTerminal, displayAutoFullPackage, type AutoTerminal } from "./auto-terminal.js";
 
 export function readAutoCoordination() {
   try {
     const db = openReadonlyRegistryDatabase(true);
-    try { const journal = new RegistryAutoJournal(db); return { observed: true, active: journal.active(), control: journal.control(), notification: new RegistryAutoNotifications(db).last() }; }
+    try {
+      const journal = new RegistryAutoJournal(db), active = journal.active();
+      const foregroundReview = active ? new RegistryDocumentJournal(db).events(active.project, active.ticket).flatMap(e => e.data.kind === "auto-review" && e.data.itemId === active.itemId ? [e.data] : []).at(-1) ?? null : null;
+      const nativeResult = active?.dispatch ? inspectAutoNativeResult(active, new AutoStartDecisionService(new RegistryDocumentJournal(db), journal).intent(active)) : null;
+      return { observed: true, active, control: journal.control(), notification: new RegistryAutoNotifications(db).last(), nativeResult, foregroundReview };
+    }
     finally { db.close(); }
-  } catch { return { observed: false, active: null, control: null, notification: null }; }
+  } catch { return { observed: false, active: null, control: null, notification: null, nativeResult: null, foregroundReview: null }; }
 }
 export interface AutoForegroundHooks {
   review?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
@@ -21,6 +27,7 @@ export interface AutoForegroundHooks {
   close?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
   revise?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
   changed?(journal: RegistryAutoJournal): void;
+  redraft?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
 }
 /** Human-only selection/control. JSON/noninteractive calls have no selection or
  * decision flags. Native owners are callbacks, never public request fields. */
@@ -59,14 +66,12 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
     terminal.display(`Active item ${active.ticket}: ${active.state}. Original item ${active.itemId}.\nThis item holds the single PAP/PAPC slot until an explicitly settled disposition.`);
     const selected = await terminal.choose("Inspect or control the original item; cancellation grants nothing and retains the slot.", [
       "Inspect full frozen documents", "Review exact implementation start", "Reconcile original work (never launch a replacement)",
-      "Pause scanning and new dispatch (does not kill a worker)", "Enable/resume compatible new work", "Decline before implementation / safely close settled item", "Request changes / withdraw a never-dispatched start proposal",
+      "Pause periodic scanning and new dispatch (does not kill a worker)", "Enable/resume compatible new work", "Decline before implementation / safely close settled item", "Request changes / withdraw a never-dispatched start proposal", "Prepare revised unsigned documents (no implementation)",
     ]);
     if (selected === 0 && active.subjectSha256) {
       const documents = new RegistryDocumentJournal(journal.db), subject = documents.subject(active.subjectSha256);
-      for (const member of subject.members) {
-        if (!member.mediaType.startsWith("text/")) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
-        terminal.display(`${member.role} (${member.sha256})\n${new TextDecoder("utf-8", { fatal: true }).decode(documents.snapshot(member.sha256))}`);
-      }
+      terminal.display(JSON.stringify(active, null, 2));
+      displayAutoFullPackage(terminal, subject, subject.members.map(m => documents.snapshot(m.sha256)));
     } else if (selected === 1) {
       if (!hooks.review) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
       active = await hooks.review(active, journal, terminal);
@@ -78,7 +83,7 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
       else if (active.route === "draft") active = await coordinator.draft(active, autoDraftOwner(journal, () => terminal.authenticate()));
     } else if (selected === 3) {
       const before = journal.control(); journal.setControl(before.revision, { scansEnabled: false, dispatchEnabled: false, paused: true }, () => terminal.authenticate());
-      terminal.display("New scans/dispatch paused. Existing work was not killed; its original item and evidence remain.");
+      terminal.display("Periodic scans and new dispatch paused. Existing work was not killed; its original item and evidence remain.");
     } else if (selected === 4) {
       if (!hooks.enable) throw new AutoWaitlistError("AUTO_UNAVAILABLE"); await hooks.enable(journal, terminal);
     } else if (selected === 5) {
@@ -87,20 +92,24 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
       if (active.draft || active.dispatch || active.decisionId) {
         if (!hooks.close) throw new AutoWaitlistError("AUTO_BUSY");
         active = await hooks.close(active, journal, terminal);
-      } else {
-      if (await terminal.choose("Decline this service proposal only? The underlying ticket and documents will not be rejected or deleted.", ["Decline this never-started proposal"]) === 0) {
+      } else if (await terminal.choose("Decline this service proposal only? The underlying ticket and documents will not be rejected or deleted.", ["Decline this never-started proposal"]) === 0) {
         active = coordinator.close(active, "declined", () => terminal.authenticate());
-      }
       }
     } else if (selected === 6) {
       if (!hooks.revise) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
       active = await hooks.revise(active, journal, terminal);
+    } else if (selected === 7) {
+      if (!hooks.redraft) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+      active = await hooks.redraft(active, journal, terminal);
     }
     hooks.changed?.(journal);
-    terminal.display(`Item ${active.ticket}: ${active.state}. Run ppa auto to inspect/resume the same item. No product completion or human UAT is asserted.`);
+    terminal.display(["closed", "declined"].includes(active.state)
+      ? `Service proposal ${active.ticket}: ${active.state}. The ticket, documents and original evidence remain. Run ppa auto to choose another item; nothing is selected automatically.`
+      : `Item ${active.ticket}: ${active.state}. Run ppa auto to inspect/resume the same item. No product completion or human UAT is asserted.`);
     return 0;
-  } catch {
-    const diagnostic = autoWaitlistDiagnostic("AUTO_UNAVAILABLE");
+  } catch (error) {
+    let diagnostic = autoWaitlistDiagnostic("AUTO_UNAVAILABLE");
+    try { if (error instanceof AutoWaitlistError) diagnostic = autoWaitlistDiagnostic(error.code); } catch { /* Untrusted exceptions remain unproven; never probe/coerce their text. */ }
     try { terminal.display(diagnostic); } catch { process.stderr.write(`${diagnostic}\n`); }
     return 1;
   }

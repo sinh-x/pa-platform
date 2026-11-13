@@ -146,7 +146,7 @@ export class RegistryAutoJournal {
   }
 }
 
-export type AutoOwnerObservation = { state: "running" | "unknown" | "failed"; settled: false } | { state: "review-ready" | "draft-ready" | "failed"; settled: true; subjectSha256?: string };
+export type AutoOwnerObservation = { state: "running" | "unknown" | "failed"; settled: false } | { state: "review-ready" | "draft-ready" | "failed" | "blocked"; settled: true; subjectSha256?: string };
 export interface AutoWorkOwner {
   /** Read-only admission before persisting a first effect intent. */
   admit?(item: AutoItem): void;
@@ -180,11 +180,19 @@ export class AutoCoordinator {
     return this.journal.change(item.itemId, item.revision, before => {
       const effect = before[kind]; if (!effect) throw new AutoWaitlistError("AUTO_STORE");
       const state: AutoItemState = observation.state === "unknown" ? "uncertain" : observation.state === "running" ? kind === "draft" ? "drafting" : "running"
-        : observation.state === "failed" ? "blocked" : observation.state === "draft-ready" ? "awaiting-review" : "review-ready";
+        : ["failed", "blocked"].includes(observation.state) ? "blocked" : observation.state === "draft-ready" ? "awaiting-review" : "review-ready";
       if (observation.state === "draft-ready" && !observation.subjectSha256) throw new AutoWaitlistError("AUTO_SOURCE");
-      return { ...before, state, [kind]: { ...effect, state: observation.state === "running" ? "running" : observation.state === "unknown" ? "unknown" : observation.state === "failed" ? "failed" : "completed" },
+      return { ...before, state, [kind]: { ...effect, state: observation.state === "running" ? "running" : observation.state === "unknown" ? "unknown" : ["failed", "blocked"].includes(observation.state) ? "failed" : "completed" },
         subjectSha256: observation.settled && observation.subjectSha256 ? observation.subjectSha256 : before.subjectSha256,
-        reason: observation.state === "unknown" ? "uncertain" : observation.state === "failed" ? "failure" : "none" };
+        reason: observation.state === "unknown" ? "uncertain" : observation.state === "blocked" ? "owner" : observation.state === "failed" ? "failure" : "none" };
+    }, this.authenticate);
+  }
+  prepareRedraft(item: AutoItem, ticketSha256: string, assertSettled: (current: AutoItem) => void): AutoItem {
+    if (!/^[a-f0-9]{64}$/.test(ticketSha256)) throw new AutoWaitlistError("AUTO_INPUT");
+    return this.journal.change(item.itemId, item.revision, before => {
+      if (before.dispatch || before.startSha256 || before.decisionId || before.draft && !["completed", "failed"].includes(before.draft.state)) throw new AutoWaitlistError("AUTO_BUSY");
+      assertSettled(before);
+      return { ...before, route: "draft", state: "selected", ticketSha256, draft: null, reason: "none" };
     }, this.authenticate);
   }
   close(item: AutoItem, disposition: "closed" | "declined", assertSettled: (current: AutoItem) => void): AutoItem {
