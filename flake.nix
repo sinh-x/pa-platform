@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # PAP-298: separate, explicit host qualification pin; does not select PPA's
+    # runtime or change the main tooling/addon package set.
+    piHostNixpkgs.url = "github:NixOS/nixpkgs/0bb2eedc20e4739f29e8045034f2828ad7054f8f";
     properPiExtensions = {
       url = "github:sharaf-nassar/proper-pi-extensions/859feb321ec81d773beea379d28e21d0b7d0c8c0";
       flake = false;
@@ -13,13 +16,16 @@
     };
   };
 
-  outputs = { self, nixpkgs, properPiExtensions, piVimMode }:
+  outputs = { self, nixpkgs, piHostNixpkgs, properPiExtensions, piVimMode }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
       axiToolsFor = system: import ./nix/axi-tools.nix { pkgs = pkgsFor system; };
+      selectedPiHostFor = system: import ./nix/selected-pi-host.nix {
+        pkgs = piHostNixpkgs.legacyPackages.${system};
+      };
 
       requireBooleanOption = name: value:
         if builtins.isBool value then value
@@ -302,6 +308,8 @@
     in
     {
       lib.mkPaPlatform = paPlatformFor;
+      # Qualification inputs only. No default wrapper/PATH/launcher selection.
+      lib.selectedPiHostFor = selectedPiHostFor;
 
       packages = forAllSystems (system:
         let
@@ -345,6 +353,14 @@
             bash ${./scripts}/pap-252-packaged-treehouse-smoke.sh ${packagesForSystem.ppa}
             touch $out
           '';
+          selected-pi-host-pin =
+            let host = selectedPiHostFor system;
+            in assert host.pi.version == "1.4.0";
+            assert host.node.version == "24.21.0";
+            assert host.enabled == false;
+            pkgs.runCommand "pa-selected-pi-host-pin" {} ''
+              touch $out
+            '';
           # Phase-1 evaluation assertions, not the installed-output matrix.
           axi-packaging-contract =
             assert builtins.all (contract:
