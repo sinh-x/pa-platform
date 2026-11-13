@@ -3,9 +3,11 @@
 The operator explicitly requested P2–P5 implementation after creating companion
 **PAPC-086**, and reserved final activation/integration for manual handling. This
 supersedes the earlier planning-only stop, not the retained safety/approval owners.
-All edits remain in the PAP-302 ticket worktree. No PAPC configuration, user service,
-provider session, live ticket worker, managed product checkout, remote operation or activation is
-performed by this development session.
+All edits remain in the PAP-302 ticket worktree. At the P2–P5 source checkpoint,
+no PAPC configuration, user service, live provider/ticket worker, managed product
+checkout, remote operation or activation was performed. The subsequently
+operator-requested source PR #174 is tracked in the qualification handoff; source
+integration does not activate or qualify the service.
 
 ## P2 — global coordination, bounded drafting and foreground support
 

@@ -163,8 +163,9 @@ Preserve existing modes and prove retained-profile negatives in PAPC-086.
 
 1. Select PAPC-086's own feature worktree and implement/review the compatible
    configuration. Record exact runtime/config commits and resources. Install only
-   through separately authorized repository/release owners; this session performs
-   no install, version release, push, PR or merge.
+   through separately authorized repository/release owners. P5 performed no install
+   or release; later source PR authorization is recorded below and does not enable
+   the service.
 2. Qualify exact installed PPA/Pi/Node/native-addon identities and the effective
    registered repositories, ai-usage/config/registry roots. First inspect supported
    `ppa auto --help`, `ppa auto status --json`, `ppa auto list`, and
@@ -225,3 +226,25 @@ rewrite, machine approval input or private raw-error support field was added.
 NO_COLOR/software structural/hostile-input checks and the implementation-owner's
 wording review are separate from human readability acceptance. Actual laptop
 comprehension, full-document reading view and desktop UAT have **not** been observed.
+
+## PR #174 integration follow-up
+
+After the P5 source checkpoint, the operator explicitly requested a PR/merge into
+`develop`. This authorizes source integration, not service activation or promotion
+of the open manual qualification gates. The repository is squash-only; the pushed
+feature branch retains the individual phase commits.
+
+Initial hosted push CI [43523567011](https://github.com/sinh-x/pa-platform/actions/runs/43523567011)
+passed typecheck/build but failed two new auto-owner fixture cases. The fixture
+registered `process.execPath`; GitHub's setup-node toolcache is intentionally outside
+the trusted installed-executable roots. The production guard correctly rejected it.
+The metadata-only portable fixture now registers root-owned `/bin/sh` and an inert
+script, and asserts valid metadata before exercising owners. No runtime guard was
+weakened, no test was removed/deferred, and this fixture still executes no project
+check. Actual Node/sandbox/check/commit execution remains in the native suite.
+
+Local post-fix Pi auto tests passed **29/29**, with no skips/failures:
+`/tmp/pap302-pr174-fixture-tests.log`. Hosted rerun results belong to PR #174's
+current checks; this local result is not a claim that they passed. The original
+hosted failure log is `/tmp/pap302-pr174-ci-failed.log`. Complete native/full-suite,
+independent, installed, desktop, canary and human acceptance remain separate.

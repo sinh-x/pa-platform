@@ -24,8 +24,11 @@ function fixture() {
   for (const path of [repo, cfg]) {
     mkdirSync(path); git(["init", "-b", "develop"], path); git(["config", "user.email", "fixture@example.invalid"], path); git(["config", "user.name", "Synthetic fixture"], path);
   }
-  put(join(repo, "README.md"), "# Synthetic source\n"); put(join(repo, "check.cjs"), "process.exit(0);\n");
-  const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [{ id: "fixture-check", executable: realpathSync(process.execPath), argv: ["check.cjs"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "check.cjs", sha256: workflowDigest("process.exit(0);\n") }], timeoutSeconds: 10, maximumOutputBytes: 4096 }] });
+  put(join(repo, "README.md"), "# Synthetic source\n"); put(join(repo, "check.sh"), "exit 0\n");
+  // Metadata-only portable fixture: setup-node's runner-owned/toolcache Node
+  // is intentionally not a trusted installed command. No check executes here;
+  // real Node/sandbox/check/commit execution remains in the native suite.
+  const manifest = JSON.stringify({ schemaVersion: "project-command-contract/v1", effects: ["project-read", "isolated-temp-write"], checks: [{ id: "fixture-check", executable: realpathSync("/bin/sh"), argv: ["check.sh"], environment: {}, readPaths: ["README.md"], prerequisites: [{ path: "check.sh", sha256: workflowDigest("exit 0\n") }], timeoutSeconds: 10, maximumOutputBytes: 4096 }] });
   put(join(repo, "checks.json"), manifest); git(["add", "."], repo); git(["commit", "-m", "Synthetic source"], repo);
   put(join(cfg, "contracts/auto-waitlist-v1.json"), JSON.stringify({ schemaVersion: "pa-auto-pair/v1", producer: "pa-auto-draft/v1", review: "pa-auto-start/v1", draftMode: "auto-draft", resources: ["skills/auto.md"], enabled: true }));
   put(join(cfg, "skills/auto.md"), "Synthetic test-only unsigned drafting instructions. Never approve or mutate source.");
@@ -40,6 +43,7 @@ function fixture() {
   const journal = new RegistryAutoJournal(getDb()), coordinator = new AutoCoordinator(journal, () => {}), documents = new RegistryDocumentJournal(journal.db);
   const entry = routeAutoTicket({ id: "PAP-1", project: "pa-platform", title: "Synthetic task", priority: "medium", status: "idea", createdAt: at, ticketSha256: workflowDigest(raw), archived: false, unresolvedDependencies: [], blockingBulletins: [], competingDeployments: [], originalWorkflow: false, documents: { state: "missing" } });
   const selected = journal.select(entry, repo, () => entry, () => {});
+  assert.ok(ProjectCommandContract.inspect("pa-platform", repo), "Portable fixture must have valid trusted executable metadata; do not weaken the runtime guard");
   const template = readFileSync(new URL("../../../pa-core/src/__tests__/fixtures/protected-review-v1/producer-node-pnpm.md", import.meta.url));
   const baseMatrix = parseReviewMatrixPlan(template, "requirements:agent-teams/requirements/artifacts/fixture-producer-node-pnpm.md").matrix;
   let invocations = 0;
