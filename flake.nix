@@ -26,6 +26,10 @@
       selectedPiHostFor = system: import ./nix/selected-pi-host.nix {
         pkgs = piHostNixpkgs.legacyPackages.${system};
       };
+      selectedPiQualificationFor = system: import ./nix/selected-pi-qualification.nix {
+        pkgs = pkgsFor system;
+        host = selectedPiHostFor system;
+      };
 
       requireBooleanOption = name: value:
         if builtins.isBool value then value
@@ -310,6 +314,7 @@
       lib.mkPaPlatform = paPlatformFor;
       # Qualification inputs only. No default wrapper/PATH/launcher selection.
       lib.selectedPiHostFor = selectedPiHostFor;
+      lib.selectedPiQualificationFor = selectedPiQualificationFor;
 
       packages = forAllSystems (system:
         let
@@ -353,6 +358,18 @@
             bash ${./scripts}/pap-252-packaged-treehouse-smoke.sh ${packagesForSystem.ppa}
             touch $out
           '';
+          selected-pi-host-qualification =
+            let
+              host = selectedPiHostFor system;
+              qualification = selectedPiQualificationFor system;
+            in pkgs.runCommand "pa-selected-pi-host-qualification-check" {} ''
+              ${pkgs.coreutils}/bin/stat --format='qualification namespace: %n uid=%u mode=%a' /nix /nix/store ${qualification}/lib/qualify.mjs ${host.pi}
+              export PA_TEST_PI_QUALIFICATION=${qualification}
+              export PA_TEST_PI_NODE=${host.node}/bin/node
+              export PA_TEST_PI_WRONG_NODE=${pkgs.nodejs_22}/bin/node
+              ${host.node}/bin/node --test ${./scripts/dev/selected_pi_host_qualification.test.mjs}
+              touch $out
+            '';
           selected-pi-host-pin =
             let host = selectedPiHostFor system;
             in assert host.pi.version == "1.4.0";
