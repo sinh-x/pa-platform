@@ -131,6 +131,29 @@ test("planned entry promotes in place and later refresh preserves immutable base
   });
 });
 
+test("native linked-HEAD refresh compares both ticket predecessor and resolved Git target before ticket/audit writes", () => {
+  withLinkedBranchEnv(({ repo, tickets, store }) => {
+    const ticket = createTicket(store), branch = "feature/PAP-001-work";
+    const baseSha = git(repo, ["rev-parse", "HEAD"]);
+    git(repo, ["branch", branch]);
+    store.update(ticket.id, { add_linked_branch: { repo: "pa-platform", branch } }, "test");
+    const tree = git(repo, ["rev-parse", `${baseSha}^{tree}`]);
+    const next = execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit-tree", tree, "-p", baseSha, "-m", "advance"], { cwd: repo, encoding: "utf8" }).trim();
+    git(repo, ["update-ref", `refs/heads/${branch}`, next]);
+    const expected = { repo: "pa-platform", branch, baseSha, expectedHeadSha: baseSha, headSha: next };
+    for (const wrong of [{ ...expected, headSha: baseSha }, { ...expected, expectedHeadSha: next }, { ...expected, baseSha: next }]) {
+      const before = readFileSync(join(tickets, `${ticket.id}.json`)), audit = store.readAudit();
+      assert.throws(() => store.refreshLinkedBranchHead(ticket.id, wrong, "test"), /precondition changed/);
+      assert.deepEqual(readFileSync(join(tickets, `${ticket.id}.json`)), before); assert.deepEqual(store.readAudit(), audit);
+    }
+    const updated = store.refreshLinkedBranchHead(ticket.id, expected, "test");
+    assert.equal(updated.linkedBranches[0]?.baseSha, baseSha); assert.equal(updated.linkedBranches[0]?.headSha, next);
+    const before = store.readAudit();
+    assert.throws(() => store.refreshLinkedBranchHead(ticket.id, expected, "test"), /precondition changed/);
+    assert.deepEqual(store.readAudit(), before);
+  });
+});
+
 test("legacy sha records normalize to materialized head evidence without inventing baseSha", () => {
   withLinkedBranchEnv(({ tickets, store }) => {
     const ticket = createTicket(store);

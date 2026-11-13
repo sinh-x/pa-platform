@@ -36,6 +36,9 @@ export interface MaterializeTicketBranchOptions {
   preparedCapacityOwner?: PreparedTicketCapacityTransaction;
   /** Durable operation identity, required for exact post-crash branch/ticket reconciliation. */
   preparationOperationId?: string;
+  /** Trusted adapter only: reauthenticate metadata-only refresh inside capacity
+   * and ticket exclusion. No callback, digest or authority is imported from CLI JSON. */
+  authenticateHeadRefresh?: () => void;
   /** Trusted terminal owner: exact materialized predecessor, never CLI inputs. */
   settlement?: { branch: string; baseSha: string; expectedHeadSha: string; headSha: string };
 }
@@ -372,7 +375,8 @@ export function refreshTicketLinkedBranchHead(options: MaterializeTicketBranchOp
   const transaction = <T>(action: () => T): T => options.preparedCapacityOwner
     ? withPreparedRepositoryTicketOwner(options.preparedCapacityOwner, canonicalRoot, action)
     : withRepositoryTicketTransaction(canonicalRoot, action);
-  return transaction(() => {
+  return transaction(() => store.withWorkflowTransaction(() => {
+    options.authenticateHeadRefresh?.();
     authenticateLinkedWorktree(options.canonicalRepoKey, canonicalRoot, worktreeRoot);
     const ticket = store.get(options.ticketId);
     if (!ticket) throw diagnostic(`ticket ${options.ticketId} does not exist`, "restore the durable ticket before retrying");
@@ -389,11 +393,12 @@ export function refreshTicketLinkedBranchHead(options: MaterializeTicketBranchOp
     if (headSha !== branchHead || (linked.baseSha && !isAncestor(runGit, canonicalRoot, linked.baseSha, headSha)) || !isAncestor(runGit, canonicalRoot, linked.headSha, headSha)) {
       throw diagnostic("ticket branch identity, ancestry, or authenticated head evidence is incompatible", "preserve the branch and reconcile replacement or drift under operator control");
     }
-    const updated = store.update(options.ticketId, { add_linked_branch: { repo: options.canonicalRepoKey, branch: linked.branch, linkedBy: options.actor ?? "ppa" } }, options.actor ?? "ppa");
+    const updated = store.refreshLinkedBranchHead(options.ticketId, { repo: options.canonicalRepoKey, branch: linked.branch,
+      baseSha: linked.baseSha, expectedHeadSha: linked.headSha, headSha }, options.actor ?? "ppa");
     const refreshed = requireTicketLinkedBranch(updated, options.canonicalRepoKey);
     if (refreshed.baseSha !== linked.baseSha || refreshed.headSha !== headSha) throw diagnostic("ticket head refresh changed immutable base evidence or missed current HEAD", "repair only the matching ticket record before retrying");
     return Object.freeze({ ...refreshed });
-  });
+  }));
 }
 
 /**

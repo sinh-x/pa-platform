@@ -705,8 +705,8 @@ function ticketWorktreeDiagnostic(error: unknown): string {
     condition: "ticket-worktree selection admission stopped",
     source: "registered canonical repository, durable ticket, bounded Treehouse status, physical Git and process-verified builder evidence",
     reason,
-    correction: "preserve the checkout, ticket and all authority evidence; selection grants no mutation or return rights",
-    resumeAction: "reconcile the exact existing materialized checkout and retry with fresh matching evidence; no allocation or force bypass",
+    correction: "read ppa pi ticket-worktree --help, then inspect repo/ticket from canonical CWD. Impact: read-only. Actor: agent or operator. New approval: not required. Prerequisite: compatible PPA; preserve checkout and authority evidence",
+    resumeAction: "retry only after linked HEAD and retained execution claims have been reconciled through their respective native owners; HEAD refresh alone does not clear claims. Admission is checked again; no allocation or force bypass",
   });
 }
 
