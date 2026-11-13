@@ -130,4 +130,13 @@ for binary in ppa opa; do
     "complete -c $binary -n '__fish_seen_subcommand_from operation run' -l timeout -r -d 'Per-operation seconds (max 14400)'" \
     >> "$ROOT/completions/$binary.fish"
 done
+printf '%s\n' \
+  '' \
+  '# Pi-only read-only auto waitlist; no approval or dispatch flags' \
+  "complete -c ppa -n __fish_use_subcommand -a auto -d 'Inspect PAP/PAPC waitlist; no automatic work'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status' -a 'scan list status'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto' -l json -d 'Versioned unsigned observation'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto' -l section -r -a 'candidates excluded all'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto' -l page -r -d 'One-based page (100 entries) '" \
+  >> "$PPA"
 echo "Generated completions/ppa.fish from completions/pa-core.fish"

@@ -1,3 +1,7 @@
+export * from "./auto/waitlist.js";
+export * from "./auto/source.js";
+export * from "./auto/store.js";
+export * from "./auto/presentation.js";
 export * from "./source-content-security.js";
 export { ticketInteractionProfileSelected, patchTicketPlanningInteraction, ticketPlanningRequestSchema, type TicketPlanningRequest, type TicketPlanningResult, createTicketInteraction, readTicketInteraction, parseTicketIntakeRequest, parseTicketIntakeOperation, ticketIntakeInterface, ticketIntakeRequestSchema, ticketIntakeInspectSchema, ticketIntakeReuseSchema, TicketInteractionError, TICKET_INTERACTIONS_PROFILE, TICKET_INTAKE_VERSION, type TicketInteractionCaller, type TicketIntakeResult, type TicketSelectionRequest, type TicketSelectionResult } from "./interactions/tickets.js";
 export { TicketCreateIntentError } from "./tickets/create-intent.js";

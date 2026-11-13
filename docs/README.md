@@ -18,6 +18,8 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 
 ## Operational Docs
 
+- [PAP-302 auto waitlist delivery](PAP-302-auto-waitlist.md) documents the inspection-only P1 CLI, safe snapshot ownership, and remaining draft/review/dispatch/qualification phases.
+
 - [PAP-273 native confirmation and branch bridge](PAP-273-native-confirmation-follow-up.md) records the d-199e82 follow-up, source interfaces, phase results, retained-version behavior and separate installed/UAT gates.
 - [Requirements workspace interfaces](requirements-workspace-interface.md) separates V2 and V3 supporting capabilities and operator/model entry points.
 
