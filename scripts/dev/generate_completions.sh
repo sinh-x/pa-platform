@@ -67,12 +67,21 @@ printf '%s\n' \
 printf '%s\n' \
   '' \
   '# Pi-only terminal child reconciliation; apply uses native in-session dispatch' \
-  "complete -c ppa -n '__fish_seen_subcommand_from pi; and not __fish_seen_subcommand_from setup status remove preflight smoke-tools teardown-smoke reconcile-child' -a reconcile-child -d 'Inspect retained terminal child facts'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and not __fish_seen_subcommand_from setup status remove preflight smoke-tools teardown-smoke reconcile-child inspect-recovery' -a reconcile-child -d 'Inspect retained terminal child facts'" \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l parent-id -r -d 'Exact parent deployment ID'" \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l child-id -r -d 'Exact direct child deployment ID'" \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l ticket -r -d 'Exact ticket ID'" \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l apply -d 'Native foreground confirmation required; no shell apply'" \
   "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l json -d 'Versioned redacted result'" \
+  >> "$PPA"
+printf '%s\n' \
+  '' \
+  '# Pi-only read-only retained ticket recovery diagnosis; no apply route' \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and not __fish_seen_subcommand_from setup status remove preflight smoke-tools teardown-smoke reconcile-child inspect-recovery' -a inspect-recovery -d 'Diagnose exact retained ticket claims; no recovery effects'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from inspect-recovery' -l repo -r -d 'Exact registered repository key'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from inspect-recovery' -l ticket -r -d 'Exact ticket ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from inspect-recovery' -l deployment-id -r -d 'Exact terminal deployment ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from inspect-recovery' -l json -d 'Versioned non-secret diagnosis'" \
   >> "$PPA"
 printf '%s\n' \
   '' \
