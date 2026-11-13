@@ -70,6 +70,8 @@ test("PPA auto refresh writes only coordination data and never becomes a native 
   const scan = operation("auto.scan");
   assert.equal(scan.effectClass, "write"); assert.deepEqual(scan.cliForms, ["auto scan", "auto --json"]);
   assert.equal(operation("auto.foreground").effectClass, "launch");
+  assert.equal(operation("auto.tick").effectClass, "write");
+  assert.equal(operation("auto.units").effectClass, "read");
   assert.deepEqual(operation("auto.foreground").nativeForms, []);
   assert.deepEqual(scan.nativeForms, []); assert.deepEqual(scan.channels, ["cli"]); assert.equal(scan.nativeBinding, null);
   assert.match(scan.reason, /not a pure read/);

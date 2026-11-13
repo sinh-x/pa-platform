@@ -649,7 +649,7 @@ complete -c ppa -n '__fish_seen_subcommand_from operation run' -l timeout -r -d 
 
 # Pi-only read-only auto waitlist; no approval or dispatch flags
 complete -c ppa -n __fish_use_subcommand -a auto -d 'Inspect PAP/PAPC waitlist; no automatic work'
-complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status' -a 'scan list status'
+complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status tick units' -a 'scan list status tick units'
 complete -c ppa -n '__fish_seen_subcommand_from auto' -l json -d 'Versioned unsigned observation'
 complete -c ppa -n '__fish_seen_subcommand_from auto' -l section -r -a 'candidates excluded all'
 complete -c ppa -n '__fish_seen_subcommand_from auto' -l page -r -d 'One-based page (100 entries) '

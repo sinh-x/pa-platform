@@ -189,6 +189,8 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ]),
   ...["show", "verify"].map(action => entry(`decision.${action}`, [`decision ${action}`], "read", "native", `${core}workflow.ts`, "native decision")),
   entry("document.describe", ["document describe --format json"], "read", "native", `${pi}document-cli.ts`, "document interface"),
+  entry("auto.units", ["auto units", "auto units --json"], "read", "native", `${pi}auto-background.ts`, "PPA auto user-unit description", { reason: "Renders fixed opt-in unit text only. It does not write units, call systemctl, install, activate or approve any ticket." }),
+  entry("auto.tick", ["auto tick"], "write", "owner", `${pi}auto-background.ts`, "PPA auto periodic observation and informational notification", { reason: "An explicitly enabled wake may refresh unsigned snapshots, reconcile factual original results and request a desktop notification. It never selects, approves, publishes, queues or launches an agent. Default controls are disabled; it is not a pure reader." }),
   entry("auto.help", ["auto --help"], "read", "native", `${pi}auto-cli.ts`, "PPA auto inspection metadata"),
   entry("auto.list", ["auto list", "auto list --section", "auto list --page"], "read", "native", `${pi}auto-cli.ts`, "PPA auto retained unsigned waitlist", { reason: "Reads only a retained snapshot; no initialization, selection, approval, drafting or worker launch is supported." }),
   entry("auto.status", ["auto status"], "read", "native", `${pi}auto-cli.ts`, "PPA auto observation freshness", { reason: "Reads snapshot freshness and inspection-only availability; no timer, active item or execution grant is inferred." }),
@@ -239,7 +241,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

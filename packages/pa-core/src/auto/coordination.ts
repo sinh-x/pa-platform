@@ -59,6 +59,7 @@ export class RegistryAutoJournal {
       if (before.revision !== expected) throw new AutoWaitlistError("AUTO_BUSY");
       const result = { revision: expected + 1, ...next };
       if ([result.paused, result.scansEnabled, result.dispatchEnabled].some(v => typeof v !== "boolean")) throw new AutoWaitlistError("AUTO_INPUT");
+      this.db.prepare("INSERT INTO auto_control_events(revision,body) VALUES(?,?)").run(result.revision, JSON.stringify(result));
       this.db.prepare("INSERT INTO auto_control(singleton,revision,body) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET revision=excluded.revision,body=excluded.body").run(result.revision, JSON.stringify(result));
       return result;
     }).immediate();
@@ -133,6 +134,7 @@ export class RegistryAutoJournal {
       if (!held(before.state) || before.revision !== expected) throw new AutoWaitlistError("AUTO_BUSY");
       const next = transform(structuredClone(before));
       if (next.itemId !== before.itemId || next.project !== before.project || next.ticket !== before.ticket || next.repoRoot !== before.repoRoot || next.selectedAt !== before.selectedAt) throw new AutoWaitlistError("AUTO_STORE");
+      if (JSON.stringify(next) === JSON.stringify(before)) return before;
       return this.persist({ ...next, revision: expected + 1 }, digest(JSON.stringify(before)));
     }).immediate();
   }
@@ -168,11 +170,13 @@ export class AutoCoordinator {
   }
   async reconcile(item: AutoItem, owner: AutoWorkOwner, kind: "draft" | "dispatch"): Promise<AutoItem> {
     const effect = item[kind]; if (!effect) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+    if (["completed", "failed"].includes(effect.state)) return item;
     let observation: AutoOwnerObservation;
     try { observation = await (owner.reconcile ?? owner.observe)(item, effect); } catch { observation = { state: "unknown", settled: false }; }
     return this.apply(item, kind, observation);
   }
   apply(item: AutoItem, kind: "draft" | "dispatch", observation: AutoOwnerObservation): AutoItem {
+    if (item[kind] && ["completed", "failed"].includes(item[kind]!.state)) return item;
     return this.journal.change(item.itemId, item.revision, before => {
       const effect = before[kind]; if (!effect) throw new AutoWaitlistError("AUTO_STORE");
       const state: AutoItemState = observation.state === "unknown" ? "uncertain" : observation.state === "running" ? kind === "draft" ? "drafting" : "running"

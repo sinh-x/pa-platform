@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand, runWorkflowCommand, templateFailure } from "@pa-platform/pa-core";
+import { AutoWaitlistStore, runCoreCommand, runWorkflowCommand, templateFailure } from "@pa-platform/pa-core";
 import { createDefaultPiHooks } from "./deploy.js";
 import { removePi, setupPi, statusPi } from "./setup.js";
 import { PiAdapter } from "./adapter.js";
@@ -18,10 +18,18 @@ import { TICKET_WORKTREE_RECOVERY_USAGE, runTicketWorktreeRecoveryCommand } from
 import { AUTO_USAGE, runAutoCommand } from "./auto-cli.js";
 import { runAutoForeground } from "./auto-foreground.js";
 import { piAutoForegroundHooks } from "./auto-runtime.js";
+import { publishAutoNotice, runAutoBackgroundCommand } from "./auto-background.js";
 
 if (process.argv[2] === "auto") {
-  process.exitCode = process.argv.length === 3 && process.stdin.isTTY
-    ? await runAutoForeground(undefined, piAutoForegroundHooks)
+  process.exitCode = ["tick", "units"].includes(process.argv[3] ?? "")
+    ? await runAutoBackgroundCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) })
+    : process.argv.length === 3 && process.stdin.isTTY
+    ? await runAutoForeground(undefined, { ...piAutoForegroundHooks, changed: journal => {
+      try {
+        const notice = publishAutoNotice(journal, new AutoWaitlistStore().read());
+        if (notice?.delivery === "unavailable") process.stderr.write("Desktop notification unavailable. The item is saved; run ppa auto. No approval or launch is inferred from notification delivery.\n");
+      } catch { process.stderr.write("Desktop notification outcome is unknown. Keep the saved item and inspect ppa auto status; do not repeat a launch.\n"); }
+    } })
     : runAutoCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
 } else if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   process.exitCode = runWorkflowCommand(process.argv[2], process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) }, piWorkflowReadHost());

@@ -1,15 +1,16 @@
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { runPiAutoScanWorker } from "./auto-scan-client.js";
 import { readAutoCoordination } from "./auto-foreground.js";
 import {
   AutoWaitlistError, AutoWaitlistStore, autoWaitlistDiagnostic, autoWaitlistPage, formatAutoWaitlist, parseAutoWaitlistSnapshot,
   type AutoSection, type AutoWaitlistSnapshot, type AutoWaitlistView,
 } from "@pa-platform/pa-core";
 
-export const AUTO_USAGE = `Pi-only: ppa auto [scan|list|status] [--json] [--section candidates|excluded|all] [--page N]
+export const AUTO_USAGE = `Pi-only: ppa auto [scan|list|status|tick|units] [--json] [--section candidates|excluded|all] [--page N]
   auto / scan  Refresh registered PAP/PAPC observations; save only coordination data outside repositories.
   list         Read the last complete snapshot without initialization or refresh (100 entries/page).
-  status       Read snapshot freshness and service availability without initialization or refresh.
+  status       Read snapshot freshness, active item and informational notification state.
+  tick         Enabled timer wake: read-only scan/result observations; never select/approve/launch.
+  units        Render opt-in user units only; never install, enable or start a user service.
   --help       Show this help. Foreground auto offers human-only selection and bounded unsigned drafting.
 Opening auto refreshes observations and resumes the global item. Review/start requires exact paired support.
 Timers and activation remain opt-in. Failed scans retain a visibly stale complete list.
@@ -23,13 +24,7 @@ export interface AutoCliHost {
 }
 function defaultHost(): AutoCliHost {
   const store = new AutoWaitlistStore();
-  return { coordination: readAutoCoordination, read: () => store.read(), scan: produce => store.scan(produce), produce: () => {
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./auto-scan-worker.js", import.meta.url))], {
-      timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-    });
-    if (result.error || result.status !== 0) throw new AutoWaitlistError(result.error && "code" in result.error && result.error.code === "ETIMEDOUT" ? "AUTO_LIMIT" : "AUTO_SOURCE");
-    return parseAutoWaitlistSnapshot(result.stdout);
-  } };
+  return { coordination: readAutoCoordination, read: () => store.read(), scan: produce => store.scan(produce), produce: runPiAutoScanWorker };
 }
 export function runAutoCommand(args: string[], io: AutoCliIo, host?: AutoCliHost): number {
   const json = args.includes("--json");
@@ -68,11 +63,11 @@ export function runAutoCommand(args: string[], io: AutoCliIo, host?: AutoCliHost
       observedAt: view.state?.snapshot?.observedAt ?? null, snapshotVersion: view.state?.snapshot?.version ?? null,
       lastAttempt: view.state?.lastAttempt ?? null,
       service: { availability: "foreground-controls", selectionEnabled: Boolean(coordination?.observed), executionAdmitted: false,
-        activeItem: coordination?.active ?? null, control: coordination?.control ?? null, observationStatus: coordination?.observed ? "observed" : "unavailable" },
+        activeItem: coordination?.active ?? null, control: coordination?.control ?? null, notification: coordination?.notification ?? null, observationStatus: coordination?.observed ? "observed" : "unavailable" },
       ...(action === "status" ? {} : { recommendation: view.state?.snapshot?.recommendation ?? null,
         projects: view.state?.snapshot?.projects ?? [], ...autoWaitlistPage(view, page, section) }) }));
     else {
-      if (action === "status") io.stdout(`PPA auto: ${coordination?.active ? `${coordination.active.ticket} — ${coordination.active.state}; original item ${coordination.active.itemId}` : coordination?.observed ? "no selected automatic item" : "automatic-item ownership not observed"}.\nSnapshot: ${view.freshness}. Observed: ${view.state?.snapshot?.observedAt ?? "no complete snapshot"}.\nScan: ${view.scan}. Last attempt: ${view.state?.lastAttempt.outcome ?? "not recorded"}.\nUse ppa auto list to inspect retained entries or ppa auto scan to refresh observations.`);
+      if (action === "status") io.stdout(`PPA auto: ${coordination?.active ? `${coordination.active.ticket} — ${coordination.active.state}; original item ${coordination.active.itemId}` : coordination?.observed ? "no selected automatic item" : "automatic-item ownership not observed"}.\nSnapshot: ${view.freshness}. Observed: ${view.state?.snapshot?.observedAt ?? "no complete snapshot"}.\nScan: ${view.scan}. Last attempt: ${view.state?.lastAttempt.outcome ?? "not recorded"}.\nDesktop request: ${coordination?.notification?.delivery ?? "not recorded"}; actual viewing is unproven.\nUse ppa auto list to inspect retained entries or ppa auto scan to refresh observations.`);
       else {
         if (coordination?.active) io.stdout(`Active item ${coordination.active.ticket}: ${coordination.active.state}. Opening foreground ppa auto resumes this original item; no second item is selectable.`);
         io.stdout(formatAutoWaitlist(view, page, section));

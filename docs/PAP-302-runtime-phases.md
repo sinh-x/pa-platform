@@ -109,3 +109,34 @@ failures/skips/cancellations. Core and Pi TypeScript builds passed. Logs:
 `/tmp/pap302-p3-tests.log`, `/tmp/pap302-p3-retained-final.log`. Capture, process
 launch and provider outcomes in unit fixtures are synthetic and do not substitute
 for an actually selected installed pair or genuine human prompt-count observation.
+
+## P4 — opt-in observation timer and informational desktop requests
+
+`ppa auto units [--json]` renders fixed user-unit descriptions only. It does not
+write/install units, call systemctl or enable anything. The timer uses a 30-minute
+inactive interval and `Persistent=false`; registry wake CAS coalesces processes,
+missed intervals and clock reversal rather than building an offline backlog.
+`ppa auto tick [--json]` is disabled by default and initializes no absent registry.
+An enabled tick only scans, observes the original native result and updates unsigned
+coordination/notifications; it never selects, approves, publishes/queues or launches.
+Opening, explicit scan and timer share the fixed 120-second scanner subprocess.
+
+Notification transitions are durably claimed before argument-array `notify-send`.
+Only bounded ticket/state text plus “Run ppa auto” is sent: no objective, secret,
+command interpolation, action button or approval. Unchanged scans coalesce across
+processes; lost replies remain unknown and never cause a delivery or launch retry.
+Missing user-session bus/daemon/executable is a durable warning. Success means
+**requested**, not human-seen delivery. `ppa auto status` retains that distinction.
+No desktop notification was sent by development checks.
+
+Control transitions now retain append-only registry history. Foreground pause is
+not process termination. A safety review also fixed completed-draft observations
+regressing a later approved/paused item: settled observations are now idempotent
+and do not grow history on every timer wake.
+
+Initial P4 check: 25 passed / 1 failed. The hostile-path test exposed JavaScript
+replacement-string handling of `$$` in unit quoting; a function replacement now
+preserves the required literal systemd escape. Repeated P4 check: **26/26 passed**,
+zero skips/cancellations, including compiled disabled tick/unit routes, no
+initialization, missing desktop, dedup/reply-loss, interval and regression cases.
+Evidence: `/tmp/pap302-p4-tests.log`, `/tmp/pap302-p4-tests-final.log`.

@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -247,6 +247,12 @@ function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS auto_control (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), revision INTEGER NOT NULL, body TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS auto_wake (singleton INTEGER PRIMARY KEY CHECK(singleton=1), at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS auto_notice_state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), sequence INTEGER NOT NULL, fingerprint TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS auto_notices (sequence INTEGER PRIMARY KEY, body TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS auto_control_events (revision INTEGER PRIMARY KEY, body TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_control_events_no_update BEFORE UPDATE ON auto_control_events BEGIN SELECT RAISE(ABORT, 'auto controls are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_control_events_no_delete BEFORE DELETE ON auto_control_events BEGIN SELECT RAISE(ABORT, 'auto controls are append-only'); END;
     CREATE TABLE IF NOT EXISTS document_snapshots (
       sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL
     );

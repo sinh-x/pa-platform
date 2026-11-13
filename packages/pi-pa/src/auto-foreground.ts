@@ -1,17 +1,18 @@
 import {
-  AutoCoordinator, AutoWaitlistError, AutoWaitlistStore, RegistryAutoJournal, RegistryDocumentJournal,
+  AutoCoordinator, AutoWaitlistError, AutoWaitlistStore, RegistryAutoJournal, RegistryDocumentJournal, RegistryAutoNotifications,
   getDb, openReadonlyRegistryDatabase, scanAutoWaitlist, formatAutoWaitlist, autoWaitlistDiagnostic,
   resolveRepoExecutionPath, type AutoControl, type AutoItem,
 } from "@pa-platform/pa-core";
 import { autoDraftOwner } from "./auto-draft.js";
+import { runPiAutoScanWorker } from "./auto-scan-client.js";
 import { nativeAutoTerminal, type AutoTerminal } from "./auto-terminal.js";
 
-export function readAutoCoordination(): { observed: boolean; active: AutoItem | null; control: AutoControl | null } {
+export function readAutoCoordination() {
   try {
     const db = openReadonlyRegistryDatabase(true);
-    try { const journal = new RegistryAutoJournal(db); return { observed: true, active: journal.active(), control: journal.control() }; }
+    try { const journal = new RegistryAutoJournal(db); return { observed: true, active: journal.active(), control: journal.control(), notification: new RegistryAutoNotifications(db).last() }; }
     finally { db.close(); }
-  } catch { return { observed: false, active: null, control: null }; }
+  } catch { return { observed: false, active: null, control: null, notification: null }; }
 }
 export interface AutoForegroundHooks {
   review?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
@@ -19,13 +20,14 @@ export interface AutoForegroundHooks {
   enable?(journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<void>;
   close?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
   revise?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
+  changed?(journal: RegistryAutoJournal): void;
 }
 /** Human-only selection/control. JSON/noninteractive calls have no selection or
  * decision flags. Native owners are callbacks, never public request fields. */
 export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTerminal(), hooks: AutoForegroundHooks = {}): Promise<number> {
   try {
     terminal.authenticate();
-    const snapshots = new AutoWaitlistStore(), view = snapshots.scan(scanAutoWaitlist);
+    const snapshots = new AutoWaitlistStore(), view = snapshots.scan(runPiAutoScanWorker);
     terminal.display(formatAutoWaitlist(view));
     const journal = new RegistryAutoJournal(getDb()), coordinator = new AutoCoordinator(journal, () => terminal.authenticate());
     let active = journal.active();
@@ -44,7 +46,7 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
         const snapshotRoot = view.state.snapshot.projects.find(p => p.key === entry.project)?.canonicalRoot;
         if (repository.repoRoot !== snapshotRoot) throw new AutoWaitlistError("AUTO_SOURCE");
         active = journal.select(entry, repository.repoRoot, () => {
-          const found = scanAutoWaitlist().entries.find(e => e.id === entry.id);
+          const found = runPiAutoScanWorker().entries.find(e => e.id === entry.id);
           if (!found) throw new AutoWaitlistError("AUTO_SOURCE"); return found;
         }, () => terminal.authenticate());
       }
@@ -53,6 +55,7 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
         catch { active = journal.change(active.itemId, journal.item(active.itemId).revision, b => ({ ...b, state: "blocked", reason: "contract" }), () => terminal.authenticate()); }
       }
     }
+    hooks.changed?.(journal);
     terminal.display(`Active item ${active.ticket}: ${active.state}. Original item ${active.itemId}.\nThis item holds the single PAP/PAPC slot until an explicitly settled disposition.`);
     const selected = await terminal.choose("Inspect or control the original item; cancellation grants nothing and retains the slot.", [
       "Inspect full frozen documents", "Review exact implementation start", "Reconcile original work (never launch a replacement)",
@@ -93,6 +96,7 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
       if (!hooks.revise) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
       active = await hooks.revise(active, journal, terminal);
     }
+    hooks.changed?.(journal);
     terminal.display(`Item ${active.ticket}: ${active.state}. Run ppa auto to inspect/resume the same item. No product completion or human UAT is asserted.`);
     return 0;
   } catch {
