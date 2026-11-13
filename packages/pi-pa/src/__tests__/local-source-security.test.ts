@@ -258,6 +258,109 @@ test("read revalidates between async callbacks; abort after ingress suppresses c
   }
 }));
 
+test("registered read lifetime revokes in-flight acquired bytes before session shutdown delivery", async t => fixture(async f => {
+  const originalRead = fs.readSync, originalOpen = fs.openSync, originalClose = fs.closeSync;
+  const target = statSync(f.file), owned = new Set<number>();
+  let shutdown: Promise<void> | undefined, scheduled = false, registryClosed = false;
+  const tools = new Map<string, PiToolDefinition>(), lifecycle = createPiSessionLifecycle(() => { registryClosed = true; });
+  registerPiSessionModules({ registerTool: tool => tools.set(tool.name, tool) }, lifecycle, [registerLocalSourceToolsModule]);
+  t.mock.method(fs, "openSync", ((...args: Parameters<typeof originalOpen>) => { const fd = originalOpen(...args); owned.add(fd); return fd; }) as typeof originalOpen);
+  t.mock.method(fs, "closeSync", (fd: number) => { owned.delete(fd); return originalClose(fd); });
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => {
+    const stat = fs.fstatSync(args[0]), count = originalRead(...args);
+    if (!scheduled && stat.ino === target.ino && stat.dev === target.dev) {
+      scheduled = true;
+      queueMicrotask(() => { shutdown = lifecycle.shutdown({ reason: "reload" }); });
+    }
+    return count;
+  }) as typeof originalRead);
+  try {
+    const result = await invoke(tools.get("read")!, { path: f.file }, f.context);
+    assert.equal(scheduled, true, "exercise actual acquisition, not a late-call-only rejection");
+    await shutdown;
+    assert.equal(result.isError, true);
+    assert.equal(result.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+    assert.equal(result.details.outputWithheld, true);
+    assert.equal(result.details.effectState, "not-established");
+    assert.doesNotMatch(JSON.stringify(result), /ordinary before|ordinary after|INERT_LOCAL_CANARY/);
+    assert.equal(owned.size, 0, "reader pins close even when shutdown revokes delivery");
+    assert.equal(registryClosed, true);
+    await assert.rejects(() => invoke(tools.get("read")!, { path: f.file }, f.context), /shutting down/);
+  } finally { await lifecycle.shutdown(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+}));
+
+test("registered reader revokes all shutdown reasons, drops late updates/results/errors and never borrows replacement lifetime", async () => fixture(async f => {
+  for (const reason of ["reload", "new", "resume", "fork", "quit"]) {
+    for (const thrown of [false, true]) {
+      let finish!: () => void, receivedSignal: AbortSignal | undefined, closes = 0, calls = 0;
+      const tools = new Map<string, PiToolDefinition>(), updates: PiToolResult[] = [];
+      const lifecycle = createPiSessionLifecycle(() => { closes++; });
+      registerPiSessionModules({ registerTool: tool => tools.set(tool.name, tool) }, lifecycle, [pi => pi.registerTool?.({
+        name: "read", label: "Inert delegated reader", description: "Inert lifetime fixture", parameters: Type.Object({ path: Type.String() }),
+        execute: async (_id, _input, signal, update) => {
+          calls++; receivedSignal = signal;
+          await new Promise<void>(resolve => { finish = resolve; });
+          const result = { content: [{ type: "text" as const, text: "INERT_REVOKED_READER_BODY" }], details: {} };
+          update?.(result);
+          if (thrown) throw new Error("INERT_REVOKED_READER_BODY");
+          return result;
+        },
+      })]);
+      const pending = invoke(tools.get("read")!, { path: f.file }, f.context, result => updates.push(result));
+      assert.equal(receivedSignal?.aborted, false);
+      const shutdown = lifecycle.shutdown({ reason });
+      assert.equal(receivedSignal?.aborted, true, "revocation precedes cleanup/settlement");
+      assert.equal(closes, 0, "registry remains owned until pending read settles");
+      finish();
+      const result = await pending;
+      await shutdown;
+      assert.equal(closes, 1);
+      assert.equal(result.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+      assert.equal(result.isError, true);
+      assert.deepEqual(updates, [], "no progress or unchecked late update after revocation");
+      assert.doesNotMatch(JSON.stringify(result), /INERT_REVOKED_READER_BODY/);
+      await assert.rejects(() => invoke(tools.get("read")!, { path: f.file }, f.context), /shutting down/);
+      assert.equal(calls, 1, "late rejection must precede delegation");
+    }
+  }
+  const replacementTools = new Map<string, PiToolDefinition>(), replacement = createPiSessionLifecycle(() => {});
+  registerPiSessionModules({ registerTool: tool => replacementTools.set(tool.name, tool) }, replacement, [registerLocalSourceToolsModule]);
+  try {
+    const allowed = await invoke(replacementTools.get("read")!, { path: f.file }, f.context);
+    assert.notEqual(allowed.isError, true, text(allowed));
+    assert.match(text(allowed), /ordinary before/);
+  } finally { await replacement.shutdown(); }
+}));
+
+test("registered read combines caller cancellation without revoking another call in the same session", async () => fixture(async f => {
+  let finish!: () => void, receivedSignal: AbortSignal | undefined;
+  const tools = new Map<string, PiToolDefinition>(), lifecycle = createPiSessionLifecycle(() => {});
+  registerPiSessionModules({ registerTool: tool => tools.set(tool.name, tool) }, lifecycle, [pi => pi.registerTool?.({
+    name: "read", label: "Inert delegated reader", description: "Inert lifetime fixture", parameters: Type.Object({ path: Type.String() }),
+    execute: async (_id, _input, signal) => {
+      receivedSignal = signal;
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { content: [{ type: "text" as const, text: "ordinary delegated fixture" }], details: {} };
+    },
+  })]);
+  try {
+    const controller = new AbortController();
+    const pending = tools.get("read")!.execute("caller-abort", { path: f.file }, controller.signal, undefined, f.context);
+    controller.abort();
+    assert.equal(receivedSignal?.aborted, true);
+    finish();
+    const denied = await pending;
+    assert.equal(denied.details.code, "LOCAL_SOURCE_UNAVAILABLE");
+    assert.doesNotMatch(text(denied), /ordinary delegated fixture/);
+    const next = invoke(tools.get("read")!, { path: f.file }, f.context);
+    assert.equal(receivedSignal?.aborted, false, "caller cancellation does not revoke the session");
+    finish();
+    const allowed = await next;
+    assert.notEqual(allowed.isError, true, text(allowed));
+    assert.equal(text(allowed), "ordinary delegated fixture");
+  } finally { await lifecycle.shutdown(); }
+}));
+
 test("read distinguishes unknown I/O from unsupported policy without exposing private exceptions", async t => fixture(async f => {
   const target = statSync(f.file), originalRead = fs.readSync;
   t.mock.method(fs, "readSync", ((...args: Parameters<typeof originalRead>) => {

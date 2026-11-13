@@ -73,6 +73,75 @@ no approval merely to ask, preserve result/disabled support), conditional retry,
 no installation/access promise. Source inventory adds the entry owner and renews
 the changed Nix owner after semantic inspection. Human clarity/UAT is not run.
 
+## Phase 4b — registered reader lifetime
+
+`registerPiSessionModules` now owns a private AbortController for each registration.
+It installs revocation before module shutdown steps, combines the native lifetime
+signal with each caller read signal, suppresses late read progress, and checks
+revocation after filtering both returned and thrown delegated-read outcomes.
+Actual `createSecureLocalReadTool` observes this signal while descriptors are
+pinned and before final delivery; its existing finally closes them. Shutdown
+still waits for tracked in-flight accesses before registry close. Other tools,
+registry tracking semantics, selected/retained admission, direct tool signals,
+result fields and read failure wording are unchanged. No identity setter,
+trusted-root argument, provenance flag or test override is introduced.
+
+This is a production **revocation prerequisite**, not a selected-host producer
+connection. A replacement session gets its own lifetime; it cannot reactivate an
+old registered reader. A caller abort cancels only its call, not the session.
+Synchronous reads cannot observe newly dispatched external events until JavaScript
+runs them; microtask revocation before async formatting/delivery is covered, not
+hostile-same-UID isolation or a persistent read-operation journal.
+
+The new actual-reader baseline test was run BEFORE the repair:
+
+```sh
+NO_COLOR=1 node --import=tsx --test --test-name-pattern='registered read lifetime' \
+ packages/pi-pa/src/__tests__/local-source-security.test.ts
+```
+
+**Exit1, 0 pass/1 fail**: read acquired bytes, queued shutdown during the async
+boundary, but returned ordinary text (`isError` undefined, expected true). Original
+log retained. After repair, expanded source command **46/46 pass** (unchanged
+manifest9 included), composition/admission/native-host **37/37 pass**, workspace
+`corepack pnpm typecheck` exit0. New cases cover actual acquired-byte revocation
+and descriptor cleanup; all five reload/new/resume/fork/quit reasons; a delegated
+reader ignoring cancellation, including late thrown body/update; late calls before
+delegation; independent replacement lifetime; and caller cancellation without
+session revocation. These are inert source-host fixtures, not selected Pi1.4.0
+registered-consumer qualification.
+
+Exact focused commands:
+
+```sh
+NO_COLOR=1 node --import=tsx --test --test-concurrency=1 \
+ packages/pi-pa/src/__tests__/local-source-security.test.ts \
+ packages/pi-pa/src/__tests__/local-read-paths.test.ts \
+ packages/pi-pa/src/__tests__/local-image-type.test.ts \
+ packages/pa-core/src/__tests__/local-source-file.test.ts \
+ packages/pa-core/src/__tests__/source-content-security.test.ts \
+ packages/pa-core/src/artifacts/__tests__/manifest.test.ts
+NO_COLOR=1 node --import=tsx --test --test-concurrency=1 \
+ packages/pi-pa/src/__tests__/requirements-tool-parity.test.ts \
+ packages/pi-pa/src/__tests__/mode-capability-session.test.ts \
+ packages/pi-pa/src/__tests__/pi-extension-composition.test.ts \
+ packages/pi-pa/src/__tests__/pi-native-host.test.ts \
+ packages/pa-core/src/__tests__/interactions-catalogue.test.ts \
+ packages/pa-core/src/__tests__/interactions-discovery.test.ts
+```
+
+```text
+e9254bbf4c57c49a795f9d8f0ec98c1b64e8a501bf4e02341d2ab837e538e9cc /tmp/pap298-lifetime-baseline.log
+c8480d8618867793e7680024ee18fc9760d173b1df1a2e9e0601d18674e33dda /tmp/pap298-lifetime-focused.log
+884dfa2b8684a5e53c8f0fb81b10084fa0d78d5f85a4ad269c6cb9aca28f8399 /tmp/pap298-lifetime-typecheck.log
+0b0df169ea0bfe38dedfef08e9ff39041d41db6ea849148f6e45f32fc3a61e75 /tmp/pap298-lifetime-composition.log
+```
+
+No new wording: the existing typed LOCAL_SOURCE_UNAVAILABLE/result-withheld
+contract now covers actual native revocation as well. Baseline late success becomes
+a truthful unavailable result; unknown underlying mutable effects are not called
+absent. Module source inventory renewed after checking affected consumers.
+
 ## Remaining enabling boundary
 
 Configured installed README/extensions guarded reads still returned

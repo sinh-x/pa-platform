@@ -77,6 +77,6 @@
     "packages/pa-core/src/registry/index.ts": "9508aa1ec42f0613a22f78380aaa90a87c45ff24a71fb2b98495a15e14754845",
     "packages/pa-core/src/mode-capabilities.ts": "d1f0659e63c3e3c6c42903c0c6b485518ba89d6875c5183c8a832cebf68df353",
     "packages/pa-core/src/mode-capability-selection.ts": "ec1d0559f38eebc5c25b1a658d5e096ffe414ab1f7bf1495d9e580b6c7fe8a5c",
-    "packages/pi-pa/src/pi-extension/index.ts": "3b570d173c4d5aba646fa9f47dc62862e36190bd9c89a57b72d25f9a66d546c2"
+    "packages/pi-pa/src/pi-extension/index.ts": "b904a8c6c97a2f303a75a58090b0af8f40ba59bba46108236009d0e00cf79977"
   }
 }
