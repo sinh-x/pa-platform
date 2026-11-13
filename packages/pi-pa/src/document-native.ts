@@ -4,11 +4,11 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
-  DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
+  MODE_CAPABILITY_SESSION, capabilityToolSelected, DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, resolveTrustedTicketMutationContext, workflowDigest,
   type DocumentPackageHost, parseDocumentRequest, DOCUMENT_ACTION_FIELDS, workflowObject,
 } from "@pa-platform/pa-core";
-import { createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "./document-confirmation-native.js";
+import { createPiDocumentRetirement, createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "./document-confirmation-native.js";
 import { authenticatePiDocumentCaller, assertSameDocumentCaller, confirmationDocumentCaller, workspaceDocumentCaller } from "./document-session.js";
 import { nativeReviewPages, type PiWorkflowContext } from "./workflow-native.js";
 
@@ -73,8 +73,10 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
   const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
     confirmationProfile: confirmationDocumentCaller(caller),
+    recoveryProfile: caller.profile === MODE_CAPABILITY_SESSION && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"),
     ...(confirmationDocumentCaller(caller) ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
     ...(confirmationDocumentCaller(caller) && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
+    ...(caller.profile === MODE_CAPABILITY_SESSION && caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document") && (context as PiDocumentConfirmationContext).ui?.custom ? { retire: createPiDocumentRetirement(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
     capture: createPiDocumentCapture(context, authenticate, signal),
     assertEffectAvailable(subject) {
       authenticate();
@@ -92,7 +94,7 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   const service = new DocumentPackageService(new RegistryDocumentJournal(getDb()), host);
   if (!confirmationDocumentCaller(caller)) return service.execute(request);
   const parsed = parseDocumentRequest(request);
-  if (parsed.action !== "confirm" && parsed.action !== "confirm-revoke") return service.execute(request);
+  if (parsed.action !== "confirm" && parsed.action !== "confirm-revoke" && parsed.action !== "publication-retire") return service.execute(request);
   try { workflowObject(parsed, ["action", ...DOCUMENT_ACTION_FIELDS[parsed.action]!]); }
   catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
   const requestSha256 = workflowDigest(JSON.stringify(Object.fromEntries(Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b)))));

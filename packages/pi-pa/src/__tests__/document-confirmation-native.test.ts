@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { generatePrimer, parseTeamYamlContent, workflowDigest, type NativeDocumentConfirmationRequest } from "@pa-platform/pa-core";
-import { createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "../document-confirmation-native.js";
+import { MODE_CAPABILITY_SESSION, createModeCapabilityBinding, parseModeCapabilityPolicy, generatePrimer, parseTeamYamlContent, workflowDigest, type NativeDocumentConfirmationRequest, type NativeRetirementRequest } from "@pa-platform/pa-core";
+import { createPiDocumentRetirement, createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { DOCUMENT_CONFIRMATION_SESSION_VERSION } from "../document-session.js";
 import { DocumentConfirmationDialog } from "../pi-extension/document-confirmation-ui.js";
 import { runDocumentConfirmationCommand, documentConfirmationCommandFailure } from "../pi-extension/document-confirmation-command.js";
@@ -30,6 +30,31 @@ for (const [outcome, keys] of [["approved", ["\u001b[A", "\u001b[A", "\u001b[A",
   assert.match(result.principal, /^local-uid:\d+$/); assert.match(result.interactionId, /^interaction-/);
   for (const expected of ["EX-1", "Requirements content only", "NO publication or queue", "single final decision"]) assert.ok(count.lines.join("\n").includes(expected), expected);
 });
+test("policy-only retirement uses one native exact-operation UI and defaults to Cancel", async () => {
+  const f = fixture();
+  const binding = createModeCapabilityBinding("a".repeat(40), Buffer.from("source-test"), parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: ["document.package"] }));
+  const caller = { ...f.caller, profile: MODE_CAPABILITY_SESSION, capabilities: binding };
+  const request: NativeRetirementRequest = { subject: f.request.subject, requestId: "recovery-fixture", requestKey: "c".repeat(64), diagnosis: {
+    operationId: "effect-original", decisionId: "decision-original", expectedRevision: 4, custody: "available", cause: "Original cause remains unproven.",
+    observation: { members: [{ path: "derived/brief.md", state: "exact", refs: [], consistent: true }], limitations: "Point-in-time source fixture." },
+  } as any };
+  for (const [keys, outcome] of [[ ["\r"], "cancelled" ], [ ["\u001b[A", "\u001b[A", "\u001b[A", "\r"], "approved" ]] as const) {
+    const count = { custom: 0, lines: [] as string[] };
+    const result = await createPiDocumentRetirement(nativeContext([...keys], count), () => caller)(request);
+    assert.equal(result.outcome, outcome); assert.equal(count.custom, 1);
+    assert.equal(workflowDigest(result.nativeEvidence), result.evidenceSha256);
+    assert.match(count.lines.join("\n"), /No obsolete content will be published/);
+    assert.match(count.lines.join("\n"), /permanently prevents/);
+    assert.match(count.lines.join("\n"), /effect-original/);
+    assert.match(Buffer.from(result.nativeEvidence).toString(), /pa-native-document-retirement\/v1/);
+  }
+  const context = nativeContext(["\r"], { custom: 0, lines: [] });
+  await assert.rejects(createPiDocumentRetirement(context, () => f.caller)(request), /DOCUMENT_UNAVAILABLE/);
+  const omitted = { ...caller, capabilities: createModeCapabilityBinding("a".repeat(40), Buffer.from("source-test"), parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: [] })) };
+  await assert.rejects(createPiDocumentRetirement(context, () => omitted)(request), /DOCUMENT_UNAVAILABLE/);
+  await assert.rejects(createPiDocumentRetirement({ ...context, mode: "rpc" }, () => caller)(request), /DOCUMENT_UNAVAILABLE/);
+});
+
 test("native confirmation denies RPC/no custom UI, retained profile, abort and caller drift without fabricated event provenance", async () => {
   const f = fixture(), count = { custom: 0, lines: [] as string[] }, context = nativeContext(["\u001b[A", "\u001b[A", "\u001b[A", "\r"], count);
   await assert.rejects(createPiDocumentConfirmation({ ...context, mode: "rpc" }, () => f.caller)(f.request), /DOCUMENT_UNAVAILABLE/);
