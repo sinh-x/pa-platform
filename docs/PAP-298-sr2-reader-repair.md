@@ -166,8 +166,10 @@ e1d1b07f95d8ca401cfd0cdf0b1c193f297239364f8e4a06d90c6dbbd7ae9300  completions
 
 SR-2 has a source repair candidate, **not an independent resolved finding** until
 the reviewer examines the exact commit and tests. SR-1 remains an enabling blocker.
-The next design phase must specify a trusted build/runtime producer that actually
-executes its selected Pi payload, not just transports an asserted root. No positive
+The separately authorized [bootstrap design proposal](PAP-298-selected-host-bootstrap-design.md)
+specifies a build/runtime producer that would execute its selected Pi payload,
+not just transport an asserted root; it requires renewed independent review and
+concrete packaging/launch selection before implementation. No positive
 hard-link implementation is authorized by source-test success. Final security/code
 review, completed full regression, hosted CI, separately authorized installed reader
 provenance/reads and human clarity/UAT remain outstanding. PAP-287/PAPC-064 remain
