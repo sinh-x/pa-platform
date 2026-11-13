@@ -8,6 +8,7 @@ export * from "./operations/evidence.js";
 export * from "./operations/service.js";
 export * from "./operations/runtime.js";
 export * from "./operations/host.js";
+export * from "./operations/recovery-inspection.js";
 export * from "./operations/files.js";
 export { TEMPLATE_TOOL_REFERENCE } from "./templates/reference.js";
 export { reviewBundleTemplateConsumer } from "./workflows/producer.js";

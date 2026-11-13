@@ -51,6 +51,12 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
   assert.equal(operation("registry.sweep.apply").targetDisposition, "operator-only");
   assert.equal(operation("signal.collect.preview").effectClass, "sensitive");
   assert.equal(operation("pi.reconcile-child.apply").effectClass, "write");
+  assert.equal(operation("pi.inspect-recovery").effectClass, "read");
+  assert.equal(operation("pi.ticket-worktree.inspect").effectClass, "read");
+  assert.equal(operation("pi.ticket-worktree.refresh-head").effectClass, "write");
+  assert.equal(operation("pi.ticket-worktree.refresh-head").targetDisposition, "operator-only");
+  assert.deepEqual(operation("pi.ticket-worktree.refresh-head").nativeForms, []);
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "pi.ticket-worktree.refresh-head" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
   assert.equal(operation("registry.amend").replacementId, "registry.update");
   assert.equal(operation("deploy.agent-model").targetDisposition, "intentionally-unsupported");
   assert.equal(operation("evaluate.agent-model").targetDisposition, "intentionally-unsupported");

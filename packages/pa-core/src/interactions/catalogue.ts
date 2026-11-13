@@ -204,6 +204,9 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   entry("review.preflight", ["review preflight"], "read", "native", `${pi}review-preflight.ts`, "protected review preflight"),
   entry("pi.status", ["pi status", "pi status --local"], "read", "native", `${pi}cli.ts`, "Pi setup metadata"),
   ...["preflight", "smoke-tools", "teardown-smoke", "setup", "remove"].map(action => entry(`pi.${action}`, [`pi ${action}`], "resource", "operator", `${pi}cli.ts`, "Pi host operator")),
+  entry("pi.inspect-recovery", ["pi inspect-recovery"], "read", "native", `${pi}ticket-recovery.ts`, "read-only retained ticket execution diagnosis"),
+  entry("pi.ticket-worktree.inspect", ["pi ticket-worktree inspect"], "read", "native", `${pi}ticket-worktree-recovery.ts`, "read-only existing checkout and linked-HEAD diagnosis"),
+  entry("pi.ticket-worktree.refresh-head", ["pi ticket-worktree refresh-head --expected-observation"], "write", "operator", `${pi}ticket-worktree-recovery.ts`, "existing ticket linked-HEAD and audit owner", { reason: "Metadata-only conditional HEAD refresh; does not settle execution claims, return leases or launch work. No native tool binding is added." }),
   entry("pi.reconcile-child.inspect", ["pi reconcile-child"], "read", "native", `${pi}child-reconciliation.ts`, "native child reconciliation"),
   entry("pi.reconcile-child.apply", ["pi reconcile-child --apply"], "write", "owner", `${pi}child-reconciliation.ts`, "native foreground child reconciliation"),
   // Policy selection changes eligibility, not the finite operations/effect owners.
@@ -231,7 +234,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "operation.run", "serve.status"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

@@ -33,6 +33,15 @@ export interface TicketMutationPrincipal {
   operator?: boolean;
 }
 
+/** Native materialization/metadata-refresh precondition, not a caller SHA override. */
+export interface TicketLinkedHeadExpectation {
+  readonly repo: string;
+  readonly branch: string;
+  readonly baseSha?: string;
+  readonly expectedHeadSha: string;
+  readonly headSha: string;
+}
+
 export class TicketStore {
   private readonly dir: string;
   private readonly context: TicketMutationContext;
@@ -302,6 +311,16 @@ export class TicketStore {
   }
 
   update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
+    return this.updateWithLinkedHeadExpectation(id, input, actor, context);
+  }
+
+  /** Existing ticket writer/audit owner, with native Git resolution compared to
+   * the exact intended predecessor and target BEFORE publishing any bytes. */
+  refreshLinkedBranchHead(id: string, expected: TicketLinkedHeadExpectation, actor: string): Ticket {
+    return this.updateWithLinkedHeadExpectation(id, { add_linked_branch: { repo: expected.repo, branch: expected.branch, linkedBy: actor } }, actor, this.context, expected);
+  }
+
+  private updateWithLinkedHeadExpectation(id: string, input: UpdateTicketInput, actor: string, context: TicketMutationContext, expected?: TicketLinkedHeadExpectation): Ticket {
     assertLifecycleOwnership(input.status, context);
     if (Object.prototype.hasOwnProperty.call(input, "linkedBranches")) {
       throw new Error("Direct linkedBranches replacement is not allowed. Correction: use add_linked_branch so repository and Git evidence are authenticated.");
@@ -332,7 +351,7 @@ export class TicketStore {
       if (input.status && !TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = null;
       if (addDocRef) next = { ...next, doc_refs: this.addDocRef(next.doc_refs, addDocRef, actor, next.updatedAt) };
       if (removeDocRef) next = { ...next, doc_refs: next.doc_refs.filter((ref) => ref.path !== removeDocRef) };
-      next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, collectLinkedAudit);
+      next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, collectLinkedAudit, expected);
       next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, collectLinkedAudit);
       next = this.normalizeTicket(next as unknown as Record<string, unknown>);
 
@@ -831,7 +850,7 @@ type AuditIntent = {
   changes: AuditEntry["changes"];
 };
 
-function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender): Ticket {
+function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender, expected?: TicketLinkedHeadExpectation): Ticket {
   let linkedBranches = ticket.linkedBranches;
   if (remove) {
     const matches = linkedBranchSelectorMatches(linkedBranches, remove);
@@ -855,6 +874,11 @@ function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBra
       throw new Error(`Duplicate linked-branch evidence for ${id}: found ${exactMatches.length} entries for "${resolvedBranch.repo}|${resolvedBranch.branch}". Correction: retain one entry before retrying.`);
     }
     const existing = exactMatches[0];
+    if (expected && (expected.repo !== resolvedBranch.repo || expected.branch !== resolvedBranch.branch
+      || existing?.state !== "materialized" || existing.baseSha !== expected.baseSha || existing.headSha !== expected.expectedHeadSha
+      || resolvedBranch.state !== "materialized" || resolvedBranch.headSha !== expected.headSha)) {
+      throw new Error("Ticket linked-HEAD refresh precondition changed; no ticket update was published");
+    }
     if (existing?.state === "planned" && resolvedBranch.state === "planned") {
       throw new Error(`Duplicate planned linked branch for ${id}: "${resolvedBranch.repo}|${resolvedBranch.branch}" is already recorded. Correction: materialize the branch or keep the existing intent.`);
     }
