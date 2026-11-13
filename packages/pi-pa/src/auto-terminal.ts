@@ -7,6 +7,8 @@ export interface AutoTerminal {
   authenticate(): void;
   display(text: string): void;
   choose(prompt: string, choices: readonly string[]): Promise<number>;
+  /** Unsigned proposal data only; never an outcome/principal/approval port. */
+  input?(prompt: string): Promise<string | null>;
 }
 const visible = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 /** TTY is transport, not identity: the existing unmanaged-origin owner also
@@ -17,6 +19,11 @@ export function nativeAutoTerminal(): AutoTerminal {
     if (!process.stdin.isTTY || !process.stderr.isTTY || typeof process.stdin.setRawMode !== "function") throw new AutoWaitlistError("AUTO_UNAVAILABLE");
   };
   return { authenticate, display(text) { authenticate(); process.stderr.write(`${visible(text)}\n`); },
+    async input(prompt) {
+      authenticate(); const reader = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+      try { const answer = await reader.question(`${visible(prompt)}\nEmpty input cancels: `); authenticate(); return answer.trim() ? answer : null; }
+      finally { reader.close(); }
+    },
     async choose(prompt, choices) {
       authenticate();
       const reader = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
@@ -30,7 +37,7 @@ export function nativeAutoTerminal(): AutoTerminal {
 }
 export interface AutoFullReview {
   subject: DocumentPackage; subjectSha256: string; documents: readonly Uint8Array[];
-  startIntent: unknown; startSha256: string; documentScope: "none" | "publish-and-queue";
+  startIntent: unknown; startSha256: string; documentScope: "none" | "queue-only" | "publish-and-queue";
 }
 export interface AutoNativeCapture {
   outcome: "approved" | "rejected" | "changes-requested" | "cancelled";
@@ -50,7 +57,7 @@ export async function captureAutoFullReview(review: AutoFullReview, terminal: Au
   }
   terminal.display(`Exact start bindings (including configured provider/model, finite deadline, branch and checks):\n${JSON.stringify(review.startIntent, null, 2)}`);
   const selected = await terminal.choose("Decide on exactly the full documents and start bindings displayed above. Nothing is approved by default.", [
-    "Approve the exact document scope AND separate finite implementation-start intent", "Reject this proposal without rejecting the ticket", "Request changes to the proposal",
+    review.documentScope === "publish-and-queue" ? "Approve the exact document scope AND separate finite implementation-start intent" : "Approve the finite implementation-start and displayed ticket effects; unchanged content is not reapproved", "Reject this proposal without rejecting the ticket", "Request changes to the proposal",
   ]);
   terminal.authenticate();
   const outcome = (["approved", "rejected", "changes-requested"] as const)[selected] ?? "cancelled";

@@ -107,7 +107,22 @@ export class RegistryAutoJournal {
     return this.db.transaction(() => {
       authenticate(); const current = this.item(item.itemId);
       if (![current.draft?.operationId, current.dispatch?.operationId].includes(effect.operationId)) throw new AutoWaitlistError("AUTO_STORE");
-      return this.db.prepare("INSERT OR IGNORE INTO auto_effect_claims(operation_id,item_id,body) VALUES(?,?,?)").run(effect.operationId, item.itemId, JSON.stringify(effect)).changes === 1;
+      return this.db.prepare("INSERT OR IGNORE INTO auto_effect_claims(operation_id,item_id,body) VALUES(?,?,?)").run(effect.operationId, item.itemId, JSON.stringify({ effect, stage: "claimed" })).changes === 1;
+    }).immediate();
+  }
+  effectStage(effect: AutoEffect): "claimed" | "ticket-effects" | "launch-requested" {
+    const row = this.db.prepare("SELECT body FROM auto_effect_claims WHERE operation_id=?").get(effect.operationId) as { body: string } | undefined;
+    if (!row) throw new AutoWaitlistError("AUTO_STORE");
+    const r = object(strictJson(Buffer.from(row.body)), ["effect", "stage"]);
+    const saved = object(r.effect, ["operationId", "deploymentId", "state"]);
+    if (saved.operationId !== effect.operationId || saved.deploymentId !== effect.deploymentId) throw new AutoWaitlistError("AUTO_STORE");
+    return oneOf(r.stage, ["claimed", "ticket-effects", "launch-requested"]);
+  }
+  advanceEffect(item: AutoItem, effect: AutoEffect, expected: "claimed" | "ticket-effects", next: "ticket-effects" | "launch-requested", authenticate: () => void): void {
+    this.db.transaction(() => {
+      authenticate(); const current = this.item(item.itemId);
+      if (current.dispatch?.operationId !== effect.operationId || this.effectStage(effect) !== expected) throw new AutoWaitlistError("AUTO_BUSY");
+      this.db.prepare("UPDATE auto_effect_claims SET body=? WHERE operation_id=?").run(JSON.stringify({ effect, stage: next }), effect.operationId);
     }).immediate();
   }
   /** Trusted coordination transition. A callback is rechecked under SQLite CAS;
@@ -134,6 +149,8 @@ export interface AutoWorkOwner {
   /** Read-only admission before persisting a first effect intent. */
   admit?(item: AutoItem): void;
   observe(item: AutoItem, effect: AutoEffect): Promise<AutoOwnerObservation>;
+  /** Same-intent owner reconciliation may finish proven missing pre-launch effects. */
+  reconcile?(item: AutoItem, effect: AutoEffect): Promise<AutoOwnerObservation>;
   /** Called ONCE after durable intent. Any lost reply remains same-intent uncertain. */
   execute(item: AutoItem, effect: AutoEffect): Promise<AutoOwnerObservation>;
 }
@@ -152,7 +169,7 @@ export class AutoCoordinator {
   async reconcile(item: AutoItem, owner: AutoWorkOwner, kind: "draft" | "dispatch"): Promise<AutoItem> {
     const effect = item[kind]; if (!effect) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
     let observation: AutoOwnerObservation;
-    try { observation = await owner.observe(item, effect); } catch { observation = { state: "unknown", settled: false }; }
+    try { observation = await (owner.reconcile ?? owner.observe)(item, effect); } catch { observation = { state: "unknown", settled: false }; }
     return this.apply(item, kind, observation);
   }
   apply(item: AutoItem, kind: "draft" | "dispatch", observation: AutoOwnerObservation): AutoItem {

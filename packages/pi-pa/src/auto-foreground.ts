@@ -17,6 +17,8 @@ export interface AutoForegroundHooks {
   review?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
   reconcile?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
   enable?(journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<void>;
+  close?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
+  revise?(item: AutoItem, journal: RegistryAutoJournal, terminal: AutoTerminal): Promise<AutoItem>;
 }
 /** Human-only selection/control. JSON/noninteractive calls have no selection or
  * decision flags. Native owners are callbacks, never public request fields. */
@@ -54,7 +56,7 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
     terminal.display(`Active item ${active.ticket}: ${active.state}. Original item ${active.itemId}.\nThis item holds the single PAP/PAPC slot until an explicitly settled disposition.`);
     const selected = await terminal.choose("Inspect or control the original item; cancellation grants nothing and retains the slot.", [
       "Inspect full frozen documents", "Review exact implementation start", "Reconcile original work (never launch a replacement)",
-      "Pause scanning and new dispatch (does not kill a worker)", "Enable/resume compatible new work", "Decline before implementation / safely close settled item",
+      "Pause scanning and new dispatch (does not kill a worker)", "Enable/resume compatible new work", "Decline before implementation / safely close settled item", "Request changes / withdraw a never-dispatched start proposal",
     ]);
     if (selected === 0 && active.subjectSha256) {
       const documents = new RegistryDocumentJournal(journal.db), subject = documents.subject(active.subjectSha256);
@@ -79,10 +81,17 @@ export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTermi
     } else if (selected === 5) {
       // Only never-started/no-effect selections can be declined here. Work that
       // ran requires explicit original-owner settlement through reconciliation.
-      if (active.draft || active.dispatch || active.decisionId) throw new AutoWaitlistError("AUTO_BUSY");
+      if (active.draft || active.dispatch || active.decisionId) {
+        if (!hooks.close) throw new AutoWaitlistError("AUTO_BUSY");
+        active = await hooks.close(active, journal, terminal);
+      } else {
       if (await terminal.choose("Decline this service proposal only? The underlying ticket and documents will not be rejected or deleted.", ["Decline this never-started proposal"]) === 0) {
         active = coordinator.close(active, "declined", () => terminal.authenticate());
       }
+      }
+    } else if (selected === 6) {
+      if (!hooks.revise) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+      active = await hooks.revise(active, journal, terminal);
     }
     terminal.display(`Item ${active.ticket}: ${active.state}. Run ppa auto to inspect/resume the same item. No product completion or human UAT is asserted.`);
     return 0;

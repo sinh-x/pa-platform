@@ -54,3 +54,58 @@ waitlist, catalogue and Pi native/compiled-CLI cases), zero skips/cancellations.
 Core build and Pi TypeScript build passed. Evidence: `/tmp/pap302-p2-tests.log`.
 Source checks do not establish actual desktop delivery, provider output usefulness,
 installed pairing, independent review, hosted CI or human UAT.
+
+## P3 — exact native start and original-intent dispatch
+
+`pa-auto-start/v1` is additive to the existing native document registry/decision
+owner, not a service approval file. Immutable proposals precede the prompt and bind
+full document bytes/revision, relevant ticket scope, canonical repository, finite
+source paths, matrix/checks, branch/base, configured Pi provider/model/resources,
+objective, local-only effects and deadline. Ranking/comments alone do not rebind
+scope. Old content/publish/queue receipts never grant implementation start.
+
+One genuine unmanaged foreground review shows all complete text documents and
+start bindings, then records one decision. Unchanged review reconciliation returns
+the original record with no second prompt. Ready published content uses a distinct
+start/queue-only scope without content reapproval. The new native queue-only path
+is authorized by that exact new start grant even when an older package was
+publish-only; old queue receipts/scopes themselves are not broadened. Cancel,
+Reject and changes confer no start. Explicit withdrawal preserves/revokes original
+evidence and cannot conceal an already-dispatched or unsettled effect.
+
+Approved dispatch persists the original operation/deployment IDs first. Existing
+document publication/queue and status owners execute their finite obligations;
+branch planning is displayed and authorized in the exact start intent. The actual
+Pi launcher consumes a native-only closure and new auto baseline while retaining
+ordinary capacity, Treehouse, repository custody, Git effects, project-command and
+source/check owners. There is no force/rogue/alternate-root/resume fallback.
+The direct foreground worker starts automatically from the same CLI approval;
+there is no manual deploy or second unchanged approval. Deadline bounds cover
+preparation and the actual process start, not just an approval timestamp.
+
+Native source/check boundaries reauthenticate the saved same deployment through
+registry/process/custody evidence, exact selected pair, native decision/revocation,
+material ticket and reviewed file/check scope. They do not accept a PA environment
+flag as authority. Pausing stops new dispatch, not an already-admitted worker.
+A terminal success is labelled local review-ready, never checks/CI/human acceptance;
+uncertain/failure outcomes hold the slot and their original evidence.
+
+Recovery has durable owner stages: claimed, ticket-effects, launch-requested.
+Same-intent prelaunch publication/queue can finish through their existing owners.
+Once a launch request may have crossed admission/spawn, recovery observes that
+SAME deployment; missing PID/reply never permits another invocation. Settled close
+checks native pending effects and source ownership/process evidence; it releases
+coordination only, never resources or ticket completion.
+
+The requirements producer can include a finite `Auto Execution Scope` JSON block.
+Existing approved documents without one remain byte-identical: the operator can
+supply unsigned finite path scope as part of the new START proposal before its
+single final approval. Missing/invalid matrix, source scope, pair or original-owner
+facts block dependent work rather than fabricate readiness.
+
+P3 source checks: **35/35** combined auto decision/coordination/dispatch/native/CLI
+cases and **70/70** retained document/session/workflow/catalogue cases, zero
+failures/skips/cancellations. Core and Pi TypeScript builds passed. Logs:
+`/tmp/pap302-p3-tests.log`, `/tmp/pap302-p3-retained-final.log`. Capture, process
+launch and provider outcomes in unit fixtures are synthetic and do not substitute
+for an actually selected installed pair or genuine human prompt-count observation.

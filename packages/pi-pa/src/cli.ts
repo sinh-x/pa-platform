@@ -17,10 +17,11 @@ import { TICKET_RECOVERY_USAGE, runTicketRecoveryInspectionCommand } from "./tic
 import { TICKET_WORKTREE_RECOVERY_USAGE, runTicketWorktreeRecoveryCommand } from "./ticket-worktree-recovery.js";
 import { AUTO_USAGE, runAutoCommand } from "./auto-cli.js";
 import { runAutoForeground } from "./auto-foreground.js";
+import { piAutoForegroundHooks } from "./auto-runtime.js";
 
 if (process.argv[2] === "auto") {
   process.exitCode = process.argv.length === 3 && process.stdin.isTTY
-    ? await runAutoForeground()
+    ? await runAutoForeground(undefined, piAutoForegroundHooks)
     : runAutoCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
 } else if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   process.exitCode = runWorkflowCommand(process.argv[2], process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) }, piWorkflowReadHost());

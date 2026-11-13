@@ -166,8 +166,16 @@ export class TicketPackagePublication {
     });
   }
   queue(subject: DocumentPackage, authorize: () => void, predecessor?: DocumentPackage): void {
+    this.queueInternal(subject, authorize, predecessor, subject.effects.queue);
+  }
+  /** New finite native start scope, not a widening of old content/publish receipts.
+   * The existing document owner MUST validate that exact new grant in authorize. */
+  queueAutoStart(subject: DocumentPackage, authorize: () => void, predecessor?: DocumentPackage): void {
+    this.queueInternal(subject, authorize, predecessor, true);
+  }
+  private queueInternal(subject: DocumentPackage, authorize: () => void, predecessor: DocumentPackage | undefined, queueAuthorized: boolean): void {
     this.store.withWorkflowTransaction(() => {
-      authorize(); if (!subject.effects.queue || this.observe(subject, predecessor) !== "complete") documentReject("DOCUMENT_AUTHORITY");
+      authorize(); if (!queueAuthorized || this.observe(subject, predecessor) !== "complete") documentReject("DOCUMENT_AUTHORITY");
       const ticket = this.ticket(subject);
       if (ticket.status === "pending-implementation" && ticket.assignee === "builder/team-manager") return;
       if (!["requirement-review", "pending-approval", "pending-implementation"].includes(ticket.status) || !["", "sinh", "requirements/team-manager"].includes(ticket.assignee)) documentReject("DOCUMENT_CONFLICT");

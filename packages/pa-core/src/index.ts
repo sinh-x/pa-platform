@@ -1,4 +1,6 @@
 export * from "./auto/coordination.js";
+export * from "./auto/intent.js";
+export * from "./documents/auto-start.js";
 export { openReadonlyRegistryDatabase } from "./registry/db.js";
 export * from "./auto/waitlist.js";
 export { CommittedConfigSource } from "./selected-config-source.js";
