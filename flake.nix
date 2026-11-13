@@ -367,7 +367,7 @@
               export PA_TEST_PI_QUALIFICATION=${qualification}
               export PA_TEST_PI_NODE=${host.node}/bin/node
               export PA_TEST_PI_WRONG_NODE=${pkgs.nodejs_22}/bin/node
-              ${host.node}/bin/node --test ${./scripts/dev/selected_pi_host_qualification.test.mjs}
+              ${host.node}/bin/node --test ${./scripts/dev/selected_pi_host_qualification.test.mjs} ${./scripts/dev/selected_pi_host_entry.test.mjs}
               touch $out
             '';
           selected-pi-host-pin =

@@ -3,7 +3,8 @@
   "scope": "Conservative source-change guard, not semantic completeness or installed provenance. Reconcile changed dispatch/variants before renewing hashes.",
   "sources": {
     "nix/selected-pi-host.nix": "4454d74ac2288d3fe3ff190ef001f358a5bb314a3f3f0dd149fc9603412f74bc",
-    "nix/selected-pi-qualification.nix": "8c0a7b28f3c6128082063bbdd04f437bf30fb9241221e53751ab958a1be62195",
+    "nix/selected-pi-qualification.nix": "5731934424cd83d83db6abd4f68d057efc441ca59b3bb126c297531b86ffe99c",
+    "packages/pi-pa/runtime/selected-host-entry.c": "155e4659dce8225df7d200894028e9ca15e26f50e4d44c41b1be54338c33485b",
     "packages/pi-pa/runtime/selected-host-qualification.mjs": "f78fa6f988609749ff75329c728147eb13891a68ffca606f061f7f294a01d94a",
     "packages/pa-core/src/index.ts": "8d6ce93447300d7f273457a9200f3db36b1d193ab6337cad70109f5c2caa876d",
     "packages/pa-core/src/source-content-security.ts": "4c0be6d8c6ae3d77490ba99a07337a67512a9681fa85751111ed05262c539d80",
