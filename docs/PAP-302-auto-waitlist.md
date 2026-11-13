@@ -151,6 +151,11 @@ successful real read-only scanner subprocess across both disposable projects.
 
 ## Remaining delivery contracts
 
+The operator selected a [paired PAPC follow-up plan](PAP-302-paired-follow-up-plan.md)
+after P1. P2–P5 are deferred, **not removed from PAP-302 scope**. A cancelled
+session checklist entry was replaced with an explicit pending follow-up; it was
+not a ticket/product cancellation.
+
 P2 requires durable global selection/hold states plus an actually supported,
 bounded unsigned background producer and a genuine versioned foreground review
 host. Existing `requirements/analyze` selection explicitly rejects background
