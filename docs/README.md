@@ -18,6 +18,8 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 
 ## Operational Docs
 
+- [PAP-302 runtime phases](PAP-302-runtime-phases.md) records P2–P4 implementation and P5 source hardening. The [qualification handoff](PAP-302-qualification-handoff.md) separates actual checks/timeouts from unperformed manual pairing, installed/independent/desktop/canary/human gates; [P1 evidence](PAP-302-auto-waitlist.md) remains historical.
+
 - [PAP-273 native confirmation and branch bridge](PAP-273-native-confirmation-follow-up.md) records the d-199e82 follow-up, source interfaces, phase results, retained-version behavior and separate installed/UAT gates.
 - [Requirements workspace interfaces](requirements-workspace-interface.md) separates V2 and V3 supporting capabilities and operator/model entry points.
 

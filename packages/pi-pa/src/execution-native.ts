@@ -24,6 +24,7 @@ import { executionAdministration, runExecutionAdministration, type ExecutionAdmi
 import { ProjectCommandContract } from "./project-command-contract.js";
 import { readPiForegroundCompletion } from "./terminal-status.js";
 import { authorizePiStructuredWork, parseStructuredLaunchNote, requirePiSourceIntent, retainedPiSourceIntent, taskRequiredCommands } from "./workflow-consumers.js";
+import { piAutoWorkerIntent } from "./auto-authority.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan",
   "pi-typecheck": "corepack pnpm --filter @pa-platform/pi-pa typecheck",
@@ -441,7 +442,7 @@ export class NativeExecutionSession {
     }
     if (!this.#commands) {
       const task = authorizePiStructuredWork(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch, "source.edit-scoped", undefined, parseStructuredLaunchNote(this.#ordinary?.start.note) ?? undefined);
-      this.#commands = ProjectCommandContract.resolve(this.contract.repoKey, this.contract.repoRoot, this.contract.worktreeRoot, task ? taskRequiredCommands(task) : undefined);
+      this.#commands = ProjectCommandContract.resolve(this.contract.repoKey, this.contract.repoRoot, this.contract.worktreeRoot, task ? taskRequiredCommands(task) : piAutoWorkerIntent(this.contract.repoKey, this.contract.repoRoot, this.contract.ticket, this.contract.branch)?.validation.commands);
     }
     if (!this.#commands) throw executionFailure("EXECUTION_PROJECT_CONTRACT_INVALID");
     return this.#commands;

@@ -189,6 +189,13 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ]),
   ...["show", "verify"].map(action => entry(`decision.${action}`, [`decision ${action}`], "read", "native", `${core}workflow.ts`, "native decision")),
   entry("document.describe", ["document describe --format json"], "read", "native", `${pi}document-cli.ts`, "document interface"),
+  entry("auto.units", ["auto units", "auto units --json"], "read", "native", `${pi}auto-background.ts`, "PPA auto user-unit description", { reason: "Renders fixed opt-in unit text only. It does not write units, call systemctl, install, activate or approve any ticket." }),
+  entry("auto.tick", ["auto tick"], "write", "owner", `${pi}auto-background.ts`, "PPA auto periodic observation and informational notification", { reason: "An explicitly enabled wake may refresh unsigned snapshots, reconcile factual original results and request a desktop notification. It never selects, approves, publishes, queues or launches an agent. Default controls are disabled; it is not a pure reader." }),
+  entry("auto.help", ["auto --help"], "read", "native", `${pi}auto-cli.ts`, "PPA auto inspection metadata"),
+  entry("auto.list", ["auto list", "auto list --section", "auto list --page"], "read", "native", `${pi}auto-cli.ts`, "PPA auto retained unsigned waitlist", { reason: "Reads only a retained snapshot; no initialization, selection, approval, drafting or worker launch is supported." }),
+  entry("auto.status", ["auto status"], "read", "native", `${pi}auto-cli.ts`, "PPA auto observed coordination and native local results", { reason: "Reads retained freshness, active coordination/control/notification IDs and existing native result evidence. It does not initialize, grant work, infer a launch or certify human acceptance." }),
+  entry("auto.scan", ["auto scan", "auto --json"], "write", "owner", `${pi}auto-cli.ts`, "PPA auto unsigned coordination snapshot", { reason: "Read-only product observations run in a fixed bounded scanner child, but refresh writes an external coordination snapshot and scanner lock. It is not a pure read, Pi agent launch, human decision, selection or execution grant." }),
+  entry("auto.foreground", ["auto"], "launch", "owner", `${pi}auto-foreground.ts`, "PPA auto native human foreground controller", { reason: "Interactive opening can explicitly select one global item, request bounded unsigned drafting/revision with retained evidence, capture one claimed exact native start decision and automatically request one ordinary Pi launch. Document, ticket, capacity, checkout, source/check and pause owners still admit each effect; retained receipts grant no launch authority. Noninteractive opening only scans; no native tool or imported approval binding is exposed." }),
   ...family("artifact", "owned artifact session", [
     ["render", ["artifact render"], "write", "owner"], ["review.start", ["artifact review start"], "resource", "owner"],
     ["review.status", ["artifact review status"], "read", "owner"], ["review.stop", ["artifact review stop"], "resource", "owner"],
@@ -204,6 +211,9 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   entry("review.preflight", ["review preflight"], "read", "native", `${pi}review-preflight.ts`, "protected review preflight"),
   entry("pi.status", ["pi status", "pi status --local"], "read", "native", `${pi}cli.ts`, "Pi setup metadata"),
   ...["preflight", "smoke-tools", "teardown-smoke", "setup", "remove"].map(action => entry(`pi.${action}`, [`pi ${action}`], "resource", "operator", `${pi}cli.ts`, "Pi host operator")),
+  entry("pi.inspect-recovery", ["pi inspect-recovery"], "read", "native", `${pi}ticket-recovery.ts`, "read-only retained ticket execution diagnosis"),
+  entry("pi.ticket-worktree.inspect", ["pi ticket-worktree inspect"], "read", "native", `${pi}ticket-worktree-recovery.ts`, "read-only existing checkout and linked-HEAD diagnosis"),
+  entry("pi.ticket-worktree.refresh-head", ["pi ticket-worktree refresh-head --expected-observation"], "write", "operator", `${pi}ticket-worktree-recovery.ts`, "existing ticket linked-HEAD and audit owner", { reason: "Metadata-only conditional HEAD refresh; does not settle execution claims, return leases or launch work. No native tool binding is added." }),
   entry("pi.reconcile-child.inspect", ["pi reconcile-child"], "read", "native", `${pi}child-reconciliation.ts`, "native child reconciliation"),
   entry("pi.reconcile-child.apply", ["pi reconcile-child --apply"], "write", "owner", `${pi}child-reconciliation.ts`, "native foreground child reconciliation"),
   // Policy selection changes eligibility, not the finite operations/effect owners.
@@ -231,7 +241,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "operation.run", "serve.status"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

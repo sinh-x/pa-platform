@@ -417,6 +417,13 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
 }
 
 export interface PiDeployDependencies {
+  /** Native auto decision/coordination closure only, never request/argv/env.
+   * Ordinary capacity, checkout, source and validation owners still apply. */
+  readonly autoLaunch?: {
+    readonly deploymentId: string; readonly deadlineAt: string;
+    assertCurrent(request: DeployRequest, resolved?: { provider?: string; model?: string }): void;
+    baseline(): import("@pa-platform/pa-core").AutoTaskBaseline;
+  };
   /** Historical stricter launcher fixture only; never an argv/env/config field
    * and never selects advisory behavior or weakens a security boundary. */
   readonly retainedRuntimeFixture?: "ordinary-native-execution/v1";
@@ -705,8 +712,8 @@ function ticketWorktreeDiagnostic(error: unknown): string {
     condition: "ticket-worktree selection admission stopped",
     source: "registered canonical repository, durable ticket, bounded Treehouse status, physical Git and process-verified builder evidence",
     reason,
-    correction: "preserve the checkout, ticket and all authority evidence; selection grants no mutation or return rights",
-    resumeAction: "reconcile the exact existing materialized checkout and retry with fresh matching evidence; no allocation or force bypass",
+    correction: "read ppa pi ticket-worktree --help, then inspect repo/ticket from canonical CWD. Impact: read-only. Actor: agent or operator. New approval: not required. Prerequisite: compatible PPA; preserve checkout and authority evidence",
+    resumeAction: "retry only after linked HEAD and retained execution claims have been reconciled through their respective native owners; HEAD refresh alone does not clear claims. Admission is checked again; no allocation or force bypass",
   });
 }
 
@@ -750,6 +757,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       : inheritedAttempt ? inheritedAdmissionFailure(detail, request.repo ?? "unknown", process.cwd()) : detail;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
+  if (dependencies.autoLaunch) {
+    dependencies.autoLaunch.assertCurrent(request);
+    if (request.team !== "builder" || request.mode !== "orchestrator" || request.background || request.force || request.resume || request.dryRun || request.ticketWorktree) throw new Error("Native auto requires exact fresh direct foreground orchestrator admission");
+  }
   let timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) {
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
@@ -780,7 +791,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   }
   // Only genuinely fresh, unpinned independent builder launches select the
   // advisory contract. Neither model prose nor an environment flag selects it.
-  let advisoryLaunch = dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
+  let advisoryLaunch = !dependencies.autoLaunch && dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
   const documentLaunch = selectsDocumentSession({ team: team.name, mode: mode?.id, pinned: Boolean(pinnedConfig), resume: Boolean(request.resume), inherited: Boolean(inheritedAttempt), rogue: team.name === "rogue-one", background: Boolean(request.background), ticketWorktree: Boolean(request.ticketWorktree), supportedConfig: documentSessionVersion(mode?.document_profile) !== undefined });
   let modeCapabilities: ReturnType<typeof selectModeCapabilities> | undefined;
   if (mode?.capability_policy !== undefined) {
@@ -809,7 +820,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (report.status !== "compatible") return { status: "failed", team: request.team, mode: mode.id, reason: formatReviewPreflight(report) };
     staticReviewAuthorizationId = objective?.reviewAuthorizationId;
   }
-  let deploymentId = `d-${randomBytes(3).toString("hex")}`;
+  let deploymentId = dependencies.autoLaunch?.deploymentId ?? `d-${randomBytes(3).toString("hex")}`;
   if (team.name === "requirements" && mode?.id === "review-auto" && request.background && !request.dryRun && !request.resume) {
     try { deploymentId = approvedPiNixosDeploymentId(request) ?? deploymentId; }
     catch (error) {
@@ -844,6 +855,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   }
   const provider = runtimeConfig.provider;
   const model = runtimeConfig.model;
+  dependencies.autoLaunch?.assertCurrent(request, { provider, model });
   const requestedEnvironment = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
   let activeReviewReservation: RepositoryReviewReservation | undefined;
   let reviewRuntimeTerminated = true;
@@ -960,11 +972,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (advisoryLaunch && existsSync(preparedRepositoryTicketReservationPath(initialRepository.repoRoot, ticketId))) advisoryLaunch = false;
       let linkedBranchFailure: unknown;
       try { requireTicketLinkedBranch(ticket, initialRepository.repoKey); } catch (error) { linkedBranchFailure = error; }
-      if (!advisoryLaunch) assertPiStructuredLaunchPrerequisites(initialRepository.repoKey, initialRepository.repoRoot, ticketId, linkedBranchFailure === undefined);
+      if (!advisoryLaunch && !dependencies.autoLaunch) assertPiStructuredLaunchPrerequisites(initialRepository.repoKey, initialRepository.repoRoot, ticketId, linkedBranchFailure === undefined);
       if (linkedBranchFailure) throw linkedBranchFailure;
-      structuredBaseline = advisoryLaunch ? null : resolvePiStructuredBaseline(initialRepository.repoKey, initialRepository.repoRoot, ticketId);
+      structuredBaseline = advisoryLaunch || dependencies.autoLaunch ? null : resolvePiStructuredBaseline(initialRepository.repoKey, initialRepository.repoRoot, ticketId);
       if (structuredBaseline && (builderMode !== "orchestrator" || team.deploy_modes?.some(entry => entry.id === "implement"))) throw new Error("structured workflow requires the supported direct orchestrator owner; no split-mode fallback");
-      if (!advisoryLaunch && builderMode === "orchestrator" && !request.resume && !structuredBaseline) {
+      if (!advisoryLaunch && !dependencies.autoLaunch && builderMode === "orchestrator" && !request.resume && !structuredBaseline) {
         preparedBuilderAdmission = consumePiPreparedBuilderAdmission({ repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot, ticket: ticketId,
           deploymentId, deploymentDirectory: deployDir, timeoutSeconds: request.timeout }, dependencies);
         if (preparedBuilderAdmission) { activeTicketSlot = preparedBuilderAdmission.slot; timeout = { timeout: preparedBuilderAdmission.timeoutSeconds }; }
@@ -972,7 +984,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       // Ordinary direct admission must carry task intent before acquiring a
       // permit/checkout. Legacy split-mode and optional preparation retain their
       // separate provenance; neither is a fallback for a denied ordinary task.
-      const intendedTaskBaseline = advisoryLaunch ? resolveAdvisoryTaskBaseline({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, ticketId }) : structuredBaseline ?? (builderMode === "orchestrator" && !preparedBuilderAdmission && !team.deploy_modes?.some((entry) => entry.id === "implement")
+      const intendedTaskBaseline = dependencies.autoLaunch ? dependencies.autoLaunch.baseline() : advisoryLaunch ? resolveAdvisoryTaskBaseline({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, ticketId }) : structuredBaseline ?? (builderMode === "orchestrator" && !preparedBuilderAdmission && !team.deploy_modes?.some((entry) => entry.id === "implement")
         ? resolveOrdinaryTaskBaseline({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, ticketId })
         : undefined);
       if (structuredBaseline && request.resume) {
@@ -1022,7 +1034,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
       if (builderMode === "orchestrator" && !preparedBuilderAdmission) dependencies.observeOperation?.("branch");
       const branchEvidence = preparedBuilderAdmission ? preparedBuilderAdmission.branch : builderMode === "orchestrator"
-        ? materializeTicketBranch({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId, ...(intendedTaskBaseline ? { intendedTaskBaseline, ...(structuredBaseline ? { rereadStructuredTaskBaseline: rereadStructured } : {}), ordinaryOwner: { ...activeTicketSlot!, deploymentId } } : {}) })
+        ? materializeTicketBranch({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId, ...(intendedTaskBaseline ? { intendedTaskBaseline, ...(structuredBaseline ? { rereadStructuredTaskBaseline: rereadStructured } : {}), ...(dependencies.autoLaunch ? { rereadAutoTaskBaseline: () => dependencies.autoLaunch!.baseline() } : {}), ordinaryOwner: { ...activeTicketSlot!, deploymentId } } : {}) })
         : parent
           ? authenticateParentTicketBranch(initialRepository.repoKey, selectedRepository.worktreeRoot, ticketId)
           : refreshTicketLinkedBranchHead({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId });
@@ -1534,11 +1546,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       observedRuntimeFingerprint = readProcessFingerprint(pid);
       publishedPid = pid;
     };
-    const beforeRuntimeStart = retainedResume ? (pid: number): void => {
+    const beforeRuntimeStart = dependencies.autoLaunch ? (_pid: number): void => {
+      dependencies.autoLaunch!.assertCurrent(request, { provider, model });
+    } : retainedResume ? (pid: number): void => {
       const handoff = retainedResume!.bindChild(pid); activeRepositoryLease = handoff; activeTicketSlot = handoff.ticketSlot;
       if (Date.now() >= Date.parse(retainedResume!.binding.bounds.deadlineAt)) throw workflowError();
     } : undefined;
-    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, ...(advisoryLaunch || request.background || retainedResume ? { timeoutMs: Math.min(plan.timeoutSeconds * 1000, retainedResume ? Math.max(1, Date.parse(retainedResume.binding.bounds.deadlineAt) - Date.now()) : Infinity) } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, ...(advisoryLaunch || request.background || retainedResume || dependencies.autoLaunch ? { timeoutMs: Math.min(plan.timeoutSeconds * 1000, retainedResume ? Math.max(1, Date.parse(retainedResume.binding.bounds.deadlineAt) - Date.now()) : dependencies.autoLaunch ? Math.max(1, Date.parse(dependencies.autoLaunch.deadlineAt) - Date.now()) : Infinity) } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
     if (protectedValidationLaunch) {
       (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
     }

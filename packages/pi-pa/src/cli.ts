@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand, runWorkflowCommand, templateFailure } from "@pa-platform/pa-core";
+import { AutoWaitlistStore, runCoreCommand, runWorkflowCommand, templateFailure } from "@pa-platform/pa-core";
 import { createDefaultPiHooks } from "./deploy.js";
 import { removePi, setupPi, statusPi } from "./setup.js";
 import { PiAdapter } from "./adapter.js";
@@ -13,8 +13,25 @@ import { piWorkflowReadHost, piRetainedTemplateHost } from "./workflow-host.js";
 import { runDocumentDescription } from "./document-cli.js";
 import { runTicketStatusCommand } from "./ticket-status.js";
 import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./child-reconciliation.js";
+import { TICKET_RECOVERY_USAGE, runTicketRecoveryInspectionCommand } from "./ticket-recovery.js";
+import { TICKET_WORKTREE_RECOVERY_USAGE, runTicketWorktreeRecoveryCommand } from "./ticket-worktree-recovery.js";
+import { AUTO_USAGE, runAutoCommand } from "./auto-cli.js";
+import { runAutoForeground } from "./auto-foreground.js";
+import { piAutoForegroundHooks } from "./auto-runtime.js";
+import { publishAutoNotice, runAutoBackgroundCommand } from "./auto-background.js";
 
-if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
+if (process.argv[2] === "auto") {
+  process.exitCode = ["tick", "units"].includes(process.argv[3] ?? "")
+    ? await runAutoBackgroundCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) })
+    : process.argv.length === 3 && process.stdin.isTTY
+    ? await runAutoForeground(undefined, { ...piAutoForegroundHooks, changed: journal => {
+      try {
+        const notice = publishAutoNotice(journal, new AutoWaitlistStore().read());
+        if (notice?.delivery === "unavailable") process.stderr.write("Desktop notification unavailable. The item is saved; run ppa auto. No approval or launch is inferred from notification delivery.\n");
+      } catch { process.stderr.write("Desktop notification outcome is unknown. Keep the saved item and inspect ppa auto status; do not repeat a launch.\n"); }
+    } })
+    : runAutoCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
+} else if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   process.exitCode = runWorkflowCommand(process.argv[2], process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) }, piWorkflowReadHost());
 } else if (process.argv[2] === "ticket-status") {
   process.exitCode = runTicketStatusCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
@@ -26,6 +43,10 @@ if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   // hooks, database migration or a caller-supplied run/resource override.
   try { process.exitCode = await runCoreCommand(process.argv.slice(2), { binaryName: "ppa", templateHost: piRetainedTemplateHost() }); }
   catch (error) { process.stdout.write(`${JSON.stringify(templateFailure(error))}\n`); process.exitCode = 1; }
+} else if (process.argv[2] === "pi" && process.argv[3] === "ticket-worktree") {
+  process.exitCode = runTicketWorktreeRecoveryCommand(process.argv.slice(4));
+} else if (process.argv[2] === "pi" && process.argv[3] === "inspect-recovery") {
+  process.exitCode = runTicketRecoveryInspectionCommand(process.argv.slice(4));
 } else if (process.argv[2] === "pi" && process.argv[3] === "reconcile-child") {
   process.exitCode = runChildReconciliationCommand(process.argv.slice(4));
 } else if (process.argv.includes("--version") || process.argv.includes("-V")) {
@@ -51,7 +72,7 @@ if (process.argv[2] === "workflow" || process.argv[2] === "decision") {
   ).then(() => 0).catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); return 1; });
 } else {
 process.exitCode = await runCoreCommand(process.argv.slice(2), { hooks: createDefaultPiHooks(), binaryName: "ppa" });
-if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write(`\nPi-only: workflow list|show|validate|preflight|status|next; decision show|verify (read-only).\nPi-only: ticket-status --help (selected administrative status owner; no approval/effects).\nPi-only: document describe --format json (interface discovery only; no CLI approval/effects).\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n${CHILD_RECONCILIATION_USAGE}\n`);
+if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write(`\n${AUTO_USAGE}\nPi-only: workflow list|show|validate|preflight|status|next; decision show|verify (read-only).\nPi-only: ticket-status --help (selected administrative status owner; no approval/effects).\nPi-only: document describe --format json (interface discovery only; no CLI approval/effects).\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n${CHILD_RECONCILIATION_USAGE}\n${TICKET_RECOVERY_USAGE}\n${TICKET_WORKTREE_RECOVERY_USAGE}\n`);
 }
 
 function runTeardownSmoke(args: string[]): void {

@@ -51,6 +51,12 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
   assert.equal(operation("registry.sweep.apply").targetDisposition, "operator-only");
   assert.equal(operation("signal.collect.preview").effectClass, "sensitive");
   assert.equal(operation("pi.reconcile-child.apply").effectClass, "write");
+  assert.equal(operation("pi.inspect-recovery").effectClass, "read");
+  assert.equal(operation("pi.ticket-worktree.inspect").effectClass, "read");
+  assert.equal(operation("pi.ticket-worktree.refresh-head").effectClass, "write");
+  assert.equal(operation("pi.ticket-worktree.refresh-head").targetDisposition, "operator-only");
+  assert.deepEqual(operation("pi.ticket-worktree.refresh-head").nativeForms, []);
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "pi.ticket-worktree.refresh-head" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
   assert.equal(operation("registry.amend").replacementId, "registry.update");
   assert.equal(operation("deploy.agent-model").targetDisposition, "intentionally-unsupported");
   assert.equal(operation("evaluate.agent-model").targetDisposition, "intentionally-unsupported");
@@ -59,6 +65,19 @@ test("hidden effect variants and deprecated/unsupported forms remain explicit", 
   assert.ok(operation("codectx.query.function").aliases.includes("codectx query fn"));
 });
 
+test("PPA auto refresh writes only coordination data and never becomes a native approval/launch binding", () => {
+  for (const id of ["auto.help", "auto.list", "auto.status"]) assert.equal(operation(id).effectClass, "read");
+  const scan = operation("auto.scan");
+  assert.equal(scan.effectClass, "write"); assert.deepEqual(scan.cliForms, ["auto scan", "auto --json"]);
+  assert.equal(operation("auto.foreground").effectClass, "launch");
+  assert.equal(operation("auto.tick").effectClass, "write");
+  assert.equal(operation("auto.units").effectClass, "read");
+  assert.deepEqual(operation("auto.foreground").nativeForms, []);
+  assert.deepEqual(scan.nativeForms, []); assert.deepEqual(scan.channels, ["cli"]); assert.equal(scan.nativeBinding, null);
+  assert.match(scan.reason, /not a pure read/);
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "auto.scan" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(row => row.operationId !== "auto.scan")).includes("missing-effect-variant"));
+});
 test("status owner routes are inventoried without promoting source discovery to authority", () => {
   for (const action of ["inspect", "set"]) {
     const row = operation(`ticket.status.${action}`);

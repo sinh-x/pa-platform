@@ -9,6 +9,15 @@ export interface DocumentConfirmation extends DocumentDecision {
   requestKey: string; scope: DocumentConfirmationScope; operation: "capture" | "revoke"; revokes: string | null; supersedes: string | null;
   interactionId: string; deploymentId: string; sessionId: string; recordedAt: string;
 }
+export interface DocumentAutoStart extends DocumentDecision {
+  autoStartVersion: "pa-auto-start/v1"; method: "ppa-auto-foreground"; itemId: string; startSha256: string;
+  requestKey: string; documentScope: "none" | "queue-only" | "publish-and-queue"; interactionId: string; recordedAt: string;
+}
+export interface DocumentAutoReview {
+  subjectSha256: string; itemId: string; startSha256: string; reviewId: string;
+  phase: "requested" | "observed" | "withdrawn"; callerIdentity: string;
+  evidenceSha256: string | null; outcome: DocumentDecision["outcome"] | null; principal: string | null; interactionId: string | null;
+}
 export interface DocumentIntent { operationId: string; subjectSha256: string; decisionId: string; operation: "publish" | "queue" }
 export interface DocumentRetirementConsent {
   consentId: string; subjectSha256: string; operationId: string; decisionId: string;
@@ -22,6 +31,9 @@ export function retirementRequestKey(r: Pick<DocumentRetirementConsent, "subject
 export type DocumentEventData = { kind: "frozen"; subjectSha256: string }
   | ({ kind: "decision" } & DocumentDecision)
   | ({ kind: "confirmation" } & DocumentConfirmation)
+  | ({ kind: "auto-start" } & DocumentAutoStart)
+  | ({ kind: "auto-review" } & DocumentAutoReview)
+  | { kind: "auto-proposal"; subjectSha256: string; itemId: string; startSha256: string }
   | { kind: "revoked"; subjectSha256: string; decisionId: string; evidenceSha256: string }
   | ({ kind: "intent" } & DocumentIntent)
   | ({ kind: "retirement-consent" } & DocumentRetirementConsent)
@@ -30,12 +42,30 @@ export type DocumentEventData = { kind: "frozen"; subjectSha256: string }
 export interface DocumentEvent { schemaVersion: "pa-document-event/v1"; repoKey: string; ticket: string; revision: number; predecessor: string | null; data: DocumentEventData }
 function eventData(value: unknown): DocumentEventData {
   const row = value as Record<string, unknown>;
-  const fields = row?.kind === "retirement-consent" ? ["kind", "consentId", "subjectSha256", "operationId", "decisionId", "requestId", "requestKey", "expectedRevision", "originalRequestSha256", "observationSha256", "observationEvidenceSha256", "outcome", "principal", "interactionId", "evidenceSha256", "callerIdentity", "deploymentId", "sessionId", "recordedAt"]
+  const fields = row?.kind === "auto-review" ? ["kind", "subjectSha256", "itemId", "startSha256", "reviewId", "phase", "callerIdentity", "evidenceSha256", "outcome", "principal", "interactionId"] : row?.kind === "auto-proposal" ? ["kind", "subjectSha256", "itemId", "startSha256"] : row?.kind === "auto-start" ? ["kind", "decisionId", "subjectSha256", "outcome", "principal", "evidenceSha256", "callerIdentity", "autoStartVersion", "method", "itemId", "startSha256", "requestKey", "documentScope", "interactionId", "recordedAt"] : row?.kind === "retirement-consent" ? ["kind", "consentId", "subjectSha256", "operationId", "decisionId", "requestId", "requestKey", "expectedRevision", "originalRequestSha256", "observationSha256", "observationEvidenceSha256", "outcome", "principal", "interactionId", "evidenceSha256", "callerIdentity", "deploymentId", "sessionId", "recordedAt"]
     : row?.kind === "retired" ? ["kind", "subjectSha256", "operationId", "consentId", "observationSha256"] : row?.kind === "confirmation" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity", "confirmationVersion", "method", "requestKey", "scope", "operation", "revokes", "supersedes", "interactionId", "deploymentId", "sessionId", "recordedAt"] : row?.kind === "frozen" ? ["kind", "subjectSha256"] : row?.kind === "decision" ? ["kind", "subjectSha256", "decisionId", "outcome", "principal", "evidenceSha256", "callerIdentity"]
     : row?.kind === "revoked" ? ["kind", "subjectSha256", "decisionId", "evidenceSha256"] : row?.kind === "intent" ? ["kind", "subjectSha256", "operationId", "decisionId", "operation"]
       : row?.kind === "result" ? ["kind", "subjectSha256", "operationId", "outcome", "code"] : [];
   if (!fields.length) documentReject("DOCUMENT_UNCERTAIN");
   const r = object(value, fields); text(r.subjectSha256, SHA256);
+  if (r.kind === "auto-review") {
+    text(r.itemId, /^auto-[a-f0-9-]{36}$/); text(r.startSha256, SHA256); text(r.reviewId, ID); text(r.callerIdentity, SHA256);
+    oneOf(r.phase, ["requested", "observed", "withdrawn"]);
+    if (r.phase === "requested") {
+      if ([r.evidenceSha256, r.outcome, r.principal, r.interactionId].some(v => v !== null)) documentReject("DOCUMENT_UNCERTAIN");
+    } else {
+      text(r.evidenceSha256, SHA256); text(r.principal);
+      oneOf(r.outcome, ["approved", "rejected", "changes-requested", "cancelled"]);
+      if (r.phase === "observed") text(r.interactionId, ID);
+      else if (r.outcome !== "cancelled" || r.interactionId !== null) documentReject("DOCUMENT_UNCERTAIN");
+    }
+  }
+  if (r.kind === "auto-proposal") { text(r.itemId, /^auto-[a-f0-9-]{36}$/); text(r.startSha256, SHA256); }
+  if (r.kind === "auto-start") {
+    if (r.autoStartVersion !== "pa-auto-start/v1" || r.method !== "ppa-auto-foreground") documentReject("DOCUMENT_UNCERTAIN");
+    text(r.itemId, /^auto-[a-f0-9-]{36}$/); text(r.startSha256, SHA256); text(r.requestKey, SHA256); text(r.interactionId, ID);
+    oneOf(r.documentScope, ["none", "queue-only", "publish-and-queue"]); text(r.recordedAt, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+  }
   if (r.kind === "retirement-consent") {
     for (const field of ["consentId", "operationId", "decisionId", "requestId", "interactionId"]) text(r[field], ID);
     for (const field of ["requestKey", "originalRequestSha256", "observationSha256", "observationEvidenceSha256", "evidenceSha256", "callerIdentity"]) text(r[field], SHA256);
@@ -56,7 +86,7 @@ function eventData(value: unknown): DocumentEventData {
     const recordedAt = text(r.recordedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     if (new Date(recordedAt).toISOString() !== recordedAt) documentReject("DOCUMENT_UNCERTAIN");
   }
-  if (r.kind === "decision" || r.kind === "confirmation") { text(r.decisionId, ID); oneOf(r.outcome, ["approved", "rejected", "changes-requested", "cancelled"]); text(r.principal); text(r.evidenceSha256, SHA256); text(r.callerIdentity, SHA256); }
+  if (r.kind === "decision" || r.kind === "confirmation" || r.kind === "auto-start") { text(r.decisionId, ID); oneOf(r.outcome, ["approved", "rejected", "changes-requested", "cancelled"]); text(r.principal); text(r.evidenceSha256, SHA256); text(r.callerIdentity, SHA256); }
   if (r.kind === "revoked") { text(r.decisionId, ID); text(r.evidenceSha256, SHA256); }
   if (r.kind === "intent") { text(r.operationId, ID); text(r.decisionId, ID); oneOf(r.operation, ["publish", "queue"]); }
   if (r.kind === "result") { text(r.operationId, ID); oneOf(r.outcome, ["completed", "failed", "unknown"]); text(r.code, /^[A-Z_]+$/); }
@@ -132,6 +162,21 @@ export class RegistryDocumentJournal {
         if (!consent || consent.data.kind !== "retirement-consent" || consent.data.outcome !== "approved" || consent.data.consentId !== data.consentId || consent.data.subjectSha256 !== data.subjectSha256 || consent.data.operationId !== data.operationId || consent.data.observationSha256 !== data.observationSha256 || documentRetiredSubjects(events).has(data.subjectSha256) || !documentPending(events).some(i => i.operationId === data.operationId)) documentReject("DOCUMENT_AUTHORITY");
         this.snapshot(consent.data.evidenceSha256); this.snapshot(consent.data.observationEvidenceSha256);
       }
+      if (data.kind === "auto-proposal" && events.some(e => e.data.kind === "auto-proposal" && e.data.itemId === data.itemId && e.data.startSha256 === data.startSha256)) documentReject("DOCUMENT_CONFLICT");
+      if (data.kind === "auto-review") {
+        const same = events.flatMap(e => e.data.kind === "auto-review" && e.data.itemId === data.itemId && e.data.startSha256 === data.startSha256 ? [e.data] : []);
+        if (!events.some(e => e.data.kind === "auto-proposal" && e.data.itemId === data.itemId && e.data.startSha256 === data.startSha256 && e.data.subjectSha256 === data.subjectSha256)) documentReject("DOCUMENT_AUTHORITY");
+        if (data.phase === "requested" ? same.length > 0 : !same.some(e => e.phase === "requested" && e.reviewId === data.reviewId) || same.some(e => e.reviewId === data.reviewId && e.phase === data.phase)
+          || data.phase === "observed" && same.find(e => e.phase === "requested" && e.reviewId === data.reviewId)?.callerIdentity !== data.callerIdentity) documentReject("DOCUMENT_CONFLICT");
+      }
+      if (data.kind === "auto-start") {
+        const reviews = events.flatMap(e => e.data.kind === "auto-review" && e.data.itemId === data.itemId && e.data.startSha256 === data.startSha256 ? [e.data] : []);
+        if (!reviews.some(r => r.phase === "observed" && r.evidenceSha256 === data.evidenceSha256 && r.outcome === data.outcome && r.callerIdentity === data.callerIdentity && r.principal === data.principal && r.interactionId === data.interactionId) || reviews.some(r => r.phase === "withdrawn")) documentReject("DOCUMENT_AUTHORITY");
+        if (!events.some(e => e.data.kind === "auto-proposal" && e.data.itemId === data.itemId && e.data.startSha256 === data.startSha256 && e.data.subjectSha256 === data.subjectSha256)
+          || digest(this.snapshot(data.startSha256)) !== data.startSha256
+          || data.requestKey !== digest(JSON.stringify([data.itemId, data.subjectSha256, data.startSha256, data.documentScope]))
+          || events.some(e => e.data.kind === "auto-start" && (e.data.requestKey === data.requestKey || e.data.decisionId === data.decisionId || e.data.interactionId === data.interactionId))) documentReject("DOCUMENT_CONFLICT");
+      }
       if (data.kind === "confirmation") {
         if (data.requestKey !== digest(JSON.stringify([data.subjectSha256, expectedRevision, data.operation, data.scope, data.revokes]))) documentReject("DOCUMENT_AUTHORITY");
         if (events.some(e => (e.data.kind === "confirmation" || e.data.kind === "decision") && e.data.decisionId === data.decisionId || e.data.kind === "confirmation" && (e.data.requestKey === data.requestKey || e.data.interactionId === data.interactionId))) documentReject("DOCUMENT_CONFLICT");
@@ -142,7 +187,8 @@ export class RegistryDocumentJournal {
         if (raw.byteLength > DOCUMENT_LIMITS.memberBytes) documentReject("DOCUMENT_INPUT");
         const sha256 = digest(raw); this.db.prepare("INSERT OR IGNORE INTO document_snapshots (sha256, raw) VALUES (?, ?)").run(sha256, raw); this.snapshot(sha256);
       }
-      if ((data.kind === "decision" || data.kind === "confirmation" || data.kind === "revoked") && digest(this.snapshot(data.evidenceSha256)) !== data.evidenceSha256) documentReject("DOCUMENT_UNCERTAIN");
+      if ((data.kind === "decision" || data.kind === "confirmation" || data.kind === "auto-start" || data.kind === "revoked") && digest(this.snapshot(data.evidenceSha256)) !== data.evidenceSha256) documentReject("DOCUMENT_UNCERTAIN");
+      if (data.kind === "auto-review" && data.evidenceSha256) this.snapshot(data.evidenceSha256);
       if (data.kind === "retirement-consent") { this.snapshot(data.evidenceSha256); this.snapshot(data.observationEvidenceSha256); }
       const last = this.db.prepare("SELECT sha256 FROM document_events WHERE repo_key = ? AND ticket = ? ORDER BY revision DESC LIMIT 1").get(repoKey, ticket) as { sha256: string } | undefined;
       const event: DocumentEvent = { schemaVersion: "pa-document-event/v1", repoKey, ticket, revision: expectedRevision + 1, predecessor: last?.sha256 ?? null, data };
@@ -155,8 +201,8 @@ export class RegistryDocumentJournal {
 export function documentRevokedDecisionIds(events: DocumentEvent[]): Set<string> {
   return new Set(events.flatMap(e => e.data.kind === "revoked" ? [e.data.decisionId] : e.data.kind === "confirmation" && e.data.operation === "revoke" && e.data.outcome === "approved" && e.data.revokes ? [e.data.revokes] : []));
 }
-export function documentDecisionRecords(events: DocumentEvent[], sha256: string): ((DocumentDecision & { kind: "decision" }) | (DocumentConfirmation & { kind: "confirmation" }))[] {
-  return events.flatMap(e => (e.data.kind === "decision" || e.data.kind === "confirmation" && e.data.operation === "capture") && e.data.subjectSha256 === sha256 ? [e.data] : []);
+export function documentDecisionRecords(events: DocumentEvent[], sha256: string): ((DocumentDecision & { kind: "decision" }) | (DocumentConfirmation & { kind: "confirmation" }) | (DocumentAutoStart & { kind: "auto-start" }))[] {
+  return events.flatMap(e => (e.data.kind === "decision" || e.data.kind === "confirmation" && e.data.operation === "capture" || e.data.kind === "auto-start" && e.data.documentScope === "publish-and-queue") && e.data.subjectSha256 === sha256 ? [e.data] : []);
 }
 export function documentDecisions(events: DocumentEvent[], sha256: string): DocumentDecision[] {
   const revoked = documentRevokedDecisionIds(events);
@@ -168,6 +214,10 @@ export function documentCompletedOperation(events: DocumentEvent[], sha256: stri
 }
 export function documentRetiredSubjects(events: DocumentEvent[]): Set<string> {
   return new Set(events.flatMap(e => e.data.kind === "retired" ? [e.data.subjectSha256] : []));
+}
+export function documentPendingAutoReviews(events: DocumentEvent[]): DocumentAutoReview[] {
+  const settled = new Set(events.flatMap(e => e.data.kind === "auto-review" && e.data.phase !== "requested" ? [e.data.reviewId] : []));
+  return events.flatMap(e => e.data.kind === "auto-review" && e.data.phase === "requested" && !settled.has(e.data.reviewId) ? [e.data] : []);
 }
 export function documentPending(events: DocumentEvent[]): DocumentIntent[] {
   const completed = new Set(events.flatMap(e => e.data.kind === "retired" || e.data.kind === "result" && e.data.outcome === "completed" ? [e.data.operationId] : []));
