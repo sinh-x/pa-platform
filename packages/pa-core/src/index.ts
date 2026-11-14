@@ -1,4 +1,5 @@
 export * from "./auto/coordination.js";
+export * from "./auto/draft-journal.js";
 export * from "./auto/shortlist-report.js";
 export * from "./auto/shortlist-journal.js";
 export * from "./auto/notifications.js";

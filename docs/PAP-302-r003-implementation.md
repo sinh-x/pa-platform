@@ -349,6 +349,105 @@ the r003 original. These are source/fixture checks, not genuine policy adoption,
 real provider usefulness, installed qualification or human UAT. Initial 30-case
 append/create/planning run passed; no old failure/skip/timeout is erased.
 
+## R2 bounded draft generation and producer source
+
+Registry **21** adds immutable draft request/response/source snapshots, generation
+revision chains and pre-provider claimed/anchored/observed turns. Every generation
+binds the ORIGINAL accepted human choice, item, draft operation/deployment, full
+ticket version and an exact policy reference. References are correlation, not
+permission: the mandatory native host must authenticate and reauthorize each
+effect against the actual current policy. Asynchronous callbacks, changed copies
+of deadlines/state, expired checks and unknown original turns cannot grant
+continuation. Historical original responses can still be recorded after
+revocation, without authorizing any follow-on write. Unknown states coalesce and
+retain their slot; no PID/reply-absence or replacement-producer recovery exists.
+
+`auto-delegated-draft.ts` supplies the finite Pi producer/package/append adapter.
+It requires an actual native `PiAutoDraftAuthority`; there is deliberately NO
+permissive production implementation or CLI-supplied grant. It uses the existing
+instruction-only, tool-less Pi process driver with ordinary authentication and
+observed-group cleanup limits. Native preparation records the actual registered
+repository configuration, Git observation, check profile, original ticket and
+document-journal prefix. Those are checked again before protected transitions.
+Previously read/listed sources are rechecked through the same source owner,
+including changed content on already-dirty paths. Unread/ignored file bodies are
+not comprehensively fingerprinted; Git status is not a filesystem-write sandbox.
+The original 30-minute ceiling includes preparation, is capped by policy expiry,
+and also retains a native boot/monotonic-clock anchor across controller restarts.
+Boot changes, clock reversal and deadline expiry hold; a restart cannot reset the
+budget. There are at most 32 native source reads/lists (128 KiB/file) and 1 MiB
+context/prompt/response ceilings. These are cooperative native admission/driver
+bounds, NOT an OS filesystem sandbox, CPU quota or escaped-descendant guarantee.
+Registry liveness names the producer controller; each actual Pi child incarnation
+and observed group result is separately preserved in the immutable turn log.
+
+The producer requests complete unsigned brief/requirements/UAT plus a
+material-questions member, rather than collapsed feature summaries. Without material
+questions, FR/NFR/AC/TS identifiers and TS-to-UAT coverage are structurally required;
+a finite validation matrix must match the native repository/branch/base and actual
+registered checks, and requirements must declare finite source scope. Shape checks
+cannot establish semantic usefulness, feasibility or human UAT.
+Raw invalid/failed output remains evidence and holds the original item. Material
+questions save their own complete draft evidence but block implementation.
+
+The complete deterministic bundle is saved BEFORE own artifacts, freeze or
+append. Own files use exclusive creation, fsync and exact-byte replay; conflicting
+or partial bytes refuse without overwrite. Native package freeze and generation
+CAS share SQLite ownership. The original append request is then saved before the
+existing ticket mutex/intent/audit owner is entered. Exact native generation,
+policy, own-member hashes and ticket CAS are rechecked there. Read-only
+`observeAutoDraftAppend` distinguishes absent/intent/ticket/completed/conflict
+without repair or a cleanup claim. Reply loss after output, artifact, freeze,
+append or finish reuses the SAME producer, bundle, package and append request.
+Foreign ticket/repository/document work is retained and causes a hold, not reset,
+substitution or primary-reference rewriting. Completion still issues NO human
+content/start receipt, queue effect, source custody or implementation launch.
+
+NEW consumer proposal `contracts/auto-delegated-v1.json` has exact keys
+`schemaVersion,enabled,draftMode,policySource,resources`, schema
+`pa-auto-delegated-pair/v1`. It requires an explicit committed requirements
+`auto-draft-delegated`/suffixed mode, builder `orchestrator`, explicit Pi models,
+pinned instructions/resources and bounded policy-source bytes. It is NOT an
+agreed external PAPC contract, native policy adoption or activation. Unsupported
+extra CPU/sandbox settings, missing/disabled/dirty pairing and ordinary mode
+substitution fail closed. Generic `auto-draft-*` reservation and the released v1
+real-draft HOLD remain unchanged. R003 continuation is still held until its real
+policy/admission owner is implemented and connected; safe existing-package reuse
+belongs to that native bridge, not to a fabricated manual receipt.
+
+Message/reader changes are additive source behavior, not installed evidence:
+
+| Path/category | Before | After |
+| --- | --- | --- |
+| New producer success | No supported r003 draft producer | `Own unsigned draft package and nonprimary ticket evidence saved; delegated admission remains separate.` |
+| New material-question limitation | No r003 producer outcome | `Own unsigned draft evidence saved with material questions; implementation remains held.` |
+| New known-failed producer blocker | No r003 producer outcome | `Draft preparation did not produce a complete unsigned package.` plus exactly Condition/Source/Reason/Correction/Resume Action; supported read-only inspection and owner reconciliation, no blind restart |
+| Existing-only shortlist JSON | Original item/effect IDs | Adds `draftGeneration` metadata/hashes, never raw request/output bodies or a permission grant; still no initialization/provider/choice/effects |
+
+The blocker is static, <=2000 UTF-16 units, contains no exception/model text, and
+explains inspection versus owner repair and re-admission. Registry propagation
+and label/length/safe-text assertions passed; independent human readability and
+installed propagation remain unperformed. No old JSON schema, manual receipt,
+exit/stream or OPA capability was reinterpreted. Interaction inventory renewal
+covers the new private adapter/data owners, schema/export and read-only field;
+no discoverable native permission binding was added.
+
+Actual focused checks: **215/215 core**, **80/80 Pi**, zero focused skips or
+failures; workspace typecheck/build, staged secrets scan and whitespace checks
+passed (secrets log: `/tmp/pap302-r003-r2-generation-secrets.log`). Logs:
+`/tmp/pap302-r003-r2-generation-{core,pi,typecheck,build}-renewed.log`.
+The additional 9 core and 13 Pi cases cover claims/incarnations, revoked/expired/
+changed authorization, async callback rejection, immutable history, complete
+package and append replay at five fault stages, 32-source ceiling, unknown
+cleanup/no respawn, protected ticket preservation, drift and strict pairing.
+Composed policy/human/provider callbacks are SIMULATED; actual native Git reads
+and retained multiprocess append fixtures do not qualify a real provider, native
+adoption or installed pairing. Earlier syntax/type/fixture-time failures remain
+in `/tmp/pap302-r003-r2-producer-*` logs; later passing reruns do not erase them.
+Full regression timeouts, independent review, C0/PAPC agreement, actual policy
+adoption/implementation, both-project canaries, desktop delivery and r003 UAT
+remain open. No live provider, ticket, configuration or service was changed.
+
 ## Remaining dependency-ordered implementation
 
 1. **R0/R1:** agree exact PAPC/native session/report/publication/choice contracts

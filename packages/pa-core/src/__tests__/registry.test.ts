@@ -1126,7 +1126,7 @@ test("registry schema-v13 migration expands the production event constraint with
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "20" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "21" });
     const control = new RegistryAutoJournal(db).control();
     assert.equal(control.scansEnabled, false); assert.equal(control.dispatchEnabled, false); assert.equal(control.paused, true);
     for (const table of ["auto_items", "auto_effect_claims", "auto_control", "auto_wake", "auto_notice_state", "auto_notices"]) {

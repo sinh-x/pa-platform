@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
 import {
-  AutoWaitlistError, RegistryAutoShortlists, getDb, openReadonlyRegistryDatabase, RegistryReadError, readProcessFingerprint, workflowDigest,
+  AutoWaitlistError, RegistryAutoShortlists, RegistryAutoDrafts, getDb, openReadonlyRegistryDatabase, RegistryReadError, readProcessFingerprint, workflowDigest,
   type AutoItem, type AutoPublishedShortlist,
 } from "@pa-platform/pa-core";
 import { PiAutoReasoningOwner, type PiAutoReasoningDependencies } from "./auto-reasoning.js";
@@ -104,7 +104,7 @@ export function readAutoShortlistStatus(query: { viewVersion?: string; page?: nu
         : Date.now() >= Date.parse(view.generatedAt) && Date.now() < Date.parse(view.expiresAt) ? "time-current" : "expired";
       return { schemaVersion: "pa-auto-shortlist-result/v1", observed: true, freshness, materialFreshness: "not-rechecked", shortlist: shortlist ? { version: shortlist.version, sha256: shortlist.sha256, reportSha256: shortlist.reportSha256, report: shortlist.report, view: JSON.parse(shortlist.view.toString("utf8")) } : null,
         inventory: { snapshotSha256: shortlist?.report.snapshotSha256 ?? null, section, page, pageSize: 100, total: entries.length, pages: Math.ceil(entries.length / 100), entries: entries.slice((page - 1) * 100, page * 100) },
-        reasoning: store.activeCycle(), pendingChoice: store.pendingChoice(), activeItem: active, selection: active ? store.selectionForItem(active.itemId) : null,
+        reasoning: store.activeCycle(), pendingChoice: store.pendingChoice(), activeItem: active, draftGeneration: active ? new RegistryAutoDrafts(store.items).current(active.itemId) : null, selection: active ? store.selectionForItem(active.itemId) : null,
         executionRequested: false, authorityGranted: false };
     } finally { db.close(); }
   } catch (error) {

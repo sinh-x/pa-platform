@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -279,6 +279,25 @@ function migrate(db: Database.Database): void {
       BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
     CREATE TRIGGER IF NOT EXISTS auto_reasoning_items_update BEFORE UPDATE ON auto_reasoning_cycles WHEN NEW.active_slot=1 AND EXISTS(SELECT 1 FROM auto_items WHERE active_slot=1)
       BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TABLE IF NOT EXISTS auto_draft_generations (
+      item_id TEXT NOT NULL, generation INTEGER NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(item_id,generation)
+    );
+    CREATE TABLE IF NOT EXISTS auto_draft_events (
+      item_id TEXT NOT NULL, generation INTEGER NOT NULL, revision INTEGER NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(item_id,generation,revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_draft_events_no_update BEFORE UPDATE ON auto_draft_events BEGIN SELECT RAISE(ABORT, 'auto draft events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_draft_events_no_delete BEFORE DELETE ON auto_draft_events BEGIN SELECT RAISE(ABORT, 'auto draft events are append-only'); END;
+    CREATE TABLE IF NOT EXISTS auto_draft_snapshots (sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_draft_snapshots_no_update BEFORE UPDATE ON auto_draft_snapshots BEGIN SELECT RAISE(ABORT, 'auto draft bytes are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_draft_snapshots_no_delete BEFORE DELETE ON auto_draft_snapshots BEGIN SELECT RAISE(ABORT, 'auto draft bytes are immutable'); END;
+    CREATE TABLE IF NOT EXISTS auto_draft_turns (
+      item_id TEXT NOT NULL, generation INTEGER NOT NULL, turn INTEGER NOT NULL, phase TEXT NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(item_id,generation,turn,phase)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_draft_turns_no_update BEFORE UPDATE ON auto_draft_turns BEGIN SELECT RAISE(ABORT, 'auto draft turns are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_draft_turns_no_delete BEFORE DELETE ON auto_draft_turns BEGIN SELECT RAISE(ABORT, 'auto draft turns are append-only'); END;
     CREATE TABLE IF NOT EXISTS auto_effect_claims (
       operation_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, body TEXT NOT NULL
     );

@@ -312,6 +312,25 @@ export class TicketStore {
     });
   }
 
+  /** Private native recovery observation, NOT admission. Reports only the
+   * original intent's exact data/audit relationship; never repairs or writes. */
+  observeAutoDraftAppend(raw: Uint8Array): { state: "absent" | "intent" | "ticket" | "completed" | "conflict"; expectedVersion: string; appliedVersion: string | null; currentVersion: string | null } {
+    const input = parseAutoDraftTicketAppend(raw), key = autoDraftAppendKey(input);
+    return this.withTransaction(() => {
+      const record = readAutoDraftAppendIntent(this.dir, key), current = this.get(input.ticket), currentVersion = current ? autoDraftTicketVersion(current) : null;
+      const result = { expectedVersion: input.expectedVersion, appliedVersion: record?.appliedVersion ?? null, currentVersion };
+      if (!record) return { state: "absent", ...result };
+      if (record.payloadSha256 !== creationDigest(input) || !isDeepStrictEqual(record.input, input) || !current) return { state: "conflict", ...result };
+      const bytes = new AdvisoryFiles(this.dir).file(`${input.ticket}.json`) as Buffer;
+      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parseReviewEvidenceJson(bytes, "auto-draft-append-observation"))), current)) return { state: "conflict", ...result };
+      const complete = autoDraftAppendAuditComplete(record, this.readCreationAudits().entries);
+      if (complete) return { state: "completed", ...result };
+      if (isDeepStrictEqual(current, record.before)) return { state: "intent", ...result };
+      if (isDeepStrictEqual(current, record.after)) return { state: "ticket", ...result };
+      return { state: "conflict", ...result };
+    });
+  }
+
   /** Native quarantine owner can inspect unresolved append identities; absence
    * of a process or a terminal label is not used to settle these data effects. */
   pendingAutoDraftAppends(id: string): string[] {
