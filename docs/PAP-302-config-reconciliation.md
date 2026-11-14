@@ -73,6 +73,45 @@ Staged secrets/whitespace and later complete Pi/shard results are reported with
 phase commits. Prior full-suite timeouts and installed smoke-driver mistakes
 remain at `/tmp/pap302-full-*`; none is silently converted into a pass.
 
+## Completed full regression accounting after reconciliation
+
+Source candidate `db774342252e757a5470fb50d6554ab6238ab85b`:
+
+- Complete core suite with the exact updated config: **2123/2123**, zero skips,
+  failures or cancellations; `/tmp/pap302-reconcile-core-full.log` (487seconds).
+- Full Pi script suite: **11/11**, no skips/failures;
+  `/tmp/pap302-reconcile-pi-script-tests.log`.
+- ALL **77 Pi source test files** appear exactly once in four disjoint file
+  shards (1/26/25/25). No test-name filters or manual/native-file exclusions.
+  Manifest `/tmp/pap302-reconcile-pi-shards.json`; summary
+  `/tmp/pap302-reconcile-pi-summary.json`; logs `pap302-reconcile-pi-shard{0..3}.log`
+  with separate exit files. All exit0, zero failures/cancellations. Totals:
+  **1533tests,1528passed,5owning external-fixture skips**. Shards separately
+  report191/191,457pass/2skip,485pass/3skip,395/395.
+- The deployment file completes191asserted tests (89top-level) in724seconds.
+  Slowest shard completes in834seconds. The original900-second workspace/full-Pi
+  attempts remain incomplete history, not regressions erased by a new pass.
+  A diagnostic filtered single contention case passed in54seconds; it is NOT
+  counted as complete coverage and no body was omitted from final shards.
+- One skipped installed dual-host case was subsequently exercised using the
+  ACTUAL installed2fc76130... output: full characterization entry **10/10**,
+  `/tmp/pap302-reconcile-installed-dual-host.log`. This overlaps the shard and
+  is not ten new disjoint tests. It resolves that optional case only; four AXI/
+  quota/MCP pinned-fixture cases remain deferred. No installed Git/config
+  provenance or new-source package qualification is inferred.
+- Updated-config OPA **108/108**, runtime-host **1/1**, no skips/failures;
+  `pap302-reconcile-opa-full.log`, `pap302-reconcile-runtime-host.log`.
+- Restore default editor bundle selection after Pi's prescribed both-enabled
+  source test stage; `pap302-reconcile-pi-default-restore.log`.
+
+These complete source/file-shard results supersede the previously unfinished
+source regression dimension, not independent safety review, hosted results at
+an integration SHA, exact installed resource identity or native-human/product
+UAT. All original failure/timeout evidence remains. No performance threshold,
+assertion, authority/cleanup boundary or runtime implementation changed to
+obtain the completed matrix. There is no claim of comprehensive escaped-child
+cleanup from a fixture's successful return.
+
 ## Installed provenance and remaining product gates
 
 Read the owning source, not the previously denied installed metadata bytes.
