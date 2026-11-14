@@ -134,6 +134,50 @@ to a public wrapper. Future native shortlist/choice/timer/final-review messages
 must apply `docs/cli-message-standard.md` with their own before/after inventory,
 real CLI propagation, structural checks and separate human-readability review.
 
+## Native registry coordination phase
+
+`auto/shortlist-journal.ts` now implements the registry-owned pre-ticket cycle,
+complete scan/goal/request/raw-output/report snapshots, original producer claim,
+report-before-publication ordering, immutable shortlist history and atomic head
+refresh. A separate original native choice interaction is claimed before UI,
+its captured evidence is saved before mutable selection checks, and one item is
+created under SQLite CAS. The choice is coordination intent, never a start or
+policy grant. Trusted adapter callbacks must authenticate actual sources/session
+proof and human input; source fixtures simulate those callbacks, not real humans.
+
+Registry schema 20 adds immutable byte/event/report tables and cross-owner SQL
+slot guards. Manual item selection and held states exclude reasoning; reasoning
+or unknown cleanup excludes manual/new selection. A waiting shortlist owns no
+ticket. Refresh while an old view is open causes the original choice to be
+refused, not translated. Cancel has no item/effects. Requested/unknown capture
+cannot be reprompted; observed evidence can finish the SAME interrupted CAS.
+Accepted selection reply loss reuses its original item. No code infers process
+settlement from missing PID/reply. Producer proof is mandatory, not model flags.
+
+The new exports expose typed owners/data only, not CLI/tool dispatch. Inventory
+reconciliation covers that export, schema-20 storage and manual selection's new
+shared-slot guard; the two shortlist modules are newly tracked. Existing CLI,
+OPA, manual receipts and observational tick keep their grammars/effects. No
+service/config enablement, native adoption or live session follows from migration.
+
+Actual checks: core auto/registry/interactions **138/138**, Pi auto/native-host
+**51/51**, workspace typecheck and core build passed; no skips in focused runs.
+Logs: `/tmp/pap302-r003-coordination-{core-final,pi,typecheck,build}.log`.
+Initial failures are retained: null-prototype strict JSON needed normalization
+before comparing native data, typed boundary errors needed preservation, and a
+multiprocess choice fixture needed the ORIGINAL persisted scan identity rather
+than a newly randomized fixture snapshot. The interaction source guard initially
+refused changed exports; hashes were renewed only after the boundary review and
+negative/race tests. This is implementer/source evidence, not independent review.
+The earlier full-suite timeout remains unresolved, not converted into a pass.
+
+Tests include genuine OS-process races for reasoning versus manual selection and
+for two explicit native-choice fixture hosts; full report preservation; zero,
+non-top and stale/expired/foreign choices; source/config/policy drift; refresh
+while a view is open; invalid raw-output retention; session-bound limits;
+immutable history; lost capture reply; interrupted final CAS and same-request
+recovery. Production adapter/provider/CLI integration remains the next phase.
+
 ## Remaining dependency-ordered implementation
 
 1. **R0/R1:** agree exact PAPC/native session/report/publication/choice contracts

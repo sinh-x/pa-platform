@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -241,6 +241,44 @@ function migrate(db: Database.Database): void {
       BEGIN SELECT RAISE(ABORT, 'auto events are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS auto_events_no_delete BEFORE DELETE ON auto_events
       BEGIN SELECT RAISE(ABORT, 'auto events are append-only'); END;
+    CREATE TABLE IF NOT EXISTS auto_reasoning_cycles (
+      cycle_id TEXT PRIMARY KEY, active_slot INTEGER UNIQUE CHECK(active_slot IS NULL OR active_slot=1),
+      revision INTEGER NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS auto_reasoning_session ON auto_reasoning_cycles(json_extract(body,'$.context.sessionId'));
+    CREATE TABLE IF NOT EXISTS auto_reasoning_events (
+      cycle_id TEXT NOT NULL, revision INTEGER NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(cycle_id, revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_events_no_update BEFORE UPDATE ON auto_reasoning_events BEGIN SELECT RAISE(ABORT, 'auto reasoning events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_events_no_delete BEFORE DELETE ON auto_reasoning_events BEGIN SELECT RAISE(ABORT, 'auto reasoning events are append-only'); END;
+    CREATE TABLE IF NOT EXISTS auto_shortlist_blobs (sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_shortlist_blobs_no_update BEFORE UPDATE ON auto_shortlist_blobs BEGIN SELECT RAISE(ABORT, 'auto shortlist bytes are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_shortlist_blobs_no_delete BEFORE DELETE ON auto_shortlist_blobs BEGIN SELECT RAISE(ABORT, 'auto shortlist bytes are immutable'); END;
+    CREATE TABLE IF NOT EXISTS auto_shortlists (version TEXT PRIMARY KEY, cycle_id TEXT UNIQUE NOT NULL, sha256 TEXT NOT NULL, report_sha256 TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_shortlists_no_update BEFORE UPDATE ON auto_shortlists BEGIN SELECT RAISE(ABORT, 'auto shortlists are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_shortlists_no_delete BEFORE DELETE ON auto_shortlists BEGIN SELECT RAISE(ABORT, 'auto shortlists are immutable'); END;
+    CREATE TABLE IF NOT EXISTS auto_shortlist_head (singleton INTEGER PRIMARY KEY CHECK(singleton=1), version TEXT NOT NULL REFERENCES auto_shortlists(version));
+    CREATE TABLE IF NOT EXISTS auto_choice_requests (
+      request_id TEXT PRIMARY KEY, active_slot INTEGER UNIQUE CHECK(active_slot IS NULL OR active_slot=1),
+      revision INTEGER NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auto_choice_events (
+      request_id TEXT NOT NULL, revision INTEGER NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(request_id, revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_choice_events_no_update BEFORE UPDATE ON auto_choice_events BEGIN SELECT RAISE(ABORT, 'auto choice events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_choice_events_no_delete BEFORE DELETE ON auto_choice_events BEGIN SELECT RAISE(ABORT, 'auto choice events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_items_reasoning_insert BEFORE INSERT ON auto_items WHEN NEW.active_slot=1 AND
+      (EXISTS(SELECT 1 FROM auto_reasoning_cycles WHERE active_slot=1) OR EXISTS(SELECT 1 FROM auto_choice_requests WHERE active_slot=1))
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_items_reasoning_update BEFORE UPDATE ON auto_items WHEN NEW.active_slot=1 AND
+      (EXISTS(SELECT 1 FROM auto_reasoning_cycles WHERE active_slot=1) OR EXISTS(SELECT 1 FROM auto_choice_requests WHERE active_slot=1))
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_items_insert BEFORE INSERT ON auto_reasoning_cycles WHEN NEW.active_slot=1 AND EXISTS(SELECT 1 FROM auto_items WHERE active_slot=1)
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_items_update BEFORE UPDATE ON auto_reasoning_cycles WHEN NEW.active_slot=1 AND EXISTS(SELECT 1 FROM auto_items WHERE active_slot=1)
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
     CREATE TABLE IF NOT EXISTS auto_effect_claims (
       operation_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, body TEXT NOT NULL
     );
