@@ -62,6 +62,59 @@ function block(input: Token, readingLink?: (href: string) => boolean): string {
   }
 }
 
+/** New inactive package-reader primitive. Existing companion output stays byte
+ * identical. Only generated member anchors may activate source links. */
+export function renderPackageMarkdown(source: Uint8Array, namespace: string, links: ReadonlyMap<string, string> = new Map()): {
+  html: string; headings: { id: string; level: number; label: string }[];
+} {
+  const safeAnchor = /^#member-[1-9][0-9]*(?:-section-[1-9][0-9]*)?$/;
+  if (!/^member-[1-9][0-9]*$/.test(namespace) || [...links.values()].some(value => !safeAnchor.test(value))) throw artifactDiagnostic("ARTIFACT_POLICY_REJECTED");
+  const markdown = decodeArtifactSource(source).replace(/\r\n|\r/g, "\n");
+  const tokens = new Lexer({ gfm: true, breaks: false, pedantic: false }).lex(markdown);
+  const headings: { id: string; level: number; label: string }[] = [];
+  const depths: number[] = [];
+  const mappedInline = (tokens: Token[]): Token[] => tokens.map(input => {
+    const token = input as MarkedToken;
+    if (token.type === "link") return { ...token, href: links.get(token.href) ?? "", tokens: mappedInline(token.tokens) };
+    if (token.type === "strong" || token.type === "em" || token.type === "text" && token.tokens) return { ...token, tokens: mappedInline(token.tokens!) } as Token;
+    return token;
+  });
+  const text = (tokens: Token[]) => inline(mappedInline(tokens), href => safeAnchor.test(href));
+  const overflow = (body: string, label: string) => `<div class="local-overflow" tabindex="0" role="region" aria-label="${label}">${body}</div>`;
+  const render = (input: Token): string => {
+    const token = input as MarkedToken;
+    switch (token.type) {
+      case "space": return "";
+      case "heading": {
+        while (depths.length && depths.at(-1)! >= token.depth) depths.pop();
+        depths.push(token.depth);
+        const level = Math.min(6, depths.length + 2), id = `${namespace}-section-${headings.length + 1}`;
+        headings.push({ id, level, label: token.text });
+        return `<h${level} id="${id}">${text(token.tokens)}</h${level}>`;
+      }
+      case "paragraph": return `<p>${text(token.tokens)}</p>`;
+      case "text": return token.tokens ? text(token.tokens) : escapeArtifactText(token.text);
+      case "code": return overflow(block(token), "Code block");
+      case "table": return overflow(`<table><thead><tr>${token.header.map(cell => `<th>${text(cell.tokens)}</th>`).join("")}</tr></thead><tbody>${token.rows.map(row => `<tr>${row.map(cell => `<td>${text(cell.tokens)}</td>`).join("")}</tr>`).join("")}</tbody></table>`, "Data table");
+      case "list": {
+        const tag = token.ordered ? "ol" : "ul", start = token.ordered && Number.isSafeInteger(token.start) ? ` start="${token.start}"` : "";
+        return `<${tag}${start}>${token.items.map(item => `<li>${item.task ? item.checked ? "[x] " : "[ ] " : ""}${item.tokens.map(render).join("")}</li>`).join("")}</${tag}>`;
+      }
+      case "blockquote": return `<blockquote>${token.tokens.map(render).join("")}</blockquote>`;
+      default: return overflow(`<pre>${escapeArtifactText(input.raw)}</pre>`, "Unsupported source syntax");
+    }
+  };
+  const content: string[] = []; let offset = 0;
+  for (const token of tokens) {
+    const position = markdown.indexOf(token.raw, offset);
+    if (position < offset || !token.raw) throw artifactDiagnostic("ARTIFACT_SOURCE_INVALID");
+    if (position > offset) content.push(overflow(`<pre>${escapeArtifactText(markdown.slice(offset, position))}</pre>`, "Unsupported source syntax"));
+    content.push(render(token)); offset = position + token.raw.length;
+  }
+  if (offset < markdown.length) content.push(overflow(`<pre>${escapeArtifactText(markdown.slice(offset))}</pre>`, "Unsupported source syntax"));
+  return { html: content.join("\n"), headings };
+}
+
 /** Pure deterministic derivation; source raw bytes remain authoritative. Anchors
  * cover each nonblank top-level block, including all nested content. Lines are
  * 1-based inclusive, CRLF/lone CR count as one newline, trailing blanks excluded.
