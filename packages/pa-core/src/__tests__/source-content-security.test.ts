@@ -86,7 +86,7 @@ test("policy failures and fixed diagnostics disclose no source, pattern or raw c
     writeFileSync(join(config, "sensitive-patterns.yaml"), "contents:\n - '[INERT_INVALID_REGEX'\n");
     assert.throws(() => checkSourceContent({ source, content: "ordinary" }), error => error instanceof SourceContentSecurityError && error.code === "LOCAL_CONTENT_POLICY" && !error.message.includes("INERT_INVALID"));
   } finally { if (old === undefined) delete process.env.PA_PLATFORM_CONFIG; else process.env.PA_PLATFORM_CONFIG = old; rmSync(root, { recursive: true, force: true }); }
-  for (const code of ["LOCAL_SOURCE_BLOCKED", "LOCAL_CONTENT_LIMIT", "LOCAL_CONTENT_POLICY", "CONTENT_SOURCE_INVALID"] as const) {
+  for (const code of ["LOCAL_SOURCE_UNAVAILABLE", "LOCAL_SOURCE_UNSUPPORTED_FILE", "LOCAL_SOURCE_BLOCKED", "LOCAL_CONTENT_LIMIT", "LOCAL_CONTENT_POLICY", "CONTENT_SOURCE_INVALID"] as const) {
     const text = new SourceContentSecurityError(code).message;
     assert.ok(text.length <= 2000); assert.ok(!text.includes("\u001b"));
     for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(text.split(`${label}:`).length, 2);

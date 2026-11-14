@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # PAP-298: separate, explicit host qualification pin; does not select PPA's
+    # runtime or change the main tooling/addon package set.
+    piHostNixpkgs.url = "github:NixOS/nixpkgs/0bb2eedc20e4739f29e8045034f2828ad7054f8f";
     properPiExtensions = {
       url = "github:sharaf-nassar/proper-pi-extensions/859feb321ec81d773beea379d28e21d0b7d0c8c0";
       flake = false;
@@ -13,13 +16,20 @@
     };
   };
 
-  outputs = { self, nixpkgs, properPiExtensions, piVimMode }:
+  outputs = { self, nixpkgs, piHostNixpkgs, properPiExtensions, piVimMode }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
       axiToolsFor = system: import ./nix/axi-tools.nix { pkgs = pkgsFor system; };
+      selectedPiHostFor = system: import ./nix/selected-pi-host.nix {
+        pkgs = piHostNixpkgs.legacyPackages.${system};
+      };
+      selectedPiQualificationFor = system: import ./nix/selected-pi-qualification.nix {
+        pkgs = pkgsFor system;
+        host = selectedPiHostFor system;
+      };
 
       requireBooleanOption = name: value:
         if builtins.isBool value then value
@@ -302,6 +312,18 @@
     in
     {
       lib.mkPaPlatform = paPlatformFor;
+      # Qualification inputs only. No default wrapper/PATH/launcher selection.
+      lib.selectedPiHostFor = selectedPiHostFor;
+      lib.selectedPiQualificationFor = selectedPiQualificationFor;
+      lib.selectedPiDocumentMechanicsFixtureFor = system:
+        import ./packages/pa-core/src/__tests__/fixtures/immutable-document.nix { pkgs = pkgsFor system; };
+      # Build-only inert qualification; no production selector or runtime root.
+      lib.selectedPiDocumentQualificationFor = system: { foundation ? paPlatformFor system {} }:
+        import ./nix/selected-pi-document-qualification.nix {
+          pkgs = pkgsFor system;
+          host = selectedPiHostFor system;
+          inherit foundation;
+        };
 
       packages = forAllSystems (system:
         let
@@ -345,6 +367,28 @@
             bash ${./scripts}/pap-252-packaged-treehouse-smoke.sh ${packagesForSystem.ppa}
             touch $out
           '';
+          selected-pi-host-qualification =
+            let
+              host = selectedPiHostFor system;
+              qualification = selectedPiQualificationFor system;
+            in pkgs.runCommand "pa-selected-pi-host-qualification-check" {
+              nativeBuildInputs = [ pkgs.stdenv.cc ];
+            } ''
+              ${pkgs.coreutils}/bin/stat --format='qualification namespace: %n uid=%u mode=%a' /nix /nix/store ${qualification}/lib/qualify.mjs ${host.pi}
+              export PA_TEST_PI_QUALIFICATION=${qualification}
+              export PA_TEST_PI_NODE=${host.node}/bin/node
+              export PA_TEST_PI_WRONG_NODE=${pkgs.nodejs_22}/bin/node
+              ${host.node}/bin/node --test ${./scripts/dev/selected_pi_host_qualification.test.mjs} ${./scripts/dev/selected_pi_host_entry.test.mjs}
+              touch $out
+            '';
+          selected-pi-host-pin =
+            let host = selectedPiHostFor system;
+            in assert host.pi.version == "1.4.0";
+            assert host.node.version == "24.21.0";
+            assert host.enabled == false;
+            pkgs.runCommand "pa-selected-pi-host-pin" {} ''
+              touch $out
+            '';
           # Phase-1 evaluation assertions, not the installed-output matrix.
           axi-packaging-contract =
             assert builtins.all (contract:
