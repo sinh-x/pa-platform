@@ -21,9 +21,71 @@ activation is part of this step. The requirements owner's advanced branch
 readback remains a separate original-owner reconciliation obligation before any
 future protected launch. Safe authorized source work does not grant that launch.
 
+## Latest rebase and current drgnfly trial
+
+Sinh requested another rebase onto updated develop, then explicitly requested
+the `.2` suffix. Current trial: **`0.1.166-pap302.2`**, on develop
+`e1bfd8901a11ba726ad96bdabc8e810ff795b107` (0.1.166, including PAP-298 guarded
+reads and disabled selected-host qualification). All eleven local follow-ups
+were replayed from the previous base `4242bf7`. Pre-rebase HEAD
+`6a51c117b3ce73399f28eb5bb86c34d8f6ec6cbd` is preserved at
+`backup/PAP-302-before-rebase-20261114T154757Z`; the earlier backup also remains.
+
+Conflicts were limited to the source inventory and four shared version manifests.
+The inventory retains BOTH projects' entries and the actual digest of combined
+core exports (`5cf9d755542ed42ac9a2fcbdeac0ebea9a35a2e699c06d65d7c0ec61bba220b7`).
+The core export union retains PAP-298's `acquireLocalSourceFile` export; common
+native-host tests preserve both schema22 and the disabled-bootstrap assertions.
+No dispatch/admission guard, source-security rule or installed registration was
+removed. Range-diff differences are inventory context/digests and the version
+label/message, not PAP-302 owner logic. PAP-302 domain sources compare byte-for-
+byte to the backup; PAP-298 source, Nix/lock inputs and qualification modules
+compare exactly to fetched develop. Evidence:
+`/tmp/pap302-rebase166-{range-diff,preservation}.log`.
+
+The brief intermediate rebased label was `0.1.166-pap302.1`; the operator's `.2`
+request changes all four shared manifests to `0.1.166-pap302.2`. `runtime-host`
+stays 0.1.88. PPA/OPA version/info output changes from `ppa/opa 0.1.166-pap302.1`
+to `ppa/opa 0.1.166-pap302.2`, with unchanged format, stdout, empty stderr and
+exit0. No formatter, command grammar or permission changes. Plain-output agent
+review is not independent human comprehension/UAT.
+
+The older section below is HISTORICAL for `0.1.165-pap302.1`, including its old
+SHA map, examples and Python version assertion. For THIS trial, expect
+`ppa 0.1.166-pap302.2`, metadata `packageVersion: 0.1.166-pap302.2` and
+`sourceSha` equal to the FULL final clean commit supplied with this change, not
+the old SHA or a moving branch. Packaged `configSha` remains
+`1c4994670088e5ac33e53e31065781d1fc2b0dc3`; it is not accepted r003 C0 pairing.
+Use the existing clean exact-Git packaging recipe, not a dirty/path build. No
+installation was changed by this work; no earlier installed evidence transfers.
+
+Renewed `.2` source checks, all with retained `/tmp/pap302-rebase166-` logs:
+
+| Check | Result / log suffix |
+| --- | --- |
+| Workspace `corepack pnpm typecheck` / `corepack pnpm build` | Both exit0; `typecheck-final.log`, `build-final.log` |
+| Prior focused core suite plus local-source-file, immutable-document-policy and source-content-security | 278/278, zero skips/failures; `core-final.log` |
+| Pi auto/native-host plus local-source-security, read-path and image-type | 114/114, zero skips/failures; `pi-final.log` |
+| OPA adapter | 94 passed, one external-pair fixture skipped; `opa-final.log` |
+| Shared/independent/generated manifests and built PPA/OPA `--version`, `NO_COLOR=1` | Eight checks pass; `version-final.log` |
+| Registered Nix `selected-pi-host-qualification` and `selected-pi-host-pin`, offline/no-link | Exit0; existing immutable check outputs resolved, not installed PPA/agent/doc qualification; `selected-host-nix.log` |
+
+An initial direct `node --test` invocation of THREE Nix-only qualification
+drivers failed at their mandatory fixed-artifact input assertions (0/3), before
+qualification bodies. It is retained in `selected-host.log`. Host checks were
+then requested via their actual Nix entrypoints above, without bypassing input
+or namespace checks. The separate selected-document driver and immutable-document
+mechanics test were NOT rerun; the latter was short-circuited by the initial
+command failure. Focused source successes do not replace those positive artifact
+checks, full workspace regressions, independent/hosted review, provider/native-
+human canaries or UAT. Staged secrets/whitespace and exact final source evaluation
+are reported with the local commit. No push, installation, activation or policy
+adoption; production `effect-owner-bridge`, PAPC-087/C0 and other delivery gates
+remain unchanged. Canonical README/PAP-282 bytes are preserved.
+
 ## Rebased worktree trial label — drgnfly
 
-At Sinh's subsequent explicit requests, the retained worktree was rebased onto
+Historical first rebase: at Sinh's subsequent explicit requests, the retained worktree was rebased onto
 current fetched develop `4242bf7d74ec783c5363e1d306a5d1311e65406d` and given the
 worktree-only trial version **`0.1.165-pap302.1`**. These requests supersede the
 earlier no-rebase scope only for this operation; they grant no installation,

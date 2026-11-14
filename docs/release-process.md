@@ -12,18 +12,21 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
-The PAP-302 r003 worktree trial label is **`0.1.165-pap302.1`** across the four
-shared manifests, after the operator-requested rebase onto develop
-`4242bf7d74ec783c5363e1d306a5d1311e65406d`. A separately rebuilt/selected PPA must
-show `ppa 0.1.165-pap302.1`; `runtime-host` remains independently versioned.
+The current PAP-302 r003 worktree trial label is **`0.1.166-pap302.2`** across
+the four shared manifests, after the operator-requested rebase onto develop
+`e1bfd8901a11ba726ad96bdabc8e810ff795b107` and explicit `.2` request. A separately
+rebuilt/selected PPA must show `ppa 0.1.166-pap302.2`; `runtime-host` remains
+independently versioned.
 This is an identification label for the operator's drgnfly trial, not completion
 of PAP-302, native delegation/activation, a release/tag or installed qualification.
 Use the clean exact label commit and verify both `packageVersion` and `sourceSha`
 in `share/pa-platform/review-runtime-provenance.json`, not a dirty/path-derived
-source. The packaged config pin, dependencies/lockfile and Nix dependency hash
-are unchanged. Installation is separate. Restore the ordinary current develop
-version before normal integration. Rebase preservation and read-only trial
-identity checks are recorded in [PAP-302 r003](PAP-302-r003-implementation.md#rebased-worktree-trial-label--drgnfly).
+source. The rebase retains develop's PAP-298 Nix/lock updates intact; the label
+adds no dependency, config-pin or dependency-hash changes. Installation is
+separate, and the earlier `0.1.165-pap302.1` artifact is not relabelled. Restore
+the ordinary current develop version before normal integration. Rebase
+preservation and trial checks are recorded in
+[PAP-302 r003](PAP-302-r003-implementation.md#latest-rebase-and-current-drgnfly-trial).
 
 The PAP-292 local-source security follow-up uses **`0.1.161-pap292.1`** across
 `package.json`, `pa-core`, `opencode-pa` and `pi-pa`, at the operator's request for
