@@ -70,6 +70,9 @@ export class RegistryHandoffBranchJournal {
     }).immediate();
   }
 }
+export function handoffBranchOperationId(subjectSha256: string, decisionId: string): string {
+  return digest(JSON.stringify(["pa-handoff-branch-operation/v1", text(subjectSha256, SHA256), text(decisionId, ID)]));
+}
 export function completeHandoffBranch(journal: RegistryHandoffBranchJournal, host: HandoffBranchHost,
   rawSubject: HandoffReviewSubject, rawIntent: HandoffBranchIntent, document: DocumentPackage, rawDecisionId: string): Record<string, unknown> {
   const subject = parseHandoffReviewSubject(rawSubject), intent = parseHandoffBranchIntent(rawIntent), decisionId = text(rawDecisionId, ID);
@@ -77,7 +80,7 @@ export function completeHandoffBranch(journal: RegistryHandoffBranchJournal, hos
   if (!subject.effects.publish || !subject.effects.branchRef || subject.branchIntentSha256 !== intentSha256 || subject.documentSubjectSha256 !== documentPackageSha(document)
     || intent.ticket !== document.ticket || intent.repository.key !== document.repository.key || intent.repository.root !== document.repository.root
     || subject.callerIdentitySha256 !== intent.callerIdentitySha256 || subject.effects.queue && !document.effects.queue) documentReject("DOCUMENT_AUTHORITY");
-  const operationId = digest(JSON.stringify(["pa-handoff-branch-operation/v1", subjectSha256, decisionId]));
+  const operationId = handoffBranchOperationId(subjectSha256, decisionId);
   const bindingSha256 = digest(JSON.stringify([subjectSha256, intentSha256, decisionId]));
   return host.serialize(() => {
     const caller = () => {

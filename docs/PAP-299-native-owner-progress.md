@@ -68,6 +68,55 @@ explicit read-only actor/approval/prerequisite guidance. Structural plain-text
 checks passed; independent readability and actual installed propagation unrun.
 No existing machine/exit/stream contract changed.
 
+## Phase B: real shared exclusion, Git/ref correlation and combined writer
+
+`withRepositoryRefTicketExclusion` reuses the actual ticket-slot/materialization
+mutex without reserve/update/reclaim/inventory-sync APIs. Its live opaque token
+expires at release. It tolerates valid idle preparation without consuming capacity,
+but blocks every live/stale/uncertain ticket writer. `withRepositoryRefAdmission`
+then reuses the primary and sorted linked mutation mutexes, validates physical
+backlinks/inode identity and rejects all retained custody markers without cleanup.
+Lock order is exclusion -> primary -> linked -> TicketStore -> synchronous SQLite.
+No human dialog occurs under these locks.
+
+`RegistryHandoffGitOwner` requires an explicitly FULL-synchronous SQLite connection
+(the legacy registry default NORMAL is NOT silently upgraded), stores a random
+256-bit marker bound to the original operation/intent before compare-and-create,
+and verifies the exact zero-old-OID creation reflog entry, base and physical
+identity. Fixed bounded Git argv disables executable hooks/ambient Git config and
+uses no-deref absent-only update-ref. Existing/symbolic/foreign/deleted/uncertain
+refs and leftover logs block; storage symlinks reject before mutation. Exact ref,
+reflog and generated ancestor directories are fsynced. No extra Git correlation
+ref is created. An armed intent with absent ref is uncertain, never auto-recreated.
+Power-loss/filesystem-ordering and hostile-same-UID guarantees are NOT claimed.
+
+`completeNativeHandoffBranch` now composes the actual Git owner, SQLite branch
+journal and TicketStore result writer. It consumes an exact completed native plan,
+not caller lineage by name. Candidate ticket fields with a missing audit are NOT
+completed linkage: recovery re-enters the original ticket operation/CAS and finishes
+its audit before the branch journal can complete. This prevents reply-loss from
+leaving an invisible unfinished ticket operation. Real external decision,
+publication, current caller/selection and ownership checks remain mandatory trusted
+native authority seams, **not implemented selected review consumers**. Fresh-create
+only; existing advanced lineage migration remains unsupported (never adopted).
+No new module is exported from core's public index or registered as a tool/profile.
+
+Actual checks: core typecheck exit 0; combined owner/new-ticket/retained branch,
+Treehouse concurrency, repository-admission and repo-setup suites **144/144 passed**,
+zero skipped/failed/cancelled. Includes real child-process SIGKILL after ref create,
+actual competing capacity process exclusion, all ticket crash boundaries through
+the combined adapter, original marker readback, symlink/leftover-log negatives,
+retained primary/linked custody and unchanged idle reservation bytes.
+
+Preserved earlier Phase B failures: initial typecheck found missing explicit string
+annotations on frozen port parameters (corrected); first Git tests 0/9 passed
+because the shared fixture had legacy NORMAL synchronous mode (correctly rejected;
+fixture now explicitly uses FULL, production check retained). Next run 8/9 passed:
+child script imported bare better-sqlite3 outside its workspace package resolution.
+Changed the child to use the actual registry owner and explicitly FULL connection;
+SIGKILL assertion and all original correlation checks retained. Reruns 13/13 and
+final expanded 144/144 passed. No failed run is represented as a pass.
+
 Full source/paired checks, independent review, hosted CI, installed/default-entry,
 foreground prompt counts, browser/accessibility and TS1–18 human UAT/adoption are
 separate outstanding gates. Prior timeout/skips remain as recorded, not passes.

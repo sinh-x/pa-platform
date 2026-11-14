@@ -472,6 +472,15 @@ export class TicketStore {
     });
   }
 
+  /** Internal original-operation observation; no repair, authority or public
+   * request dispatch. Used under the same outer native admission as the writer. */
+  inspectHandoffWithIntent(identity: TicketCreateIntentIdentity) {
+    return this.withTransaction(() => {
+      const record = readHandoffIntent(this.dir, handoffKey(identity));
+      return record ? { record, complete: handoffAuditComplete(record, this.readCreationAudits().entries) } : undefined;
+    });
+  }
+
   get(id: string): Ticket | undefined {
     return this.readTicket(id, new Set<string>());
   }
