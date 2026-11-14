@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { join } from "node:path";
 import { buildDecisionPayload } from "../decision-payload.js";
+import { directBuilderProfile, assertDirectContract } from "./builder-instruction-contract.js";
 
 const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
 const modePath = configRoot ? join(configRoot, "teams", "builder", "modes", "orchestrator.md") : "";
@@ -28,6 +29,7 @@ test("builder orchestrator mode hard-fails without a ticket before startup", (t)
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
+  if (directBuilderProfile(configRoot!)) return assertDirectContract("ticket", modeDoc);
   assert.match(modeDoc, /\*\*Ticket required\.\*\*/);
   assert.match(modeDoc, /orchestrator requires ticket_id; none provided/);
   assert.match(modeDoc, /exit before any report, ticket, Git, or child-deployment mutation/);
@@ -41,6 +43,7 @@ test("builder orchestrator mode requires exact canonical and authenticated execu
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
+  if (directBuilderProfile(configRoot!)) return assertDirectContract("identity", modeDoc);
   assert.match(modeDoc, /`repo_key`: the registry-bound canonical repository key/);
   assert.match(modeDoc, /`repo_root`: the canonical registry root/);
   assert.match(modeDoc, /`worktree_root`: the distinct launch-time authenticated Treehouse ticket checkout/);
@@ -53,6 +56,7 @@ test("builder orchestrator mode encodes PPA planned/materialized and non-Pi bran
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
+  if (directBuilderProfile(configRoot!)) return assertDirectContract("branch", modeDoc);
   assert.match(modeDoc, /Requirements supplies only the approved canonical\/ticket\/base\/branch plan/);
   assert.match(modeDoc, /trusted PPA launcher reserves capacity and acquires or reuses and authenticates the ticket checkout/);
   assert.match(modeDoc, /\| `planned` \|[\s\S]{0,480}action is `create`[\s\S]{0,320}ordinary Git to create the exact branch/);
@@ -66,6 +70,7 @@ test("builder orchestrator mode passes stable authenticated checkout context to 
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
+  if (directBuilderProfile(configRoot!)) return assertDirectContract("holder", modeDoc);
   assert.match(modeDoc, /Every child receives the same canonical key\/root, authenticated worktree root, ticket, exact feature branch/);
   assert.match(modeDoc, /Launch against the registry key with authenticated runtime evidence selecting `worktree_root`; never derive or substitute a child path from CWD/);
   assert.match(modeDoc, /--repo "<repo_key>"[\s\S]*--ticket <ticket_id>/);
@@ -76,6 +81,7 @@ test("builder orchestrator mode keeps review fixes on the same branch and record
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
+  if (directBuilderProfile(configRoot!)) return assertDirectContract("repair", modeDoc);
   assert.match(modeDoc, /compose one fix objective per feedback bundle with `Goal`, `Requirements`, `Verification`, `Context`, and `Guardrails`/i);
   assert.match(modeDoc, /Delegate the fix to `builder\/implement` on the same repository, ticket, and branch/);
   assert.match(modeDoc, /persist the accepted review bracket and finding decisions before checklist or lifecycle mutation/i);

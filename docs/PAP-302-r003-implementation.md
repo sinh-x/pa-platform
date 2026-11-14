@@ -21,6 +21,16 @@ activation is part of this step. The requirements owner's advanced branch
 readback remains a separate original-owner reconciliation obligation before any
 future protected launch. Safe authorized source work does not grant that launch.
 
+## Subsequent updated-config source repair
+
+After the installed `.2` full-check report, Sinh requested reconciliation. The
+source-only config pin now targets merged PAPC504a8dc, with strict dual-profile
+instruction checks and exact disabled-v1 native-mode closure. See
+[reconciliation, actual checks and provenance limitation](PAP-302-config-reconciliation.md).
+This supersedes source-pin statements below only for the new source candidate;
+the b28026a trial/installed artifact and its historical pin remain unchanged.
+It is not new r003 C0 support, installed qualification, activation or completion.
+
 ## Latest rebase and current drgnfly trial
 
 Sinh requested another rebase onto updated develop, then explicitly requested
