@@ -448,6 +448,34 @@ Full regression timeouts, independent review, C0/PAPC agreement, actual policy
 adoption/implementation, both-project canaries, desktop delivery and r003 UAT
 remain open. No live provider, ticket, configuration or service was changed.
 
+### R3 authority-owner readback before extension
+
+Current source inspection reconfirms two boundaries, not new authority:
+`documents/auto-start.ts` owns the retained per-ticket human full-review/start
+receipt; `pi-pa/prepared-native.ts` owns optional prepared automation with exact
+installed runtime/config qualification and genuinely promoted human-approved
+sources. Neither is the r003 policy owner, and neither its policy nor its
+qualification/promotion records may be reinterpreted as r003 delegation. R3 must
+extend genuine native authority with a distinct exact scope and original-review
+recovery, rather than issue old receipts from an agent callback or use a parallel
+model-authored permission store. Genuine adoption itself must remain distinct
+from qualification, effect controls, canary admission and service activation.
+
+PAPC-086 readback still records an administratively completed, default-disabled
+**v1** delivery at `813cd53`; no later acceptance of the r003 proposal was found.
+Do not reopen/rewrite that ticket or treat its done state as r003 agreement. A
+separately admitted configuration/requirements-owner successor remains needed.
+Independent default-off source work is not blocked merely by that absent pair;
+actual adoption/launch/installed qualification remains dependent on its owners.
+
+Follow-up review also corrected a test call: `readAutoShortlistStatus` takes an
+optional query, NOT a database handle. The composed draft test now calls the
+actual existing-only API, opening its disposable registry through the native
+reader. This changes no production behavior or machine contract. Renewed Pi
+**80/80** and Pi/core typecheck passed; logs:
+`/tmp/pap302-r003-r2-reader-api-{pi,typecheck}.log`. Staged secrets/whitespace
+checks were also renewed; no new full/installed/human result is claimed.
+
 ## Remaining dependency-ordered implementation
 
 1. **R0/R1:** agree exact PAPC/native session/report/publication/choice contracts

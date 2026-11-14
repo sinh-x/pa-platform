@@ -22,7 +22,7 @@ test("new bounded producer freezes one full useful unsigned package and appends 
     assert.equal(f.journal.active()!.decisionId, null); assert.equal(f.journal.active()!.startSha256, null); assert.equal(f.journal.active()!.dispatch, null);
     assert.equal(getDeploymentEvents(ready.deploymentId).filter(e => e.event === "started").length, 1); assert.equal(getDeploymentEvents(ready.deploymentId).filter(e => e.event === "completed").length, 1);
     assert.deepEqual(f.tickets.pendingAutoDraftAppends(f.ticket.id), []);
-    const status = readAutoShortlistStatus(f.journal.db); assert.equal((status.draftGeneration as { operationId: string }).operationId, ready.operationId); assert.equal(status.authorityGranted, false); assert.equal(f.count(), 1);
+    const status = readAutoShortlistStatus(); assert.equal((status.draftGeneration as { operationId: string }).operationId, ready.operationId); assert.equal(status.authorityGranted, false); assert.equal(f.count(), 1);
   } finally { f.close(); }
 });
 
