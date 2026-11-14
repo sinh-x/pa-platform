@@ -1,5 +1,10 @@
 # PAP-302 r002 — implementation lineage and initial assessment contract
 
+Historical r002 record: superseded for new development by
+[the r003 shortlist/explicit-choice reconciliation](PAP-302-r003-implementation.md).
+The r002 parser remains unconnected; its `selected` field is neither the r003
+contract nor human-selection evidence. Retain its old schema without widening it.
+
 The published `pap-302-auto-waitlist/r002` requirements and UAT supersede r001
 for the **new delegated mode** while retaining the manual mode. The r002 native
 decision is publish-only: it does not adopt a delegation policy, queue work,

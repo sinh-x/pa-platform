@@ -1,7 +1,8 @@
 import { AUTO_PROJECTS, AutoWaitlistError } from "./waitlist.js";
 import { object, SHA256, strictJson, text } from "../workflows/contracts.js";
 
-/** Unsigned model-authored assessment only, NOT the full r002 session report.
+/** Retained, unconnected r002 model-data contract; NOT the r003 shortlist route.
+ * Use shortlist-report.ts for the new unsigned shortlist/choice data contracts.
  * This parser does not reserve a cycle, authenticate a PPA session, read goals,
  * persist evidence, attest reasoning or authorize a pick. */
 export interface AutoSelectionReport {
