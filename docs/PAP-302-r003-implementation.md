@@ -182,7 +182,8 @@ recovery. Production adapter/provider/CLI integration remains the next phase.
 
 The new **additive** `ppa auto shortlist` route now has a native producer source
 implementation, native unmanaged-terminal selection adapter and existing-only
-report reader. Existing bare `ppa auto` and v1 tick/manual start remain unchanged.
+report reader. Retained manual items and v1 tick/start keep their semantics;
+bare `ppa auto` now routes durable r003-owned state only to its original owner.
 This route is not yet the full delegated product: after recording a choice it
 fails closed at the missing native delegated-continuation owner, retaining that
 original item rather than prompting for old per-ticket start approval or using
@@ -292,6 +293,61 @@ Initial syntax/type errors and readback failures from testing concurrently with
 a dependency rebuild are retained; final checks rebuilt first, then tested.
 The earlier full-core timeout and all independent/hosted/installed/human gates
 remain open. No PAPC source/flags, live timer, adoption, provider or worker changed.
+
+## R2 ticket-owner foundation and mode barrier
+
+`TicketStore.appendAutoDraftWithIntent` is now a finite **data-owner primitive**,
+not a registered native tool, policy grant or completed draft producer. The
+strict `pa-auto-draft-ticket-append/v1` request accepts only exact PAP/PAPC ticket,
+item/generation/deployment/original-request IDs, complete normalized ticket CAS,
+1–3 own brief/requirements/UAT paths/hashes and a bounded comment. No actor,
+planning/status/assignment/tag/blocker/primary/Git/approval/imported outcome fields
+are accepted. Actor is derived as `requirements/auto-draft`; added refs are always
+nonprimary and the appended comment explicitly says agent-authored UNAPPROVED.
+Existing primary refs, comments/history and all protected fields are preserved.
+
+Mandatory synchronous native caller/generation/policy and own-artifact checks run
+inside the existing ticket mutex before intent/ticket/audit effects and final
+readback. Callback copies cannot mutate the original candidate. These callbacks
+must be supplied by the future genuine native policy/producer port; an empty test
+callback is not admission. There is NO CLI flag or model-authored grant for them.
+The original immutable `.ticket-auto-draft-<digest>.json` is ticket-owner
+idempotency data only, not a second permission ledger. It binds the full original
+request/candidate before writes, shares the ordinary audit owner, and recovers
+one original update/comment/ref set after reply loss. Pending same-ticket appends
+block fresh IDs; intervening human work, unknown markers, corruption, aliases,
+unsupported extra raw fields and torn audit refuse without normalization,
+rollback, overwrite or evidence deletion. Completed replay returns current work
+and its original applied version without reverting later human changes.
+
+The native quarantine owner may inspect `pendingAutoDraftAppends`, but cannot
+mistake a missing process/reply for settled appends. Actual fencing/quarantine
+and the native draft/policy adapter remain unimplemented. This primitive adds no
+live ticket changes in this implementation session, no primary promotion or
+publication/queue/launch bridge, and does not remove the retained real-draft HOLD.
+
+The manual foreground now checks native reasoning/choice/item correlation before
+opening its old selection/start UI. Durable r003-owned work resumes through its
+own owner instead of translating into manual v1 content/start receipts. Before:
+an r003-held item could reach `Review exact implementation start` in the manual
+menu. After: the original shortlist controller owns it, with no repeated choice,
+manual start prompt, replacement producer or fabricated grant. Existing manual
+items retain their prior path. The same already-tested bounded shortlist blocker
+propagates if its native continuation owner is missing. No new wording formatter
+or native tool/machine schema is introduced by this barrier.
+
+Current checks: **206/206** core auto/all-ticket/document-service/registry/
+interaction/execution/lower-file integrity tests; **67/67** Pi auto/native-host;
+workspace typecheck/build passed. Logs:
+`/tmp/pap302-r003-r2-owner-{core,pi,typecheck,build}.log`. Ten new append-owner
+cases cover protected-field preservation, original intent/ticket/audit faults,
+stale/concurrent changes, fresh-ID refusal, strict/malformed/foreign fields,
+native generation/artifact/async negatives, callback mutation, late-generation
+fencing, unsafe sources/records/audit and real two-process same-intent writes.
+Native CLI tests additionally prove bare auto does not reopen a manual start for
+the r003 original. These are source/fixture checks, not genuine policy adoption,
+real provider usefulness, installed qualification or human UAT. Initial 30-case
+append/create/planning run passed; no old failure/skip/timeout is erased.
 
 ## Remaining dependency-ordered implementation
 

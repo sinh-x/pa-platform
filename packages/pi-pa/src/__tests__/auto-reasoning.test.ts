@@ -10,6 +10,7 @@ import {
 import { selectedPiAutoShortlistPair } from "../auto-shortlist-contract.js";
 import { readAutoGoalEvidence } from "../auto-goals.js";
 import { PiAutoReasoningOwner } from "../auto-reasoning.js";
+import { runAutoForeground } from "../auto-foreground.js";
 import { runAutoShortlistForeground, runAutoShortlistReadCommand, autoShortlistDiagnostic } from "../auto-shortlist-cli.js";
 import { runAutoProducerProcess, type AutoProducerProcessDriver } from "../auto-producer-process.js";
 
@@ -141,6 +142,9 @@ test("missing delegated owner holds the original choice rather than falling back
     assert.equal(await runAutoShortlistForeground(terminal, { store: f.store, owner: f.owner() }), 1);
     assert.equal(f.store.items.active()!.itemId, item.itemId); assert.equal(f.count(), 1); assert.equal(prompts, 1);
     assert.match(display.at(-1)!, /native effect owner/);
+    assert.equal(await runAutoForeground(terminal), 1, "bare auto must retain the native r003 owner, not ask for a manual v1 start");
+    assert.equal(f.store.items.active()!.itemId, item.itemId); assert.equal(f.count(), 1); assert.equal(prompts, 1);
+    assert.equal((f.store.db.prepare("SELECT count(*) AS n FROM document_events").get() as { n: number }).n, 0);
   } finally { f.close(); }
 });
 
