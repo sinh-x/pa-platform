@@ -21,6 +21,103 @@ activation is part of this step. The requirements owner's advanced branch
 readback remains a separate original-owner reconciliation obligation before any
 future protected launch. Safe authorized source work does not grant that launch.
 
+## Rebased worktree trial label — drgnfly
+
+At Sinh's subsequent explicit requests, the retained worktree was rebased onto
+current fetched develop `4242bf7d74ec783c5363e1d306a5d1311e65406d` and given the
+worktree-only trial version **`0.1.165-pap302.1`**. These requests supersede the
+earlier no-rebase scope only for this operation; they grant no installation,
+integration, service activation or native delegation. Old release/manual history,
+PAPC pairing and all outstanding implementation/qualification gates remain.
+
+Pre-rebase HEAD `f64f621a7858c489e32fbd0fc94e21e0f8a17183` is preserved at
+`backup/PAP-302-before-rebase-20261114T114637Z`. The released feature tree at
+`1959957` was verified identical to PR174's squash `e8f0825`; only the TEN
+unpublished follow-ups were replayed. `git range-diff` reports all ten patches
+unchanged (`=`). The rebased policy-owner HEAD is
+`40ec9a0cc1688e701a2d96ab8cb3ef162609c061`. Before the label, the complete file
+tree differs from the backup ONLY by the four release versions, .164 → .165.
+Canonical develop/README/PAP-282 work was not altered. No remote push occurred;
+the old remote feature ancestry is intentionally unchanged and now diverges.
+Do not force-push it without separate authorization.
+
+| Old source phase | Rebased equivalent |
+| --- | --- |
+| 315518c | c2bed4e |
+| 8e899f6 | 4368abb |
+| c5a35a2 | 83e2175 |
+| 972ee52 | 101ed1d |
+| fad1df5 | a2fea7b |
+| 2e4641e | 9a468ff |
+| fbf4701 | c6a638b |
+| 853b7c4 | 983e992 |
+| 5867bb0 | e15dbb0 |
+| f64f621 | 40ec9a0 |
+
+The label changes only `package.json` and the pa-core/opencode-pa/pi-pa package
+versions together, plus this documentation. `runtime-host` stays 0.1.88. The
+existing Nix derivation and provenance already consume the root package version;
+no formatter, CLI grammar/exit/stream, lockfile, config pin or Nix dependency hash
+changes are needed. Version/info message before: `ppa 0.1.165`. Expected rebuilt
+source output after: `ppa 0.1.165-pap302.1`, with matching OPA output and the same
+core manifest version. This is readable build identification, not new authority
+or a feature-completion claim.
+Existing installations do not change from editing these manifests.
+
+On drgnfly, AFTER the operator separately builds/selects this clean exact label
+commit, inspect `command -v ppa`, `readlink -f "$(command -v ppa)"` and
+`ppa --version`. Set `PAP302_EXPECTED_SHA` to the FULL label commit supplied by
+the runtime owner, not a moving branch or an old implementation SHA, then run
+this read-only identity check:
+
+```sh
+: "${PAP302_EXPECTED_SHA:?Set the full clean label commit supplied by the runtime owner}"
+python3 - "$PAP302_EXPECTED_SHA" <<'PY'
+import json, pathlib, re, shutil, sys
+expected = sys.argv[1]
+assert re.fullmatch(r'[0-9a-f]{40}', expected), 'Exact full label commit required'
+root = pathlib.Path(shutil.which('ppa')).resolve().parent.parent
+metadata = json.loads((root / 'share/pa-platform/review-runtime-provenance.json').read_text())
+assert metadata['packageVersion'] == '0.1.165-pap302.1', metadata
+assert metadata['sourceSha'] == expected, metadata
+assert metadata['configSha'] == '1c4994670088e5ac33e53e31065781d1fc2b0dc3', metadata
+print(json.dumps(metadata, indent=2))
+PY
+```
+
+For exact-source Nix packaging use the existing
+[clean Git-revision recipe](mode-capabilities.md#clean-exact-artifact-not-a-readable-label-inference)
+with this worktree's physical path and FULL label commit. A dirty/path source may
+produce `unversioned-dirty-source`; do not patch provenance or treat the suffix
+alone as exact source identity. The config check above verifies the unchanged
+PACKAGED default, not effective r003 C0/PAPC-087 pairing. The suffix does not remove
+the production `effect-owner-bridge` hold. No drgnfly install, provider/worker,
+human UAT or activation is performed by the label/rebase work.
+
+Renewed label/rebase checks (not the full workspace regression or installed UAT):
+
+| Check | Actual result / `/tmp/` evidence |
+| --- | --- |
+| `corepack pnpm typecheck` / `corepack pnpm build` | Both exit 0; `pap302-rebase-label-{typecheck,build}.log` |
+| Same focused core entrypoints as R3 final | 261/261, no skips/failures; `pap302-rebase-label-core.log` |
+| Pi `auto-*.test.ts` and `pi-native-host.test.ts` | 89/89, no skips/failures; `pap302-rebase-label-pi.log` |
+| OPA `opencode-adapter.test.ts` | 94 passed, 1 external fixture skipped; `pap302-rebase-label-opa.log` |
+| Four shared manifests, independent runtime-host, generated Pi manifest and built PPA/OPA `--version` | 8 checks passed, exit 0 and exact stdout/empty stderr for both adapters with `NO_COLOR=1`; `pap302-rebase-label-version-corrected.log` |
+| `nix eval --offline --no-write-lock-file --raw .#packages.x86_64-linux.ppa.version` | Exit 0, `0.1.165-pap302.1`; working-tree evaluation only with expected dirty-source warning; `pap302-rebase-label-nix-eval.log` |
+| Lock/config/runtime-host preservation and whitespace | `git diff --exit-code origin/develop` on those paths and `git diff --check` both exit 0 |
+
+The initial version probe wrongly assumed `runCoreCommand(["--version"])`
+was an adapter entrypoint. The actual internal helper returned exit 1 / unknown
+command after all eight legitimate checks passed. The original log remains at
+`pap302-rebase-label-version.log`; the corrected probe drops that unsupported
+assertion, not a runtime guard. No core CLI/version handler was added or changed.
+Optional source/old-installed-provenance reads were unavailable through local
+source security; no alternate access was attempted. The flake's permitted source
+independently establishes its provenance keys/formula. Plain-output agent review
+covers version/info only; independent human readability/UAT remains separate.
+Staged secrets/whitespace results and the full clean label commit are reported
+with the local commit; no source label is claimed as installed evidence.
+
 ## r002 → r003 disposition
 
 | Area | Superseded r002 direction | Current r003 direction |
