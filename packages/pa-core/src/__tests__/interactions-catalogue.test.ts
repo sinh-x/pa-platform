@@ -78,6 +78,13 @@ test("PPA auto refresh writes only coordination data and never becomes a native 
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "auto.scan" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
   assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(row => row.operationId !== "auto.scan")).includes("missing-effect-variant"));
 });
+test("shortlist foreground is a provider/choice effect while retained report pages stay observational", () => {
+  const foreground = operation("auto.shortlist.foreground"), read = operation("auto.shortlist.read");
+  assert.equal(foreground.effectClass, "launch"); assert.equal(read.effectClass, "read");
+  assert.deepEqual(foreground.nativeForms, []); assert.equal(foreground.nativeBinding, null); assert.equal(foreground.delegationBinding, null);
+  assert.match(foreground.reason, /No ranking\/default\/noninteractive/);
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === foreground.operationId ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
+});
 test("status owner routes are inventoried without promoting source discovery to authority", () => {
   for (const action of ["inspect", "set"]) {
     const row = operation(`ticket.status.${action}`);

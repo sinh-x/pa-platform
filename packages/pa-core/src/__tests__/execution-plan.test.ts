@@ -52,14 +52,14 @@ test("strict mode resolution rejects unknown explicit/default and retired select
   }
 });
 
-test("native auto-draft names cannot enter generic deployment through explicit or default selection", () => {
-  for (const id of ["auto-draft", "auto-draft-isolated-v1"]) {
+test("native draft/reasoning names cannot enter generic deployment through explicit or default selection", () => {
+  for (const id of ["auto-draft", "auto-draft-isolated-v1", "auto-reasoning", "auto-reasoning-shortlist-v1"]) {
     const mode = { id, label: "Native-only draft" };
     const config: TeamConfig = { ...team(), name: "requirements", default_mode: id, deploy_modes: [mode] };
     for (const explicit of [true, false]) {
       assert.throws(() => resolveDeployMode(config, explicit ? id : undefined), (error: unknown) => {
         assert.ok(error instanceof DeployModeSelectionError);
-        assert.match(error.message, /^Draft not started:.*\n\nCondition:.*\nSource:.*\nReason:.*\nCorrection:.*\nResume Action:/s);
+        assert.match(error.message, /^(?:Draft|Reasoning session) not started:.*\n\nCondition:.*\nSource:.*\nReason:.*\nCorrection:.*\nResume Action:/s);
         assert.ok(error.message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
         for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(error.message.split(label).length, 2);
         return true;

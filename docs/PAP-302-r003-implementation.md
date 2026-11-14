@@ -178,6 +178,121 @@ while a view is open; invalid raw-output retention; session-bound limits;
 immutable history; lost capture reply; interrupted final CAS and same-request
 recovery. Production adapter/provider/CLI integration remains the next phase.
 
+## R1 adapter/source integration
+
+The new **additive** `ppa auto shortlist` route now has a native producer source
+implementation, native unmanaged-terminal selection adapter and existing-only
+report reader. Existing bare `ppa auto` and v1 tick/manual start remain unchanged.
+This route is not yet the full delegated product: after recording a choice it
+fails closed at the missing native delegated-continuation owner, retaining that
+original item rather than prompting for old per-ticket start approval or using
+manual deploy. The separately owned PAPC selection is absent/default-off; no live
+provider or human-selection journey was run in this implementation session.
+
+### Explicit observation-only pairing
+
+`auto-shortlist-contract.ts` consumes NEW committed
+`contracts/auto-shortlist-v1.json`, schema `pa-auto-shortlist-pair/v1`. Required
+keys are exactly `schemaVersion`, `enabled`, `mode`, `resources`, `timezone` and
+`goalSources`. Missing/disabled/dirty/unknown schemas refuse, without widening
+`pa-auto-pair/v1`. `mode` is one explicit native-only `auto-reasoning` or
+`auto-reasoning-*` requirements mode, with configured provider/model and a pinned
+objective; no document profile/generic deployment is substituted. Resources and
+team/objective bytes belong to the committed closure. `timezone` is explicit;
+up to four unique goal sources each require `pathTemplate`, `dateFormat` and
+`heading`. Only a relative `daily/...{date}....md` template is supported;
+`dateFormat` is `iso` or `underscore`. These are runtime schema requirements, not
+an edit/enablement of the external configuration.
+
+The goal owner refreshes the current configured date and extracts exactly one
+selected heading per source AFTER whole-file source-policy validation. It
+retains relevant excerpts plus source/date/hash, not diary/reflection dumps.
+Absent/duplicate/oversized/denied sections block rather than invent a goal.
+The context's `policySha256` here binds the **observation scope**, not an adopted
+implementation policy. It cannot be consumed as delegation evidence. Final
+runtime/config/resource pins and joint PAPC qualification remain separate.
+
+### Native producer and recovery
+
+`auto-reasoning.ts` registers original requirements/Pi producer events, persists
+request/raw responses/process incarnation/result evidence, assesses all eligible
+metadata and saves the full immutable report before publication. Native finite
+read/list requests reuse the existing source owner; denied reads return one
+bounded unavailable result, not a retry/bypass path. Limits: 10-minute original
+cycle deadline, at most 32 source requests, 128 KiB/file, 1 MiB context/prompt/
+response. Scanner rechecks can now use a stricter remaining timeout, never raise
+the retained 120-second scanner maximum. Publication refuses an expired original
+cycle; native known-complete failed/stale output is retained as failed, while
+unknown process/selection effects keep their original coordination.
+
+`auto-producer-process.ts` uses supported ordinary Pi authentication, tool-less
+no-extension/MCP/skill/context/session-discovery flags and stdin prompts. It does
+not extract credentials. Every request has a saved native fingerprint before
+stdin. A dedicated process group is observed; normal known completion differs
+from timeout/oversize/unknown group cleanup. Destroyed pipes or killing a parent
+never proves descendant settlement. No OS filesystem sandbox, CPU quota or
+hostile/escaped-descendant guarantee is claimed. The native report explicitly
+records `cleanupScope: observed-process-group-no-escaped-descendant-guarantee`;
+`cleanup: settled` must not be read as a stronger whole-tree guarantee.
+Bounded stderr byte counts and
+exit/signal evidence are retained; full stderr content is not published. Captured
+stdout bytes, including invalid UTF-8, can be preserved exactly through the
+existing lower file owner; its path/symlink/size/write boundaries are unchanged.
+Repository/Git writing is forbidden by instruction and no tools are exposed;
+real-provider before/after and cleanup qualification remains unperformed.
+
+Completed/uncertain work reconciles the original cycle and saved process/report
+identities; it never creates a replacement because a reply/PID is missing.
+Atomic original publication is read back before failure/recovery. A failed newer
+refresh makes the last complete view stale for selection, but preserves all its
+bytes/history. Human choice cannot be replaced by a rank, an empty/default
+response, a timer, a machine flag or a freshly changed view.
+
+### CLI/message paths and checks
+
+New read grammar: `ppa auto shortlist --json [--view UUID] [--section
+candidates|excluded|all] [--page N]`; 100 original-snapshot rows/page, immutable
+view selection, complete report/coverage plus original cycle/choice/item state.
+Readers never initialize/migrate/scan/request a provider. `time-current` is only
+the timestamp window; material authority/source freshness is explicitly not
+rechecked by inspection. Noninteractive input can never choose. Interactive
+human selection is one native choice; Cancel records no item, and a valid choice
+immediately calls only its actual continuation port, with no routine second
+per-ticket approval. A missing port is a blocker, not permission to fabricate one.
+
+Touched categories and actual examples (source behavior, not installed output):
+
+| Path/category | Before | After |
+| --- | --- | --- |
+| Help/completions | Manual waitlist routes only; misleading read-only umbrella comment | Add native shortlist route and exact-view inspection; no choice/approval flags |
+| New saved-report information | No r003 surface | `Shortlist saved: 10 suitable tickets. No ticket selected.` plus exact view/report/session/source hashes and individual rationale |
+| New choice progress | No r003 surface | `Selected PAP-…; original choice …` followed by native policy/admission-next wording, not worker success |
+| Cancel | No r003 surface | `Ticket choice cancelled. No item was selected; recommendations remain available.` |
+| New blockers | No r003 surface | Outcome-first static five-label diagnostic, current typed cause, original-evidence preservation and supported read-only inspection; <=2000 UTF-16 units |
+| Generic requirements/auto-reasoning | Could otherwise resolve as an ordinary mode | `Reasoning session not started: this mode cannot run through ordinary deployment.` before repository/planning/allocation |
+
+The new reader has its own result schema; old JSON/exits/streams are unchanged.
+Formatting introduces no probes/effects. Returned and thrown wrapper paths,
+actual noninteractive CLI subprocess propagation, label uniqueness/length,
+source/read/launch classifications, and direct/default/force/background Pi/OPA
+mode negatives are tested. Human comprehension/installed usability is NOT tested.
+Inventory hashes were renewed after these effect/alias/owner changes and their
+negative tests, with no native/delegation bindings invented by discovery.
+
+Current focused results: core auto/execution-plan/registry/interactions/lower-file
+integrity **159/159**, Pi auto/native-host **67/67**, OPA adapter **94 passed,
+1 external fixture skip**, zero failures. Workspace typecheck/build/completions
+passed. Logs: `/tmp/pap302-r003-r1-{core-final,pi-final,opa-final,typecheck-final,build-final}.log` and
+`/tmp/pap302-r003-reasoning-completions.log`. The Pi total includes 16 new cases:
+composed native registry with SIMULATED provider/process proof, one native-choice
+fixture and continuation spy, actual noninteractive CLI, finite source requests,
+failed-refresh retention, scope/goal negatives, raw-byte evidence and actual
+Node stdin/group/timeout fixtures. These are NOT real Pi/provider/human canaries.
+Initial syntax/type errors and readback failures from testing concurrently with
+a dependency rebuild are retained; final checks rebuilt first, then tested.
+The earlier full-core timeout and all independent/hosted/installed/human gates
+remain open. No PAPC source/flags, live timer, adoption, provider or worker changed.
+
 ## Remaining dependency-ordered implementation
 
 1. **R0/R1:** agree exact PAPC/native session/report/publication/choice contracts

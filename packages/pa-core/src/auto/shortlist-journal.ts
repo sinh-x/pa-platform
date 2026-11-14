@@ -30,6 +30,7 @@ export interface AutoReasoningSessionEvidence {
   deploymentId: string; operationId: string; requestSha256: string; provider: string; model: string;
   configRevision: string; resourcesSha256: string; startedAt: string; completedAt: string;
   sourceRequests: number; contextBytes: number; outputBytes: number; cleanup: "settled";
+  cleanupScope: "observed-process-group-no-escaped-descendant-guarantee";
 }
 export interface AutoShortlistReport {
   schemaVersion: "pa-auto-shortlist-report/v1"; cycleId: string; snapshotSha256: string; goalEvidenceSha256: string;
@@ -90,6 +91,11 @@ export class RegistryAutoShortlists {
   activeCycle(): AutoReasoningCycle | null {
     if (!this.present("auto_reasoning_cycles")) return null;
     const row = this.db.prepare("SELECT cycle_id FROM auto_reasoning_cycles WHERE active_slot=1").get() as { cycle_id: string } | undefined;
+    return row ? this.cycle(row.cycle_id) : null;
+  }
+  latestCycle(): AutoReasoningCycle | null {
+    if (!this.present("auto_reasoning_cycles")) return null;
+    const row = this.db.prepare("SELECT cycle_id FROM auto_reasoning_cycles ORDER BY rowid DESC LIMIT 1").get() as { cycle_id: string } | undefined;
     return row ? this.cycle(row.cycle_id) : null;
   }
   cycle(id: string): AutoReasoningCycle {
@@ -166,8 +172,8 @@ export class RegistryAutoShortlists {
     return this.tx(() => { host.authenticate(); this.session(cycle, session); host.assertSession(cycle, session); if (!activeCycle(cycle.state)) throw new AutoWaitlistError("AUTO_BUSY"); return this.changeCycle(cycle, { state: "failed" }); }).immediate();
   }
   private session(cycle: AutoReasoningCycle, input: AutoReasoningSessionEvidence): AutoReasoningSessionEvidence {
-    const s = object(input, ["deploymentId", "operationId", "requestSha256", "provider", "model", "configRevision", "resourcesSha256", "startedAt", "completedAt", "sourceRequests", "contextBytes", "outputBytes", "cleanup"]);
-    if (s.deploymentId !== cycle.context.sessionId || s.operationId !== cycle.operationId || s.requestSha256 !== cycle.requestSha256 || s.resourcesSha256 !== cycle.context.configSha256 || s.cleanup !== "settled"
+    const s = object(input, ["deploymentId", "operationId", "requestSha256", "provider", "model", "configRevision", "resourcesSha256", "startedAt", "completedAt", "sourceRequests", "contextBytes", "outputBytes", "cleanup", "cleanupScope"]);
+    if (s.deploymentId !== cycle.context.sessionId || s.operationId !== cycle.operationId || s.requestSha256 !== cycle.requestSha256 || s.resourcesSha256 !== cycle.context.configSha256 || s.cleanup !== "settled" || s.cleanupScope !== "observed-process-group-no-escaped-descendant-guarantee"
       || utc(s.startedAt) < utc(cycle.createdAt) || utc(s.completedAt) < utc(s.startedAt) || utc(s.completedAt) > utc(cycle.deadlineAt)) throw new AutoWaitlistError("AUTO_SOURCE");
     text(s.provider, /^[a-z][a-z0-9-]{0,63}$/); text(s.model, /^[A-Za-z0-9_][A-Za-z0-9_./:-]{0,255}$/); text(s.configRevision, GIT_SHA);
     integer(s.sourceRequests, 0, 32); integer(s.contextBytes, 0, 1_048_576); integer(s.outputBytes, 0, 1_048_576);
@@ -207,9 +213,10 @@ export class RegistryAutoShortlists {
       host.authenticate(); const current = this.cycle(cycle.cycleId);
       if (current.state === "published" && current.viewVersion) return this.published(current.viewVersion);
       if (current.revision !== cycle.revision || current.state !== "report-saved" || this.items.active()) throw new AutoWaitlistError("AUTO_BUSY");
-      const report = this.report(current), generatedAt = host.now(), scanCompletedAt = this.snapshot(current).completedAt;
+      const report = this.report(current), scanCompletedAt = this.snapshot(current).completedAt;
       host.assertSession(current, report.session);
-      if (!isDeepStrictEqual(host.reobserve(current), current.context) || utc(generatedAt) < utc(report.session.completedAt) || utc(expiresAt) <= utc(generatedAt) || utc(expiresAt) > utc(scanCompletedAt) + 30 * 60_000) throw new AutoWaitlistError("AUTO_SOURCE");
+      const observation = host.reobserve(current), generatedAt = host.now();
+      if (!isDeepStrictEqual(observation, current.context) || utc(generatedAt) < utc(report.session.completedAt) || utc(generatedAt) > utc(current.deadlineAt) || utc(expiresAt) <= utc(generatedAt) || utc(expiresAt) > utc(scanCompletedAt) + 30 * 60_000) throw new AutoWaitlistError("AUTO_SOURCE");
       const version = randomUUID(), view = Buffer.from(JSON.stringify({ schemaVersion: "pa-auto-shortlist-view/v1", version, scanCompletedAt, generatedAt, expiresAt, assessment: report.assessment }));
       const sha = this.bytes(view);
       this.db.prepare("INSERT INTO auto_shortlists(version,cycle_id,sha256,report_sha256) VALUES(?,?,?,?)").run(version, current.cycleId, sha, current.reportSha256);
@@ -268,7 +275,7 @@ export class RegistryAutoShortlists {
     return this.choice(next.requestId);
   }
   private assertView(shortlist: AutoPublishedShortlist, ticket: string, requestId: string, host: AutoShortlistObservationHost): void {
-    if (this.head()?.version !== shortlist.version || this.items.active() || this.activeCycle()) throw new AutoWaitlistError("AUTO_BUSY");
+    if (this.head()?.version !== shortlist.version || this.latestCycle()?.cycleId !== shortlist.cycleId || this.items.active() || this.activeCycle()) throw new AutoWaitlistError("AUTO_BUSY");
     const cycle = this.cycle(shortlist.cycleId), current = host.reobserve(cycle);
     parseAutoShortlistChoiceRequest(Buffer.from(JSON.stringify({ schemaVersion: "pa-auto-shortlist-choice-request/v1", requestId, shortlistVersion: shortlist.version, shortlistSha256: shortlist.sha256, ticket })), { view: shortlist.view, current, now: host.now() });
   }

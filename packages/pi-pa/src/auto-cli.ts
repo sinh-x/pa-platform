@@ -5,12 +5,13 @@ import {
   type AutoSection, type AutoWaitlistSnapshot, type AutoWaitlistView,
 } from "@pa-platform/pa-core";
 
-export const AUTO_USAGE = `Pi-only: ppa auto [scan|list|status|tick|units] [--json] [--section candidates|excluded|all] [--page N]
+export const AUTO_USAGE = `Pi-only: ppa auto [scan|list|status|tick|units|shortlist] [--json] [--section candidates|excluded|all] [--page N]
   auto / scan  Refresh registered PAP/PAPC observations; save only coordination data outside repositories.
   list         Read the last complete snapshot without initialization or refresh (100 entries/page).
   status       Read snapshot freshness, active item and informational notification state.
   tick         Enabled timer wake: read-only scan/result observations; never select/approve/launch.
   units        Render opt-in user units only; never install, enable or start a user service.
+  shortlist    New paired reasoning/explicit-choice route; --json reads saved state only.
   --help       Show this help. Foreground auto offers human-only selection and bounded unsigned drafting.
 Opening auto refreshes observations and resumes the global item. Review/start requires exact paired support.
 Timers and activation remain opt-in. Failed scans retain a visibly stale complete list.

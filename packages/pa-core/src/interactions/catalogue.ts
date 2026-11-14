@@ -189,6 +189,8 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ]),
   ...["show", "verify"].map(action => entry(`decision.${action}`, [`decision ${action}`], "read", "native", `${core}workflow.ts`, "native decision")),
   entry("document.describe", ["document describe --format json"], "read", "native", `${pi}document-cli.ts`, "document interface"),
+  entry("auto.shortlist.read", ["auto shortlist --json", "auto shortlist --help", "auto shortlist --view", "auto shortlist --section", "auto shortlist --page"], "read", "native", `${pi}auto-shortlist-cli.ts`, "PPA retained shortlist/report inventory", { reason: "Existing-only inspection of immutable native report/view/source pages and original cycle/choice/item state. No migration, scan, provider, policy, selection or launch occurs; time-current is not material admission." }),
+  entry("auto.shortlist.foreground", ["auto shortlist"], "launch", "owner", `${pi}auto-shortlist-cli.ts`, "PPA native shortlist reasoning and human-choice owners", { reason: "Only an authenticated unmanaged terminal and the exact new producer pairing may reserve/register bounded reasoning, publish its unsigned shortlist and record one explicit human choice. No ranking/default/noninteractive input chooses work. The original selected item then needs its actual delegated policy/admission owner; no old start receipt, generic deploy fallback, service install or activation is supplied. Source fixtures are not provider/human qualification." }),
   entry("auto.units", ["auto units", "auto units --json"], "read", "native", `${pi}auto-background.ts`, "PPA auto user-unit description", { reason: "Renders fixed opt-in unit text only. It does not write units, call systemctl, install, activate or approve any ticket." }),
   entry("auto.tick", ["auto tick"], "write", "owner", `${pi}auto-background.ts`, "PPA auto periodic observation and informational notification", { reason: "An explicitly enabled wake may refresh unsigned snapshots, reconcile factual original results and request a desktop notification. It never selects, approves, publishes, queues or launches an agent. Default controls are disabled; it is not a pure reader." }),
   entry("auto.help", ["auto --help"], "read", "native", `${pi}auto-cli.ts`, "PPA auto inspection metadata"),
@@ -241,7 +243,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick", "auto.shortlist.foreground"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

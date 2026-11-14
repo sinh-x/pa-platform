@@ -45,7 +45,12 @@ export interface DeployRequest {
 
 /** Schema-owned text only: supplied IDs and private configuration never enter a denial. */
 export class DeployModeSelectionError extends Error {
-  constructor(source: "explicit request" | "configured default" | "execution plan", nativeAutoDraft = false) {
+  constructor(source: "explicit request" | "configured default" | "execution plan", nativeAutoDraft = false, nativeReasoning = false) {
+    if (nativeReasoning) {
+      super("Reasoning session not started: this mode cannot run through ordinary deployment.\n\nCondition: Generic deployment is blocked before planning.\nSource: Native shortlist mode selection.\nReason: Only the registered bounded shortlist owner may run this mode; its output cannot select a ticket or grant delegation.\nCorrection: Ask the runtime/configuration owner to qualify the exact native shortlist pairing. Impact: none. Actor: operator or agent. New approval: not required to ask. Prerequisite: preserve original state; repairs need their owner.\nResume Action: Use ppa auto shortlist only after compatible native pairing is available. Its current source, session and selection checks still apply.");
+      this.name = "DeployModeSelectionError";
+      return;
+    }
     if (nativeAutoDraft) {
       super("Draft not started: this mode cannot run through ordinary deployment.\n\nCondition: The requested generic deployment is blocked before planning.\nSource: Native auto-draft mode selection.\nReason: Ordinary deployment does not provide the bounded unsigned auto-draft owner.\nCorrection: Ask the runtime owner to qualify the native auto workflow. Impact: none; actor: operator or agent; no approval is needed to ask. Prerequisite: preserve current state; repairs need separate authority.\nResume Action: Use the native auto workflow only after its owners qualify and enable the exact pairing; admission is checked again.");
       this.name = "DeployModeSelectionError";
@@ -74,8 +79,8 @@ export function resolveDeployMode(team: TeamConfig, requestedMode?: string): Dep
   }
   // This mode names a private protocol consumed by the auto owner, not a
   // general deploy profile. Its instructions alone do not enforce isolation.
-  if (team.name === "requirements" && /^auto-draft(?:-[a-z0-9-]+)?$/.test(id)) {
-    throw new DeployModeSelectionError(requestedMode !== undefined ? "explicit request" : "configured default", true);
+  if (team.name === "requirements" && /^auto-(?:draft|reasoning)(?:-[a-z0-9-]+)?$/.test(id)) {
+    throw new DeployModeSelectionError(requestedMode !== undefined ? "explicit request" : "configured default", id.startsWith("auto-draft"), id.startsWith("auto-reasoning"));
   }
   return matches[0];
 }

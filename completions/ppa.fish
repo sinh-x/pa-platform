@@ -647,9 +647,10 @@ complete -c ppa -n '__fish_seen_subcommand_from operation' -l format -r -a pa-op
 complete -c ppa -n '__fish_seen_subcommand_from operation run' -l command -r -d 'Safe bounded shell command'
 complete -c ppa -n '__fish_seen_subcommand_from operation run' -l timeout -r -d 'Per-operation seconds (max 14400)'
 
-# Pi-only read-only auto waitlist; no approval or dispatch flags
-complete -c ppa -n __fish_use_subcommand -a auto -d 'Inspect PAP/PAPC waitlist; no automatic work'
-complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status tick units' -a 'scan list status tick units'
+# Pi-only auto inspection and native foreground owners; no choice or approval flags
+complete -c ppa -n __fish_use_subcommand -a auto -d 'Inspect or resume PAP/PAPC work; native human choices only'
+complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status tick units shortlist' -a 'scan list status tick units shortlist'
+complete -c ppa -n '__fish_seen_subcommand_from auto; and __fish_seen_subcommand_from shortlist' -l view -r -d 'Inspect an exact saved shortlist UUID; read-only'
 complete -c ppa -n '__fish_seen_subcommand_from auto' -l json -d 'Versioned unsigned observation'
 complete -c ppa -n '__fish_seen_subcommand_from auto' -l section -r -a 'candidates excluded all'
 complete -c ppa -n '__fish_seen_subcommand_from auto' -l page -r -d 'One-based page (100 entries) '
