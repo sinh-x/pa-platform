@@ -1543,9 +1543,11 @@ test("foreground cleanup settles from process evidence without an onExit callbac
     setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
   } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-resistant", mode: "foreground", timeoutMs: 1 });
-  await nextTick(); timeoutCallback?.();
+  await nextTick();
+  assert.equal(timeoutCallback, undefined, "legacy timeout must not arm a deployment timer");
+  input.emit("end");
   const result = await resultPromise;
-  assert.equal(result.exitCode, 124);
+  assert.equal(result.exitCode, 0);
   assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(result.metadata?.cleanupVerified, true);
   assert.equal(input.isRaw, false);
@@ -1604,7 +1606,7 @@ test("foreground persistence failure terminates, escalates, verifies exit, and r
   assert.equal(input.isRaw, false);
 });
 
-test("foreground resistant timeout waits for verified exit and settles exactly once", async () => {
+test("foreground explicit cancellation waits for verified exit and settles exactly once without a deployment timer", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   let now = 0; let timeoutCallback: (() => void) | undefined; let outcomes = 0;
   pty.onKill = (signal) => { if (signal === "SIGKILL") pty.emitExit(137); };
@@ -1617,14 +1619,41 @@ test("foreground resistant timeout waits for verified exit and settles exactly o
   } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-timeout", mode: "foreground", timeoutMs: 1 });
   resultPromise.then(() => { outcomes++; });
-  await nextTick(); timeoutCallback?.();
+  await nextTick();
+  assert.equal(timeoutCallback, undefined);
+  input.emit("end");
   const result = await resultPromise;
   pty.emitExit(0); pty.emitExit(0); await nextTick();
-  assert.equal(result.exitCode, 124);
+  // Explicit cancellation preserves the actual nonzero child exit; it must not
+  // manufacture a successful result after SIGKILL or late zero-exit callbacks.
+  assert.equal(result.exitCode, 137);
   assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(result.metadata?.cleanupVerified, true);
   assert.equal(input.isRaw, false);
   assert.equal(outcomes, 1);
+});
+
+test("foreground and managed spawn/resume outlive legacy timeoutMs without a timer or termination signal", async () => {
+  for (const mode of ["foreground", "dry-run"] as const) for (const resume of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-unlimited-")), primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+    const pty = new FakePiPty(), child = new FakePiChild(), input = new FakePiInput(), output = new FakePiOutput();
+    let timerCount = 0, settled = false; const signals: NodeJS.Signals[] = [];
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
+      spawnPty: () => pty as never, spawnProcess: (() => child as never) as typeof spawn,
+      input: input as never, output: output as never,
+      setTimeout: () => { timerCount++; return {} as NodeJS.Timeout; },
+      sendSignal: (_pid, signal) => { signals.push(signal); },
+    } });
+    try {
+      const opts = { primerPath: primer, deployId: "d-unlimited", mode, timeoutMs: 1 };
+      const running = resume ? adapter.resume({ ...opts, sessionId: "existing-session" }) : adapter.spawn(opts);
+      void running.then(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      assert.equal(timerCount, 0); assert.equal(settled, false); assert.deepEqual(signals, []); assert.deepEqual(pty.signals, []);
+      if (mode === "foreground") pty.emitExit(0); else child.emit("close", 0);
+      assert.equal((await running).exitCode, 0);
+    } finally { input.destroy(); rmSync(dir, { recursive: true, force: true }); }
+  }
 });
 
 test("terminal Pi error fails on exit 0 and preserves persisted diagnostics", async () => {
@@ -1637,8 +1666,9 @@ test("terminal Pi error fails on exit 0 and preserves persisted diagnostics", as
   assert.equal((await successful.spawn({ primerPath: primer, deployId: "d-semantic-success", mode: "background" })).exitCode, 0);
 });
 
-test("escalates resistant timeout cleanup and settles once after the process group disappears", async () => {
+test("escalates explicit shutdown cleanup and settles once after the process group disappears", async () => {
   const child = new FakePiChild();
+  const shutdown = new AbortController();
   let now = 0;
   let groupGone = false;
   const signals: NodeJS.Signals[] = [];
@@ -1652,21 +1682,24 @@ test("escalates resistant timeout cleanup and settles once after the process gro
       sleep: async (milliseconds) => { now += milliseconds; },
       processGroupGone: () => groupGone,
       sendSignal: (_pid, signal) => { signals.push(signal); if (signal === "SIGKILL") { groupGone = true; child.emit("close", 137); } },
+      shutdownSignal: shutdown.signal,
       setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; },
       clearTimeout: () => {},
     },
   });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-timeout", mode: "dry-run", timeoutMs: 1 });
   await nextTick();
-  timeoutCallback?.();
+  assert.equal(timeoutCallback, undefined);
+  shutdown.abort("SIGTERM");
   const result = await resultPromise;
-  assert.equal(result.exitCode, 124);
+  assert.equal(result.exitCode, 143);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(result.metadata?.cleanupVerified, true);
 });
 
-test("settles at the cleanup deadline when the child and process group never disappear", async () => {
+test("explicit shutdown retains its cleanup deadline when the child and process group never disappear", async () => {
   const child = new FakePiChild();
+  const shutdown = new AbortController();
   let now = 0;
   let timeoutCallback: (() => void) | undefined;
   const signals: NodeJS.Signals[] = [];
@@ -1679,22 +1712,24 @@ test("settles at the cleanup deadline when the child and process group never dis
       sleep: async (milliseconds) => { now += milliseconds; },
       processGroupGone: () => false,
       sendSignal: (_pid, signal) => { signals.push(signal); },
+      shutdownSignal: shutdown.signal,
       setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; },
       clearTimeout: () => {},
     },
   });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-deadline", mode: "dry-run", timeoutMs: 1 });
   await nextTick();
-  timeoutCallback?.();
+  assert.equal(timeoutCallback, undefined);
+  shutdown.abort("SIGTERM");
   const result = await resultPromise;
   assert.equal(now, 4900);
-  assert.equal(result.exitCode, 124);
+  assert.equal(result.exitCode, 143);
   assert.equal(result.metadata?.cleanupVerified, false);
-  assert.equal(result.errorMessage, "Pi deployment timed out; process tree cleanup deadline exceeded");
+  assert.equal(result.errorMessage, "runner-shutdown: Pi supervisor received SIGTERM; process tree cleanup deadline exceeded");
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 });
 
-test("settles exactly once when persistence failure, timeout, and late close compete", async () => {
+test("settles exactly once on persistence failure and late close without arming a deployment timer", async () => {
   const child = new FakePiChild();
   let now = 0;
   let groupGone = false;
@@ -1719,7 +1754,7 @@ test("settles exactly once when persistence failure, timeout, and late close com
   resultPromise.then(() => { outcomes++; });
   await nextTick();
   child.stdout.emit("data", Buffer.from('{"type":"message","text":"fails"}\n'));
-  timeoutCallback?.();
+  assert.equal(timeoutCallback, undefined);
   child.emit("close", 137);
   child.emit("close", 137);
   const result = await resultPromise;

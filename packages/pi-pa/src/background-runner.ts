@@ -192,7 +192,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         mode: "dry-run",
         logFile: config.logFile,
         sessionId: config.sessionId,
-        ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}),
+        // Legacy supervisor configs may retain timeoutMs; deployment lifetime
+        // is unbounded even when resuming such a config.
       },
       config.sessionId,
       secrets,

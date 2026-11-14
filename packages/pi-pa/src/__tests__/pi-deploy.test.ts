@@ -4313,14 +4313,14 @@ test("new foreground Pi deployments omit the adapter deadline but retain timeout
   });
 });
 
-test("new background Pi deployments pass the resolved adapter deadline while retaining supervision metadata", async () => {
+test("new background Pi deployments omit adapter deadlines while retaining legacy planning metadata", async () => {
   await withPiEnv(async () => {
     let captured: SpawnOpts | undefined;
     const result = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 2400 }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
     assert.equal(result.status, "success");
     assert.ok(captured);
     assert.equal(captured.mode, "background");
-    assert.equal(captured.timeoutMs, 2_400_000);
+    assert.equal(Object.hasOwn(captured, "timeoutMs"), false);
     assertTimeoutMetadata(captured, 2400);
   });
 });
@@ -4355,14 +4355,15 @@ test("ordinary background termination retains one causal failure with no Git sta
     } });
     const deployed = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 60 }, adapter);
     assert.equal(deployed.status, "pending");
-    assert.equal(config?.timeoutMs, 60_000);
+    assert.equal(config?.timeoutMs, undefined);
 
     const child = new BackgroundDeploymentProcess(88_002);
+    const shutdown = new AbortController();
     let timeoutCallback: (() => void) | undefined;
     let now = 0;
     let gone = false;
     const signals: NodeJS.Signals[] = [];
-    const running = runPiBackgroundRunner(config!, { supervision: {
+    const running = runPiBackgroundRunner(config!, { shutdownSignal: shutdown.signal, supervision: {
       spawnProcess: (() => child as never) as never,
       now: () => now,
       sleep: async (milliseconds) => { now += milliseconds; },
@@ -4375,15 +4376,30 @@ test("ordinary background termination retains one causal failure with no Git sta
       },
     } });
     await nextTick();
-    timeoutCallback?.();
+    assert.equal(timeoutCallback, undefined);
+    shutdown.abort("SIGTERM");
     await running;
     const terminal = getDeploymentEvents(deployed.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0]?.summary ?? "", /runner-timeout:/);
+    assert.match(terminal[0]?.summary ?? "", /runner-shutdown:.*SIGTERM/);
     assert.equal(queryDeploymentStatus(deployed.deploymentId!)?.status, "failed");
     assert.ok(now < 5_000);
     assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("background standalone, ticketed, resumed and evaluator routes never forward deployment deadlines", async () => {
+  await withPiEnv(async () => {
+    const captured: SpawnOpts[] = [];
+    const adapter = stubAdapter({ onSpawn: opts => { captured.push(opts); }, onResume: opts => { captured.push(opts); } });
+    const standalone = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 60 }, adapter);
+    const ticketed = await deployWithPi({ team: "builder", mode: "implement", background: true, ticket: "PAP-159", timeout: 60 }, adapter);
+    const resumed = await deployWithPi({ team: "builder", mode: "implement", background: true, resume: standalone.deploymentId, timeout: 60 }, adapter);
+    const evaluator = await deployWithPi({ team: "builder", mode: "implement", background: true, evaluateDeployment: "d-abcdef", timeout: 60 }, adapter);
+    for (const result of [standalone, ticketed, resumed, evaluator]) assert.equal(result.status, "success", result.reason);
+    assert.equal(captured.length, 4);
+    for (const opts of captured) { assert.equal(opts.mode, "background"); assert.equal(Object.hasOwn(opts, "timeoutMs"), false); assertTimeoutMetadata(opts, 60); }
   });
 });
 

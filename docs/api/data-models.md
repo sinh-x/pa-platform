@@ -463,7 +463,7 @@ interface RegistryEvent {
 | `resumed_from_deployment_id` | `string` | no | If this deployment resumed a prior one, the prior deployment id. |
 | `runtime` | `HistoricalRuntimeName` (opaque string) | no | Recorded runtime; not launch authority. |
 | `binary` | `string` | no | Binary path that was spawned. |
-| `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
+| `effective_timeout_seconds` | `number` | no | Retained planning/finite-authority metadata in seconds; not a deployment runtime kill timer. Historical events retain their original values. |
 | `rogue_one` | `boolean` | no | True only for an explicitly selected rogue-one bare deployment. |
 | `invocation_channel` | `"cli" \| "agent-api"` | no | Rogue-one invocation channel; never contains caller credentials or identity values. |
 
@@ -554,7 +554,7 @@ interface DeploymentStatus {
 | `resumed_from_deployment_id` | `string` | no | Prior deployment id if resumed. |
 | `runtime` | `HistoricalRuntimeName` (opaque string) | no | Recorded runtime; not launch authority. |
 | `binary` | `string` | no | Binary path. |
-| `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
+| `effective_timeout_seconds` | `number` | no | Retained planning/finite-authority metadata in seconds; not a deployment runtime kill timer. Historical deployments may have used older enforcement. |
 | `rogue_one` | `boolean` | no | True for rogue-one deployment evidence. |
 | `invocation_channel` | `"cli" \| "agent-api"` | no | Rogue-one invocation channel. |
 

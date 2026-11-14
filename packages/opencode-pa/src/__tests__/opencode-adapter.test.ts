@@ -1478,6 +1478,39 @@ test("opa status activity surfaces unresolved permission.asked evidence from fak
   });
 });
 
+test("OpenCode foreground spawn and resume ignore legacy timeoutMs even with PID supervision", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-unlimited-")), bin = join(root, "bin"), primer = join(root, "primer.md");
+  mkdirSync(bin); writeFileSync(primer, "fixture");
+  const executable = join(bin, "opencode"); writeFileSync(executable, "#!/bin/sh\nsleep 0.05\nexit 0\n"); chmodSync(executable, 0o755);
+  const adapter = new OpencodeAdapter({ cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PA_AI_USAGE_HOME: root } });
+  let pidCount = 0;
+  try {
+    const opts = { primerPath: primer, deployId: "d-unlimited", mode: "foreground" as const, timeoutMs: 1, onPid: (pid: number) => { assert.ok(pid > 0); pidCount++; } };
+    assert.equal((await adapter.spawn(opts)).exitCode, 0);
+    assert.equal((await adapter.resume({ ...opts, sessionId: "existing-session" })).exitCode, 0);
+    assert.equal(pidCount, 2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("OpenCode launch and resume routes never forward deployment deadlines", async () => {
+  await withOpaEnv(async () => {
+    const captured: SpawnOpts[] = [], adapter = createStubAdapter({ exitCode: 0 }), spawn = adapter.spawn.bind(adapter), resume = adapter.resume.bind(adapter);
+    adapter.spawn = opts => { captured.push(opts); return spawn(opts); };
+    adapter.resume = opts => { captured.push(opts); return resume(opts); };
+    for (const background of [false, true]) {
+      const base = { team: "daily", mode: "plan", provider: "openai", timeout: 60, background };
+      const initial = await deployWithOpencode(base, adapter);
+      assert.equal(initial.status, background ? "pending" : "success", initial.reason);
+      const continued = await deployWithOpencode({ ...base, resume: initial.deploymentId }, adapter);
+      assert.equal(continued.status, background ? "pending" : "success", continued.reason);
+      const evaluator = await deployWithOpencode({ ...base, evaluateDeployment: "d-abcdef" }, adapter);
+      assert.equal(evaluator.status, background ? "pending" : "success", evaluator.reason);
+    }
+    assert.equal(captured.length, 6);
+    assert.ok(captured.every(opts => !Object.hasOwn(opts, "timeoutMs")));
+  });
+});
+
 test("opa foreground deploy records flag effective timeout metadata", async () => {
   await withOpaEnv(async () => {
     const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax", "--timeout", "1200"], { hooks: createOpencodeHooks(createStubAdapter({ exitCode: 0 })), io: { stdout: () => {}, stderr: () => {} } });
@@ -1487,7 +1520,7 @@ test("opa foreground deploy records flag effective timeout metadata", async () =
     assert.equal(deployment.effective_timeout_seconds, 1200);
     const statusOut: string[] = [];
     assert.equal(await runCoreCommand(["status", deployment.deploy_id], { io: { stdout: (line) => statusOut.push(line), stderr: () => {} } }), 0);
-    assert.match(statusOut.join("\n"), /Timeout:\s+1200s/);
+    assert.match(statusOut.join("\n"), /Timeout metadata: 1200s \(not a deployment runtime limit\)/);
   });
 });
 

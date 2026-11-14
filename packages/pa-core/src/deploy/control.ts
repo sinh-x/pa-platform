@@ -9,6 +9,9 @@ import { MAX_REVIEW_OBJECTIVE_BYTES } from "../validation/review-contract.js";
 import type { SessionCommandBuilder, SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 import type { DeploymentInvocationChannel } from "./rogue-one.js";
 
+/** Retained planning/finite-authority metadata, NOT a deployment kill deadline.
+ * Keep legacy request/registry contracts intact; adapters run until natural exit,
+ * explicit cancellation or a causal safety/lifecycle failure. */
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
 export const MIN_DEPLOY_TIMEOUT_SECONDS = 60;
 export const MAX_DEPLOY_TIMEOUT_SECONDS = 7200;
