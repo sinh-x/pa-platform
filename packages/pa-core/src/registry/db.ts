@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 22;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -313,6 +313,22 @@ function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS document_snapshots (
       sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS document_auto_policy_events (
+      domain TEXT NOT NULL, revision INTEGER NOT NULL, review_id TEXT NOT NULL, phase TEXT NOT NULL,
+      predecessor TEXT, sha256 TEXT NOT NULL, body TEXT NOT NULL, decision_claim TEXT UNIQUE, interaction_claim TEXT UNIQUE, policy_claim TEXT UNIQUE,
+      PRIMARY KEY (domain, revision), UNIQUE (domain, review_id, phase)
+    );
+    CREATE TABLE IF NOT EXISTS document_auto_policy_captures (
+      domain TEXT NOT NULL, review_id TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY (domain, review_id)
+    );
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_captures_no_update BEFORE UPDATE ON document_auto_policy_captures
+      BEGIN SELECT RAISE(ABORT, 'native policy captures are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_captures_no_delete BEFORE DELETE ON document_auto_policy_captures
+      BEGIN SELECT RAISE(ABORT, 'native policy captures are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_events_no_update BEFORE UPDATE ON document_auto_policy_events
+      BEGIN SELECT RAISE(ABORT, 'native document policy events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_events_no_delete BEFORE DELETE ON document_auto_policy_events
+      BEGIN SELECT RAISE(ABORT, 'native document policy events are append-only'); END;
     CREATE TABLE IF NOT EXISTS document_subjects (
       sha256 TEXT PRIMARY KEY, repo_key TEXT NOT NULL, ticket TEXT NOT NULL,
       package_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,

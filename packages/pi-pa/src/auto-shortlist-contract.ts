@@ -10,7 +10,7 @@ export interface AutoGoalSource {
 export interface PiAutoShortlistPair {
   schemaVersion: "pa-auto-shortlist-pair/v1";
   configRoot: string; configRevision: string; resourcesSha256: string; observationScopeSha256: string;
-  reasoning: { team: "requirements"; mode: string; provider: string; model: string; instructions: string };
+  reasoning: { team: "requirements"; mode: string; provider: string; model: string; instructions: string; objective: { path: string; sha256: string } };
   timezone: string; goalSources: AutoGoalSource[];
   assertCurrent(): void;
 }
@@ -43,7 +43,8 @@ export function selectedPiAutoShortlistPair(): PiAutoShortlistPair {
     const mode = modes[0]!, resolved = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request: {}, team, mode }));
     if (!resolved.provider || !/^[a-z][a-z0-9-]{0,63}$/.test(resolved.provider) || !resolved.model || !/^[A-Za-z0-9_][A-Za-z0-9_./:-]{0,255}$/.test(resolved.model)) throw new Error();
     for (const path of value.resources as string[]) read(path);
-    const instructions = new TextDecoder("utf-8", { fatal: true }).decode(read(mode.objective!));
+    const objectiveBytes = read(mode.objective!);
+    const instructions = new TextDecoder("utf-8", { fatal: true }).decode(objectiveBytes);
     if (!instructions.trim() || Buffer.byteLength(instructions) > 65_536) throw new Error();
     assertNoSensitiveMatch("content", instructions); assertNoSensitiveMatch("content", `${resolved.provider}/${resolved.model}`);
     source.assertCurrent();
@@ -51,6 +52,6 @@ export function selectedPiAutoShortlistPair(): PiAutoShortlistPair {
     const observationScopeSha256 = workflowDigest(JSON.stringify({ contract: workflowDigest(raw), configRevision: source.revision, resourcesSha256,
       projects: ["pa-platform", "pa-platform-config"], purpose: "shortlist-only-no-selection-or-delegation", limits: { wallMs: 600_000, sourceRequests: 32, fileBytes: 131_072, contextBytes: 1_048_576, outputBytes: 1_048_576 } }));
     return { schemaVersion: "pa-auto-shortlist-pair/v1", configRoot: source.root, configRevision: source.revision, resourcesSha256, observationScopeSha256,
-      reasoning: { team: "requirements", mode: mode.id, provider: resolved.provider, model: resolved.model, instructions }, timezone: value.timezone, goalSources, assertCurrent: () => source.assertCurrent() };
+      reasoning: { team: "requirements", mode: mode.id, provider: resolved.provider, model: resolved.model, instructions, objective: { path: mode.objective!, sha256: workflowDigest(objectiveBytes) } }, timezone: value.timezone, goalSources, assertCurrent: () => source.assertCurrent() };
   } catch { throw new AutoWaitlistError("AUTO_UNAVAILABLE"); }
 }

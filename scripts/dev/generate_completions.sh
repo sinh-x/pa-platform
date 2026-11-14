@@ -134,10 +134,11 @@ printf '%s\n' \
   '' \
   '# Pi-only auto inspection and native foreground owners; no choice or approval flags' \
   "complete -c ppa -n __fish_use_subcommand -a auto -d 'Inspect or resume PAP/PAPC work; native human choices only'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status tick units shortlist' -a 'scan list status tick units shortlist'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from scan list status tick units shortlist policy' -a 'scan list status tick units shortlist policy'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto; and __fish_seen_subcommand_from policy; and not __fish_seen_subcommand_from status adopt revoke withdraw' -a 'status adopt revoke withdraw'" \
   "complete -c ppa -n '__fish_seen_subcommand_from auto; and __fish_seen_subcommand_from shortlist' -l view -r -d 'Inspect an exact saved shortlist UUID; read-only'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from auto' -l json -d 'Versioned unsigned observation'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from auto' -l section -r -a 'candidates excluded all'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from auto' -l page -r -d 'One-based page (100 entries) '" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from adopt revoke withdraw' -l json -d 'Versioned observation, not a grant'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from policy' -l section -r -a 'candidates excluded all'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from auto; and not __fish_seen_subcommand_from policy' -l page -r -d 'One-based page (100 entries) '" \
   >> "$PPA"
 echo "Generated completions/ppa.fish from completions/pa-core.fish"

@@ -464,8 +464,14 @@ from qualification, effect controls, canary admission and service activation.
 PAPC-086 readback still records an administratively completed, default-disabled
 **v1** delivery at `813cd53`; no later acceptance of the r003 proposal was found.
 Do not reopen/rewrite that ticket or treat its done state as r003 agreement. A
-separately admitted configuration/requirements-owner successor remains needed.
-Independent default-off source work is not blocked merely by that absent pair;
+separately admitted configuration/requirements-owner successor is now **PAPC-087**.
+Sinh explicitly requested its creation and separately confirmed feature / medium /
+provisional L / sinh / idea. Installed native ticket creation returned PAPC-087;
+full readback verified the project, metadata and empty document/branch/commit
+links. Native sanitization removed semicolons, so its first comment separately
+clarifies each finite limit. PAP-302 and PAPC-086 contain reciprocal tracking
+comments. PAPC-086 stays done. Creation is not C0 agreement, requirements approval,
+checkout/deployment allocation or activation. Independent default-off source work is not blocked merely by that absent pair;
 actual adoption/launch/installed qualification remains dependent on its owners.
 
 Follow-up review also corrected a test call: `readAutoShortlistStatus` takes an
@@ -475,6 +481,125 @@ reader. This changes no production behavior or machine contract. Renewed Pi
 **80/80** and Pi/core typecheck passed; logs:
 `/tmp/pap302-r003-r2-reader-api-{pi,typecheck}.log`. Staged secrets/whitespace
 checks were also renewed; no new full/installed/human result is claimed.
+
+## R3 native global-policy decision component
+
+This source phase extends **RegistryDocumentJournal**, the existing native
+SQLite document-decision owner, with a DISTINCT global policy scope. Registry
+**22** adds immutable `document_auto_policy_events` and
+`document_auto_policy_captures`; actual subject/capture bytes use the EXISTING
+immutable `document_snapshots` owner. No model-owned permission file, imported
+receipt, per-ticket human confirmation or old prepared-native activation is
+converted into delegation. All old document/manual/v1 and OPA meanings remain.
+
+`documents/auto-policy-contract.ts` defines closed unsigned proposals and native
+subjects. `pa-auto-delegation-definition/v1` has exact keys
+`schemaVersion,lifetimeSeconds,repositories`. Lifetime is 60..86400 seconds. Both
+registered project keys are required, each with finite `sourceScope` and unique
+registered `checkIds`. Actual roots/repository configuration/check profiles,
+commands, Pi reasoning/draft/builder roles, objective source paths/hashes,
+configuration/resources, installed identity and goal rules are resolved by the
+native producer, not copied from caller claims. The native
+`pa-auto-delegation-policy/v1` subject binds these, the UID/data-root/registry
+domain, fixed supported initial bounds, local/excluded effects, honest
+instruction-only/observed-group restrictions, final human review, original
+UTC expiry and boot/monotonic-clock anchor. Unknown keys, unsupported bounds,
+old schemas and extra approval/actor flags refuse. No proposal is adoption.
+
+`AutoDelegationPolicyService` separates original request, raw actual capture,
+validated observation and issuance. Requests are claimed BEFORE opening UI.
+Actual raw capture is saved BEFORE mutable checks/issuance, including invalid or
+late bytes. Missing capture is UNKNOWN and cannot reprompt; saved capture or
+observation can reconcile the SAME original decision under fresh native caller
+and current facts. Issued reply loss reuses that decision while still current.
+History, captures, policy IDs, interactions and issuance are immutable/unique;
+readers validate hash chains, semantic phase ancestry and exact capture bindings.
+A previously reviewed subject/ID cannot be silently reactivated. New material
+policy scope/lifetime requires a new exact native review, never a restart reset.
+
+Pending permission review conservatively holds eligibility. Revocation remains
+available after source drift or expiry and never asserts process death/cleanup.
+`withdraw` is an EXPLICIT exceptional operator decision about the original
+unresolved POLICY REVIEW, not draft quarantine, ticket closure or execution
+custody release. It preserves evidence and fences late original issuance. It can
+remove a conservative review hold on a still-valid older policy; the UI discloses
+that consequence. Cancel retains the unresolved original. Unknown withdrawal
+attempts remain history; no old permission interaction is reprompted. Protected
+work uncertainty is not settled by any policy operation.
+
+The native Pi source adapter uses existing unmanaged-origin/controlling-terminal
+checks and displays the entire exact policy before one default-Cancel choice.
+Production identity must come from the executing immutable Nix installation and
+its package/provenance, never PA_* source/version flags or a local checkout.
+Those identity observations are NOT v1 qualification or r003 acceptance.
+Reasoning/draft objective identities are explicit; implementation objective bytes
+(or its team-configuration fallback) are now also in the committed resource
+closure, preventing an unobserved objective-file change. The private future
+continuation adapter checks the actual registry, current original item/choice,
+exact immutable view, adopted-policy observation closure, goal and configuration
+identities. Observation-only old shortlists cannot be upgraded by supplying a
+policy hash. Draft admission now rechecks policy and generation AFTER source
+reobservation too, so an intervening revocation/fence cannot claim the next turn.
+
+**Production full-scope adoption/authorization remains HELD.** The native
+factory has no supported document/lifecycle/preparation/source/check/launcher
+bridge in this build; `effect-owner-bridge` refuses before issuance. A private
+embedding/test callback is not that production owner or qualification. Neither
+configuration flags nor this decision component may remove the hold. The actual
+per-item intent, safe existing-package reuse, protected document/queue/branch/
+capacity/launch transitions and final-review execution still need implementation.
+No production `continueSelected` port is connected by this phase.
+
+### CLI, interaction classification and message evidence
+
+NEW PPA-only grammar: `ppa auto policy [status] [--json]` and native unmanaged
+foreground `ppa auto policy adopt|revoke|withdraw`. No JSON mutation, actor,
+outcome, yes or policy-file flags. Existing-only status never initializes,
+migrates, rechecks eligibility, captures a prompt or starts work. Its new
+`pa-auto-policy-status/v1` result carries original IDs/full scope/pending reviews
+and explicitly separates unverified eligibility from execution/activation.
+No old JSON/exit/stream contract is rewritten. Discovery classifies inspection
+as read and review as operator-only WRITE, with no invented tool/delegation
+binding. New PPA completions do not suggest mutation JSON/selection flags.
+
+| Affected path/category | Before | After (source behavior) |
+| --- | --- | --- |
+| Policy help/information | No global r003 policy route | Exact scopes/grammar and read-only status, with eligibility explicitly not rechecked |
+| Native policy result | No r003 issuer | `Native policy adopt: approved/cancelled` with ORIGINAL review/decision/subject IDs. No item/provider/worker/service effect is claimed. Positive UI fixtures are SIMULATED, not real adoption |
+| Unsupported production owner | Generic missing-continuation hold only | `Automatic policy review did not complete through this request.` plus exactly Condition/Source/Reason/Correction/Resume Action and actual `effect-owner-bridge` cause |
+| Unknown permission interaction | No global recovery path | Preserve original capture/request. Reconcile known evidence without another prompt or explicitly withdraw the exact original review. No blind retry/fresh worker advice |
+
+Diagnostics are static/finite, <=2000 UTF-16 units, NO_COLOR-safe and do not
+interpolate raw errors, objectives or hostile getters. Grammar, actual
+noninteractive CLI propagation/no initialization, full displayed-subject hash,
+label uniqueness/length and hostile input negatives were exercised. Human
+comprehension, real foreground provider/human interaction and installed delivery
+remain unperformed.
+
+Actual source checks and retained failures are recorded below. New owner tests
+use simulated native caller/current-scope/UI/installed facts; the multiprocess
+race uses genuine OS processes/SQLite but NOT human permission. No genuine
+native adoption/revocation/withdrawal, provider/worker, policy enablement,
+installation, desktop request or service activation was performed here.
+
+| Actual check | Result and evidence |
+| --- | --- |
+| Core auto/all-ticket/document confirmation/process/integrity/registry/interactions/execution | **261/261**, no skips/failures; `/tmp/pap302-r003-r3-policy-core-final.log` |
+| Pi auto/native host | **89/89**, no skips/failures; `/tmp/pap302-r003-r3-policy-pi-final.log` |
+| OPA retained adapter | **94 passed / 1 external-fixture skip**, zero failures; `/tmp/pap302-r003-r3-policy-opa-focused.log` |
+| Workspace typecheck/build | Passed; `/tmp/pap302-r003-r3-policy-typecheck-final-workspace.log`, `/tmp/pap302-r003-r3-policy-build-final.log` |
+| Completions | Passed; `/tmp/pap302-r003-r3-policy-completions.log`; only PPA output gained policy forms |
+| Staged secrets / whitespace | Passed; `/tmp/pap302-r003-r3-policy-secrets.log` and `git diff --cached --check` |
+
+The new cases include 12 policy-owner cases (one real two-process SQLite race),
+9 Pi policy cases, and a draft late-revocation recheck. Retained document
+confirmation/process tests were included explicitly. Original unsuccessful
+catalogue-effect vocabulary, fixture declaration emission and original-view
+linkage typechecks remain in `/tmp/pap302-r003-r3-policy-*` initial/rerun logs;
+repairs did not weaken guards or erase failures. The installed Node-22 addon is
+only a test dependency. Full regression timeouts, independent review, exact
+installed pairing/provider/native-human trials and all r003 product UAT remain
+open, not converted into passes by these focused results.
 
 ## Remaining dependency-ordered implementation
 

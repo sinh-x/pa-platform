@@ -16,13 +16,16 @@ import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./chi
 import { TICKET_RECOVERY_USAGE, runTicketRecoveryInspectionCommand } from "./ticket-recovery.js";
 import { TICKET_WORKTREE_RECOVERY_USAGE, runTicketWorktreeRecoveryCommand } from "./ticket-worktree-recovery.js";
 import { AUTO_USAGE, runAutoCommand } from "./auto-cli.js";
+import { runPiAutoPolicyCommand } from "./auto-policy-cli.js";
 import { runAutoShortlistForeground, runAutoShortlistReadCommand } from "./auto-shortlist-cli.js";
 import { runAutoForeground } from "./auto-foreground.js";
 import { piAutoForegroundHooks } from "./auto-runtime.js";
 import { publishAutoNotice, runAutoBackgroundCommand } from "./auto-background.js";
 
 if (process.argv[2] === "auto") {
-  process.exitCode = process.argv[3] === "shortlist"
+  process.exitCode = process.argv[3] === "policy"
+    ? await runPiAutoPolicyCommand(process.argv.slice(4), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) })
+    : process.argv[3] === "shortlist"
     ? process.argv.length === 4 && process.stdin.isTTY
       ? await runAutoShortlistForeground()
       : runAutoShortlistReadCommand(process.argv.slice(4), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) })

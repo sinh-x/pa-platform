@@ -105,6 +105,13 @@ test("copied deadline/state overrides and expiry during a native source check ca
   } finally { f.db.close(); }
 });
 
+test("native policy revocation during source reobservation is rechecked before claiming the next effect", async () => {
+  const f = await fixture(); try {
+    const g = f.drafts.start(f.reserve(), f.host); f.host.assertCurrent = () => f.revoke();
+    assert.throws(() => f.drafts.claimTurn(g, bytes({ late: true }), f.host), AutoWaitlistError); assert.equal(f.drafts.turns(g).length, 0);
+  } finally { f.db.close(); }
+});
+
 test("draft event/turn/snapshot history is immutable and corrupted heads fail closed", async () => {
   const f = await fixture(); try {
     const g = f.drafts.start(f.reserve(), f.host); f.drafts.claimTurn(g, bytes({ prompt: "one" }), f.host);

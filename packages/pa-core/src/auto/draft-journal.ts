@@ -112,7 +112,8 @@ export class RegistryAutoDrafts {
       || iso(host.now()) < iso(g.createdAt) || iso(host.now()) >= iso(g.deadlineAt)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
     if (!isDeepStrictEqual(authorize(host, item, choice, g.policy), g.policy) || iso(host.now()) >= iso(g.policy.expiresAt)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
     const result: unknown = synchronous(host.assertCurrent(structuredClone(g)));
-    if (result !== undefined || iso(host.now()) >= iso(g.deadlineAt) || iso(host.now()) >= iso(g.policy.expiresAt)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
+    if (result !== undefined || !isDeepStrictEqual(this.current(g.itemId), g) || !isDeepStrictEqual(authorize(host, item, choice, g.policy), g.policy)
+      || iso(host.now()) >= iso(g.deadlineAt) || iso(host.now()) >= iso(g.policy.expiresAt)) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
   }
   reserve(item: AutoItem, input: { request: Uint8Array; ticketVersion: string }, host: AutoDraftGenerationHost): AutoDraftGeneration {
     return this.tx(() => {
