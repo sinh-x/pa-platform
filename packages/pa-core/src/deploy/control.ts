@@ -45,7 +45,12 @@ export interface DeployRequest {
 
 /** Schema-owned text only: supplied IDs and private configuration never enter a denial. */
 export class DeployModeSelectionError extends Error {
-  constructor(source: "explicit request" | "configured default" | "execution plan") {
+  constructor(source: "explicit request" | "configured default" | "execution plan", nativeAutoDraft = false) {
+    if (nativeAutoDraft) {
+      super("Draft not started: this mode cannot run through ordinary deployment.\n\nCondition: The requested generic deployment is blocked before planning.\nSource: Native auto-draft mode selection.\nReason: Ordinary deployment does not provide the bounded unsigned auto-draft owner.\nCorrection: Ask the runtime owner to qualify the native auto workflow. Impact: none; actor: operator or agent; no approval is needed to ask. Prerequisite: preserve current state; repairs need separate authority.\nResume Action: Use the native auto workflow only after its owners qualify and enable the exact pairing; admission is checked again.");
+      this.name = "DeployModeSelectionError";
+      return;
+    }
     super(formatBoundedFiveFieldDiagnostic({
       condition: "deployment mode selection rejected",
       source,
@@ -66,6 +71,11 @@ export function resolveDeployMode(team: TeamConfig, requestedMode?: string): Dep
   const matches = team.deploy_modes?.filter((mode) => mode.id === id) ?? [];
   if (typeof id !== "string" || !/^[a-zA-Z0-9_-]+$/.test(id) || matches.length !== 1) {
     throw new DeployModeSelectionError(requestedMode !== undefined ? "explicit request" : "configured default");
+  }
+  // This mode names a private protocol consumed by the auto owner, not a
+  // general deploy profile. Its instructions alone do not enforce isolation.
+  if (team.name === "requirements" && /^auto-draft(?:-[a-z0-9-]+)?$/.test(id)) {
+    throw new DeployModeSelectionError(requestedMode !== undefined ? "explicit request" : "configured default", true);
   }
   return matches[0];
 }

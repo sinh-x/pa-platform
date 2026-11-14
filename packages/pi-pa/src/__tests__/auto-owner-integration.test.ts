@@ -60,6 +60,16 @@ function fixture() {
   return { root, repo, cfg, usage, journal, coordinator, documents, selected, driver, count: () => invocations,
     close() { closeDb(); process.env = oldEnv; rmSync(root, { recursive: true, force: true }); } };
 }
+test("real producer stays unavailable before effect claim until CPU and process-tree confinement is qualified", async () => {
+  const f = fixture(); try {
+    const before = f.journal.active();
+    assert.ok(before);
+    await assert.rejects(f.coordinator.draft(f.selected, autoDraftOwner(f.journal, () => {})), (error: unknown) => error instanceof AutoWaitlistError && error.code === "AUTO_UNAVAILABLE");
+    assert.deepEqual(f.journal.active(), before, "no effect, deployment or replacement intent is claimed");
+    assert.equal(f.journal.history(f.selected.itemId).length, 1);
+    assert.equal(f.count(), 0);
+  } finally { f.close(); }
+});
 test("default selected contract and native producer persist one unsigned package, zero product writes, then explicit redraft retains history", async () => {
   const f = fixture(); try {
     const before = readFileSync(join(f.repo, "README.md"));

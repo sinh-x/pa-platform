@@ -27,8 +27,15 @@ export function selectedPiAutoPair(): PiAutoPair {
       || !Array.isArray(r.resources) || !r.resources.length || r.resources.length > 64 || r.resources.some(p => typeof p !== "string")) throw new Error();
     for (const name of ["requirements", "builder"]) read(`teams/${name}.yaml`);
     for (const path of r.resources as string[]) read(path);
+    // The native producer reads this private profile as data; it must never use
+    // the generic deploy resolver, which deliberately refuses this mode family.
+    const draftTeam = loadTeamConfig("requirements");
+    const draftModes = draftTeam.deploy_modes?.filter(mode => mode.id === r.draftMode) ?? [];
+    if (draftTeam.name !== "requirements" || draftModes.length !== 1) throw new Error();
+    const draftMode = draftModes[0]!;
     const resolve = (teamName: string, modeName: string) => {
-      const team = loadTeamConfig(teamName), mode = resolveDeployMode(team, modeName);
+      const team = teamName === "requirements" ? draftTeam : loadTeamConfig(teamName);
+      const mode = teamName === "requirements" ? draftMode : resolveDeployMode(team, modeName);
       if (!mode || mode.id !== modeName || !mode.provider || !mode.model) throw new Error();
       // The producer is a new data-only route, not analyze or analyze-auto.
       if (teamName === "requirements" && mode.document_profile !== undefined) throw new Error();
@@ -39,8 +46,7 @@ export function selectedPiAutoPair(): PiAutoPair {
       return { provider: config.provider, model: config.model };
     };
     const draft = resolve("requirements", r.draftMode), implementation = resolve("builder", "orchestrator");
-    const draftMode = resolveDeployMode(loadTeamConfig("requirements"), r.draftMode);
-    if (!draftMode?.objective) throw new Error();
+    if (!draftMode.objective) throw new Error();
     const draftInstructions = new TextDecoder("utf-8", { fatal: true }).decode(read(draftMode.objective)!);
     if (!draftInstructions.trim() || Buffer.byteLength(draftInstructions) > 65536) throw new Error();
     assertNoSensitiveMatch("content", draftInstructions);
