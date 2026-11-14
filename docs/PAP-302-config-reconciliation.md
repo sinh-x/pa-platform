@@ -112,6 +112,23 @@ assertion, authority/cleanup boundary or runtime implementation changed to
 obtain the completed matrix. There is no claim of comprehensive escaped-child
 cleanup from a fixture's successful return.
 
+## Operator-authorized source integration candidate
+
+After reconciliation and completed regression accounting, Sinh explicitly asked
+to proceed with PR/merge and update the config reference. A fresh
+`feature/PAP-302-r003-source-integration` branch preserves the retained feature
+and its divergent old remote history; no force-push/rebase is required. Restore
+plain **0.1.166** across four shared manifests; runtime-host remains0.1.88, no
+changelog/tag/release or dependency/lock/hash change. Pin remains merged504a8dc.
+
+This candidate requests normal GitHub CI and squash integration of **partial,
+default-off source**, not a PAP-302 completion/activation claim. Do not close
+PAP-302 or import source tests as human policy/UAT/custody evidence. Review and
+hosted checks must refer to the final candidate; no admin/quality-gate bypass.
+The readable source version change does not alter installed `.2`, package
+provenance, current controls or old receipts. No external PAPC selector/design
+null field or historical released counterpart pin is rewritten.
+
 ## Installed provenance and remaining product gates
 
 Read the owning source, not the previously denied installed metadata bytes.

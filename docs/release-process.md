@@ -12,6 +12,15 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-302 **source integration candidate** restores plain **`0.1.166`** across
+the four shared manifests for develop's normal auto-patch flow. It pins merged
+PAPC-087 config `504a8dcc333fec6169b4b0242718bcbc3773ccff` after strict source
+compatibility reconciliation. The installed `.2` trial is unchanged. This is
+partial default-off source integration, not completed/activated automation or
+exact installed/UAT acceptance; see
+[PAP-302 reconciliation and complete source coverage](PAP-302-config-reconciliation.md).
+The historical trial reference follows.
+
 The current PAP-302 r003 worktree trial label is **`0.1.166-pap302.2`** across
 the four shared manifests, after the operator-requested rebase onto develop
 `e1bfd8901a11ba726ad96bdabc8e810ff795b107` and explicit `.2` request. A separately
