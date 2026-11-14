@@ -1,5 +1,9 @@
 # PAP-299 P1: candidate contracts and independent-review gate
 
+> Historical P1 design/review input. Later real owner integration and remaining
+> gates are recorded in [the d-f0ea21 continuation](PAP-299-native-owner-progress.md).
+> New source adapters do not constitute independent review or enablement.
+
 Status: **P1 groundwork only; NOT security-reviewed, enabled or phase-complete.**
 No P2–P6 completion or product acceptance is claimed. This document and the new
 pure parsers are review inputs, not runtime capabilities or authority. The source

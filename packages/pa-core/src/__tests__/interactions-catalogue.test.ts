@@ -120,6 +120,12 @@ test("PAP-299 composition does not advertise inactive handoff/reader cores as na
   for (const id of ["document.native.plan", "document.native.complete-branch", "document.native.open"]) {
     assert.equal(interactionCatalogue.some(row => row.operationId === id), false);
   }
+  // Actual new ticket/Git owners are still internal source seams. Compiling
+  // them must not silently select a tool/profile or retrofit legacy decisions.
+  for (const path of ["packages/pa-core/src/index.ts", "packages/pi-pa/src/pi-extension/document-tool.ts", "packages/pi-pa/src/document-session.ts"]) {
+    const source = readFileSync(resolve(root, path), "utf8");
+    assert.doesNotMatch(source, /(?:handoff-native-branch|handoff-git|handoff-contract|reader-publication)\.js/);
+  }
   // Primer resource composition is text projection, not another CLI dispatcher.
   assert.equal(operation("document.native.branch-inspect").effectClass, "read");
   assert.equal(operation("document.native.branch-inspect").nativeBinding, null);
