@@ -2,7 +2,17 @@
   "schemaVersion": "pa-interaction-source-inventory/v1",
   "scope": "Conservative source-change guard, not semantic completeness or installed provenance. Reconcile changed dispatch/variants before renewing hashes.",
   "sources": {
-    "packages/pa-core/src/index.ts": "f0198e749ef62d5192a74cd38b65a1453d5ffa9c462acbc93f3119f0c2ac2281",
+    "nix/selected-pi-host.nix": "4454d74ac2288d3fe3ff190ef001f358a5bb314a3f3f0dd149fc9603412f74bc",
+    "nix/selected-pi-qualification.nix": "5731934424cd83d83db6abd4f68d057efc441ca59b3bb126c297531b86ffe99c",
+    "packages/pi-pa/runtime/selected-host-entry.c": "4fd6140099ef03e9176a90d75b9e145fe5a74f9c45fbb9522bd3f7f32d37f7f1",
+    "packages/pi-pa/runtime/selected-document-qualification.mjs": "456b795819735b8ff179c3da07981296e2575c088af2fc360642792988b4968c",
+    "packages/pi-pa/runtime/local-source-core.ts": "b41c830258a0ef7a669ad46992783481211b81691ece6bdd61fbb6fd881c3ee5",
+    "nix/selected-pi-document-qualification.nix": "ebd840941aaed40eac1cc9a7b6391850c0f33df57d59b737788a927e82229f6d",
+    "packages/pi-pa/runtime/selected-host-qualification.mjs": "f78fa6f988609749ff75329c728147eb13891a68ffca606f061f7f294a01d94a",
+    "packages/pa-core/src/index.ts": "fe9938cfe7868d82eead5814d73a2d0e6ae97f7c3dcc6521764e6dc35e21a831",
+    "packages/pa-core/src/source-content-security.ts": "05dcccc36a059ae84a508f131c760112648777a2e246b79028c874e4ca2dbdfc",
+    "packages/pa-core/src/local-source-file.ts": "f0c569746ccc8246d95ee0e06f0b84dfec0e0f155ddc2c22076f2d31f9e9a222",
+    "packages/pa-core/src/immutable-document-policy.ts": "3e8d5379704145cd03aebddf19335f0e479e9b2b2f572f3811def34a342ded6c",
     "packages/pa-core/src/auto/notifications.ts": "a35b7ffe63f2f508e0abe27b0a57685f7c864e375c290a1d1e78196420618557",
     "packages/pi-pa/src/auto-background.ts": "ae8780a6189d24f930903a738f225fe3ce65528b6c69d4f48c49aa7d2f8d197d",
     "packages/pi-pa/src/auto-scan-client.ts": "4961b17bbe4343796ab344e49ec3dc7b68173470cd63b54a1cbc0757aca470a1",
@@ -29,10 +39,12 @@
     "packages/pa-core/src/auto/presentation.ts": "84460e382207585d8bb74d3fe1661c71b9ee106cd9879c285bcba179af0bc103",
     "packages/pi-pa/src/auto-cli.ts": "025e93341d5864770ebb34bbe9a1f396685078d6cffcb6f0fcde0e11088df402",
     "packages/pi-pa/src/auto-scan-worker.ts": "ad4e4c00911b561aa239c52ef2733788ba981121de6078cbf6c3f19ef55989ef",
-    "packages/pa-core/src/source-content-security.ts": "738ec9f2bffded1e4b41c8b2bd6beecb6bc3b854088c42239fbf45ea8584fcef",
     "packages/pa-core/src/safety-policy.ts": "63c851c6bd908f5baf4a02a53d5104c75a3fb27d2ca3dd9c830f6fa3f0b0aa39",
     "packages/pi-pa/src/pi-extension/local-content-security.ts": "cb278f3dc4025db95ac1da798de35569820e0d13aca8ddc62d08e07f9a5a9fd1",
-    "packages/pi-pa/src/pi-extension/local-source-tools.ts": "7f720dd3a32da6bf9e5fd1218f6f008e004ab83b0cc481c2bba8f5a60460aa5a",
+    "packages/pi-pa/src/pi-extension/local-source-tools.ts": "9c5de03d53a3465ae81a4325a41567bd1ba3938653cd6384fa562ad14c3be14b",
+    "packages/pi-pa/src/pi-extension/bound-local-read.ts": "c12462e1b3f7d59773fc2881e082f512bc6a1435f96555245c7c62d789b73a97",
+    "packages/pi-pa/src/pi-extension/local-read-paths.ts": "ceb2053dfcd68c8fb7c785cd48ed19547b59595f80ff0b801b3e02f7134b71ca",
+    "packages/pi-pa/src/pi-extension/local-image-type.ts": "d186b717e69347caaa3a34d15b8f7296c36ada0ffc4f0be4eb48305e4f3847c7",
     "packages/pi-pa/src/pi-extension/web-read-tool.ts": "94975ca7c69504b4596510b0cd284b5cf598c43d3200d6a8685e5c469f55af6a",
     "packages/pi-pa/src/pi-host-smoke.ts": "f8a300fc65c81bc103b5602591ab5aebdfea4ca58139c64eef58ea1685183da4",
     "packages/pa-core/src/tickets/status-intent.ts": "d98f318f93754e7f908259dccf055585e956706ca428e2212d1ce97955a9c1b8",
@@ -100,6 +112,6 @@
     "packages/pa-core/src/registry/index.ts": "587ef8ffddb173c8ef60073ffd848c9ec9152574b0c6077feee4601a6b696f72",
     "packages/pa-core/src/mode-capabilities.ts": "d1f0659e63c3e3c6c42903c0c6b485518ba89d6875c5183c8a832cebf68df353",
     "packages/pa-core/src/mode-capability-selection.ts": "ec1d0559f38eebc5c25b1a658d5e096ffe414ab1f7bf1495d9e580b6c7fe8a5c",
-    "packages/pi-pa/src/pi-extension/index.ts": "3b570d173c4d5aba646fa9f47dc62862e36190bd9c89a57b72d25f9a66d546c2"
+    "packages/pi-pa/src/pi-extension/index.ts": "ac3cb3249ded190c16b5a1505129ec9291274e5b64293651eabb7e9976df188f"
   }
 }

@@ -1,5 +1,5 @@
 import { Type, type TSchema } from "typebox";
-import { BulletinStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
+import { BulletinStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, SourceContentSecurityError } from "@pa-platform/pa-core";
 import { interceptToolCall } from "./safety.js";
 export { interceptToolCall } from "./safety.js";
 import { auditPiValueFromEnvironment } from "../diagnostics.js";
@@ -13,7 +13,7 @@ import { registerOperationModule } from "./operation-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
 import { registerDocumentModule, documentToolDeployment, policyDocumentDeployment, assertNativeDocumentTool } from "./document-tool.js";
-import { filterLocalToolResult, localProgressResult, safeLocalToolError, registerLocalContentResultModule } from "./local-content-security.js";
+import { filterLocalToolResult, localContentFailure, localProgressResult, safeLocalToolError, registerLocalContentResultModule } from "./local-content-security.js";
 import { registerLocalSourceToolsModule } from "./local-source-tools.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import { registerRepoSetupModule } from "./repo-setup.js";
@@ -119,7 +119,12 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
     shutdown(event?: unknown, context?: unknown): Promise<void> {
       if (shutdownPromise) return shutdownPromise;
       closing = true;
-      shutdownPromise = (async () => {
+      // Memoize BEFORE synchronous shutdown/abort callbacks can re-enter.
+      // Keep immediate revocation; deferring the whole cleanup would reopen a
+      // publication window between shutdown() and its first microtask.
+      let resolveShutdown!: () => void, rejectShutdown!: (error: unknown) => void;
+      shutdownPromise = new Promise<void>((resolve, reject) => { resolveShutdown = resolve; rejectShutdown = reject; });
+      void (async () => {
         const disposal = shutdownSteps.map((step) => {
           try { return Promise.resolve(step(event, context)); }
           catch (error) { return Promise.reject(error); }
@@ -127,7 +132,7 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
         await Promise.allSettled(disposal);
         await Promise.allSettled([...registryAccess]);
         closeRegistry();
-      })();
+      })().then(resolveShutdown, rejectShutdown);
       return shutdownPromise;
     },
   };
@@ -139,6 +144,11 @@ export function registerPiSessionModules(
   modules: readonly PiExtensionModule[] = PI_PA_MODULES,
 ): void {
   const deploymentId = documentToolDeployment(), policyDeploymentId = policyDocumentDeployment();
+  // Native per-registration lifetime, never an identity/grant supplied by a
+  // tool argument, env or another session. Install revocation before module
+  // cleanup; shutdown still awaits in-flight accesses before registry close.
+  const readLifetime = new AbortController();
+  lifecycle.addShutdownStep(() => { readLifetime.abort(); });
   // Capability admission precedes execution. Source-aware output protection also
   // covers direct/delegated custom calls outside document profiles. No role list.
   const guardedRuntime = new Proxy(pi, {
@@ -155,9 +165,23 @@ export function registerPiSessionModules(
         // Partial custom output may split a secret across updates. Never forward
         // unchecked fragments to the TUI or its runtime capture.
         const checkedArgs = [...args] as Parameters<PiToolDefinition["execute"]>;
-        if (update) checkedArgs[3] = () => update(localProgressResult());
-        try { return filterLocalToolResult(tool.name, await tool.execute(...checkedArgs)); }
-        catch (error) { throw safeLocalToolError(tool.name, error); }
+        if (tool.name === "read") checkedArgs[2] = args[2]
+          ? AbortSignal.any([readLifetime.signal, args[2]]) : readLifetime.signal;
+        if (update) checkedArgs[3] = () => {
+          if (tool.name !== "read" || !checkedArgs[2]?.aborted) update(localProgressResult());
+        };
+        try {
+          const result = filterLocalToolResult(tool.name, await tool.execute(...checkedArgs));
+          // Defense in depth for a delegated reader that ignores its signal.
+          // Checked bytes are still withheld after revocation/cancellation.
+          if (tool.name === "read" && checkedArgs[2]?.aborted)
+            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+          return result;
+        } catch (error) {
+          if (tool.name === "read" && checkedArgs[2]?.aborted)
+            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+          throw safeLocalToolError(tool.name, error);
+        }
       }).catch(error => {
         // Preserve retained intake's existing bounded late-call result without
         // reopening its registry after shutdown. Policy callers keep rejection.
