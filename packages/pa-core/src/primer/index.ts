@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { digest } from "../workflows/contracts.js";
 import { resolve } from "node:path";
 import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
@@ -119,7 +120,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
     ``,
-    renderDeploymentInstructions(options.teamConfig, mode, options.runtime, document),
+    renderDeploymentInstructions(options.teamConfig, mode, options.runtime, document, options),
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
@@ -542,14 +543,33 @@ const REPO_SETUP_TOOL_REFERENCE = [
   "These discovery operations are registered by the runtime itself; generic read/search tool availability is not assumed. Linux descriptor confinement, owned non-symlink files, sensitive filtering and finite input/output limits apply.",
 ].join("\n");
 
-function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName, document = false): string {
+function renderSelectedRequirementsCompletion(options: GeneratePrimerOptions): string {
+  const source = "primers/fragments/shared/completion.md";
+  // An explicit retained resolver must NEVER fall back to today's config.
+  const path = options.resolveFile ? options.resolveFile(source) : resolve(getPlatformHomeDir(), source);
+  const unavailable = () => new Error("Requirements instructions could not be composed.\nCondition: The selected completion fragment is unavailable.\nSource: Selected requirements resource composition.\nReason: Its exact body cannot be loaded; current config must not replace retained resources.\nCorrection: Ask the config/runtime owner to reconcile the selected resource closure. Impact: none to ask. Actor: agent or operator. New approval: not required to ask; changes need their own authority. Prerequisite: preserve the selected configuration and session identity.\nResume Action: Generate the primer only after the selected resource is available; do not upgrade retained sessions or infer new capabilities.");
+  if (!path || !existsSync(path)) throw unavailable();
+  let bytes: Buffer;
+  try { bytes = readFileSync(path); } catch { throw unavailable(); }
+  if (!bytes.length || bytes.length > 65_536) throw unavailable();
+  let body: string;
+  try { body = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw unavailable(); }
+  body = applyTemplateVars(body, { ...options.templateVars, RUNTIME_ADAPTER: "ppa" });
+  return `<!--pa:selected-completion path=${source} sha256=${digest(bytes)}-->\n${demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(body, "pi"))}`;
+}
+
+function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName, document = false, options?: GeneratePrimerOptions): string {
   assertSupportedRuntime(runtime);
+  const selectedPolicy = runtime === "pi" && document && mode?.document_profile === MODE_CAPABILITY_PROFILE;
   if (runtime === "pi" && document) return [
     "## Deployment Instructions",
-    "PAPC owns the requirements process. Use only native tools exposed in this document session; no shell, generic source/Git writers, builder preparation or resource operations are granted.",
+    selectedPolicy
+      ? "PAPC owns the requirements process. Use only explicitly selected tools; ordinary bash/read/edit/write may be used only when selected. Repository/Git writing, builder preparation and resource operations are not granted. Do not use shell or generic writers for logging/registry bookkeeping."
+      : "PAPC owns the requirements process. Use only native tools exposed in this document session; no shell, generic source/Git writers, builder preparation or resource operations are granted.",
     "Record meaningful feedback and exact returned package/effect locators with pa_ticket comments and authorized pa_document artifacts. Administrative status is not approval; protected publication/queue must use their native owners.",
     "Session/registry terminal publication belongs to the runtime. Exit with Pi's existing /quit, Ctrl-C, EOF or terminal-close controls when finished; do not issue manual registry commands or write logs outside the authorized artifact roots.",
     "Failed checks or missing optional helpers constrain their dependent operations only. Preserve actual failures, diagnose/repair authorized drafts and report specific limitations; independent safe reads, discussion and drafting remain available. Protected denials and conflicting/uncertain effects remain enforced.",
+    ...(selectedPolicy && options ? [renderSelectedRequirementsCompletion(options)] : []),
   ].join("\n");
   if (runtime === "pi" && teamConfig.name === "repo-setup" && mode?.id === "setup") return [
     "## Deployment Instructions",
