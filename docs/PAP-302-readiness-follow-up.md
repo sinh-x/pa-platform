@@ -53,6 +53,50 @@ refusal, no new capability or effect; the existing foreground launch classificat
 is retained and its reason now states the real producer hold. Inventory digests
 were renewed after this reconciliation.
 
+## Further native-owner investigation — 2026-11-14
+
+The safety hold remains in place. The following additional **source-candidate**
+fixture runs passed, using the installed Node 22 SQLite addon as a test dependency,
+not as candidate installation evidence:
+
+| Suite | Result | Log |
+| --- | --- | --- |
+| Offline document workspace namespace helper | 6/6 | `/tmp/pap302-producer-sandbox-baseline.log` |
+| Project command contracts | 23/23 | `/tmp/pap302-readiness-command-contract.log` |
+| Native project catalogue execution | 4/4 | `/tmp/pap302-readiness-catalogue-execution.log` |
+| Ordinary local development | 20/20 | `/tmp/pap302-readiness-ordinary-native.log` |
+| Prepared native execution | 27/27 | `/tmp/pap302-readiness-prepared-native.log` |
+| Pi native workflow runtime | 36/36 | `/tmp/pap302-readiness-workflow-native.log` |
+
+The latter integration fixtures use disposable local state and include simulated
+providers/Treehouse where their tests say so. They do not exercise a real auto
+producer or certify complete regression, hosted CI, installation or human UAT.
+A full `pi-deploy.test.ts` attempt hit the 300-second command limit after 26
+completed top-level results; no final test summary exists. Preserve
+`/tmp/pap302-readiness-pi-deploy-full.log`; partial progress is not a passing suite.
+A subsequent process listing did not show that test command, but absence from a
+process listing is not custody or tree-settlement proof.
+
+The existing offline workspace helper proved its tested namespace/path/output
+boundaries; it intentionally has no network and no host credentials, so this is
+not a compatible provider sandbox. A synthetic user-systemd transient service
+running immutable `true` with `CPUQuota=50%`, `TasksMax=32` and `RuntimeMaxSec=10`
+exited zero and no `run-*.service` units were subsequently listed. This was only
+a host-availability smoke, not proof of enforcement, descendant settlement,
+reboot recovery, provider credentials, or an approved production quota. An initial
+attempt using unavailable `/bin/true` failed before a service started; the
+immutable Nix executable was then used. No persistent unit or timer was installed.
+
+The local Pi model/authentication documentation read was denied with
+`LOCAL_SOURCE_UNAVAILABLE`; no denied bytes were copied or bypassed. The security/
+runtime owner must establish permitted documentation/source access and a supported
+provider-authentication boundary. No real provider was started or credentials
+read by this investigation. The native producer still lacks a proven way to
+combine authenticated network access with product-write isolation, tree-wide
+resource limits and durable same-intent process reconciliation. Do not substitute
+an assumed auth mount or shell/CLI grant. That unresolved prerequisite prevents
+implementation/qualification of the full producer and prevents activation.
+
 ## Human-facing blocker review
 
 Affected paths/categories: PPA and OPA generic deploy returned/preflight failures
