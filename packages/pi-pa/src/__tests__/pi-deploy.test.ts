@@ -876,6 +876,25 @@ test("Pi strict mode entry rejects retired/unknown/default, force, resume and in
   });
 });
 
+test("Pi generic deployment refuses native auto-draft before allocation or adapter effects", async () => {
+  await withPiEnv(async (root, gitState) => {
+    writeFileSync(join(root, "teams", "requirements.yaml"), ["name: requirements", "description: fixture", "objective: Draft", "agents: []",
+      "default_mode: auto-draft", "deploy_modes:", "  - id: auto-draft", "    label: Native draft"].join("\n"));
+    const effects: string[] = [];
+    const adapter = stubAdapter({ preflight: async () => { effects.push("preflight"); }, onInstall: () => effects.push("hooks"), onDescribe: () => effects.push("tools"), onSpawn: () => effects.push("spawn"), onResume: () => effects.push("resume") });
+    for (const selection of [{ mode: "auto-draft" }, {}, { mode: "auto-draft", force: true, background: true }, { mode: "auto-draft", dryRun: true }]) {
+      const request = { team: "requirements", ticket: "PAP-198", ...selection };
+      const result = await deployWithPi(request, adapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined); assert.match(result.reason!, /^Draft not started:/);
+      const preflight = await createPiHooks(adapter).deployPreflight!(request);
+      assert.equal(preflight?.reason, result.reason);
+    }
+    assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+    assert.equal(existsSync(join(root, "deployments")), false);
+    assert.equal(existsSync(join(root, "registry.db")), false);
+  });
+});
+
 test("Pi rejects opaque unsupported resume files before allocation, hooks or preflight", async () => {
   await withPiEnv(async (root) => {
     const id = "d-abcdef";

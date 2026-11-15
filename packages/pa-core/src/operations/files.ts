@@ -16,7 +16,7 @@ export class AdvisoryFiles {
     if ((!rel && !directoryOnly) || rel === ".." || rel.startsWith("../") || isAbsolute(rel) || !evaluateSafetyPolicy({ kind: "path", value: absolute }, { cwd: this.root }).allowed) throw new Error("OPERATION_PATH_DENIED");
     return rel;
   }
-  file(path: string, content?: string, directoryOnly = false): Buffer | void {
+  file(path: string, content?: string | Uint8Array, directoryOnly = false): Buffer | void {
     const rel = this.assertPath(path, directoryOnly);
     if (!rel && directoryOnly) return;
     if (content !== undefined && Buffer.byteLength(content) > MAX_FILE_BYTES) throw new Error("OPERATION_FILE_LIMIT");

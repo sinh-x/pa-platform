@@ -52,6 +52,32 @@ test("strict mode resolution rejects unknown explicit/default and retired select
   }
 });
 
+test("native draft/reasoning names cannot enter generic deployment through explicit or default selection", () => {
+  for (const id of ["auto-draft", "auto-draft-isolated-v1", "auto-reasoning", "auto-reasoning-shortlist-v1"]) {
+    const mode = { id, label: "Native-only draft" };
+    const config: TeamConfig = { ...team(), name: "requirements", default_mode: id, deploy_modes: [mode] };
+    for (const explicit of [true, false]) {
+      assert.throws(() => resolveDeployMode(config, explicit ? id : undefined), (error: unknown) => {
+        assert.ok(error instanceof DeployModeSelectionError);
+        assert.match(error.message, /^(?:Draft|Reasoning session) not started:.*\n\nCondition:.*\nSource:.*\nReason:.*\nCorrection:.*\nResume Action:/s);
+        assert.ok(error.message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+        for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(error.message.split(label).length, 2);
+        return true;
+      });
+    }
+    for (const runtime of ["pi", "opencode"] as const) {
+      assert.throws(() => resolveExecutionPlan({ request: { team: "requirements", mode: id, force: true, background: true },
+        teamConfig: config, mode, runtime, deploymentId: "d-111111", deploymentDir: "/must-not-write",
+        activityLogPath: "/must-not-write/activity.jsonl", environment: {}, timeoutSeconds: 60,
+        captureRepositoryGitSnapshot: () => { throw new Error("repository access must not happen"); },
+        observeRepositoryAdmissionOperation: () => { throw new Error("admission must not happen"); },
+      }), DeployModeSelectionError);
+    }
+  }
+  const retained = { id: "analyze-auto", label: "Existing analyze-auto" };
+  assert.equal(resolveDeployMode({ ...team(), name: "requirements", default_mode: retained.id, deploy_modes: [retained] }), retained);
+});
+
 test("immutable planning revalidates the original request before repository, skill or admission effects", () => {
   const configured = { id: "orchestrator", label: "Orchestrator" };
   const directOnly: TeamConfig = { ...team(), default_mode: "orchestrator", deploy_modes: [configured] };

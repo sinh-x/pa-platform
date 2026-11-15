@@ -280,6 +280,34 @@ test("PAP-268 paired direct-only profile validates source producer without resto
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
+for (const variant of ["valid", "enabled", "extra-key", "duplicate-key", "missing-resource", "unknown-mode", "inherited-skills", "extra-mode", "wrong-objective"] as const) {
+  test(`PAP-302 disabled v1 native source ${variant} has no arbitrary mode-count or activation allowance`, () => {
+    const f = createDirectFixture();
+    try {
+      const resources = ["skills/requirements/auto-draft.md", "skills/requirements/auto-draft-objective.md", "skills/requirements/auto-review-start.md"];
+      const contract = { schemaVersion: "pa-auto-pair/v1", producer: "pa-auto-draft/v1", review: "pa-auto-start/v1", draftMode: "auto-draft", resources, enabled: false };
+      const path = join(f.root, "teams/requirements.yaml");
+      let mode = "  - id: auto-draft\n    label: Native draft\n    phone_visible: false\n    mode_type: work\n    require_ticket: true\n    provider: openai\n    model: openai/test\n    agents: []\n    skills: []\n    global_docs: []\n    objective: skills/requirements/auto-draft.md\n";
+      if (variant === "unknown-mode") mode = mode.replace("id: auto-draft", "id: unagreed-mode");
+      if (variant === "inherited-skills") mode = mode.replace("skills: []", "skills: [unagreed-skill]");
+      if (variant === "wrong-objective") mode = mode.replace("objective: skills/requirements/auto-draft.md", "objective: skills/requirements/analyze-objective.md");
+      if (variant === "extra-mode") mode += "  - id: unrelated\n    provider: openai\n    model: openai/test\n";
+      writeFileSync(path, readFileSync(path, "utf8") + mode);
+      mkdirSync(join(f.root, "contracts"), { recursive: true });
+      let raw = JSON.stringify({ ...contract, ...(variant === "enabled" ? { enabled: true } : {}), ...(variant === "extra-key" ? { actor: "human" } : {}) });
+      if (variant === "duplicate-key") raw = raw.replace('"enabled":false', '"enabled":false,"enabled":false');
+      writeFileSync(join(f.root, "contracts/auto-waitlist-v1.json"), raw);
+      for (const resource of resources) if (variant !== "missing-resource" || resource !== resources[2]) writeFileSync(join(f.root, resource), "Unsigned disabled source fixture, not native authority.\n");
+      git(f.root, "add", "."); git(f.root, "commit", "-qm", "disabled native source fixture");
+      const run = () => validatePairedRepository({ configRoot: f.root, expectedSha: git(f.root, "rev-parse", "HEAD") });
+      if (variant === "valid") {
+        const result = run(); assert.ok(result.includes("MODES_VALID=53/53")); assert.ok(result.includes("REQUIREMENTS_READ_ONLY=7/7"));
+        assert.ok(result.includes("AUTO_DRAFT_SOURCE=disabled-v1-native-only-not-r003-pairing"));
+      } else assert.throws(run);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+}
+
 test("PAP-268 paired producer cannot reuse a cached module from a different selected SHA", () => {
   const f = createDirectFixture();
   try {

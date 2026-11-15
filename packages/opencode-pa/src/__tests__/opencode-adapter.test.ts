@@ -239,6 +239,25 @@ test("OPA strict mode admission rejects retired/unknown/default, force, resume a
   });
 });
 
+test("OPA generic deployment refuses native auto-draft before allocation or adapter effects", async () => {
+  await withOpaEnv(async (root, gitState) => {
+    writeFileSync(join(root, "teams", "requirements.yaml"), ["name: requirements", "description: fixture", "objective: Draft", "agents: []",
+      "default_mode: auto-draft", "deploy_modes:", "  - id: auto-draft", "    label: Native draft"].join("\n"));
+    const effects: string[] = [];
+    const adapter: RuntimeAdapter = { ...createStubAdapter({ exitCode: 0 }),
+      describeTools: () => { effects.push("tools"); return { runtime: "opencode", markdown: "stub" }; },
+      installHooks: () => { effects.push("hooks"); }, spawn: () => { effects.push("spawn"); return { exitCode: 0 }; },
+      resume: () => { effects.push("resume"); return { exitCode: 0 }; } };
+    for (const selection of [{ mode: "auto-draft" }, {}, { mode: "auto-draft", force: true, background: true }, { mode: "auto-draft", dryRun: true }]) {
+      const result = await deployWithOpencode({ team: "requirements", ticket: "PAP-198", ...selection }, adapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined); assert.match(result.reason!, /^Draft not started:/);
+    }
+    assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+    assert.equal(existsSync(join(root, "deployments")), false);
+    assert.equal(existsSync(join(root, "registry.db")), false);
+  });
+});
+
 test("opa rogue-one reaches the normal hook/spawn seam with fixed bare evidence", async () => {
   await withOpaEnv(async (root, gitState) => {
     writeRogueOneTeamConfig(root);

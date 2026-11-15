@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { appendDocumentAutoPolicyEvent, readDocumentAutoPolicyEvents, captureDocumentAutoPolicy, readDocumentAutoPolicyCapture, type DocumentAutoPolicyReview } from "./document-auto-policy.js";
 import { digest, ID, integer, object, oneOf, SHA256, strictJson, text, workflowTicket } from "../workflows/contracts.js";
 import { documentGuard, documentPackageSha, documentReject, DOCUMENT_LIMITS, parseDocumentPackage, type DocumentPackage } from "../documents/package-contract.js";
 
@@ -96,6 +97,12 @@ function eventData(value: unknown): DocumentEventData {
  * receipt import; no workflow graph replay or parallel permission store. */
 export class RegistryDocumentJournal {
   constructor(private readonly db: Database.Database) {}
+  /** Distinct global policy scope. Old per-ticket decisions never enter it. */
+  autoPolicyEvents(domain: string) { return readDocumentAutoPolicyEvents(this.db, domain); }
+  appendAutoPolicy(domain: string, revision: number, data: DocumentAutoPolicyReview, snapshots: readonly Uint8Array[] = []) { return appendDocumentAutoPolicyEvent(this.db, domain, revision, data, snapshots); }
+  captureAutoPolicy(domain: string, reviewId: string, raw: Uint8Array) { return captureDocumentAutoPolicy(this.db, domain, reviewId, raw); }
+  autoPolicyCapture(domain: string, reviewId: string) { return readDocumentAutoPolicyCapture(this.db, domain, reviewId); }
+  autoPolicyTransaction<T>(action: () => T): T { return this.db.transaction(action).immediate(); }
   events(repoKey: string, ticket: string): DocumentEvent[] {
     return documentGuard(() => {
       text(repoKey, ID); workflowTicket(ticket);

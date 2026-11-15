@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getPlatformHomeDir, getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
+import { directBuilderProfile } from "./builder-instruction-contract.js";
 
 const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
 
@@ -151,14 +152,15 @@ test("builder team config has no Anthropic deploy modes", (t) => {
   const modeIds = builder.deploy_modes?.map((mode) => mode.id) ?? [];
 
   assert.ok(modeIds.length > 0);
-  assert.equal(builder.default_mode, "implement");
+  const executionMode = directBuilderProfile(configRoot) ? "orchestrator" : "implement";
+  assert.equal(builder.default_mode, executionMode);
   assert.ok(
     ["ollama-cloud", "minimax", "openai", "deepseek", "opencode-go"].includes(
-      builder.deploy_modes?.find((mode) => mode.id === "implement")?.provider ?? "",
+      builder.deploy_modes?.find((mode) => mode.id === executionMode)?.provider ?? "",
     ),
-    `implement provider must be a supported provider`,
+    `${executionMode} provider must be a supported provider`,
   );
-  const implementModel = builder.deploy_modes?.find((mode) => mode.id === "implement")?.model;
+  const implementModel = builder.deploy_modes?.find((mode) => mode.id === executionMode)?.model;
   if (implementModel !== undefined) {
     assert.ok(!/anthropic|claude/i.test(implementModel), `implement model must not be Anthropic/Claude (got ${implementModel})`);
   }
