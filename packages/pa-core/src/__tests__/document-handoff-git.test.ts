@@ -179,3 +179,184 @@ test("shared native capacity mutex excludes a real second process while the ref 
     await done; assert.equal(readFileSync(marker, "utf8"), "entered");
   } finally { child?.kill(); f.close(); }
 });
+
+function reuseFixture() {
+  const f = fixture();
+  const ticket = f.store.update("EX-1", { summary: "Stable original native fixture" }, "fixture");
+  f.intent.expectedTicketVersion = creationDigest(ticket); f.intent.plannedLinkSha256 = creationDigest(null);
+  const originalPlan = { scope: "a".repeat(64), requestId: "original" };
+  const hooks = { assertCurrent() {}, assertSnapshot() {} }; // Synthetic authority; not selected/native review acceptance.
+  f.store.applyHandoffWithIntent("EX-1", creationDigest(ticket), { kind: "plan", intent: f.intent }, "documents/handoff", originalPlan, hooks);
+  const originalSubject: HandoffReviewSubject = { schemaVersion: "pa-handoff-review/v1", documentSubjectSha256: documentPackageSha(f.subject), branchIntentSha256: handoffBranchIntentSha(f.intent), deliverySha256: "e".repeat(64), selectionSha256: "f".repeat(64), callerIdentitySha256: "a".repeat(64), effects: { publish: true, branchRef: true, queue: false } };
+  let allowed = true;
+  const authority = { authenticate: () => ({ identitySha256: originalSubject.callerIdentitySha256, selectionSha256: originalSubject.selectionSha256 }), assertAvailable() {}, assertDecision() { if (!allowed) throw Error("revoked fixture decision"); }, assertPublished() {} };
+  const originalResult = completeNativeHandoffBranch(f.db, f.store, authority, originalSubject, f.intent, f.subject, "decision-original", originalPlan);
+  const originalLink = f.store.get("EX-1")!.linkedBranches[0]!;
+  const advanced = f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", f.git("rev-parse", `${f.base}^{tree}`), "-p", f.base, "-m", "advanced branch history");
+  f.git("update-ref", `refs/heads/${f.intent.branch}`, advanced, f.base);
+  const current = f.store.get("EX-1")!;
+  const intent: HandoffBranchIntent = { ...structuredClone(f.intent), requestId: "reuse", action: "reuse", expectedTicketVersion: creationDigest(current), plannedLinkSha256: creationDigest(originalLink),
+    base: { ...f.intent.base, provenance: "native-original-base" }, lineage: { operationSha256: originalResult.operationId as string, originalBaseSha: f.base, observedHeadSha: advanced } };
+  const planIdentity = { scope: "b".repeat(64), requestId: "reuse" };
+  const plan = f.store.applyHandoffWithIntent("EX-1", creationDigest(current), { kind: "plan", intent }, "documents/handoff", planIdentity, hooks);
+  assert.deepEqual(plan.ticket.linkedBranches[0], originalLink, "planning must not reset/downgrade/refresh the materialized link");
+  const reviewSubject = { ...originalSubject, branchIntentSha256: handoffBranchIntentSha(intent) };
+  const run = (boundary?: (stage: "intent" | "ticket" | "audit") => void) => completeNativeHandoffBranch(f.db, f.store, authority, reviewSubject, intent, f.subject, "decision-reuse", planIdentity, boundary);
+  return { ...f, reuseIntent: intent, originalResult, originalLink, advanced, reviewSubject, runReuse: run, revoke() { allowed = false; } };
+}
+
+for (const point of ["none", "intent", "ticket", "audit"] as const) test(`actual advanced lineage reuse preserves original base/ref/history/dirt and recovers ${point} linkage boundary`, () => {
+  const f = reuseFixture();
+  try {
+    const develop = f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", f.git("rev-parse", `${f.base}^{tree}`), "-p", f.base, "-m", "develop moved after frozen reuse intent");
+    f.git("update-ref", "refs/heads/develop", develop, f.base);
+    writeFileSync(join(f.repo, "staged.bin"), Buffer.from([0, 1, 255])); f.git("add", "staged.bin");
+    writeFileSync(join(f.repo, "unrelated.txt"), "preserve unrelated untracked work");
+    const status = f.git("status", "--porcelain=v2", "--untracked-files=all");
+    const logPath = join(f.repo, ".git", "logs", "refs", "heads", f.intent.branch), log = readFileSync(logPath);
+    if (point !== "none") assert.throws(() => f.runReuse(stage => { if (stage === point) throw Error("reuse reply lost"); }), /reuse reply lost/);
+    const result = f.runReuse(), link = f.store.get("EX-1")!.linkedBranches[0]!;
+    assert.equal(result.completion, "verified"); assert.notEqual(result.operationId, f.originalResult.operationId);
+    assert.deepEqual(link, { ...f.originalLink, headSha: f.advanced, sha: f.advanced });
+    assert.equal(link.baseSha, f.base); assert.notEqual(link.baseSha, link.headSha);
+    assert.notEqual(link.baseSha, f.git("rev-parse", "refs/heads/develop"));
+    assert.deepEqual(f.runReuse(), result);
+    assert.deepEqual(readFileSync(logPath), log, "reuse must perform no ref/reflog write");
+    assert.equal(f.git("rev-parse", `refs/heads/${f.intent.branch}`), f.advanced);
+    assert.equal(f.git("branch", "--show-current"), "develop");
+    assert.equal(f.git("status", "--porcelain=v2", "--untracked-files=all"), status);
+    assert.deepEqual(readFileSync(join(f.repo, "staged.bin")), Buffer.from([0, 1, 255]));
+    assert.equal(f.git("worktree", "list", "--porcelain").split("worktree ").length - 1, 1);
+    assert.equal(readdirSync(join(f.repo, ".git", "pa-ticket-builder-slots")).filter(name => name.endsWith(".json")).length, 0);
+    assert.equal(existsSync(join(f.repo, ".git", REPOSITORY_MUTATION_LEASE_FILE)), false);
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_intents").get() as { n: number }).n, 1);
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_creation_sources").get() as { n: number }).n, 1);
+    assert.equal(f.store.readAudit().filter(row => row.changes.handoffIntent).length, 4);
+  } finally { f.close(); }
+});
+
+test("lineage reuse is observation-only at the Git port and has no create capability", () => {
+  const f = reuseFixture();
+  try {
+    f.owner.withRepository(f.reuseIntent, "9".repeat(64), port => {
+      const observed = port.observe(); assert.equal(observed.state, "present");
+      if (observed.state === "present") assert.deepEqual(observed.owner, { kind: "lineage", sha256: f.originalResult.operationId });
+      assert.throws(() => port.create(), /DOCUMENT_AUTHORITY/);
+    });
+    f.revoke(); const before = f.store.get("EX-1");
+    assert.throws(() => f.runReuse(), /revoked fixture decision/);
+    assert.deepEqual(f.store.get("EX-1"), before); assert.equal(f.git("rev-parse", `refs/heads/${f.intent.branch}`), f.advanced);
+  } finally { f.close(); }
+});
+
+for (const fault of ["missing-source", "corrupt-source", "incomplete-origin", "moved-head", "foreign-marker"] as const) test(`advanced reuse blocks ${fault} without native-history backfill, ref rewrite or ticket relink`, () => {
+  const f = reuseFixture();
+  try {
+    const origin = f.originalResult.operationId as string, logPath = join(f.repo, ".git", "logs", "refs", "heads", f.intent.branch);
+    if (fault === "missing-source") f.db.prepare("DELETE FROM handoff_git_creation_sources WHERE operation_id = ?").run(origin);
+    else if (fault === "corrupt-source") f.db.prepare("UPDATE handoff_git_creation_sources SET payload = '{}' WHERE operation_id = ?").run(origin);
+    else if (fault === "incomplete-origin") f.db.prepare("DELETE FROM handoff_branch_events WHERE operation_id = ? AND sequence = 5").run(origin);
+    else if (fault === "moved-head") {
+      const next = f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", f.git("rev-parse", `${f.base}^{tree}`), "-p", f.advanced, "-m", "moved after review");
+      f.git("update-ref", `refs/heads/${f.intent.branch}`, next, f.advanced);
+    } else writeFileSync(logPath, `${"0".repeat(40)} ${f.base} Fixture <fixture@example.invalid> 0 +0000\tforeign marker\n`);
+    const ticket = f.store.get("EX-1"), head = f.git("rev-parse", `refs/heads/${f.intent.branch}`), log = readFileSync(logPath);
+    assert.throws(() => f.runReuse(), /DOCUMENT_UNCERTAIN|DOCUMENT_CONFLICT/);
+    assert.deepEqual(f.store.get("EX-1"), ticket); assert.equal(f.git("rev-parse", `refs/heads/${f.intent.branch}`), head);
+    assert.deepEqual(readFileSync(logPath), log);
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_intents").get() as { n: number }).n, 1);
+    if (fault === "missing-source") assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_creation_sources").get() as { n: number }).n, 0);
+  } finally { f.close(); }
+});
+
+test("same SHA/name metadata or a different branch cannot substitute for the original completed creation", () => {
+  const f = fixture();
+  try {
+    f.run(port => port.create()); // Ref exists but no completed original branch/link operation.
+    const reuse: HandoffBranchIntent = { ...f.intent, action: "reuse", base: { ...f.intent.base, provenance: "native-original-base" }, lineage: { operationSha256: operationId, originalBaseSha: f.base, observedHeadSha: f.base } };
+    assert.notEqual(f.owner.withRepository(reuse, "e".repeat(64), port => port.observe()).state, "present");
+  } finally { f.close(); }
+  const complete = reuseFixture();
+  try {
+    const foreign = "feature/EX-1-foreign"; complete.git("update-ref", `refs/heads/${foreign}`, complete.advanced);
+    assert.throws(() => complete.owner.withRepository({ ...complete.reuseIntent, branch: foreign }, "e".repeat(64), port => port.observe()), /DOCUMENT_UNCERTAIN/);
+    assert.equal(complete.git("rev-parse", `refs/heads/${foreign}`), complete.advanced);
+  } finally { complete.close(); }
+});
+
+test("reuse never refreshes materialized metadata backwards even when the tip still descends from the original base", () => {
+  const f = reuseFixture();
+  try {
+    f.runReuse(); f.git("update-ref", `refs/heads/${f.intent.branch}`, f.base, f.advanced);
+    const before = f.store.get("EX-1")!, next: HandoffBranchIntent = { ...f.reuseIntent, requestId: "rewound", expectedTicketVersion: creationDigest(before), plannedLinkSha256: creationDigest(before.linkedBranches[0]), lineage: { ...f.reuseIntent.lineage!, observedHeadSha: f.base } };
+    const identity = { scope: "c".repeat(64), requestId: "rewound" };
+    f.store.applyHandoffWithIntent("EX-1", creationDigest(before), { kind: "plan", intent: next }, "documents/handoff", identity, { assertCurrent() {}, assertSnapshot() {} });
+    const authority = { authenticate: () => ({ identitySha256: f.reviewSubject.callerIdentitySha256, selectionSha256: f.reviewSubject.selectionSha256 }), assertAvailable() {}, assertDecision() {}, assertPublished() {} };
+    assert.throws(() => completeNativeHandoffBranch(f.db, f.store, authority, { ...f.reviewSubject, branchIntentSha256: handoffBranchIntentSha(next) }, next, f.subject, "decision-rewound", identity), /DOCUMENT_CONFLICT/);
+    assert.equal(f.store.get("EX-1")!.linkedBranches[0]!.headSha, f.advanced);
+    assert.equal(f.git("rev-parse", `refs/heads/${f.intent.branch}`), f.base);
+  } finally { f.close(); }
+});
+
+test("finite TicketStore materialization cannot substitute a head outside the exact native plan", () => {
+  const f = reuseFixture();
+  try {
+    const before = f.store.get("EX-1")!, plan = f.store.inspectHandoffWithIntent({ scope: "b".repeat(64), requestId: "reuse" })!;
+    const identity = { scope: "d".repeat(64), requestId: "unbound-head" };
+    assert.throws(() => f.store.applyHandoffWithIntent("EX-1", creationDigest(before), { kind: "materialize", planKey: plan.record.key, operationId: "e".repeat(64), headSha: f.base }, "documents/handoff", identity, { assertCurrent() {}, assertSnapshot() {} }), /TICKET_HANDOFF_CONFLICT/);
+    assert.deepEqual(f.store.get("EX-1"), before);
+    assert.equal(f.store.inspectHandoffWithIntent(identity), undefined);
+  } finally { f.close(); }
+});
+
+for (const point of ["intent", "ticket", "audit"] as const) test(`revoked advanced reuse after ${point} permits only already-complete observation, never remaining ticket writes`, () => {
+  const f = reuseFixture();
+  try {
+    assert.throws(() => f.runReuse(stage => { if (stage === point) throw Error("lost reuse reply"); }), /lost reuse reply/);
+    const ticket = f.store.get("EX-1"), audit = f.store.readAudit(), logPath = join(f.repo, ".git", "logs", "refs", "heads", f.intent.branch), log = readFileSync(logPath);
+    f.revoke();
+    if (point === "audit") assert.equal(f.runReuse().completion, "verified");
+    else assert.throws(() => f.runReuse(), /revoked fixture decision/);
+    assert.deepEqual(f.store.get("EX-1"), ticket); assert.deepEqual(f.store.readAudit(), audit);
+    assert.deepEqual(readFileSync(logPath), log); assert.equal(f.git("rev-parse", `refs/heads/${f.intent.branch}`), f.advanced);
+  } finally { f.close(); }
+});
+
+test("actual process death after advanced reuse ticket persistence resumes only its original missing audit", async () => {
+  const f = reuseFixture();
+  const script = `import {getDb} from ${JSON.stringify(fileURLToPath(new URL("../registry/db.ts", import.meta.url)))};
+    import {TicketStore} from ${JSON.stringify(fileURLToPath(new URL("../tickets/store.ts", import.meta.url)))};
+    import {completeNativeHandoffBranch} from ${JSON.stringify(fileURLToPath(new URL("../documents/handoff-native-branch.ts", import.meta.url)))};
+    const [database,tickets,rawSubject,rawIntent,rawDocument]=process.argv.slice(1), subject=JSON.parse(rawSubject), intent=JSON.parse(rawIntent), db=getDb(database); db.pragma('synchronous = FULL');
+    const authority={authenticate:()=>({identitySha256:subject.callerIdentitySha256,selectionSha256:subject.selectionSha256}),assertAvailable(){},assertDecision(){},assertPublished(){}};
+    completeNativeHandoffBranch(db,new TicketStore(tickets,{team:'requirements',mode:'analyze',privileged:true}),authority,subject,intent,JSON.parse(rawDocument),'decision-reuse',{scope:'b'.repeat(64),requestId:'reuse'},stage=>{if(stage==='ticket')process.kill(process.pid,'SIGKILL');});`;
+  try {
+    const logPath = join(f.repo, ".git", "logs", "refs", "heads", f.intent.branch), log = readFileSync(logPath);
+    const child = await new Promise<{ code: unknown; signal: unknown }>(resolve => execFile(process.execPath, ["--import=tsx", "--input-type=module", "-e", script, join(f.root, "registry.db"), join(f.root, "tickets"), JSON.stringify(f.reviewSubject), JSON.stringify(f.reuseIntent), JSON.stringify(f.subject)], { env: process.env, timeout: 15000 }, error => resolve({ code: error?.code, signal: error?.signal })));
+    assert.equal(child.signal, "SIGKILL"); assert.equal(f.store.get("EX-1")!.linkedBranches[0]!.headSha, f.advanced);
+    assert.equal(f.store.readAudit().filter(row => row.changes.handoffIntent).length, 3);
+    assert.equal(f.runReuse().completion, "verified");
+    assert.equal(f.store.readAudit().filter(row => row.changes.handoffIntent).length, 4);
+    assert.deepEqual(readFileSync(logPath), log);
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_intents").get() as { n: number }).n, 1);
+  } finally { f.close(); }
+});
+
+test("native commit/ancestry observation never implicitly invokes a promisor remote helper", () => {
+  const f = fixture();
+  try {
+    const bin = join(f.root, "helpers"), marker = join(f.root, "promisor-invoked"); mkdirSync(bin);
+    const helper = join(bin, "git-remote-sentinel");
+    writeFileSync(helper, `#!/bin/sh\nprintf invoked > ${JSON.stringify(marker)}\nexit 1\n`, { mode: 0o700 });
+    process.env.PATH = `${bin}:${process.env.PATH}`;
+    f.git("config", "core.repositoryFormatVersion", "1"); f.git("config", "extensions.partialClone", "sentinel");
+    f.git("config", "remote.sentinel.promisor", "true"); f.git("config", "remote.sentinel.url", "sentinel::unused");
+    f.git("config", "protocol.sentinel.allow", "always");
+    const missing = "1".repeat(40);
+    assert.throws(() => f.git("cat-file", "-t", missing));
+    assert.equal(existsSync(marker), true, "inert baseline must actually exercise implicit lazy fetch"); rmSync(marker);
+    assert.throws(() => f.owner.withRepository({ ...f.intent, base: { ...f.intent.base, sha: missing, observedDevelopSha: missing } }, operationId, port => port.create()));
+    assert.equal(existsSync(marker), false, "owner must not invoke even a local inert remote helper");
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_intents").get() as { n: number }).n, 0);
+  } finally { f.close(); }
+});

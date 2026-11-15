@@ -5,7 +5,9 @@
 > committed real TicketStore/Git/shared-lock integration, current selection and
 > current failures/gates. See also the later
 > [reader-worker continuation](PAP-299-reader-worker-progress.md) for the real
-> external derivation deadline and read-only complete-delivery verification.
+> external derivation deadline and read-only complete-delivery verification, and
+> [native advanced-lineage continuation](PAP-299-native-reuse-progress.md) for
+> real Git/TicketStore reuse with original-source/completion proof.
 > Historical check outcomes below are not overwritten.
 
 **Partial implementation — not all phases delivered or accepted.**

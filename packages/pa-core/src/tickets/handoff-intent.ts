@@ -83,10 +83,14 @@ export function handoffCandidate(before: Ticket, change: TicketHandoffChange, ac
     if (intent.expectedTicketVersion !== creationDigest(before) || intent.plannedLinkSha256 !== creationDigest(existing ?? null)) handoffFail("TICKET_HANDOFF_CONFLICT");
     if (intent.action === "create" && existing) handoffFail("TICKET_HANDOFF_CONFLICT"); // No adoption of legacy planned names.
     if (intent.action === "reuse" && (!existing || existing.state !== "materialized" || existing.baseSha !== intent.base.sha
-      || existing.headSha !== intent.lineage?.observedHeadSha || existing.sha !== existing.headSha)) handoffFail("TICKET_HANDOFF_CONFLICT");
+      || !existing.headSha || !/^[a-f0-9]{40}(?![\s\S])/.test(existing.headSha) || existing.sha !== existing.headSha)) handoffFail("TICKET_HANDOFF_CONFLICT");
+    // Planning preserves the complete old materialized link, not today's tip.
+    // Native hooks must prove lineage and ancestry to the newly observed HEAD;
+    // the post-publication materialize operation alone refreshes head metadata.
     return existing ? before : { ...before, updatedAt: stamp, linkedBranches: [{ repo: intent.repository.key, branch: intent.branch, state: "planned", linkedAt: stamp, linkedBy: actor }] };
   }
-  if (!plan || plan.before.id !== before.id || !existing || creationDigest(existing) !== creationDigest(plan.after.linkedBranches[0])) return handoffFail("TICKET_HANDOFF_CONFLICT");
+  if (!plan || plan.before.id !== before.id || !existing || creationDigest(existing) !== creationDigest(plan.after.linkedBranches[0])
+    || change.headSha !== (intent.action === "reuse" ? intent.lineage!.observedHeadSha : intent.base.sha)) return handoffFail("TICKET_HANDOFF_CONFLICT");
   // Never infer original base from today's tip. Keep original link attribution.
   const link: LinkedBranch = { ...existing, state: "materialized", baseSha: intent.base.sha, headSha: change.headSha, sha: change.headSha };
   return { ...before, updatedAt: stamp, linkedBranches: [link] };

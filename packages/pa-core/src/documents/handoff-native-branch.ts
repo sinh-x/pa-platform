@@ -11,7 +11,8 @@ import { RegistryHandoffGitOwner } from "./handoff-git.js";
  * supply legacy receipts/outcomes here. A future selected review/publication
  * adapter must implement these exact new-subject checks before any activation. */
 export type NativeHandoffBranchAuthority = Pick<HandoffBranchHost, "authenticate" | "assertAvailable" | "assertDecision" | "assertPublished">;
-/** Actual Git + SQLite + TicketStore composition; fresh create only. Internal,
+/** Actual Git + SQLite + TicketStore composition; pinned create or authenticated
+ * advanced-descendant reuse. Internal,
  * unregistered and NOT an alternative to the missing selected decision owner. */
 export function completeNativeHandoffBranch(db: Database.Database, store: TicketStore, authority: NativeHandoffBranchAuthority,
   rawSubject: HandoffReviewSubject, rawIntent: HandoffBranchIntent, document: DocumentPackage, decisionId: string, planIdentity: { scope: string; requestId: string },
@@ -22,13 +23,20 @@ export function completeNativeHandoffBranch(db: Database.Database, store: Ticket
     const plan = store.inspectHandoffWithIntent(planIdentity);
     if (!plan?.complete || plan.record.change.kind !== "plan" || handoffBranchIntentSha(plan.record.change.intent) !== handoffBranchIntentSha(intent)) documentReject("DOCUMENT_AUTHORITY");
     const linkIdentity = { scope: subjectSha256, requestId: `branch-link-${operationId}` };
-    const change = { kind: "materialize", planKey: plan!.record.key, operationId, headSha: intent.base.sha } as const;
+    const headSha = intent.action === "reuse" ? intent.lineage!.observedHeadSha : intent.base.sha;
+    if (intent.action === "reuse") {
+      const previous = plan.record.before.linkedBranches[0];
+      if (!previous || previous.state !== "materialized" || previous.baseSha !== intent.base.sha || !previous.headSha || previous.sha !== previous.headSha
+        || !git.isAncestor(previous.headSha, headSha)) documentReject("DOCUMENT_CONFLICT");
+    }
+    const change = { kind: "materialize", planKey: plan!.record.key, operationId, headSha } as const;
     const authorize = () => {
       const caller = authority.authenticate();
       if (caller.identitySha256 !== subject.callerIdentitySha256 || caller.selectionSha256 !== subject.selectionSha256) documentReject("DOCUMENT_AUTHORITY");
       authority.assertAvailable(intent); authority.assertDecision(subjectSha256, decisionId); authority.assertPublished(subject.documentSubjectSha256);
       const observed = git.observe();
-      if (observed.state !== "present" || observed.owner.kind !== "operation" || observed.owner.id !== operationId || observed.headSha !== intent.base.sha) documentReject("DOCUMENT_UNCERTAIN");
+      if (observed.state !== "present" || observed.headSha !== headSha || !(observed.owner.kind === "operation" && observed.owner.id === operationId
+        || observed.owner.kind === "lineage" && intent.action === "reuse" && observed.owner.sha256 === intent.lineage!.operationSha256)) documentReject("DOCUMENT_UNCERTAIN");
     };
     const current = () => {
       const ticket = store.get(intent.ticket);
