@@ -109,6 +109,28 @@ Remaining work:
    Source tests, package approval, PR merge, queue/status and generated HTML never
    certify these later gates.
 
+## Actual hosted CI finding and bounded repair
+
+Initial head3ddeae2 hosted runs43707430821 (push) and43707436407 (PR177) both
+**failed**, not timed out or passed. Typecheck/build passed. Core code tests
+reported2194pass/1fail/19skip; later package/config/completion stages were not
+reached. The single failure was mode-capabilities.test.ts's policy-primer fixture:
+it depended on the operator's external selected completion fragment and had no
+self-contained resolver. Ubuntu CI correctly rejected the missing fragment.
+
+Original failed logs are retained at `/tmp/pap299-d9-ci-{push,pr177}-failed.log`.
+The failure was reproduced locally with an explicitly empty disposable config:
+`/tmp/pap299-d9-mode-fixture-reproduce.log` (0pass/1fail). Repair is **fixture-only**:
+provide its own inert synthetic completion body and exact selected resolver, keep
+all old assertions and add an explicit missing-resolver rejection assertion. No
+production fallback, capability, external config, safety check or parser changes.
+
+Actual empty-config rerun of mode-capabilities, primer-handoff, new native planning
+and catalogue suites: **46pass/0fail/0skip**, exit0,
+`/tmp/pap299-d9-mode-fixture-rerun.log`. This is not a full local regression pass.
+Updated-head hosted CI must independently pass before the authorized merge;
+original failures and the separate full/manual/protected-review deferrals remain.
+
 ## Evidence and handoff
 
 - Latest checkpoint/actual results and complete trace disposition:

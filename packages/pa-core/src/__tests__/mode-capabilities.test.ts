@@ -79,15 +79,27 @@ test("selected committed resource binds exact bytes/revision and rejects drift/f
 });
 
 test("policy primer names the exact selection without misidentifying it as a retained profile", () => {
-  for (const ids of [[], ["ticket.intake", "capability.discover"], MODE_CAPABILITIES.map(c => c.id).filter(id => id !== "context.read") ]) {
-    const teamConfig = parseTeamYamlContent(config(policy(ids)));
-    const primer = generatePrimer({ runtime: "pi", teamConfig, mode: "analyze", requirementsDocument: true, skillsDir: "/nonexistent-fixture-skills" });
-    assert.match(primer, /Native profile: pa-document-policy\/v1/);
-    assert.ok(primer.includes(`Selected tools: ${JSON.stringify(selectedCapabilityTools(parseModeCapabilityPolicy(policy(ids))))}`));
-    assert.doesNotMatch(primer, /Native profile: pa-document-(package|workspace|confirmation|interactions)\//);
-    assert.match(primer, /Existing sessions never widen/);
-    assert.match(primer, /not installed qualification/);
-  }
+  const root = mkdtempSync(join(tmpdir(), "mode-policy-primer-"));
+  const fragment = "primers/fragments/shared/completion.md", path = join(root, fragment);
+  const completion = "Synthetic selected completion body for {{RUNTIME_ADAPTER}}; not an effect grant.\n";
+  try {
+    mkdirSync(join(root, "primers/fragments/shared"), { recursive: true }); writeFileSync(path, completion);
+    for (const ids of [[], ["ticket.intake", "capability.discover"], MODE_CAPABILITIES.map(c => c.id).filter(id => id !== "context.read") ]) {
+      const teamConfig = parseTeamYamlContent(config(policy(ids)));
+      // Self-contained selected closure: never depend on the operator's PAPC
+      // checkout or CI's unrelated paired-config location for this fixture.
+      const options = { runtime: "pi" as const, teamConfig, mode: "analyze", requirementsDocument: true,
+        skillsDir: join(root, "no-skills"), resolveFile: (requested: string) => requested === fragment ? path : undefined };
+      const primer = generatePrimer(options);
+      assert.match(primer, /Native profile: pa-document-policy\/v1/);
+      assert.ok(primer.includes(`Selected tools: ${JSON.stringify(selectedCapabilityTools(parseModeCapabilityPolicy(policy(ids))))}`));
+      assert.doesNotMatch(primer, /Native profile: pa-document-(package|workspace|confirmation|interactions)\//);
+      assert.match(primer, /Existing sessions never widen/);
+      assert.match(primer, /not installed qualification/);
+      assert.ok(primer.includes(completion.replaceAll("{{RUNTIME_ADAPTER}}", "ppa")));
+      assert.throws(() => generatePrimer({ ...options, resolveFile: () => undefined }), /selected completion fragment is unavailable/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("native registry persists selection and forbids later widening or changed replay",  () => {
