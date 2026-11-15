@@ -32,3 +32,7 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 - `sanitize-and-file-inputs.md` records current sanitization/file-input behavior and the recommended low-friction safety policy.
 - `dashboard-phase1-uat.md` records local read-only dashboard UAT checks and route-level expectations.
 - `hermes-pa-skills-dashboard-phase5.md` records PAP-078 Phase 5 packaging, boundaries, fixture coverage, and full verification commands.
+
+## Historical Design Proposals
+
+- [PAP-282 session-only external-read proposal](PAP-282-session-external-read-design.md) preserves an unimplemented design from the v0.1.159 baseline. Its dated disposition distinguishes newer ordinary-read support and PAP-298's separate guarded-document work; it is not an active implementation handoff or runtime permission.
