@@ -80,7 +80,8 @@ function parse(raw: string): Request {
   throw new DocumentPackageError("DOCUMENT_INPUT");
 }
 export interface PiHandoffContext extends PiWorkflowContext { readonly ui?: PiWorkflowContext["ui"] & HandoffReviewUi }
-export function authenticatePiHandoffCaller(context: PiHandoffContext) {
+export function authenticatePiHandoffCaller(context: PiHandoffContext, signal?: AbortSignal) {
+  if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   const caller = authenticatePiDocumentCaller(context);
   if (caller.profile !== MODE_CAPABILITY_SESSION || !caller.capabilities || !caller.sessionId || !caller.handoffIdentitySha256 || !capabilityToolSelected(caller.capabilities.policy, "pa_handoff")) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   return Object.freeze({ deploymentId: caller.deploymentId, sessionId: caller.sessionId, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket,
@@ -124,7 +125,7 @@ function reviewHost(context: PiHandoffContext, tickets: TicketStore, signal?: Ab
     } };
 }
 function services(context: PiHandoffContext, db: ReturnType<typeof getDb>, signal?: AbortSignal) {
-  const caller = authenticatePiHandoffCaller(context), artifactRoot = getAiUsageDir();
+  const caller = authenticatePiHandoffCaller(context, signal), artifactRoot = getAiUsageDir();
   const inside = (root: string, path: string) => { const value = relative(root, path); return value === "" || value !== ".." && !value.startsWith("../") && !isAbsolute(value); };
   if (realpathSync(artifactRoot) !== artifactRoot || inside(caller.repoRoot, artifactRoot) || inside(join(artifactRoot, "agent-teams/requirements/artifacts"), caller.repoRoot)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   try { if (realpathSync(getTicketsDir()) !== getTicketsDir()) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); }
@@ -155,11 +156,11 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
   let request: Request;
   try { request = parse(raw); }
   catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
-  authenticatePiHandoffCaller(context);
+  authenticatePiHandoffCaller(context, signal);
   const db = openDurableRegistryDatabase();
   try {
     if (request.action === "status") {
-      const caller = authenticatePiHandoffCaller(context), journal = new RegistryHandoffReviewJournal(db, false);
+      const caller = authenticatePiHandoffCaller(context, signal), journal = new RegistryHandoffReviewJournal(db, false);
       const { subject, intent, document } = journal.subject(request.subjectSha256);
       if (subject.callerIdentitySha256 !== caller.identitySha256 || subject.selectionSha256 !== caller.selectionSha256
         || intent.ticket !== caller.ticket || intent.repository.key !== caller.repoKey || intent.repository.root !== caller.repoRoot) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
@@ -176,8 +177,8 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
 async function executeHandoff(request: Exclude<Request, { action: "status" }>,  context: PiHandoffContext, db: ReturnType<typeof getDb>, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const s = services(context, db, signal);
   if (request.action === "intake") {
-    const host = { authenticate: () => authenticatePiHandoffCaller(context), assertAvailable(expected: ReturnType<typeof authenticatePiHandoffCaller>) {
-      if (!isDeepStrictEqual(expected, authenticatePiHandoffCaller(context))) throw new DocumentPackageError("DOCUMENT_STALE");
+    const host = { authenticate: () => authenticatePiHandoffCaller(context, signal), assertAvailable(expected: ReturnType<typeof authenticatePiHandoffCaller>) {
+      if (!isDeepStrictEqual(expected, authenticatePiHandoffCaller(context, signal))) throw new DocumentPackageError("DOCUMENT_STALE");
     } };
     const result = intakeNativeHandoffTicket(s.tickets, host, "ticket" in request ? { ticket: request.ticket } : { title: request.title, content: request.content });
     return { ...result, ticketVersion: nativeHandoffTicketVersion(result.ticket) };
@@ -221,7 +222,7 @@ async function executeHandoff(request: Exclude<Request, { action: "status" }>,  
   const deliveryRoot = verifyPublishedReader(getAiUsageDir(), subject.documentSubjectSha256, request.deliverySha256, presentation);
   const browser = new SystemDocumentBrowserFallback(join(deliveryRoot, "index.html"));
   const result = openBoundDocumentReader(new RegistryReaderOpeningJournal(s.db), {
-    serialize: run => run(), authenticate: () => { const caller = authenticatePiHandoffCaller(context); return { identitySha256: caller.identitySha256, selectionSha256: caller.selectionSha256 }; },
+    serialize: run => run(), authenticate: () => { const caller = authenticatePiHandoffCaller(context, signal); return { identitySha256: caller.identitySha256, selectionSha256: caller.selectionSha256 }; },
     verifyDelivery(value) { if (value !== request.deliverySha256) throw new DocumentPackageError("DOCUMENT_STALE"); verifyPublishedReader(getAiUsageDir(), subject.documentSubjectSha256, value, presentation); },
     available: () => browser.available(), requestOpen: (delivery, operation) => browser.request(delivery, operation), reconcile: (delivery, operation) => browser.reconcile(delivery, operation),
   }, request.deliverySha256);

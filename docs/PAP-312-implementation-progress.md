@@ -341,3 +341,33 @@ No live ticket lifecycle/refs/publication/queue/browser effects, foreign checkou
 prepared-preview launch, push/PR/merge/install/default enablement, historical repair,
 resource return or ticket-Done occurred. Original ticket base/branch/lease and
 recorded21530bc linked metadata remain untouched. The ticket is **not complete**.
+
+### Local commit and cancellation review repair
+
+Source slice committed as `6436f1956bf404ca0f1795bf579e06564ea23189` after actual
+staged secrets scan and whitespace checks passed. Staging initially failed on an
+empty pre-existing Git `index.lock`, inode126399099, mtime2026-11-15 22:52:56+07,
+older than this session. No holder was observed; ownership was not inferred.
+Sinh explicitly authorized archiving **only that exact lock**. Its same inode/bytes
+were retained beside the original index as
+`index.lock.pap312-20261115T1755Z.archived`; no index, native custody or other lock
+was deleted/reclaimed. Readback is retained in `index-lock-archive.txt`.
+
+Final source review found a cancellation gap in the new intake adapter: unlike the
+plan/review hosts, its authentication callbacks did not inspect the runtime abort
+signal. The subsequent repair rejects pre-cancelled requests before ticket,
+association or handoff-schema effects and rechecks cancellation in native intake
+and opening authentication. Exact public grammar, grants and current/retained
+policy boundaries are unchanged.
+
+Native/fallback regression after repair: **13pass/0fail/0skip**, exit0, including
+10registered-native and3desktop-launcher-stub cases
+(`native-cancellation-final.log`). Pi TypeScript check and catalogue9/9 passed;
+completion generation exit0 with no tracked completion difference. Earlier257-core
+and73-native/retained evidence is reused only for unchanged owner/retained behavior;
+it does not certify cancellation by itself. Actual staged scan follows the repair.
+
+The first clean6436f19 full attempt was stopped explicitly for this source repair,
+exit143, not a pass (`workspace-6436f19-interrupted.*`). Scoped test group1881393
+had no members afterward. A new clean repaired-candidate full run is required;
+no aggregate/independent/installed/human success is inferred.

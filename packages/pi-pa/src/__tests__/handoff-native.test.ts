@@ -152,6 +152,19 @@ test("omitted native handoff remains unregistered and direct invocation cannot w
   } finally { await f.close(); }
 });
 
+test("pre-cancelled native intake performs no ticket, association or handoff-journal mutation", async () => {
+  const f = fixture(), controller = new AbortController();
+  try {
+    controller.abort(); const before = getDb().prepare("SELECT name FROM sqlite_master ORDER BY name").all();
+    const result = await f.tools.get("pa_handoff")!.execute("cancelled", { request: JSON.stringify({ schemaVersion: "pa-handoff-native/v1", action: "intake", title: "Cancelled intake", content: "Must not create" }) }, controller.signal, undefined, f.context);
+    assert.equal(JSON.parse(result.content[0].text).code, "DOCUMENT_AUTHORITY");
+    assert.equal(new TicketStore().list().length, 0);
+    assert.equal(getDeploymentEvents("d-312001").filter(event => event.event === "ticket-associated").length, 0);
+    assert.deepEqual(getDb().prepare("SELECT name FROM sqlite_master ORDER BY name").all(), before);
+    assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
 test("strict handoff request rejects imported grants/paths, extra or duplicate fields before ticket effects", async () => {
   const f = fixture();
   try {
