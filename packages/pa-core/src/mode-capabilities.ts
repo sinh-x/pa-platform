@@ -10,6 +10,7 @@ export const MODE_CAPABILITY_MAX_BYTES = 64 * 1024;
 // Existing tool schemas/action parsers remain authoritative; config cannot replace them.
 export const MODE_CAPABILITIES = Object.freeze([
   { id: "document.package", tool: "pa_document", owner: "document-native", actions: "native document package grammar; v4-compatible confirmation owner" },
+  { id: "document.handoff", tool: "pa_handoff", owner: "handoff-native", actions: "native intake, finite stage/plan, full-reader review, publication, ref/link, optional queue and bound opening grammar" },
   { id: "document.workspace", tool: "pa_workspace", owner: "document-workspace", actions: "native bounded workspace grammar" },
   { id: "ticket.read-comment", tool: "pa_ticket", owner: "ticket-tool", actions: "read,show,list,comment" },
   { id: "ticket.intake", tool: "pa_ticket_intake", owner: "ticket-intake-tool", actions: "capabilities,inspect,reuse,create,patch-planning; native ticket intent/CAS owners" },

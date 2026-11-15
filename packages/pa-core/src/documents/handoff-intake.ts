@@ -4,6 +4,8 @@ import { creationDigest } from "../tickets/create-intent.js";
 import type { TicketStore } from "../tickets/store.js";
 import type { Ticket } from "../tickets/types.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
+import { MODE_CAPABILITY_SESSION, parseModeCapabilityBinding } from "../mode-capabilities.js";
+import { workflowDigest } from "../deploy/prepared-workflow.js";
 import { ID, object, SHA256, text, workflowTicket } from "../workflows/contracts.js";
 import { documentGuard, documentReject } from "./package-contract.js";
 
@@ -57,13 +59,21 @@ export function intakeNativeHandoffTicket(store: TicketStore, host: HandoffIntak
     sync(host.assertAvailable(structuredClone(caller)));
     const events = getDeploymentEvents(caller.deploymentId), starts = events.filter(e => e.event === "started"), start = starts[0];
     const status = queryDeploymentStatus(caller.deploymentId);
-    if (starts.length !== 1 || !start || !status || status.status !== "running" || start.note !== HANDOFF_SESSION_VERSION
+    if (starts.length !== 1 || !start || !status || status.status !== "running" || ![HANDOFF_SESSION_VERSION, MODE_CAPABILITY_SESSION].includes(start.note ?? "")
       || start.team !== "requirements" || start.mode !== "analyze" || start.runtime !== "pi" || start.binary !== "ppa"
       || status.team !== start.team || status.mode !== start.mode || status.runtime !== start.runtime
       || start.repo_root !== caller.repoRoot || start.repo !== caller.repoRoot || start.worktree_root !== caller.repoRoot
       || status.repo_root !== caller.repoRoot || status.repo !== caller.repoRoot || status.worktree_root !== caller.repoRoot
       || [start, status].some(e => e.rogue_one || e.builder_authority || e.treehouse_path || e.ticket_slot_id || e.repository_permit || e.parent_deployment_id)
       || start.resumed_from_deployment_id || start.fallback || (status.ticket_id || null) !== caller.ticket) documentReject("DOCUMENT_AUTHORITY");
+    if (start.note === MODE_CAPABILITY_SESSION) {
+      try {
+        if (!start.mode_capability_binding || start.mode_capability_binding !== status.mode_capability_binding) documentReject("DOCUMENT_AUTHORITY");
+        const selected = parseModeCapabilityBinding(JSON.parse(start.mode_capability_binding!));
+        if (JSON.stringify(selected) !== start.mode_capability_binding || !selected.policy.allow.includes("document.handoff")
+          || workflowDigest(JSON.stringify(selected)) !== caller.selectionSha256) documentReject("DOCUMENT_AUTHORITY");
+      } catch { documentReject("DOCUMENT_AUTHORITY"); }
+    }
     let ticket = start.ticket_id || null;
     const edges = events.filter(e => e.event === "ticket-associated");
     // This fresh finite route can attach once, never replace or adopt another

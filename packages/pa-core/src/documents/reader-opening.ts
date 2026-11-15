@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { isDeepStrictEqual } from "node:util";
 import { digest, object, oneOf, parseWorkflowRequest, SHA256, text } from "../workflows/contracts.js";
 import { documentGuard, documentReject } from "./package-contract.js";
 
@@ -55,11 +56,22 @@ export class RegistryReaderOpeningJournal {
     if (rows.length > 128) documentReject("DOCUMENT_UNCERTAIN");
     return rows.filter(row => this.records(row.operation_id).at(-1)!.result.state === "uncertain").map(row => row.operation_id);
   }
+  unsettledDelivery(deliverySha256: string): string[] {
+    text(deliverySha256, SHA256);
+    const rows = this.db.prepare("SELECT DISTINCT operation_id FROM handoff_reader_opening_events WHERE json_extract(payload, '$.deliverySha256') = ?").all(deliverySha256) as { operation_id: string }[];
+    if (rows.length > 128) documentReject("DOCUMENT_UNCERTAIN");
+    return rows.filter(row => {
+      const result = this.records(row.operation_id).at(-1)!.result;
+      return result.state === "uncertain" || result.cleanup === "owned-active";
+    }).map(row => row.operation_id);
+  }
   append(record: OpenRecord, expected: number): void {
     const parsed = parseRecord(record);
     this.db.transaction(() => {
       const previous = this.records(parsed.operationId);
       if (previous.length !== expected) documentReject("DOCUMENT_CONFLICT");
+      if ((parsed.result.state === "uncertain" || parsed.result.cleanup === "owned-active")
+        && this.unsettledDelivery(parsed.deliverySha256).some(id => id !== parsed.operationId)) documentReject("DOCUMENT_UNCERTAIN");
       if (previous.some(row => row.callerSha256 !== parsed.callerSha256 || row.selectionSha256 !== parsed.selectionSha256 || row.deliverySha256 !== parsed.deliverySha256)) documentReject("DOCUMENT_CONFLICT");
       this.db.prepare("INSERT INTO handoff_reader_opening_events (operation_id, sequence, caller_sha256, payload) VALUES (?, ?, ?, ?)").run(parsed.operationId, expected + 1, parsed.callerSha256, JSON.stringify(parsed));
     }).immediate();
@@ -80,7 +92,7 @@ export function openBoundDocumentReader(journal: RegistryReaderOpeningJournal, h
     let records = journal.records(operationId);
     const same = () => { if (records.some(record => record.callerSha256 !== callerSha256 || record.selectionSha256 !== selectionSha256 || record.deliverySha256 !== deliverySha256)) documentReject("DOCUMENT_CONFLICT"); };
     same();
-    if (journal.unsettled(callerSha256).some(id => id !== operationId)) documentReject("DOCUMENT_UNCERTAIN");
+    if (journal.unsettled(callerSha256).some(id => id !== operationId) || journal.unsettledDelivery(deliverySha256).some(id => id !== operationId)) documentReject("DOCUMENT_UNCERTAIN");
     const save = (result: ReaderOpeningObservation) => {
       current(); journal.append({ operationId, callerSha256, selectionSha256, deliverySha256, result }, records.length); records = journal.records(operationId);
     };
@@ -95,10 +107,11 @@ export function openBoundDocumentReader(journal: RegistryReaderOpeningJournal, h
         save({ state: "uncertain", cleanup: "unknown", evidenceSha256: digest(JSON.stringify([operationId, "opening-intent"])) });
         const result = host.requestOpen(deliverySha256, operationId); save(result);
       }
-    } else if (records.at(-1)!.result.state === "uncertain") {
+    } else if (records.at(-1)!.result.state === "uncertain" || records.at(-1)!.result.state === "open-requested" && records.at(-1)!.result.cleanup === "owned-active") {
       const result = host.reconcile(deliverySha256, operationId);
-      // Stable unknown observations do not consume the journal's finite budget.
-      if (JSON.stringify(result) !== JSON.stringify(records.at(-1)!.result)) save(result);
+      // Stable observations do not consume the journal's finite budget. Active
+      // child settlement is reobserved through the original operation only.
+      if (!isDeepStrictEqual(result, records.at(-1)!.result)) save(result);
     }
     current();
     return { schemaVersion: "pa-document-reader-opening/v1", operationId, deliverySha256, ...records.at(-1)!.result,

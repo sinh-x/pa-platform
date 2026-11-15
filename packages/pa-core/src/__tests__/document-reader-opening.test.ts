@@ -23,9 +23,20 @@ test("bound opening core requests once per original delivery, retains identity a
   const f = fixture();
   try {
     const first = f.run(), second = openBoundDocumentReader(new RegistryReaderOpeningJournal(f.db), f.host, "c".repeat(64));
-    assert.deepEqual(second, first); assert.deepEqual(f.counts(), { launches: 1, reconciles: 0 });
+    assert.deepEqual(second, first); assert.deepEqual(f.counts(), { launches: 1, reconciles: 1 });
     assert.equal(first.state, "open-requested"); assert.equal(first.observation, "not-performed"); assert.equal(first.approval, "not-issued");
     assert.equal(f.journal.records(first.operationId as string).length, 2);
+  } finally { f.close(); }
+});
+
+test("bound opening core observes original active child settlement without launching again", () => {
+  const f = fixture();
+  try {
+    const first = f.run();
+    f.observe({ state: "open-requested", cleanup: "settled", evidenceSha256: "e".repeat(64) });
+    const settled = f.run();
+    assert.equal(settled.operationId, first.operationId); assert.equal(settled.cleanup, "settled");
+    assert.deepEqual(f.run(), settled); assert.deepEqual(f.counts(), { launches: 1, reconciles: 1 });
   } finally { f.close(); }
 });
 
@@ -47,6 +58,20 @@ test("bound opening core retains unknown child/cleanup and blocks another delive
     assert.throws(() => openBoundDocumentReader(f.journal, f.host, "f".repeat(64)), (e: unknown) => e instanceof DocumentPackageError && e.code === "DOCUMENT_UNCERTAIN");
     assert.deepEqual(f.counts(), { launches: 1, reconciles: 1 });
   } finally { f.close(); }
+});
+
+test("a fresh caller cannot bypass another original delivery's uncertain or active child owner", () => {
+  for (const result of [
+    { state: "uncertain", cleanup: "unknown", evidenceSha256: "e".repeat(64) },
+    { state: "open-requested", cleanup: "owned-active", evidenceSha256: "e".repeat(64) },
+  ] as const) {
+    const f = fixture();
+    try {
+      f.observe(result); f.run(); f.foreign();
+      assert.throws(() => f.run(), (error: unknown) => error instanceof DocumentPackageError && error.code === "DOCUMENT_UNCERTAIN");
+      assert.equal(f.counts().launches, 1);
+    } finally { f.close(); }
+  }
 });
 
 test("bound opening core distinguishes unavailable/failed/cancelled and resumes an unavailable original only after launcher availability", () => {

@@ -47,9 +47,10 @@ function issued(value: unknown): HandoffIssuedDecision {
  * outcome/principal import. Only the trusted foreground service calls capture. */
 export class RegistryHandoffReviewJournal {
   readonly documents: RegistryDocumentJournal;
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: Database.Database, initialize = true) {
     if (db.pragma("synchronous", { simple: true }) !== 2) documentReject("DOCUMENT_UNAVAILABLE");
     this.documents = new RegistryDocumentJournal(db);
+    if (!initialize) return; // Existing-only status must never allocate journal tables.
     db.exec(`CREATE TABLE IF NOT EXISTS handoff_review_subjects(sha256 TEXT PRIMARY KEY, body TEXT NOT NULL, intent TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS handoff_review_events(subject_sha TEXT NOT NULL, revision INTEGER NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL,
         decision_claim TEXT UNIQUE, interaction_claim TEXT UNIQUE, PRIMARY KEY(subject_sha,revision));

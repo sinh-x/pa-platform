@@ -225,3 +225,119 @@ commits do not silently refresh it. A later selected owner must reconcile metada
 through the supported operation before any new candidate launch/review. Preserve
 the original base/branch/lease and all original evidence. All phases are **not**
 complete; this checkpoint is a committed, testable partial implementation handoff.
+
+## Foreground source integration continuation (2026-11-15/16)
+
+Resumed the same clean `f1abc8f` feature checkout at Sinh's request. All eight
+published required members were reread. Normal `read` now delivered the selected
+Pi 1.4.0 extension/TUI documentation and relevant examples; the former documentation
+access blocker is not carried forward as a current denial. This does not establish
+PAP-298's separate O-1/SR-1 production host/loader/publication contract. Latest
+supported PAP-298/PAPC-087 comments contain no newer owner correction.
+
+Sinh explicitly selected **system-default browser fallback with its limitations**.
+This changes the published no-xdg-open constraint for that fallback only; the
+trusted packaged/network-isolated opener remains unmet. No speculative packaged
+browser implementation, installation, selection or real browser launch is retained.
+Exact grammar, flow, limits and messages are in
+[PAP-312 native handoff source integration](PAP-312-native-handoff.md).
+
+### Delivered source composition
+
+- Explicit `document.handoff` capability and `pa_handoff` native dispatcher; no
+  external config selection or pin update. Retained/omitted selections cannot
+  invoke it directly, by alias or by changing environment/reloading.
+- Actual existing Pi process/registry/session/immutable-selection authentication,
+  with a separate stable handoff identity across original ticketless association.
+  The intake owner independently verifies the canonical native capability binding;
+  policy-profile status alone cannot enter it.
+- Supplied/ticketless intake, finite stages, original native plan identity, complete
+  reader preparation, one default-Cancel full-document/exact-intent/effect UI,
+  revocation/status and explicit new-provenance publication/ref/link/queue owners.
+  Original review coordinates recover without an extra unchanged interaction;
+  uncaptured pending review remains uncertain.
+- Caller-owned FULL-synchronous WAL registry connections, closed after each native
+  operation. Retained singleton settings are unchanged. Planning receives this
+  same trusted connection rather than accidentally using its NORMAL singleton.
+- Verified native-derived local reader fallback through one bounded system desktop
+  launcher invocation. Output explicitly scopes cleanup to the launcher, not browser,
+  and disclaims network isolation, trusted-opener qualification and viewing.
+- Opening journals reobserve active child settlement, compare semantic observations
+  rather than JSON key order, and atomically fence another caller's uncertain/active
+  opening of the same delivery. A new identity is not an uncertainty bypass.
+- Actual worker termination-reply-failure coverage: real worker retained, new
+  derivation denied while uncertain, fence cleared only by actual worker exit.
+  No whole-process RSS/image-decoder or complete cleanup-expiry proof is inferred.
+
+Source catalogue additions enumerate every actual new action/effect class; CLI
+forms/bindings remain absent. Snapshot coverage now includes the actual handoff/
+reader/native closure. Retained document modules still do not directly dispatch
+low-level Git owners; no old document grant or producer is changed. This is an
+intentional opt-in source registration, not deletion of the former inactivity guard.
+
+### Failures, repairs and current evidence
+
+Logs/exit files for this continuation are under `/tmp/pap312-continuation/`.
+Original earlier-session logs and SHA evidence remain unchanged.
+
+- Initial Pi typecheck failed on discriminated-union narrowing; repaired explicit
+  open-action narrowing. Later workspace build/typecheck both exit0.
+- Initial native suite: 3pass/5fail, exposing the actual NORMAL-versus-FULL journal
+  mismatch. A separate disposable probe also proved `synchronous=1`; no guard was
+  weakened. Dedicated FULL connections fixed the production composition.
+- Several bounded diagnostic runs timed out while traversing the full real native
+  route. A later complete isolated ticketless run passed in about25s; these timeout
+  attempts are not passes or proof of a deadlock.
+- Expanded native run: 7pass/1fail from a sparse supplied-ticket fixture whose
+  missing timestamps normalized differently on reread. Fixed fixture timestamps,
+  not ticket admission. Subsequent 8/8 native tests passed before the added missing-UI
+  recovery case; current complete rerun is separately recorded below.
+- Opening regression first reported 30pass/1fail: semantic equality exposed JSON
+  key-order-dependent journal growth. Fixed owner comparison; retained every
+  existing opening assertion and added active/foreign-caller settlement coverage.
+- Initial broad concurrent owner run: 256pass/1fail. The unchanged real-worker
+  1ms deadline fixture expired before spawning under parallel load, correctly
+  failing its actual-worker assertion. Serial Nix rerun: **257pass/0fail/0skip**,
+  exit0 (`core-owner-nix-serial.log`). No assertion or worker limit was loosened.
+- Initial broad Pi run: 69pass/3fail. Three actual workspace helper cases lacked
+  `bwrap` on ambient PATH. Offline repository `nix develop` provides the existing
+  declared toolchain; exact helper rerun: **6pass/0fail/0skip**, exit0. No package
+  install, fake helper or namespace/security fallback was used.
+- Workspace `corepack pnpm build` and `corepack pnpm typecheck`: exit0
+  (`workspace-build.log`, `workspace-typecheck.log`, `build-typecheck.exit`).
+
+All new UI events and desktop launchers in software tests are explicitly synthetic
+at those boundaries. Native process identity and disposable Git/TicketStore/SQLite
+owners are actual; no real human approval, browser viewing or protected review is
+claimed. Reviewer delegation returned `Unknown subagent_type`, available agents
+`none`; neither independent review nor a successful simplifier is fabricated.
+
+Serialized native/retained Nix rerun: **73pass/0fail/0skip**, exit0
+(`pi-native-retained-nix-serial.log`), including all9new registered-native cases and
+3desktop-launcher-stub cases. Final Pi TypeScript check also exits0. Counts overlap
+with earlier runs and must not be added together.
+
+The first uncommitted full workspace attempt was deliberately stopped before the
+source commit so the final full run can use a clean committed source tree. Exit143,
+not a pass; original log/exit retained as `workspace-uncommitted-interrupted.*`.
+Supervisor404860/test group490542 were scoped to this validation; no member of the
+test group remained at final observation. The clean-commit aggregate rerun follows.
+No aggregate pass follows from the focused results above.
+
+### Current phase gates
+
+IP-2/3 native source composition is now wired behind the new immutable opt-in
+capability; actual default-entry/installed/genuine-human execution remains unproven.
+IP-4 successor/reader/opening-journal composition is wired with the explicitly
+approved convenience fallback, **not** a completed trusted opener or all resource
+qualification. IP-1 independent actual-contract/security disposition and PAP-298
+production custody remain open. IP-5 current/retained PAPC common13/full-body pair
+corrections still belong to its owner; no foreign edits or blind repin. IP-6 full
+validation, supported protected independent matrix/readiness/one-use admission and
+hosted CI remain distinct. IP-7 installed/default-entry/foreground/browser/all18
+human UAT and adoption remain unperformed and separately authorized.
+
+No live ticket lifecycle/refs/publication/queue/browser effects, foreign checkout,
+prepared-preview launch, push/PR/merge/install/default enablement, historical repair,
+resource return or ticket-Done occurred. Original ticket base/branch/lease and
+recorded21530bc linked metadata remain untouched. The ticket is **not complete**.
