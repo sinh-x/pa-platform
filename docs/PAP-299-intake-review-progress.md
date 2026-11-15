@@ -59,9 +59,74 @@ PAP-298 owner request `c-20261114230653395` remains the route. Pi SDK/native UI
 changes await permitted docs and independent actual-contract review. A journal
 re-read also returned `LOCAL_SOURCE_UNAVAILABLE`; no journal mutation attempted.
 
-The finite review/explicit publication consumer, selected tool/profile, fixed
-trusted browser/display/network/cleanup owner and qualification remain pending.
-Earlier aggregate timeouts/source-pair `RUNTIME_SHELL_LIFECYCLE` failure are not
-waived. Source, independent review, hosted CI, installed/default entry, genuine
-foreground prompts/effects, browser/accessibility and TS1–18 human UAT/adoption
-remain separate. No live document/branch/queue/opening or ticket Done effect.
+## Distinct finite review/publication phase
+
+`registry/handoff-reviews.ts` now owns a separate FULL-synchronous immutable
+handoff subject/intent, hash-chained native request/issued events, original native
+capture bytes, and finite original publication/queue intents. It never inserts a
+legacy confirmation or extends a historical grant. The request is durable before
+UI; capture bytes survive before mutable checks/issuance. Original-coordinate
+replay uses the same capture without a second prompt. A request with no proven
+capture stays uncertain, never reopens automatically. Actual selected foreground
+capture is still an adapter integration gate, not supplied by test evidence.
+
+`documents/handoff-review.ts` requires a completed exact native ticket plan and
+reverifies the actual full reader before freeze, before the native review and
+after interaction, before issuance. Full immutable document bodies, exact intent
+and finite effects go to the native host together. Local UID, caller/session,
+selection, evidence bindings, latest decision, revocation and pending history are
+checked. Changed subjects/review coordinates cannot bypass unresolved native
+review, publication, queue, branch or retained document intents for that ticket.
+
+`documents/handoff-publication.ts` explicitly consumes this new provenance.
+Decision JSON and both exact delivery references precede all-member primary
+promotion; original publication intent precedes writes. The combined real Git/
+SQLite/TicketStore branch owner now consumes that decision and exact publication,
+not a fixture receipt or old scope. Publish+branch with queue=false stays unqueued.
+Queue requires its own finite effect plus the actual complete correlated branch,
+and keeps the same repository -> ticket exclusion through the status write.
+Completed effects can be observed after revocation; missing writes cannot proceed.
+Approval/publication/branch/queue/checkout/launch/UAT remain distinct.
+
+**Limits:** first-publication only; successor/predecessor provenance currently
+returns DOCUMENT_UNAVAILABLE instead of adopting old destinations. An interrupted
+review lacking native capture requires future explicit owner reconciliation, not
+another prompt. Native repository observation/planning adapter, selected tool/
+profile, actual Pi foreground capture, and fixed trusted browser/display/network/
+cleanup integration remain missing. These are internal services, not production
+enablement or completed FR1–16. No new public CLI text, machine/stream/exit contract,
+retained schema or capability selection changes. Errors reuse existing typed codes;
+no human readability/installed propagation claim.
+
+Actual checks at this source phase:
+
+- Workspace typecheck/build: exit 0, including final barrier/queue-lock changes.
+- Thirteen focused suites initially **148/148 pass**. Expanded final run:
+  **151 pass / 1 fail**, zero skips; the failure is a worker error surfaced as
+  DOCUMENT_UNAVAILABLE during concurrent broad validation/build, not a proven
+  root cause. No worker limit/check was relaxed.
+- Isolated final review/publication suite: **22/22 pass**, zero skips. This includes
+  new cross-subject pending barriers, concurrent review, revocation after partial
+  publication and original queue response-loss recovery. Earlier initial run
+  14/18 was four fixture errors caused by shadowing the document subject with the
+  handoff subject; the fixture names were separated, not production checks weakened.
+- All review evidence is explicitly synthetic source-test evidence, not human
+  consent or foreground prompt-count qualification. Actual Git/ref/link and file/
+  ticket owners are exercised in disposable repositories, with no resource effects.
+- Completions: exit 0, tracked output unchanged.
+- Current PAPC is now clean `5fc3c97457c1a01ca5c7994a79321fdffef19c0d`, not the
+  historical 504a8dc candidate. Full common13: **1373 pass / 51 fail**, zero skips.
+  Findings include missing requirements/auto-reasoning primer budget and retained
+  config/contract drift. No external config/checker was changed. Source-pair first
+  rejected this uncommitted runtime as dirty; renew against the committed source.
+- Full workspace regression is running separately; no aggregate pass asserted.
+  Historical timeouts and RUNTIME_SHELL_LIFECYCLE remain preserved until a genuine
+  final current check supplies another outcome.
+
+Logs: `/tmp/pap299-d60-{owner-focused,owner-final,review-isolated-final}.log`,
+`/tmp/pap299-d60-workspace-{typecheck-final,build-final,test}.log`,
+`/tmp/pap299-d60-papc-{common13,source-pair}.log`.
+
+Independent review, hosted CI, installed/default entry, genuine foreground prompts/
+effects, browser/accessibility and TS1–18 human UAT/adoption remain separate. No live
+document/branch/queue/opening, ticket Done, install, push/merge or checkout return.

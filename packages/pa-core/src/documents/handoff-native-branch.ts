@@ -16,7 +16,10 @@ export type NativeHandoffBranchAuthority = Pick<HandoffBranchHost, "authenticate
  * unregistered and NOT an alternative to the missing selected decision owner. */
 export function completeNativeHandoffBranch(db: Database.Database, store: TicketStore, authority: NativeHandoffBranchAuthority,
   rawSubject: HandoffReviewSubject, rawIntent: HandoffBranchIntent, document: DocumentPackage, decisionId: string, planIdentity: { scope: string; requestId: string },
-  boundary?: (stage: "intent" | "ticket" | "audit") => void): Record<string, unknown> {
+  boundary?: (stage: "intent" | "ticket" | "audit") => void,
+  /** Trusted finite successor owner only; executes while the SAME repository ->
+   * ticket exclusions still hold. Never exposed as tool/request callback data. */
+  afterVerified?: () => void): Record<string, unknown> {
   const subject = parseHandoffReviewSubject(rawSubject), intent = parseHandoffBranchIntent(rawIntent), subjectSha256 = handoffReviewSubjectSha(subject);
   const operationId = handoffBranchOperationId(subjectSha256, decisionId), gitOwner = new RegistryHandoffGitOwner(db), journal = new RegistryHandoffBranchJournal(db);
   return gitOwner.withRepository(intent, operationId, git => store.withWorkflowTransaction(() => {
@@ -43,7 +46,7 @@ export function completeNativeHandoffBranch(db: Database.Database, store: Ticket
       if (!ticket || ticket.project !== intent.repository.key || ticket.linkedBranches.length !== 1 || ticket.linkedBranches[0]!.repo !== intent.repository.key || ticket.linkedBranches[0]!.branch !== intent.branch) documentReject("DOCUMENT_CONFLICT");
       return ticket!;
     };
-    return completeHandoffBranch(journal, {
+    const result = completeHandoffBranch(journal, {
       ...authority, serialize: run => run(), observeRef: () => git.observe(), createRef: () => git.create(), isAncestor: (base, head) => git.isAncestor(base, head),
       inspectLink() {
         const ticket = current(), original = store.inspectHandoffWithIntent(linkIdentity);
@@ -64,5 +67,9 @@ export function completeNativeHandoffBranch(db: Database.Database, store: Ticket
         });
       },
     }, subject, intent, document, decisionId);
+    const successor: unknown = afterVerified?.();
+    if (successor instanceof Promise) void successor.catch(() => {});
+    if (successor !== undefined) documentReject("DOCUMENT_AUTHORITY");
+    return result;
   }));
 }
