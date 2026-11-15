@@ -170,6 +170,22 @@ export class TicketStore {
     });
   }
 
+  /** Original creation inspection only; never reserve an ID or repair an audit.
+   * Used by the separate native intake/association owner after response loss. */
+  inspectCreationWithIntent(identity: TicketCreateIntentIdentity) {
+    return this.withTransaction(() => {
+      const record = readCreationIntent(this.dir, creationKey(identity));
+      if (!record) return undefined;
+      const current = this.get(record.ticket.id);
+      const audits = this.readCreationAudits().entries.filter(row => row.ticket_id === record.ticket.id && row.action === "created");
+      const expected: AuditEntry = { ticket_id: record.ticket.id, action: "created", actor: record.actor, timestamp: record.ticket.createdAt,
+        changes: { status: ["", record.ticket.status], assignee: ["", record.ticket.assignee] } };
+      if (audits.length > 1 || audits.length === 1 && (!current || current.project !== record.ticket.project || creationDigest(audits[0]) !== creationDigest(expected))
+        || audits.length === 0 && current && !isDeepStrictEqual(current, record.ticket)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return { record: structuredClone(record), ticket: current, complete: audits.length === 1 };
+    });
+  }
+
   /** Finite scalar planning data primitive, NOT native role/lifecycle authority.
    * A future admitted adapter must authenticate ownership on every locked callback.
    * Immutable intent precedes effects; unknown partial state is never rolled back. */
