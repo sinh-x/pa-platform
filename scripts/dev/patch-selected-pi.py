@@ -63,6 +63,16 @@ def main(root: Path) -> None:
 \t\tfor (const l of this._eventListeners) {"""),
     ])
     patch(root, "packages/agent/src/agent-loop.ts", [
+        ('async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: AgentEventSink): Promise<void> {\n', '''// Incurred read usage belongs to accounting, not the public result projection.
+const paReadUsage = new WeakMap<FinalizedToolCallOutcome, NonNullable<ToolResultMessage["usage"]>>();
+async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: AgentEventSink): Promise<void> {
+\tif (finalized.toolCall.name === "read" && finalized.result.usage) paReadUsage.set(finalized, finalized.result.usage);
+'''),
+        ('function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResultMessage {\n', '''function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResultMessage {
+\tconst incurredReadUsage = paReadUsage.get(finalized);
+\tpaReadUsage.delete(finalized);
+'''),
+        ('\t\tusage: finalized.result.usage,\n', '\t\tusage: incurredReadUsage ?? finalized.result.usage,\n'),
         ("\t\tisError: finalized.isError,\n\t\t...(finalized.durationMs === undefined ? {} : { durationMs: finalized.durationMs }),\n\t\ttimestamp:", "\t\tisError: finalized.result.isError === true || finalized.isError,\n\t\t...(finalized.durationMs === undefined ? {} : { durationMs: finalized.durationMs }),\n\t\ttimestamp:"),
     ])
     patch(root, coding + "core/nested-tool-calls.ts", [

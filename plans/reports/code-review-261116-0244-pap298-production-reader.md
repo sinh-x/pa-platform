@@ -81,6 +81,14 @@ C1 remains intentionally unresolved under Sinh's compatibility decision. The lat
 
 After receiving the CR-2 explanation, Sinh explicitly requested a PR merged into `develop` with the gaps noted on PAP-298, followed by switching the canonical local repository to `develop`. This supersedes the earlier no-merge stop for checkpoint integration only. It does not close C1/CR-2, remove coverage requirements, authorize installation/default runtime switching or establish human/downstream acceptance. Keep PAP-298's status and requirements open; append the eventual PR, commit and evidence/gaps note rather than claiming completion. Review the final alias/usage corrections and require green hosted CI for this checkpoint before merging.
 
+## Committed checkpoint review and accounting corrections
+
+Fresh read-only review of `d3929db946418b821ee51f83617999f47d144cb0` completed with exit 0. It identified two P2 regressions: an event-only `tool_result` error override could become success, and top-level usage was removed before sequential/parallel message accounting. It otherwise found the private-cache cloning, host-check ordering, structured results and buffer release consistent with their stated contracts. This is same-family source inspection, not independent test execution or full acceptance.
+
+Both defects were reproduced. The publication unit baseline failed its new `error-override` case; the actual-runtime baseline failed usage accounting in both execution modes (2/4 passed). Correction: first commitment preserves the end event's typed error flag as well as the result flag. The pinned agent loop privately retains the existing incurred read-usage field before public projection, then consumes it for message accounting without forwarding other result fields. Nested accounting remains unchanged.
+
+Corrected publication tests pass 13/13 and actual-runtime tests pass 4/4, zero skips, including error-only hooks, usage for successful/withheld sources in both execution modes, cached alias mutation and nested history/usage. Logs: `/tmp/pap298-event-error-{baseline,corrected}.log`, `/tmp/pap298-top-usage-error-baseline.log`, `/tmp/pap298-top-accounting-corrected-runtime.log`. Further committed-code review and current hosted CI are required before checkpoint merge; known accepted requirement/qualification gaps remain open.
+
 ## Remaining review gate
 
 The reviewer retained G1 as a blocking evidence gap, not a demonstrated code defect: exact-candidate foreground/PTY, background, retained/resume, lifetime and all repository/CI gates must finish before source completion. Earlier builds predate corrections and are not final-candidate qualification. Review the corrected source and test/packaging deltas before landing.

@@ -180,6 +180,8 @@ for (const execution of ["parallel", "sequential"]) test(`real ${execution} Pi a
   const valid = join(root, "valid.txt"), cancelled = join(root, "cancelled.txt");
   writeFileSync(valid, "INERT_TOP_LEVEL_ALLOWED_BODY"); writeFileSync(cancelled, "INERT_TOP_LEVEL_CANCELLED_BODY");
   const calls = [{ id: "top-valid", path: valid }, { id: "top-revoked", path: cancelled }], requests = [];
+  const topUsage = { input: 7, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 9,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const server = createServer((request, response) => {
     let body = ""; request.on("data", chunk => { body += chunk; });
     request.on("end", () => {
@@ -212,6 +214,7 @@ for (const execution of ["parallel", "sequential"]) test(`real ${execution} Pi a
       extensionFactories: [pi => {
         lifecycle.addShutdownStep(() => owner.revoke());
         registerPiSessionModules(pi, lifecycle, [runtime => runtime.registerTool(owner.createTool(host.createReadToolDefinition, acquireLocalSourceFile))]);
+        pi.on("tool_result", event => ({ isError: event.toolCallId === "top-valid", usage: topUsage }));
         pi.on("tool_execution_end", async event => {
           if (event.toolCallId === "top-revoked") {
             await Promise.resolve(); revokeObserved = true; await lifecycle.shutdown({ reason: "reload" });
@@ -230,11 +233,14 @@ for (const execution of ["parallel", "sequential"]) test(`real ${execution} Pi a
     const events = []; session.subscribe(event => events.push(JSON.parse(JSON.stringify(event))));
     await session.prompt("Run the inert cancellation fixture.");
     assert.equal(revokeObserved, true); assert.equal(requests.length, 2);
-    const ends = events.filter(event => event.type === "tool_execution_end"); assert.equal(ends.length, 2);
-    assert.equal(ends.find(event => event.toolCallId === "top-valid").isError, false);
-    assert.equal(ends.find(event => event.toolCallId === "top-revoked").isError, true);
     const history = session.sessionManager.buildSessionContext().messages.filter(message => message.role === "toolResult");
-    assert.equal(history.length, 2); assert.equal(history.find(message => message.toolCallId === "top-revoked").isError, true);
+    assert.equal(history.length, 2);
+    for (const message of history) assert.deepEqual(message.usage, topUsage, "top-level incurred usage survives successful or withheld projection");
+    const ends = events.filter(event => event.type === "tool_execution_end"); assert.equal(ends.length, 2);
+    assert.equal(ends.find(event => event.toolCallId === "top-valid").isError, true, "an error-only hook override is not a successful publication");
+    assert.equal(ends.find(event => event.toolCallId === "top-revoked").isError, true);
+    assert.equal(history.find(message => message.toolCallId === "top-valid").isError, true);
+    assert.equal(history.find(message => message.toolCallId === "top-revoked").isError, true);
     assert.match(JSON.stringify([events, requests, history]), /INERT_TOP_LEVEL_ALLOWED_BODY/);
     assert.doesNotMatch(JSON.stringify([events, requests, history, session.agent.state.messages]), /INERT_TOP_LEVEL_CANCELLED_BODY/);
   } finally {

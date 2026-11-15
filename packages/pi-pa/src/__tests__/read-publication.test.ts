@@ -77,7 +77,7 @@ test("read transport retains descriptors until its synchronous native emission a
   mkdirSync(config); writeFileSync(join(config, "sensitive-patterns.yaml"), "contents: []\n");
   process.env = { ...environment, PA_PLATFORM_CONFIG: config };
   try {
-    for (const action of ["publish", "abort", "revoke", "replace", "close-failure", "foreign-id", "foreign-content"] as const) {
+    for (const action of ["publish", "error-override", "abort", "revoke", "replace", "close-failure", "foreign-id", "foreign-content"] as const) {
       await t.test(action, async () => {
         const owner = new ReadPublicationOwner(), caller = new AbortController();
         const file = join(root, `${action}.txt`); writeFileSync(file, "INERT_TRANSPORT_BODY\n");
@@ -95,18 +95,19 @@ test("read transport retains descriptors until its synchronous native emission a
           if (action === "abort") caller.abort();
           if (action === "revoke") owner.revoke();
           if (action === "replace") writeFileSync(file, "INERT_CHANGED_BODY\n");
-          const event = { type: "tool_execution_end", toolName: "read", toolCallId: action === "foreign-id" ? "foreign" : "read-1", result: action === "foreign-content" ? { ...result, content: [...result.content] } : result, isError: false };
+          const event = { type: "tool_execution_end", toolName: "read", toolCallId: action === "foreign-id" ? "foreign" : "read-1", result: action === "foreign-content" ? { ...result, content: [...result.content] } : result, isError: action === "error-override" };
           const owned = owner.publishEvent(event);
           assert.equal(owned, true);
           assert.equal(closed, 1, "even a lost correlation settles the original source immediately");
           const serialized = JSON.stringify(event);
-          if (action === "publish") {
+          if (action === "publish" || action === "error-override") {
             assert.match(serialized, /INERT_TRANSPORT_BODY/);
-            assert.equal(event.isError, false); assert.equal(closed, 1);
+            assert.equal(event.isError, action === "error-override"); assert.equal(closed, 1);
             owner.revoke();
             const message = { type: "message_end", message: { role: "toolResult", toolName: "read", toolCallId: "read-1", content: event.result.content, details: event.result.details, isError: false } };
             assert.equal(owner.publishEvent(message), true);
             assert.match(JSON.stringify(message), /INERT_TRANSPORT_BODY/, "late observation of committed output is not a new read");
+            assert.equal(message.message.isError, action === "error-override", "committed event-only errors remain errors in later history");
             assert.equal(closed, 1);
           } else {
             assert.equal(event.isError, true);

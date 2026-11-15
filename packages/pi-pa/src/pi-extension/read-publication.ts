@@ -89,7 +89,7 @@ export class ReadPublicationOwner {
         try {
           checked = structuredClone(filterLocalToolResult("read", {
             content: result.content, details: result.details ?? {},
-            ...(result.isError === true ? { isError: true } : {}),
+            ...(result.isError === true || record.isError === true ? { isError: true } : {}),
             ...(Object.hasOwn(result, "structuredContent") ? { structuredContent: result.structuredContent } : {}),
           }));
         } catch { /* Uncopyable output cannot inherit native read custody. */ }
