@@ -70,6 +70,9 @@ export interface SpawnOpts {
 
 export interface ResumeOpts extends SpawnOpts {
   sessionId: string;
+  /** Original deployment identity for adapters with an immutable host contract.
+   * Correlation only, never an execution or source-access grant. */
+  resumedFromDeploymentId?: string;
 }
 
 export interface SpawnResult {

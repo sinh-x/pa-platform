@@ -28,6 +28,7 @@ import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorize
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { inspectReviewPreflight, formatReviewPreflight } from "./review-preflight.js";
 import { readPiProcessIdentity } from "./process-identity.js";
+import { assertSelectedPiResumeHost } from "./selected-pi-resume.js";
 import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
 export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha" | "approvedReference">;
@@ -805,7 +806,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   // Strict mode rejection precedes resume-file inspection; unsupported historical
   // runtime rejection still precedes workspace/registry allocation and hooks.
   try {
-    if (request.resume) prior = readSession(request.resume, adapter.sessionFileName);
+    if (request.resume) {
+      prior = readSession(request.resume, adapter.sessionFileName);
+      assertSelectedPiResumeHost(request.resume, prior);
+    }
   } catch (error) {
     const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail)
@@ -1567,7 +1571,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     // borrower through existing matching cleanup. After it, absent native exit
     // proof must retain the borrower, including thrown/ambiguous spawn failures.
     runtimeLaunchAttempted = true;
-    const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
+    const result = prior ? await adapter.resume({ ...spawnOptions, resumedFromDeploymentId: request.resume }) : await adapter.spawn(spawnOptions);
     if (result.exitCode === 0) retainedResume?.assertCompleted();
     reviewRuntimeTerminated = result.metadata?.["cleanupVerified"] !== false && result.metadata?.["pending"] !== true;
     const rawExitCode = result.metadata?.["rawExitCode"];
