@@ -11,7 +11,7 @@ import { HandoffPublicationService } from "../documents/handoff-publication.js";
 import { handoffBranchIntentSha, handoffReviewSubjectSha, type HandoffBranchIntent, type HandoffReviewSubject } from "../documents/handoff-contract.js";
 import { presentFullDocumentReader } from "../documents/reader-publication.js";
 import { readDocumentSources } from "../documents/package-tools.js";
-import { documentDestination } from "../documents/package-contract.js";
+import { documentDestination, documentPackageSha, type DocumentPackage } from "../documents/package-contract.js";
 import { creationDigest } from "../tickets/create-intent.js";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
 
@@ -252,6 +252,124 @@ test("a different subject or fresh review coordinate cannot bypass unresolved na
       assert.equal(f.captures(), kind === "review" ? 0 : 1);
     } finally { f.close(); }
   }
+});
+
+async function successor(f: Awaited<ReturnType<typeof fixture>>, change: Partial<DocumentPackage> = {}) {
+  const document = { ...structuredClone(f.subject), revision: 2, predecessor: f.sha256, ...change };
+  const bytes = document.members.map(member => f.journal.documents.snapshot(member.sha256));
+  f.journal.documents.freeze(document, f.journal.documents.events("example", "EX-1").length, bytes);
+  const delivery = await presentFullDocumentReader(document, f.root, hash => f.journal.documents.snapshot(hash));
+  const subject = { ...f.handoffSubject, documentSubjectSha256: documentPackageSha(document), deliverySha256: delivery.deliverySha256 as string };
+  const sha = await f.review.freeze(subject, f.intent, f.planIdentity);
+  return { document, sha, decision: await f.review.review(sha, 0) };
+}
+
+for (const point of ["none", "intent", "tracking", "publication", "complete"] as const) test(`native successor publication preserves predecessor bytes/refs and recovers original ${point} boundary`, async () => {
+  const f = await fixture();
+  try {
+    const original = await f.review.review(f.sha, 0); await f.publication.publish(f.sha, original.decisionId);
+    const oldRefs = structuredClone(f.store.get("EX-1")!.doc_refs), oldBytes = f.subject.members.map(member => readFileSync(join(f.root, documentDestination(f.subject, member))));
+    const next = await successor(f);
+    if (point !== "none") {
+      const interrupted = new HandoffPublicationService(f.db, f.review, f.planIdentity, stage => { if (stage === point) throw Error("successor reply lost"); });
+      await assert.rejects(() => interrupted.publish(next.sha, next.decision.decisionId), /successor reply lost/);
+    }
+    const result = await f.publication.publish(next.sha, next.decision.decisionId);
+    assert.equal(result.publication, "verified"); assert.deepEqual(await f.publication.publish(next.sha, next.decision.decisionId), result);
+    const ticket = f.store.get("EX-1")!;
+    for (const old of oldRefs) assert.deepEqual(ticket.doc_refs.find(ref => ref.path === old.path), { ...old, primary: false });
+    assert.deepEqual(f.subject.members.map(member => readFileSync(join(f.root, documentDestination(f.subject, member)))), oldBytes);
+    assert.equal(ticket.doc_refs.filter(ref => ref.primary).length, 1);
+    assert.equal(ticket.doc_refs.find(ref => ref.primary)!.path, documentDestination(next.document, next.document.members.find(member => member.role === "requirements")!));
+    assert.equal(f.publication.completeBranch(next.sha, next.decision.decisionId).completion, "verified");
+    assert.equal(f.captures(), 2, "one original and one changed-content successor review, never a bookkeeping replay");
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_review_effects").get() as { n: number }).n, 2);
+    assert.equal(ticket.status, "requirement-review"); assert.equal(ticket.assignee, "requirements/team-manager");
+    assert.equal(f.journal.documents.events("example", "EX-1").filter(event => event.data.kind !== "frozen").length, 0, "no forged legacy events");
+  } finally { f.close(); }
+});
+
+for (const fault of ["unpublished", "revoked", "missing-provenance", "tampered-bytes", "foreign-package", "foreign-primary"] as const) test(`successor blocks ${fault} without changing old primary/history or transferring grants`, async () => {
+  const f = await fixture();
+  try {
+    const original = await f.review.review(f.sha, 0);
+    if (fault !== "unpublished") await f.publication.publish(f.sha, original.decisionId);
+    if (fault === "revoked") await f.review.review(f.sha, 2, "revoke", original.decisionId);
+    if (fault === "missing-provenance") f.db.exec("DELETE FROM handoff_review_effects");
+    const next = await successor(f, fault === "foreign-package" ? { packageId: "foreign" } : {});
+    if (fault === "tampered-bytes") writeFileSync(join(f.root, documentDestination(f.subject, f.subject.members[0]!)), "changed old bytes");
+    if (fault === "foreign-primary") {
+      const path = join(f.root, "tickets/EX-1.json");
+      writeFileSync(path, JSON.stringify({ ...f.store.get("EX-1"), doc_refs: [{ type: "attachment", path: "foreign.md", primary: true }] }));
+    }
+    const before = readFileSync(join(f.root, "tickets/EX-1.json"));
+    await assert.rejects(() => f.publication.publish(next.sha, next.decision.decisionId));
+    assert.deepEqual(readFileSync(join(f.root, "tickets/EX-1.json")), before);
+    assert.equal(f.journal.effect(next.sha, next.decision.decisionId, "publish").started, false);
+    assert.equal(existsSync(join(f.root, documentDestination(next.document, next.document.members[0]!))), false);
+  } finally { f.close(); }
+});
+
+test("retained native document publication proves predecessor only; successor still requires its own new finite decision", async () => {
+  const f = await fixture();
+  try {
+    const oldDecision = await f.prepare();
+    assert.equal((await f.call({ action: "publish", sha256: f.sha256, expectedRevision: f.revision(), decisionId: oldDecision })).ok, true);
+    const next = await successor(f);
+    await assert.rejects(() => f.publication.publish(next.sha, oldDecision), /DOCUMENT_AUTHORITY/);
+    assert.equal((await f.publication.publish(next.sha, next.decision.decisionId)).publication, "verified");
+    assert.equal(f.publication.completeBranch(next.sha, next.decision.decisionId).completion, "verified");
+    assert.equal(f.captures(), 1, "retained decision is not translated into a handoff grant or repeated");
+  } finally { f.close(); }
+});
+
+test("successor queue consumes only its own finite grant after exact successor ref/link readback", async () => {
+  const f = await fixture({ publish: true, branchRef: true, queue: true });
+  try {
+    const original = await f.review.review(f.sha, 0); await f.publication.publish(f.sha, original.decisionId);
+    const next = await successor(f); await f.publication.publish(next.sha, next.decision.decisionId);
+    assert.throws(() => f.publication.queue(next.sha, next.decision.decisionId), /DOCUMENT_AUTHORITY/);
+    assert.throws(() => f.publication.completeBranch(next.sha, original.decisionId), /DOCUMENT_AUTHORITY/);
+    f.publication.completeBranch(next.sha, next.decision.decisionId);
+    assert.equal(f.publication.queue(next.sha, next.decision.decisionId).queue, "verified");
+    assert.equal(f.store.get("EX-1")!.status, "pending-implementation"); assert.equal(f.captures(), 2);
+    assert.equal(f.journal.effect(f.sha, original.decisionId, "queue").started, false);
+  } finally { f.close(); }
+});
+
+test("successor interruption during member-ref publication resumes without early primary promotion", async () => {
+  const f = await fixture();
+  try {
+    const original = await f.review.review(f.sha, 0); await f.publication.publish(f.sha, original.decisionId);
+    const next = await successor(f), update = f.store.update.bind(f.store);
+    let interrupted = false;
+    f.store.update = (...args) => {
+      const result = update(...args);
+      if (!interrupted && args[1].add_doc_ref?.path === documentDestination(next.document, next.document.members[1]!)) {
+        interrupted = true; throw Error("member ref reply lost");
+      }
+      return result;
+    };
+    await assert.rejects(() => f.publication.publish(next.sha, next.decision.decisionId), /member ref reply lost/);
+    assert.equal(f.store.get("EX-1")!.doc_refs.find(ref => ref.primary)!.path, documentDestination(f.subject, f.subject.members.find(member => member.role === "requirements")!));
+    assert.equal((await f.publication.publish(next.sha, next.decision.decisionId)).publication, "verified");
+    assert.equal(f.captures(), 2);
+  } finally { f.close(); }
+});
+
+test("revoked partial successor retains its predecessor primary and cannot resume missing writes", async () => {
+  const f = await fixture();
+  try {
+    const original = await f.review.review(f.sha, 0); await f.publication.publish(f.sha, original.decisionId);
+    const next = await successor(f);
+    const interrupted = new HandoffPublicationService(f.db, f.review, f.planIdentity, stage => { if (stage === "tracking") throw Error("partial successor"); });
+    await assert.rejects(() => interrupted.publish(next.sha, next.decision.decisionId), /partial successor/);
+    await f.review.review(next.sha, 2, "revoke", next.decision.decisionId);
+    const before = readFileSync(join(f.root, "tickets/EX-1.json"));
+    await assert.rejects(() => f.publication.publish(next.sha, next.decision.decisionId), /DOCUMENT_AUTHORITY/);
+    assert.deepEqual(readFileSync(join(f.root, "tickets/EX-1.json")), before);
+    assert.equal(f.store.get("EX-1")!.doc_refs.find(ref => ref.primary)!.path, documentDestination(f.subject, f.subject.members.find(member => member.role === "requirements")!));
+  } finally { f.close(); }
 });
 
 test("handoff subject/intent and native evidence tampering are detected by the actual registry consumer", async () => {

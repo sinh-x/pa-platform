@@ -126,3 +126,41 @@ Actual checks in `/tmp/pap312-d1039c8/`:
 - Staged secrets scan is required before this slice's commit. Full source,
   repository admission/retained regressions and external qualification follow;
   no full-workspace result is inferred from144 focused tests.
+
+## IP-4 independent successor-publication slice
+
+The explicit new-provenance publication consumer now admits a successor only
+when its immutable predecessor has the same registered repository/ticket/package,
+a lower authored revision, native completed publication, nonrevoked eligible
+native decision/lifecycle, exact saved snapshots, exact physical bytes and full
+old member refs. New handoff completion records are verified directly; retained
+document publication is explicitly verified through its own registry without
+synthesizing events, projecting old grants, or repairing historical PAP-299 state.
+New successor publication/ref/optional queue still require its own exact finite
+review. Missing/unpublished/revoked/foreign/tampered proof blocks before an effect.
+
+Predecessor checks repeat under the same TicketStore transaction before remaining
+writes. Existing publication owner retains old files/ref history and promotes the
+new primary only after all member/decision/delivery refs. Own partial publication
+can recover without circular pending-state rejection; no second unchanged review,
+republish of the predecessor or queue replay. Branch/queue consumers now verify
+publication with the same predecessor proof. This is unregistered source work,
+not the production reader/opener portion or completion of IP-4.
+
+Changed paths: documents/handoff-publication.ts, registry/handoff-reviews.ts and
+__tests__/document-handoff-review.test.ts under packages/pa-core/src. No public
+selector, scope, message, JSON/exit/stream or installed route was changed.
+Before: every predecessor!=null returned DOCUMENT_UNAVAILABLE. After: native
+provenance and exact old bytes/refs are mandatory; typed denials are preserved,
+with no new human-facing wording or readability/installed claim.
+
+Actual core typecheck passed. Initial successor suite35/35, expanded final
+**37pass/0fail/0skip**, exit0 (`ip4-final.log` and `ip4-final.exit` under
+`/tmp/pap312-d1039c8/`). Covers original intent/tracking/publication/completion
+reply loss, mid-member-ref loss, primary ordering, retained publication provenance,
+missing/foreign/revoked/tampered predecessors, new-scope/ref/queue ordering and
+revoked partial successor. All human captures/authority are simulated fixtures;
+no genuine consent, installed/foreground/browser/network/UAT or protected review
+is claimed. Staged scan/whitespace run before commit; broader exact-source and
+retained validation follows. Trusted packaged opener and actual worker
+uncertain-cleanup/resource qualification remain open owner work.
