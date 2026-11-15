@@ -253,7 +253,7 @@ description: string         # required
 objective: string           # required, default objective
 model: string               # optional, default model for the team
 default_mode: string        # optional, default deploy mode id
-timeout: number             # optional, deploy timeout seconds
+timeout: number             # optional, legacy planning budget (not deployment lifetime)
 global_docs: [string]       # optional, memory docs injected into primers
 terse_mode: boolean          # optional, enable terse prose
 variables: {string: string} # optional, template variables
@@ -343,7 +343,7 @@ See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
 | `PA_RUNTIME` | (set by adapters on spawned processes) | `cli/run.ts` | Set on spawned child processes to the adapter name (`opencode` or `pi`) |
-| `PA_MAX_RUNTIME` | (unset → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` = 1800) | `deploy/control.ts` | Deploy timeout in seconds, consulted between the `--timeout` flag and the built-in default. Bounded to `[60, 7200]`; invalid values are rejected before the deployment hook runs |
+| `PA_MAX_RUNTIME` | (unset → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` = 1800) | `deploy/control.ts` | Legacy planning/finite-authority metadata in seconds, not a deployment kill timer. Consulted between `--timeout` and the built-in default; validation remains `[60, 7200]` for compatibility |
 
 ### Deployment Context (injected by adapters)
 
@@ -397,7 +397,7 @@ Used by `schedule`/`remove-timer` to determine the pa command invoked by systemd
 
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
-| `PA_STATUS_WAIT_TIMEOUT` | (deployment `effective_timeout_seconds` or `1800`) | `status.ts` | Override the `status --wait` timeout; must be an integer between 60 and 7200 seconds |
+| `PA_STATUS_WAIT_TIMEOUT` | (unset → wait indefinitely) | `status.ts` | Explicit wait-command-only timeout; integer between 60 and 7200 seconds. It never stops the deployment |
 
 ---
 
@@ -414,7 +414,7 @@ Used by `schedule`/`remove-timer` to determine the pa command invoked by systemd
 **Server binary (dev)** → `PA_OPENCODE_BINARY` → `"opencode"` on PATH.
 **Max sessions** → `PA_MAX_SESSIONS` → `3` (invalid → default).
 **Provider/model** → CLI `--provider`/`--model` (or warning alias `--team-model`) → selected flat `deploy_modes[]` pair → selected adapter default and compatibility fallback (see [Provider/model defaults and overrides](#providermodel-defaults-and-overrides)).
-**Deploy timeout** → `--timeout` → deployment `effective_timeout_seconds` → `PA_MAX_RUNTIME` (env, bounded `[60, 7200]`) → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); final value is bounded by `[60, 7200]`.
+**Legacy planning budget** → `--timeout` → `PA_MAX_RUNTIME` (env, bounded `[60, 7200]`) → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); recorded as `effective_timeout_seconds`. This is not a deployment runtime limit: Pi/OpenCode foreground, background, resume and evaluator processes run until natural exit, explicit cancellation or a causal safety/lifecycle failure. Finite tool/command, reviewed-authority, startup and cleanup budgets remain independent; this does not extend a grant's lifetime.
 **Health config** → `<configDir>/health.yaml` (parse failure → defaults).
 **Repo registry** → `<configDir>/repos.yaml` → `~/.config/sinh-x/personal-assistant/repos.yaml` → `<platformHome>/repos.yaml` (first existing file).
 

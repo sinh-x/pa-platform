@@ -154,7 +154,7 @@ export function printEvaluateHelp(io: Required<CliIo>): void {
   io.stdout("  --dry-run                   Generate evaluator primer without invoking opencode");
   io.stdout("  --ticket <id>               Associate evaluator run with a ticket");
   io.stdout("  --repo <path>               Repository context for memory docs");
-  io.stdout("  --timeout <seconds>         Override evaluator deployment timeout");
+  io.stdout("  --timeout <seconds>         Legacy planning budget; does not stop the evaluator");
   io.stdout("  --provider <name>           Model provider");
   io.stdout("  --model <name>              Override model");
   io.stdout("  --team-model <name>         Deprecated alias for --model (removal tracked by PAP-147)");

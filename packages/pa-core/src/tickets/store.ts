@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { handoffKey, handoffFail, parseTicketHandoffChange, handoffCandidate, readHandoffIntent, handoffIntents, publishHandoffIntent, handoffAudit, handoffAuditComplete, type TicketHandoffChange, type TicketHandoffHooks } from "./handoff-intent.js";
 import { statusFail, statusKey, statusVersion, statusCandidate, statusIntents, readStatusIntent, publishStatusIntent, statusAudit, statusAuditComplete, TICKET_STATUSES, type TicketStatusHooks } from "./status-intent.js";
 import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
 import { AdvisoryFiles } from "../operations/files.js";
@@ -166,6 +167,22 @@ export class TicketStore {
       const finalAudits = this.readCreationAudits().entries.filter(row => row.ticket_id === planned.id && row.action === "created");
       if (!persisted || persisted.id !== planned.id || persisted.project !== project || finalAudits.length !== 1 || creationDigest(finalAudits[0]) !== creationDigest(expectedAudit)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
       return { ticket: persisted, reused };
+    });
+  }
+
+  /** Original creation inspection only; never reserve an ID or repair an audit.
+   * Used by the separate native intake/association owner after response loss. */
+  inspectCreationWithIntent(identity: TicketCreateIntentIdentity) {
+    return this.withTransaction(() => {
+      const record = readCreationIntent(this.dir, creationKey(identity));
+      if (!record) return undefined;
+      const current = this.get(record.ticket.id);
+      const audits = this.readCreationAudits().entries.filter(row => row.ticket_id === record.ticket.id && row.action === "created");
+      const expected: AuditEntry = { ticket_id: record.ticket.id, action: "created", actor: record.actor, timestamp: record.ticket.createdAt,
+        changes: { status: ["", record.ticket.status], assignee: ["", record.ticket.assignee] } };
+      if (audits.length > 1 || audits.length === 1 && (!current || current.project !== record.ticket.project || creationDigest(audits[0]) !== creationDigest(expected))
+        || audits.length === 0 && current && !isDeepStrictEqual(current, record.ticket)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return { record: structuredClone(record), ticket: current, complete: audits.length === 1 };
     });
   }
 
@@ -400,6 +417,83 @@ export class TicketStore {
       const current = this.get(id);
       if (!current || current.id !== id || current.project !== record.after.project || !statusAuditComplete(record, this.readCreationAudits().entries)) return statusFail("TICKET_STATUS_UNCERTAIN");
       return { ticket: current, appliedVersion: statusVersion(record.after), reused };
+    });
+  }
+
+  /** Finite handoff owner primitive. No public tool dispatch or retained-profile
+   * upgrade. A trusted native adapter must prove association, historical owners,
+   * review/ref evidence and current authority in the synchronous locked hooks.
+   * Original intent precedes ticket/audit effects; no rollback or renamed retry. */
+  applyHandoffWithIntent(id: string, expectedVersion: string, rawChange: TicketHandoffChange, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketHandoffHooks): { ticket: Ticket; appliedVersion: string; key: string; reused: boolean } {
+    const boundIdentity = Object.freeze({ ...identity }), key = handoffKey(boundIdentity), change = parseTicketHandoffChange(rawChange);
+    if (!isCanonicalTicketId(id) || !validPlanningDigest(expectedVersion) || typeof actor !== "string" || !actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)
+      || typeof hooks.assertCurrent !== "function" || typeof hooks.assertSnapshot !== "function") return handoffFail("TICKET_HANDOFF_INPUT");
+    const payloadSha256 = creationDigest({ id, expectedVersion, change, actor });
+    const sync = (value: unknown, code: "TICKET_HANDOFF_INPUT" | "TICKET_HANDOFF_UNCERTAIN") => {
+      if (value instanceof Promise) void value.catch(() => {});
+      if (value !== undefined) handoffFail(code);
+    };
+    const check = () => sync(hooks.assertCurrent(), "TICKET_HANDOFF_INPUT");
+    const observed = (stage: "intent" | "ticket" | "audit") => sync(hooks.afterPersist?.(stage), "TICKET_HANDOFF_UNCERTAIN");
+    return this.withTransaction(() => {
+      check();
+      let record = readHandoffIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.actor !== actor)) handoffFail("TICKET_HANDOFF_CONFLICT");
+      const audits = () => {
+        try { return this.readCreationAudits(); } catch { return handoffFail("TICKET_HANDOFF_UNCERTAIN"); }
+      };
+      const snapshot = (before: Ticket) => {
+        const current = this.get(id);
+        if (!current) return handoffFail("TICKET_HANDOFF_SCOPE");
+        sync(hooks.assertSnapshot(structuredClone(before), structuredClone(current)), "TICKET_HANDOFF_INPUT");
+      };
+      // All incomplete handoff operations on this ticket, even a visible
+      // candidate with a missing audit, block replacement identities.
+      for (const pending of handoffIntents(this.dir)) if (pending.before.id === id && pending.key !== key && !handoffAuditComplete(pending, audits().entries)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      for (const pending of planningIntents(this.dir)) if (pending.before.id === id && !planningAuditComplete(pending, audits().entries)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      for (const pending of statusIntents(this.dir)) if (pending.before.id === id && !statusAuditComplete(pending, audits().entries)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      if (!record) {
+        const before = this.get(id);
+        if (!before) return handoffFail("TICKET_HANDOFF_SCOPE");
+        if (creationDigest(before) !== expectedVersion) return handoffFail("TICKET_HANDOFF_STALE");
+        snapshot(before);
+        const plan = change.kind === "materialize" ? readHandoffIntent(this.dir, change.planKey, true) : undefined;
+        if (change.kind === "materialize" && (!plan || !handoffAuditComplete(plan, audits().entries))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        const after = handoffCandidate(before, change, actor, nowUtc(), plan);
+        record = { schemaVersion: "pa-ticket-handoff-intent/v1", key, ...boundIdentity, payloadSha256, actor, expectedVersion, change, before, after };
+        check(); snapshot(before);
+        if (!isDeepStrictEqual(this.get(id), before)) handoffFail("TICKET_HANDOFF_STALE");
+        publishHandoffIntent(this.dir, record); observed("intent");
+      }
+      snapshot(record.before);
+      if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+        || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      if (!handoffAuditComplete(record, audits().entries)) {
+        const current = this.get(id);
+        if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        if (!isDeepStrictEqual(current, record.after)) {
+          check(); snapshot(record.before);
+          if (!isDeepStrictEqual(this.get(id), record.before)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+          new AdvisoryFiles(this.dir).file(`${id}.json`, JSON.stringify(record.after, null, 2)); observed("ticket");
+        }
+        check(); snapshot(record.before);
+        if (!isDeepStrictEqual(this.get(id), record.after)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${audits().raw}${JSON.stringify(handoffAudit(record))}\n`); observed("audit");
+      }
+      check(); snapshot(record.before);
+      const ticket = this.get(id);
+      if (!ticket || ticket.project !== record.after.project || !handoffAuditComplete(record, audits().entries)) return handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      return { ticket, key, appliedVersion: creationDigest(record.after), reused };
+    });
+  }
+
+  /** Internal original-operation observation; no repair, authority or public
+   * request dispatch. Used under the same outer native admission as the writer. */
+  inspectHandoffWithIntent(identity: TicketCreateIntentIdentity) {
+    return this.withTransaction(() => {
+      const record = readHandoffIntent(this.dir, handoffKey(identity));
+      return record ? { record, complete: handoffAuditComplete(record, this.readCreationAudits().entries) } : undefined;
     });
   }
 

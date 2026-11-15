@@ -113,6 +113,24 @@ test("native-only owners are accounted for without inventing CLI commands or gra
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "workspace.run" ? { ...row, channels: ["cli"] } : row)).includes("invalid-channel"));
 });
 
+test("PAP-299 composition does not advertise inactive handoff/reader cores as native interactions", () => {
+  for (const form of ["pa_handoff:plan", "pa_handoff:review", "pa_handoff:complete-branch", "pa_handoff:open"]) {
+    assert.equal(interactionCatalogue.some(row => row.nativeForms.includes(form)), false);
+  }
+  for (const id of ["document.native.plan", "document.native.complete-branch", "document.native.open"]) {
+    assert.equal(interactionCatalogue.some(row => row.operationId === id), false);
+  }
+  // Actual new ticket/Git owners are still internal source seams. Compiling
+  // them must not silently select a tool/profile or retrofit legacy decisions.
+  for (const path of ["packages/pa-core/src/index.ts", "packages/pi-pa/src/pi-extension/document-tool.ts", "packages/pi-pa/src/document-session.ts"]) {
+    const source = readFileSync(resolve(root, path), "utf8");
+    assert.doesNotMatch(source, /(?:handoff-native-branch|handoff-git|handoff-contract|handoff-intake|handoff-planning|handoff-review|handoff-publication|reader-publication)\.js/);
+  }
+  // Primer resource composition is text projection, not another CLI dispatcher.
+  assert.equal(operation("document.native.branch-inspect").effectClass, "read");
+  assert.equal(operation("document.native.branch-inspect").nativeBinding, null);
+});
+
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   const commandDir = "packages/pa-core/src/cli/commands";

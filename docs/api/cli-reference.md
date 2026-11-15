@@ -105,7 +105,7 @@ Show deployment status and activity. With no deploy-id, lists deployments; with 
 - `--verbose` requires `--activity`.
 - `--report` and `--artifacts` are standalone and not combinable with `--wait`, `--activity`, or each other.
 
-**Wait timeout:** Resolved from the deployment's `effective_timeout_seconds` (falling back to `DEFAULT_DEPLOY_TIMEOUT_SECONDS` = 1800), overridable via `PA_STATUS_WAIT_TIMEOUT`. Poll interval: 10s. If the recorded PID is dead while status is still `running`, a `crashed` registry event is appended.
+**Wait timeout:** None by default. `status --wait` does not inherit deployment planning metadata. An explicit `PA_STATUS_WAIT_TIMEOUT` limits only how long the command waits; it does not stop the deployment. Poll interval: 10s. If the recorded PID is dead while status is still `running`, a `crashed` registry event is appended.
 
 **Examples:**
 ```bash
@@ -193,7 +193,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. A live PPA orchestrator may address its direct background `builder/implement` child by registered key or exact canonical root; that identifier does not select execution, which remains in the protected parent worktree. Protected fresh Pi `requirements/review-auto` instead selects the sole existing leased ticket candidate before planning; key/canonical path identifies canonical identity, not execution. Explicit linked-worktree paths remain invalid. Other standalone PPA inputs and non-Pi behavior are unchanged. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
 | `--ticket-worktree` | — | PPA CLI only: select the ticket's sole existing authenticated Treehouse checkout from canonical CWD; requires exact `--ticket` and a non-builder team. No allocation or new authority; supports dry-run/background/same-checkout resume. Excluded from OPA, direct pa-core and Agent API. |
-| `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
+| `--timeout <seconds>` | int (60–7200) | Legacy planning/finite-authority budget, not a deployment runtime limit |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
 | `--autonomy <low\|medium\|high>` | level | Override autonomy level (default: medium) |
 | `--force` | — | ppa/opa only: recover stale or malformed builder ownership evidence. Never overrides a live builder or bypasses repository identity, sensitive-input, ticket, or runtime guards. |
@@ -284,7 +284,7 @@ scope or branch drift forces failed containment without reverting any work.
 The parent remains the sole owner, its lease bytes do not change, and a live
 borrower excludes siblings plus unrelated PPA/OPA builders. Parent finalization
 waits no longer than the admitted child's resolved timeout plus 5,000ms cleanup
-and releases only after no live borrower remains. A borrower that outlives an
+and releases only after no live borrower remains. This is a finalization observation bound, not a child runtime kill timer: a live borrower retains ownership after it expires. A borrower that outlives an
 abnormal parent exit continues to block normal and forced acquisition until its
 process fingerprint becomes stale. Missing, malformed, insecure, stale,
 replayed, consumed, mismatched, or forbidden inherited context rejects before
@@ -309,7 +309,7 @@ gates; unrelated PAPC tickets are not substitutes.
 
 **Removed flags:** `--interactive` and `--direct` were removed; foreground TUI is the default. Passing either returns an error directing the user to `--background` or `--dry-run`.
 
-**Timeout resolution:** Defaults to `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); validated against `MIN_DEPLOY_TIMEOUT_SECONDS` (60) and `MAX_DEPLOY_TIMEOUT_SECONDS` (7200). `--timeout` must be an integer in that range.
+**Deployment lifetime:** No wall-clock termination is enforced for Pi/OpenCode foreground, background, resume or evaluator deployments. `--timeout`, `PA_MAX_RUNTIME` and `effective_timeout_seconds` remain legacy planning/finite-authority metadata: default1800, validated in60–7200 for compatibility. They do not terminate the runtime. Tool/command, reviewed-authority, startup/readiness and explicit-shutdown cleanup budgets remain separate and finite; removing a deployment timer does not widen those grants or budgets.
 
 **Examples:**
 ```bash
@@ -422,7 +422,7 @@ A positional `<deploy-id>` matching `d-[a-z0-9]{6}` is shorthand for `--evaluate
 | `--dry-run` | — | Generate evaluator primer without invoking opencode |
 | `--ticket <id>` | ticket id | Associate evaluator run with a ticket |
 | `--repo <key\|path>` | repository key or exact configured path | Registered repository context for execution, evidence, and memory docs |
-| `--timeout <seconds>` | int (60–7200) | Override evaluator deployment timeout |
+| `--timeout <seconds>` | int (60–7200) | Legacy planning budget; does not stop the evaluator |
 | `--provider <name>` | provider | Adapter provider override |
 | `--model <name>` | model | Override model |
 | `--team-model <name>` | model | Deprecated warning alias for `--model` (PAP-147) |

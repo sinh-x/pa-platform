@@ -50,6 +50,8 @@ export interface SpawnOpts {
   model?: string;
   autonomy?: string;
   env?: Record<string, string>;
+  /** Legacy caller metadata; Pi/OpenCode deployments do not enforce a runtime
+   * deadline. Tool, readiness, cancellation and cleanup bounds are independent. */
   timeoutMs?: number;
   logFile?: string;
   sessionName?: string;

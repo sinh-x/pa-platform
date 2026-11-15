@@ -35,7 +35,7 @@ import { authenticateNativeExecutionRestart, assertNativeRestartProcessDead, typ
 import type { ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { readAdvisoryStart } from "../operations/runtime.js";
-import { withPreparedRepositoryTicketOwner, observeReadonlyRepositoryTicketSlot, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
+import { withPreparedRepositoryTicketOwner, withRepositoryRefExclusionOwner, observeReadonlyRepositoryTicketSlot, type RepositoryRefExclusion, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
 
 export const REPOSITORY_REVIEW_RESERVATION_FILE = "pa-repository-review.reservation.json";
 
@@ -605,6 +605,56 @@ export function withVacantRepositorySetup<T>(canonicalRepoRoot: string, capacity
         const result = operation(Object.freeze(initial.map(item => item.root)));
         if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("repo setup callback must be synchronous");
         vacant(); return result;
+      };
+      return locked(1);
+    });
+  });
+}
+
+/** Exclusion-only branch-ref boundary: ticket-slot mutex -> primary mutation
+ * mutex -> sorted linked mutation mutexes. NO capacity/reservation/lease writes.
+ * Every retained custody marker blocks, even if a process appears dead. No
+ * generic permission is conveyed by this internal synchronous composition. */
+export function withRepositoryRefAdmission<T>(canonicalRepoRoot: string, exclusion: RepositoryRefExclusion, operation: (identitySha256: string) => T): T {
+  return withRepositoryRefExclusionOwner(exclusion, canonicalRepoRoot, () => {
+    const root = assertCanonicalRoot(canonicalRepoRoot), primary = repositoryPhysicalGitDir(root);
+    if (primary !== join(root, ".git") || repositoryPhysicalGitCommonDir(root) !== primary) throw new Error("ref owner requires the registered primary physical Git directory");
+    const locations = () => {
+      const result = [{ root, gitDir: primary }], directory = join(primary, "worktrees");
+      let names: string[];
+      try {
+        if (!lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) throw new Error("unsafe ref worktree inventory");
+        names = readdirSync(directory).sort();
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return result; throw error; }
+      if (names.length > 256) throw new Error("ref worktree inventory exceeds limit");
+      for (const name of names) {
+        const gitDir = join(directory, name);
+        if (!lstatSync(gitDir).isDirectory() || realpathSync(gitDir) !== gitDir) throw new Error("unsafe ref worktree metadata");
+        const backlink = new TextDecoder("utf-8", { fatal: true }).decode(readReviewEvidenceFile(join(gitDir, "gitdir"), 4096, "ref worktree identity")).trimEnd();
+        if (!isAbsolute(backlink) || resolve(backlink) !== backlink || !backlink.endsWith("/.git")) throw new Error("unsafe ref worktree backlink");
+        const worktree = resolve(backlink, "..");
+        if (repositoryPhysicalGitDir(worktree) !== gitDir || repositoryPhysicalGitCommonDir(worktree) !== primary) throw new Error("ref worktree identity conflicts");
+        result.push({ root: worktree, gitDir });
+      }
+      return result;
+    };
+    return withMutationMutex(join(primary, REPOSITORY_MUTATION_LEASE_FILE), () => {
+      const initial = locations(), metadata = initial.map(item => repositoryMetadataIdentity(root, item.root, item.gitDir, primary));
+      const unchanged = () => {
+        exclusion.assertNoActiveWriters();
+        if (JSON.stringify(locations()) !== JSON.stringify(initial) || initial.some((item, index) => repositoryMetadataIdentity(root, item.root, item.gitDir, primary) !== metadata[index])) throw new Error("ref worktree inventory changed");
+        for (const item of initial) for (const name of [REPOSITORY_CHILD_SETTLEMENT_FILE, REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+          try { lstatSync(join(item.gitDir, name)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+          throw new Error("ref owner overlaps retained repository custody");
+        }
+      };
+      const locked = (index: number): T => {
+        if (index < initial.length) return withMutationMutex(join(initial[index]!.gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR), () => locked(index + 1));
+        unchanged();
+        const result = operation(metadata[0]!);
+        if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("ref owner callback must be synchronous");
+        unchanged(); return result;
       };
       return locked(1);
     });

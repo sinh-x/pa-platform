@@ -27,7 +27,7 @@ export function confirmationRepresentation(subject: DocumentPackage, event: Docu
 /** Complete-before-publication, no-replace link; recover only our exact pinned
  * pending inode/prefix. A partial final file, alias or conflicting byte rejects.
  * Ticket mutex serializes managed writers; no hostile-same-UID claim. */
-function immutableFile(root: string, folder: string, name: string, bytes: Buffer): void {
+export function immutableFile(root: string, folder: string, name: string, bytes: Buffer): void {
   new AdvisoryFiles(root).file(folder, undefined, true);
   const directory = openArtifactDirectory(join(root, folder), "ARTIFACT_STALE");
   const path = (file: string) => `/proc/self/fd/${directory}/${file}`;

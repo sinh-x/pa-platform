@@ -937,34 +937,23 @@ test("runner persistence failure cleans up and retains the persistence category"
   });
 });
 
-test("runner timeout owns escalation and retains the timeout category", async () => {
+test("runner ignores legacy config timeout and waits for natural completion without terminating the child", async () => {
   await withRunnerEnv(async (_root, deployDir, baseConfig) => {
-    const config = { ...baseConfig, timeoutMs: 1 };
-    const child = new RunnerChild();
-    let timeoutCallback: (() => void) | undefined;
-    let now = 0;
-    let gone = false;
+    const config = { ...baseConfig, timeoutMs: 1 }, child = new RunnerChild();
+    let timerCount = 0, settled = false;
     const signals: NodeJS.Signals[] = [];
     const running = runPiBackgroundRunner(config, { supervision: {
       spawnProcess: (() => child as never) as never,
-      now: () => now,
-      sleep: async (milliseconds) => { now += milliseconds; },
-      setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; },
-      clearTimeout: () => {},
-      processGroupGone: () => gone,
-      sendSignal: (_pid, signal) => {
-        signals.push(signal);
-        if (signal === "SIGKILL") { gone = true; child.emit("close", 137); }
-      },
+      setTimeout: () => { timerCount++; return {} as NodeJS.Timeout; },
+      sendSignal: (_pid, signal) => { signals.push(signal); },
     } });
-    await immediate();
-    timeoutCallback?.();
-    await running;
-    const terminal = terminalEvents(config.deploymentId);
-    assert.equal(terminal.length, 1);
-    assert.match(terminal[0]?.summary ?? "", /runner-timeout:/);
-    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
-    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.terminalStatus, "failed");
+    void running.then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(timerCount, 0); assert.equal(settled, false);
+    assert.deepEqual(signals, []); assert.equal(terminalEvents(config.deploymentId).length, 0);
+    child.emit("close", 0); await running;
+    assert.equal(terminalEvents(config.deploymentId).length, 1);
+    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.terminalStatus, "success");
   });
 });
 

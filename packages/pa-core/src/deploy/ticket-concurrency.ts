@@ -468,6 +468,37 @@ export function withPreparedRepositoryTicketOwner<T>(transaction: PreparedTicket
   if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("prepared capacity owner callback must be synchronous");
   return result;
 }
+/** Exclusion only: no reservation, inventory durability repair or permit API.
+ * This opaque live object composes the SAME mutex used by materialization and
+ * capacity admission. Retained idle preparation is not capacity consumption here;
+ * live/stale/uncertain writers block without reclamation or expiry inference. */
+export interface RepositoryRefExclusion { assertNoActiveWriters(): void }
+const activeRefExclusions = new WeakMap<RepositoryRefExclusion, string>();
+export function withRepositoryRefExclusionOwner<T>(owner: RepositoryRefExclusion, root: string, run: () => T): T {
+  if (activeRefExclusions.get(owner) !== root) throw new Error("repository ref exclusion is absent, expired or root-conflicting");
+  owner.assertNoActiveWriters();
+  const result = run();
+  if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("repository ref callback must be synchronous");
+  owner.assertNoActiveWriters();
+  return result;
+}
+export function withRepositoryRefTicketExclusion<T>(key: string, canonicalRepoRoot: string, run: (owner: RepositoryRefExclusion) => T): T {
+  const root = physicalRoot(canonicalRepoRoot);
+  required(key, "repository key");
+  return withTicketMutex(root, () => {
+    const owner: RepositoryRefExclusion = Object.freeze({ assertNoActiveWriters() {
+      if (activeRefExclusions.get(owner) !== root) throw new Error("repository ref exclusion expired");
+      for (const path of ticketEvidencePaths(ticketSlotDirectory(root))) {
+        const row = inspectSlot(path, readProcessFingerprint);
+        if (row.state !== "prepared" || row.reservation.repoRoot !== root || row.reservation.repoKey !== key
+          || path !== preparedRepositoryTicketReservationPath(root, row.reservation.ticket)) throw new Error("repository ref overlaps live or uncertain ticket ownership");
+      }
+    } });
+    activeRefExclusions.set(owner, root);
+    try { return withRepositoryRefExclusionOwner(owner, root, () => run(owner)); }
+    finally { activeRefExclusions.delete(owner); }
+  });
+}
 export type PreparedCapacityBoundary = "file-synced" | "linked" | "published" | "directory-synced";
 export function withPreparedTicketCapacity<T>(options: {
   canonicalRepoKey: string; canonicalRepoRoot: string;
