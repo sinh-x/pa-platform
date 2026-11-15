@@ -20,7 +20,9 @@ const extension = { "text/markdown": "md", "text/plain": "txt", "image/png": "pn
 function implementationSha256(): string {
   const suffix = import.meta.url.endsWith(".ts") ? "ts" : "js";
   const paths = [import.meta.url, new URL(`../artifacts/render.${suffix}`, import.meta.url).href,
-    new URL(`../artifacts/policy.${suffix}`, import.meta.url).href, import.meta.resolve("marked")];
+    new URL(`../artifacts/policy.${suffix}`, import.meta.url).href,
+    new URL(`./reader-worker.${suffix}`, import.meta.url).href, new URL(`./reader-worker-owner.${suffix}`, import.meta.url).href,
+    import.meta.resolve("marked")];
   const hash = createHash("sha256");
   for (const path of paths) { const bytes = readFileSync(fileURLToPath(path)); hash.update(String(bytes.length)); hash.update(":"); hash.update(bytes); }
   return hash.digest("hex");
@@ -32,7 +34,8 @@ export interface DocumentReaderBundle {
     outputs: { path: string; sha256: string; bytes: number }[]; generationState: string; observation: string };
 }
 /** Full in-memory derivation. Any failure returns no partial bundle. Native
- * publication must still supply private no-replace staging and a worker deadline. */
+ * production publication uses reader-worker-owner for an externally enforced
+ * deadline; this pure synchronous seam cannot interrupt itself. */
 export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: string) => Uint8Array): DocumentReaderBundle {
   const started = performance.now(), subject = parseDocumentPackage(input), subjectSha256 = documentPackageSha(subject);
   const renderer = { id: DOCUMENT_READER_VERSION, implementationSha256: implementationSha256() };

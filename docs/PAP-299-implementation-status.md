@@ -3,7 +3,10 @@
 > Historical d-61f2e6 checkpoint at 8820155. See
 > [d-f0ea21 native-owner continuation](PAP-299-native-owner-progress.md) for later
 > committed real TicketStore/Git/shared-lock integration, current selection and
-> current failures/gates. Historical check outcomes below are not overwritten.
+> current failures/gates. See also the later
+> [reader-worker continuation](PAP-299-reader-worker-progress.md) for the real
+> external derivation deadline and read-only complete-delivery verification.
+> Historical check outcomes below are not overwritten.
 
 **Partial implementation — not all phases delivered or accepted.**
 Branch: `feature/PAP-299-requirements-handoff-reader`.

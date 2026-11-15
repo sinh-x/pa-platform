@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderPackageMarkdown, renderMarkdown } from "../artifacts/render.js";
 import { DOCUMENT_READER_VERSION, renderDocumentReader } from "../documents/reader.js";
-import { presentFullDocumentReader } from "../documents/reader-publication.js";
+import { inspectFullDocumentReader, presentFullDocumentReader } from "../documents/reader-publication.js";
+import { renderDocumentReaderInWorker } from "../documents/reader-worker-owner.js";
 import { digest } from "../workflows/contracts.js";
 import { DocumentPackageError } from "../documents/package-contract.js";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
@@ -110,49 +111,52 @@ test("full reader hostile syntax remains inert at the direct renderer seam; pack
   } finally { f.close(); }
 });
 
-test("full reader publication uses native-derived paths, exact readback, repeat reuse and preserves old deliveries", () => {
+test("full reader publication uses native-derived paths, exact readback, repeat reuse and preserves old deliveries", async () => {
   const f = fixture();
   try {
-    const first = f.present(), entry = fileURLToPath(first.entry as string), original = readFileSync(entry);
+    const first = await f.present(), entry = fileURLToPath(first.entry as string), original = readFileSync(entry);
     assert.equal(first.opening, "not-requested"); assert.equal(first.approval, "not-issued");
-    assert.equal(f.present().entry, first.entry);
-    f.subject.revision++; const second = f.present(); assert.notEqual(first.entry, second.entry);
+    assert.equal((await f.present()).entry, first.entry);
+    assert.equal((await inspectFullDocumentReader(f.subject, f.root, f.snapshot, first.deliverySha256 as string)).entry, first.entry);
+    f.subject.revision++; const second = await f.present(); assert.notEqual(first.entry, second.entry);
     assert.deepEqual(readFileSync(entry), original);
     writeFileSync(fileURLToPath(second.entry as string), "tampered output");
-    assert.throws(() => f.present(), (e: unknown) => e instanceof DocumentPackageError && e.code === "DOCUMENT_CONFLICT");
+    await assert.rejects(() => f.present(), (e: unknown) => e instanceof DocumentPackageError && e.code === "DOCUMENT_CONFLICT");
+    await assert.rejects(() => inspectFullDocumentReader(f.subject, f.root, f.snapshot, second.deliverySha256 as string));
   } finally { f.close(); }
 });
 
-test("full reader missing completed output fails without silently rebuilding or rewriting old snapshots", () => {
+test("full reader missing completed output fails without silently rebuilding or rewriting old snapshots", async () => {
   const f = fixture();
   try {
-    const first = f.present(), entry = fileURLToPath(first.entry as string), manifest = readFileSync(fileURLToPath(first.manifest as string));
+    const first = await f.present(), entry = fileURLToPath(first.entry as string), manifest = readFileSync(fileURLToPath(first.manifest as string));
     unlinkSync(join(entry, "..", "members", "member-1.html"));
-    assert.throws(() => f.present());
+    await assert.rejects(() => f.present());
+    await assert.rejects(() => inspectFullDocumentReader(f.subject, f.root, f.snapshot, first.deliverySha256 as string));
     assert.deepEqual(readFileSync(fileURLToPath(first.manifest as string)), manifest);
   } finally { f.close(); }
 });
 
-test("full reader resumes an exact private pending prefix before a completed manifest exists", () => {
+test("full reader resumes an exact private pending prefix before a completed manifest exists", async () => {
   const f = fixture();
   try {
-    const bundle = f.render();
+    const bundle = await renderDocumentReaderInWorker(f.subject, f.snapshot);
     const folder = join(f.root, "agent-teams/requirements/artifacts/presentations", bundle.manifest.subjectSha256, bundle.deliverySha256, "raw");
     mkdirSync(folder, { recursive: true, mode: 0o700 });
     writeFileSync(join(folder, ".member-1.md.pending"), f.snapshot(f.subject.members[0]!.sha256).subarray(0, 10), { mode: 0o600 });
-    assert.equal(f.present().deliverySha256, bundle.deliverySha256);
+    assert.equal((await f.present()).deliverySha256, bundle.deliverySha256);
     assert.deepEqual(readFileSync(join(folder, "member-1.md")), f.snapshot(f.subject.members[0]!.sha256));
     assert.equal(existsSync(join(folder, ".member-1.md.pending")), false);
   } finally { f.close(); }
 });
 
-test("full reader rejects derived output overflow without publishing a partial delivery", () => {
+test("full reader rejects derived output overflow without publishing a partial delivery", async () => {
   const f = fixture();
   try {
     const bytes = Buffer.from("```text\n" + "'".repeat(1_048_560) + "\n```\n"), hash = digest(bytes);
     for (let i = 0; i < 7; i++) f.subject.members.push({ id: `large-${i}`, role: "specification", mediaType: "text/markdown", source: `agent-teams/requirements/artifacts/reviews/EX-1/r001/large-${i}.md`, description: `Large member ${i}`, bytes: bytes.length, sha256: hash });
     f.sources.set(hash, bytes);
-    assert.throws(() => f.present(), (e: unknown) => e instanceof DocumentPackageError && e.code === "DOCUMENT_UNAVAILABLE");
+    await assert.rejects(() => f.present(), (e: unknown) => e instanceof DocumentPackageError && e.code === "DOCUMENT_UNAVAILABLE");
     assert.equal(existsSync(join(f.root, "agent-teams/requirements/artifacts/presentations")), false);
   } finally { f.close(); }
 });
