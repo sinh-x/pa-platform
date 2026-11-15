@@ -371,3 +371,70 @@ The first clean6436f19 full attempt was stopped explicitly for this source repai
 exit143, not a pass (`workspace-6436f19-interrupted.*`). Scoped test group1881393
 had no members afterward. A new clean repaired-candidate full run is required;
 no aggregate/independent/installed/human success is inferred.
+
+## Final local validation checkpoint — repaired software candidate38d756a
+
+Clean candidate: `38d756a93913edd3010f19dc5216e0527f1df220`, following feature
+commit6436f19 and the cancellation repair. Before/after full-run HEADs matched;
+NUL porcelain-v2 inventories were empty, both SHA256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The later delta is this report only, not changed runtime/config/test bytes.
+
+| Actual check | Result and scope |
+| --- | --- |
+| `timeout --kill-after=20s 2400s nix develop --offline --command corepack pnpm test` | **INCOMPLETE, exit124**. Root42pass; core2293pass/14skip; OpenCode109pass/1skip; Pi scripts11pass. Main Pi last completed708, no main-Pi summary; runtime-host stage not reached. Not a full workspace pass. |
+| Final `corepack pnpm typecheck` | exit0 on clean38d756a; includes actual core/OpenCode/Pi builds and runtime-host typecheck. |
+| `corepack pnpm build` after cancellation repair | exit0 on the same software bytes before commit; tracked outputs unchanged. |
+| Final `corepack pnpm completions` | exit0 on clean38d756a; no tracked output difference. |
+| Core owner/reader/admission serial Nix lane | 257pass/0fail/0skip; unchanged owner behavior and exact catalogue closure, not human qualification. |
+| Pi native/retained serial Nix lane | 73pass/0fail/0skip before the cancellation-only repair; changed native behavior subsequently covered by the complete13-case native/fallback lane. |
+| Final native/fallback serial Nix lane | 13pass/0fail/0skip; all10native and3desktop-stub cases. These cases also ran successfully in the exact38d756a aggregate before its later timeout. |
+| Final Pi TypeScript/catalogue checks | exit0; catalogue9/9. No source inventory guard was weakened or skipped. |
+| Separate final runtime-host test | 1pass/0fail/0skip, exit0; not substituted for an aggregate result. |
+| Actual staged secrets scans and whitespace | exit0 before each source commit; renewed for this documentation checkpoint. |
+
+The long aggregate was in `pi-deploy.test.ts`: last completed case was “ineligible
+Pi orchestrator branch transitions spawn no child”; the next declared case is the
+50-contender transition test. It emitted further disposable deployment activity
+but no terminal test/package result before the external2400s deadline. Its exact
+internal cause remains unproven; no assertion, test inventory, contention count,
+owner check or runtime bound was changed to manufacture a pass.
+
+Validation supervisor2047170/timeout group2047188 belong only to this run. The
+normal timeout returned124 but left an observed native test process in that group.
+Only that recorded validation group was then SIGKILLed; no group members remained
+at repeated final observations. Normal ignored extension-bundle selection was
+restored through the existing bundle command. No hostile-same-UID/global/escaped-
+descendant cleanup or browser guarantee is inferred, and no native custody,
+capacity or lease evidence was removed.
+
+Selected final raw evidence under `/tmp/pap312-continuation/`:
+
+- `workspace-clean.log`: `24c1043a960116fd6b0ab0b73b35cf7beff9df8dbba09cd442670f5e003a9214`.
+- `workspace-clean.exit` (124): `ca2ebdf97d7469496b1f4b78958f9dc8447efdcb623953fee7b6996b762f6fff`.
+- `native-cancellation-final.log`: `aab1552dfb199ace9be4b169c7bdd4c60a826d1a1b4807e741dc7943b67ce4ff`.
+- `pi-native-retained-nix-serial.log`: `9f5b8d0314ef07960d103f9c9a11e3a92dfd876c44a9b7f42c7dfe6f268da258`.
+- `core-owner-nix-serial.log`: `e0b03e7e2e7da6dc52d3a58f177e067edadd09b8f1e9943c7f27675eec7bcd97`.
+- `workspace-typecheck-final.log`: `ff7e75998ccbde54e5b5128e9fa3086768af9e645927738937deeee7d8ab8632`.
+- `runtime-host-final.log`: `e4b2175b9817e9455633a4dc7ccf0219fb79ca90a148acfcae52267a28ec7544`.
+
+Counts overlap; do not add focused lanes to aggregate stage counts. The CLI journal
+binary is unavailable and no reviewer/simplifier agents are registered in this
+harness; this chronology is retained here, not presented as independent review.
+
+### First unproven work remains with its owners
+
+1. Complete the main-Pi/full regression with a proven outcome and resolve the
+   observed contention-run limitation without dropping cases or weakening owners.
+2. Obtain PAP-298 production host/reader-custody and independent actual-contract/
+   security disposition, and PAPC's concrete compatible budget/full-body/current+
+   retained pair outputs. SDK documentation access alone does not supply them.
+3. Use the supported protected review owner with its exact matrix, readiness and
+   one-use admission; hosted CI requires its separately authorized remote route.
+4. Qualify the trusted packaged opener/resources separately; the explicitly agreed
+   system-browser fallback does not complete that requirement. Then perform actual
+   authorized installed/default-entry/foreground/browser/all18human UAT/adoption.
+
+Source is committed and the new route remains unselected. No push, PR, merge,
+installation, enablement, live product effect, historical repair, ticket-Done or
+resource return is claimed. PAP-312 is still **partial**, not finished acceptance.
