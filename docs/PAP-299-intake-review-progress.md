@@ -105,6 +105,9 @@ Actual checks at this source phase:
   **151 pass / 1 fail**, zero skips; the failure is a worker error surfaced as
   DOCUMENT_UNAVAILABLE during concurrent broad validation/build, not a proven
   root cause. No worker limit/check was relaxed.
+- Committed candidate `5289851`: **152/152 pass** across all thirteen focused
+  suites, zero failures/skips. The earlier worker failure remains recorded, not
+  diagnosed from the subsequent pass.
 - Isolated final review/publication suite: **22/22 pass**, zero skips. This includes
   new cross-subject pending barriers, concurrent review, revocation after partial
   publication and original queue response-loss recovery. Earlier initial run
@@ -118,14 +121,54 @@ Actual checks at this source phase:
   historical 504a8dc candidate. Full common13: **1373 pass / 51 fail**, zero skips.
   Findings include missing requirements/auto-reasoning primer budget and retained
   config/contract drift. No external config/checker was changed. Source-pair first
-  rejected this uncommitted runtime as dirty; renew against the committed source.
-- Full workspace regression is running separately; no aggregate pass asserted.
-  Historical timeouts and RUNTIME_SHELL_LIFECYCLE remain preserved until a genuine
-  final current check supplies another outcome.
+  rejected this uncommitted runtime as dirty; the clean committed rerun at
+  `5289851` then failed **RUNTIME_SHELL_LIFECYCLE**, observing the full selected
+  completion fragment. No checker or selected body was weakened/substituted.
+- Other current PAPC checks: package-source, guided declarations, advisory and
+  handoff exit 0; document, requirements and platform validation exit 1 on the
+  missing requirements/auto-reasoning primer budget. Retained historical fixture
+  `/tmp/papc074-retained-runtime-62` remains absent; its lane was not redirected.
+- Full `corepack pnpm test` **finished exit 1**, not a timeout/pass. Root scripts:
+  42/42 pass; core: 2237 pass / 14 skip; OpenCode: 109 pass / 1 skip; Pi scripts:
+  11/11 pass; Pi main: 1527 pass / 3 fail / 5 skip. Runtime-host was not reached
+  by that failing aggregate, then passed separately 1/1. Pi failures were all
+  missing selected completion in disposable launcher fixtures, introduced by
+  the earlier PAP-299 completion-consumption change. The first full run overlaps
+  final core barrier development; exact final focused results above remain separate.
+- Repaired ONLY those two self-contained fixture closures, committing their own
+  inert selected completion resource alongside requirements YAML. Production
+  missing-resource denial remains unchanged; no host-config fallback or SDK/UI
+  implementation change. Both affected Pi files plus the core full-body/missing/
+  retained completion suite: **17/17 pass**, zero skips. This is NOT a full
+  workspace rerun/pass. Original aggregate failures and historical timeouts remain.
+- Separate retained Pi document/parity/capability run: **44/44 pass**. Final
+  workspace typecheck exit 0. Normal extension bundle selection restored after
+  the failed aggregate; no matching aggregate supervisor remains.
+
+## PAP-298 merge versus enablement (fresh follow-up)
+
+Sinh asked whether PAP-298 was already merged into the current version. Yes:
+`4634153913cc026c70b201c072bcea1cc1f8e41a` (PR175, explicitly partial) is an
+ancestor of current develop `36d2766`. Fresh remote develop readback matched
+`36d2766`; PAP-299 already includes it, so no additional rebase occurred.
+Installed PPA is 0.1.167 at
+`/nix/store/sh5fd53md5ardz8jc9fnzcf4cl9ci64a-pa-platform-0.1.167/bin/ppa`.
+PPA Pi status lists the packaged extension and Configured:no for this CWD; this
+registration/status observation is not qualified loaded-host custody. Source
+`nix/selected-pi-host.nix` still explicitly has `enabled = false`; qualification
+artifacts are non-default, not production selectors. Latest PAP-298 owner notes
+still identify O-1/SR-1 as open, ticket requirement-review/sinh. Fresh denial and
+exact current selection were appended to original owner request at
+**PAP-298#c-20261115063600424**. No reload, install or live proof retrofit attempted.
+Merged partial code does not resolve the observed denial or enable PAP-299.
 
 Logs: `/tmp/pap299-d60-{owner-focused,owner-final,review-isolated-final}.log`,
 `/tmp/pap299-d60-workspace-{typecheck-final,build-final,test}.log`,
-`/tmp/pap299-d60-papc-{common13,source-pair}.log`.
+`/tmp/pap299-d60-papc-{common13,source-pair}.log`,
+`/tmp/pap299-d60-committed-{focused,source-pair}.log`,
+`/tmp/pap299-d60-launcher-fixture-rerun.log`,
+`/tmp/pap299-d60-typecheck-fixtures.log` and
+`/tmp/pap299-d60-workspace-test.exit` (1).
 
 Independent review, hosted CI, installed/default entry, genuine foreground prompts/
 effects, browser/accessibility and TS1–18 human UAT/adoption remain separate. No live
