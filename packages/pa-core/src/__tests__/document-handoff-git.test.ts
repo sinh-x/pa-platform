@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, sy
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { withRepositoryRefAdmission, REPOSITORY_MUTATION_LEASE_FILE } from "../deploy/repository-admission.js";
+import { withActiveRepositoryRefAdmission, withRepositoryRefAdmission, REPOSITORY_MUTATION_LEASE_FILE, type RepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { withPreparedTicketCapacity, withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
 import { RegistryHandoffGitOwner, type NativeHandoffGit } from "../documents/handoff-git.js";
 import { completeNativeHandoffBranch } from "../documents/handoff-native-branch.js";
@@ -108,6 +108,22 @@ test("opaque exclusion and Git ports expire; every retained primary/linked custo
       assert.throws(() => f.run(port => port.create()), /retained repository custody/);
       assert.equal(readFileSync(path, "utf8"), "malformed retained custody"); rmSync(path);
     }
+  } finally { f.close(); }
+});
+
+test("opaque live repository admission composes Git inside TicketStore without reverse acquisition and expires", () => {
+  const f = fixture(); let saved: RepositoryRefAdmission | undefined;
+  try {
+    withRepositoryRefTicketExclusion("example", f.repo, exclusion => withRepositoryRefAdmission(f.repo, exclusion, (_id, owner) => {
+      saved = owner;
+      f.store.withWorkflowTransaction(() => f.owner.withRepository(f.intent, operationId, port => {
+        assert.equal(port.observe().state, "absent");
+      }, undefined, owner));
+      assert.throws(() => withActiveRepositoryRefAdmission({ ...owner }, f.repo, () => undefined), /absent/);
+      assert.throws(() => withActiveRepositoryRefAdmission(owner, join(f.root, "foreign"), () => undefined), /root-conflicting/);
+    }));
+    assert.throws(() => withActiveRepositoryRefAdmission(saved!, f.repo, () => undefined), /expired/);
+    assert.throws(() => f.owner.withRepository(f.intent, operationId, port => port.observe(), undefined, saved), /expired/);
   } finally { f.close(); }
 });
 

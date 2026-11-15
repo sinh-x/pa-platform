@@ -82,3 +82,47 @@ independent/external/installed/human qualification remain open. Full retained
 validation and human-readable CLI standard apply to any touched message paths.
 No new public messages or machine/exit/stream contracts are changed by this
 baseline documentation; human readability/installed checks are not claimed.
+
+## IP-2 independent source slice
+
+Advanced planning now discovers exactly one saved native creation and complete
+original branch journal, then verifies live marker/ref/ancestry through the
+existing Git owner. Both original base and prior linked HEAD must be ancestors;
+planning preserves all materialized link bytes/attribution. Full observed develop
+is separate, never a reset base. Original request/CAS/pin/time survive intent and
+audit reply loss; unchanged reuse has no ticket-write boundary. Missing source,
+incomplete journal, foreign marker, rewind or changed pinned tip reject without
+backfill/reset. Legacy materialized name-only evidence remains unproven.
+
+A WeakMap-backed opaque repository admission handle reuses the same live locks
+inside TicketStore without reverse acquisition. Forged, expired and wrong-root
+handles reject; the original owner still checks inventory/custody before/after.
+No new capacity, lease, ref or checkout effects are added to planning. New finite
+lifecycle composition authenticates the same fresh intake/session and applies
+only analysis/review/changes-requested via existing complete-snapshot intents.
+Advanced assignment/primary/foreign owner/session drift/async admission reject.
+Catalogue negatives now also prohibit accidental production lifecycle imports.
+
+Changed paths: documents/handoff-{planning,git,lifecycle}.ts,
+deploy/repository-admission.ts, document-handoff-{planning,git}.test.ts and
+interactions-catalogue.test.ts under packages/pa-core/src. New source remains
+internal/unregistered; production IP-2 integration is not complete. Internal
+plan result distinguishes an existing ref from a created ref; retained public
+JSON/CLI/exit/stream contracts and messages are untouched. Existing typed errors
+are reused; no new public wording or human/installed readability pass is claimed.
+
+Actual checks in `/tmp/pap312-d1039c8/`:
+- Initial focused36:26pass/10fail (invalid synthetic package route and fixture
+  setup attempted protected lifecycle writes). Fixed inert setup, no guard change.
+- Rerun28pass/8fail exposed actual non-reentrant repository-lock deadlock plus
+  fixture column/replacement mistakes. Replaced reacquisition with the opaque
+  live-admission composition; corrected inert fixtures without changing owners.
+- Next35pass/1fail: no-op advanced plan correctly performs no ticket write, so
+  the test now explicitly verifies that no ticket hook is invoked.
+- Initial combined owner run122pass/22fail: reader workers lacked prerequisite
+  built JS. After core build, exact eight-suite run **144pass/0fail/0skip**, exit0,
+  `ip2-owner-built.log`. Core typecheck/build and whitespace exit0. Source fixtures
+  use simulated human/authority only, not production consent or independent review.
+- Staged secrets scan is required before this slice's commit. Full source,
+  repository admission/retained regressions and external qualification follow;
+  no full-workspace result is inferred from144 focused tests.
