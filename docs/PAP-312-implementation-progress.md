@@ -164,3 +164,64 @@ no genuine consent, installed/foreground/browser/network/UAT or protected review
 is claimed. Staged scan/whitespace run before commit; broader exact-source and
 retained validation follows. Trusted packaged opener and actual worker
 uncertain-cleanup/resource qualification remain open owner work.
+
+## IP-6 local validation checkpoint (not phase completion)
+
+Software candidate: `a00822a` (clean before execution); subsequent edits are this
+report only. No runtime/config selection or source bytes changed during checks.
+Logs/exit files are in `/tmp/pap312-d1039c8/`; counts overlap and must not be summed.
+
+| Actual command/scope | Result |
+| --- | --- |
+| corepack pnpm typecheck | exit0; workspace-typecheck.log |
+| corepack pnpm build | exit0; workspace-build.log |
+| corepack pnpm completions | exit0; completions.log; tracked output unchanged |
+| node --import=tsx --test core document-handoff-{contract,intake,planning,branch,git,review}, ticket-handoff-intent, document-reader{,-worker,-opening}, repository-admission, treehouse-ticket-concurrency, interactions-catalogue suites | 247pass/0fail/0skip, exit0; owner-reader-admission.log |
+| node --import=tsx --test Pi document-*, mode-capability-session, requirements-tool-parity, interactions-ticket-native, public-web-launch and core primer-handoff suites | 61pass/0fail/0skip, exit0; pi-retained.log |
+| node --import=tsx --test core document-{package,service,presentation,confirmation,confirmation-process,process,publication-recovery,retirement-process}, primer and mode-capabilities suites | 143pass/0fail/0skip, exit0; core-retained.log |
+| corepack pnpm --filter @pa-platform/opencode-pa test | 109pass/0fail/1skip, exit0; opencode.log; external skip not qualified |
+| corepack pnpm --filter @pa-platform/runtime-host test | 1pass/0fail/0skip, exit0; runtime-host.log |
+| timeout --kill-after=20s 600s corepack pnpm test | **INCOMPLETE, exit124**; root42/42, core last emitted case1865 with no core summary; later aggregate packages not reached |
+| staged corepack pnpm secrets:scan; git diff --cached --check | exit0 before each implementation commit; renewed for this report |
+
+The full workspace timeout is NOT a pass; absence of an observed failing TAP case
+before termination proves no aggregate result. Existing fixture skips remain
+skips. Dedicated supervisor PID/process group2512892 settled; no member remained
+in that group at final observation. No hostile-same-UID/global cleanup or browser
+child guarantee is inferred. Earlier parent failures/timeouts remain unchanged.
+
+Selected raw SHA256 evidence:
+- workspace-test.log: `92329b55dcc17e8913ad7096a5a78c02ae71544311f23ced7461dfab447846cf`.
+- workspace-test.exit (124): `ca2ebdf97d7469496b1f4b78958f9dc8447efdcb623953fee7b6996b762f6fff`.
+- owner-reader-admission.log: `927c22833e98d03f5ae69741446af29a804b617590ca8e87bb91e37026821a24`.
+- pi-retained.log: `9d98ab21289b1b0a1002593b700b79443ef996c5a3f9c904532177d2d0a32e22`.
+- core-retained.log: `fa16d971ac534a2dabfd11776aa977bb19c35d35bf4a39dd7cb42c6d308ff1f9`.
+
+## Remaining phase gates / first unproven work
+
+| Phase | Current disposition |
+| --- | --- |
+| IP-0 | Selected local baseline recorded; no inherited protected authority |
+| IP-1 | Mapping done; final actual selector/UI/opener/custody contracts and independent security disposition **open** |
+| IP-2 | Independent advanced planner/lifecycle source delivered; production selected association/stage/ref composition **open** |
+| IP-3 | Actual native process/session/immutable selection, genuine foreground one-review/revocation/recovery **blocked** on permitted Pi docs and host contracts |
+| IP-4 | Successor source delivered; production full-reader/trusted packaged browser/display/network/child lifecycle and real worker budget/uncertainty qualification **open** |
+| IP-5 | PAPC budget/current-contract/full completion/source-pair/current+retained evidence **owner-blocked**, no foreign edits/repin |
+| IP-6 | Focused/retained checks above pass; aggregate incomplete; V-7–9 PAPC lanes, protected independent exact matrix/readiness/one-use admission and hosted CI **not run** |
+| IP-7 | Separate exact installed/default-entry/foreground/browser/all18actual human UAT and explicit adoption **not run/not authorized here** |
+
+Fresh owner requests: PAP-298 c-20261115134123947 and PAPC-087
+c-20261115134124007. No prepared preview or peer implementation was launched.
+Protected review requires actual approved raw matrix/digest, durable operator
+readiness/approval, exact clean candidate/base and unused authorization through
+the supported requirements/review-auto route; none is fabricated or replaced by
+rogue/self-review. Production contract and trusted-browser choices remain material
+owner decisions. Ask for their concrete disposition before dependent integration.
+
+No push/PR/merge, install/default enablement, native document/ref/queue/browser
+product effect, historical repair, ticket-Done, checkout release or acceptance.
+Original immutable selection/ticket linked HEAD still records21530bc; these local
+commits do not silently refresh it. A later selected owner must reconcile metadata
+through the supported operation before any new candidate launch/review. Preserve
+the original base/branch/lease and all original evidence. All phases are **not**
+complete; this checkpoint is a committed, testable partial implementation handoff.
