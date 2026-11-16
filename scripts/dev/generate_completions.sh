@@ -59,10 +59,10 @@ printf '%s\n' \
   '' \
   '# Pi-only observational protected-review contract preflight' \
   "complete -c ppa -n __fish_use_subcommand -a review -d 'Protected review preflight'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and not __fish_seen_subcommand_from preflight' -a preflight -d 'Static checks only; grants no authority'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l ticket -r -d 'Exact ticket ID'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l objective-file -r -d 'Versioned JSON objective file'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l json -d 'JSON report'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact document; and not __fish_seen_subcommand_from preflight' -a preflight -d 'Static checks only; grants no authority'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact document; and __fish_seen_subcommand_from preflight' -l ticket -r -d 'Exact ticket ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact document; and __fish_seen_subcommand_from preflight' -l objective-file -r -d 'Versioned JSON objective file'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact document; and __fish_seen_subcommand_from preflight' -l json -d 'JSON report'" \
   >> "$PPA"
 printf '%s\n' \
   '' \
@@ -112,13 +112,27 @@ printf '%s\n' \
   "complete -c ppa -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate' -l definition-file -r -d 'Bounded local JSON for static inspection only'" \
   "complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l json -d 'Stable JSON projection'" \
   >> "$PPA"
-printf '%s\n' \
-  '' \
-  '# Pi-only document interface discovery; no CLI approval or effects' \
-  "complete -c ppa -n __fish_use_subcommand -a document -d 'Native document toolkit interface discovery'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from document; and not __fish_seen_subcommand_from describe' -a describe -d 'Describe exact native request fields'" \
-  "complete -c ppa -n '__fish_seen_subcommand_from document; and __fish_seen_subcommand_from describe' -l format -r -a json" \
-  >> "$PPA"
+# Match exact command paths: document review is not protected review preflight
+# or artifact review. Do not imply CLI publication/ref/link/queue support.
+cat <<'FISH' >> "$PPA"
+
+# Pi-only document discovery and unauthenticated local-unverified v2 review
+function __ppa_document_path
+    set -l words (commandline -opc)
+    test (count $words) -eq (math 1 + (count $argv)); or return 1
+    test (string join / -- $words[2..-1]) = (string join / -- $argv)
+end
+complete -c ppa -n __fish_use_subcommand -a document -d 'Document discovery and local-unverified review'
+complete -c ppa -n '__ppa_document_path document' -a describe -d 'Describe exact native document fields'
+complete -c ppa -n '__ppa_document_path document' -a review -d 'Inspect or decide eligible v2 reviews; no authentication'
+complete -c ppa -n '__ppa_document_path document' -l help -d 'Show document interface help'
+complete -c ppa -n '__ppa_document_path document describe' -l format -r -a json
+complete -c ppa -n '__ppa_document_path document review' -l request-stdin -d 'Read one strict local review JSON request; may persist a decision'
+complete -c ppa -n '__ppa_document_path document review' -a serve -d 'Explicitly expose local review on numeric loopback'
+complete -c ppa -n '__ppa_document_path document review' -l help -d 'Show local review grammar and trust limits'
+complete -c ppa -n '__ppa_document_path document review serve' -l port -r -d 'Required loopback port (1–65535)'
+complete -c ppa -n '__ppa_document_path document review serve' -l help -d 'Show local review server help'
+FISH
 for binary in ppa opa; do
   printf '%s\n' \
     '' \

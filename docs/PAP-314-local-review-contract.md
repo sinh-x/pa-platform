@@ -1,7 +1,8 @@
 # PAP-314 local review contract
 
-Status: P0 implementation contract, not installed qualification or product acceptance.
+Status: P0 design contract retained; P0–P3 runtime source is committed at b537789. This is not installed qualification or product acceptance.
 Companion configuration work: **PAPC-090**. Runtime source only in PAP-314.
+Current source coverage, client examples and qualification boundary: [P4 runtime integration handoff](PAP-314-runtime-integration.md). The dated design below is preserved; this status/link update grants no live authority.
 
 ## Revised trust model
 

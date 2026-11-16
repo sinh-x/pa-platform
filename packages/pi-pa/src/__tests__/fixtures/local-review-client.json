@@ -1,0 +1,76 @@
+{
+  "fixtureVersion": "pap-314-inert-client/v1",
+  "inert": true,
+  "notice": "Synthetic Avodah client contract only. Not credentials, authority, installed qualification or human UAT. Never send these illustrative coordinates to a live store.",
+  "trust": "local-unverified",
+  "authentication": "not-provided",
+  "policy": {
+    "version": "pa-mode-capabilities/v1",
+    "allow": ["document.handoff", "document.local-review", "document.package"]
+  },
+  "localRequests": {
+    "show": {
+      "schemaVersion": "pa-local-review/v1",
+      "action": "show",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "request": {
+      "schemaVersion": "pa-local-review/v1",
+      "action": "request",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 0
+    },
+    "decide": {
+      "schemaVersion": "pa-local-review/v1",
+      "action": "decide",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 0,
+      "requestKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "outcome": "approved"
+    },
+    "revoke": {
+      "schemaVersion": "pa-local-review/v1",
+      "action": "revoke",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 2,
+      "decisionId": "decision-inert-example"
+    },
+    "decideRevocation": {
+      "schemaVersion": "pa-local-review/v1",
+      "action": "decide",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 2,
+      "requestKey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "outcome": "approved"
+    }
+  },
+  "nativeRequests": {
+    "preflight": {
+      "schemaVersion": "pa-handoff-native/v2",
+      "action": "preflight",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "refresh": {
+      "schemaVersion": "pa-handoff-native/v2",
+      "action": "refresh",
+      "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 2,
+      "expectedTicketVersion": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  },
+  "staleResponse": {
+    "schemaVersion": "pa-local-review-stale/v1",
+    "subjectSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "status": "stale",
+    "requestKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "oldDevelopSha": "1111111111111111111111111111111111111111",
+    "newDevelopSha": "2222222222222222222222222222222222222222",
+    "observedAt": "2026-11-17T00:00:00.000Z",
+    "approval": "not-issued",
+    "effects": "not-performed",
+    "nextOwner": "native-refresh",
+    "guidance": "Illustrative only: preserve this request and ask the selected native owner to refresh the exact stale predecessor. A new subject needs deliberate review; no CLI/API planning or launch is available.",
+    "trust": "local-unverified",
+    "authentication": "not-provided"
+  }
+}

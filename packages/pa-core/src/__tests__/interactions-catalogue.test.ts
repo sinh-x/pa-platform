@@ -114,11 +114,11 @@ test("native-only owners are accounted for without inventing CLI commands or gra
 });
 
 test("new handoff source dispatch is explicit and does not widen retained document owners or claim installed admission", () => {
-  for (const action of ["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue", "open", "status"]) {
+  for (const action of ["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue", "open", "status", "show", "preflight", "request", "decide", "refresh"]) {
     const row = operation(`handoff.${action}`);
     assert.deepEqual(row.nativeForms, [`pa_handoff:${action}`]); assert.deepEqual(row.cliForms, []);
     assert.equal(row.nativeBinding, null); assert.equal(row.sourceHandler, "packages/pi-pa/src/pi-extension/handoff-tool.ts");
-    assert.equal(row.effectClass, action === "status" ? "read" : action === "open" ? "resource" : "write");
+    assert.equal(row.effectClass, ["status", "show", "preflight"].includes(action) ? "read" : action === "open" ? "resource" : "write");
   }
   for (const id of ["document.native.plan", "document.native.complete-branch", "document.native.open"]) {
     assert.equal(interactionCatalogue.some(row => row.operationId === id), false);
@@ -133,6 +133,35 @@ test("new handoff source dispatch is explicit and does not widen retained docume
   // Primer resource composition is text projection, not another CLI dispatcher.
   assert.equal(operation("document.native.branch-inspect").effectClass, "read");
   assert.equal(operation("document.native.branch-inspect").nativeBinding, null);
+});
+
+test("local review discovery distinguishes unauthenticated journal writes, listener resources and native-only effects", () => {
+  for (const [id, effect] of [["document.review.help", "read"], ["document.review.stdin", "write"], ["document.review.serve", "resource"]] as const) {
+    const row = operation(id);
+    assert.equal(row.effectClass, effect);
+    assert.deepEqual(row.channels, ["cli"]); assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null);
+    assert.match(row.supportedNextStep, /ppa document review --help/);
+    assert.doesNotMatch(row.supportedNextStep, /current session/);
+    assert.match(row.requiredContext.join(" "), /no caller authentication/);
+    assert.doesNotMatch(row.requiredContext.join(" "), /authenticated caller/);
+  }
+  assert.match(operation("document.review.stdin").reason, /show reads; request\/revoke persist/);
+  assert.match(operation("document.review.serve").reason, /allocates a server resource/);
+  assert.match(operation("handoff.revoke").owner, /v2 request-only.*original pre-request/);
+  for (const id of ["document.review.stdin", "document.review.serve", "handoff.request", "handoff.decide", "handoff.refresh"]) {
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === id ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(row => row.operationId !== id)).includes("missing-effect-variant"));
+  }
+  for (const action of ["preflight", "refresh", "publish", "complete-branch", "queue"]) {
+    assert.deepEqual(operation(`handoff.${action}`).cliForms, []);
+    assert.equal(interactionCatalogue.some(row => row.cliForms.some(form => form.startsWith(`document review ${action}`))), false);
+  }
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  for (const path of ["packages/pa-core/src/documents/local-review.ts", "packages/pa-core/src/documents/handoff-preflight.ts",
+    "packages/pa-core/src/tickets/handoff-intent.ts", "packages/pi-pa/src/local-review-cli.ts", "packages/pi-pa/src/local-review-server.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked local review owner: ${path}`);
+  }
 });
 
 test("PAP-298 selected host changes existing launch/resume mechanics, not public commands or grants", () => {

@@ -189,6 +189,14 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ]),
   ...["show", "verify"].map(action => entry(`decision.${action}`, [`decision ${action}`], "read", "native", `${core}workflow.ts`, "native decision")),
   entry("document.describe", ["document describe --format json"], "read", "native", `${pi}document-cli.ts`, "document interface"),
+  ...[
+    entry("document.review.help", ["document review", "document review --help", "document review serve --help"], "read", "native", `${pi}local-review-cli.ts`, "local review interface metadata", { reason: "Store-free help only; describes unauthenticated local-unverified confirmation, not installed/default selection or effect authority." }),
+    entry("document.review.stdin", ["document review --request-stdin"], "write", "owner", `${pi}local-review-cli.ts`, "shared local v2 review journal", { reason: "One strict pa-local-review/v1 JSON request on stdin: show reads; request/revoke persist pending requests; decide issues or replays local-unverified outcomes. No authentication, human identity evidence, publication, ref/link, queue or shell effects." }),
+    entry("document.review.serve", ["document review serve --port"], "resource", "owner", `${pi}local-review-server.ts`, "explicit dedicated loopback review listener", { reason: "Starting a 127.0.0.1-only listener allocates a server resource and exposes eligible v2 review contents/decisions to other local processes. GET /v1/health is store-free; POST /v1/review uses the shared journal. No authentication/CORS, general agent API or CLI/API effect parity." }),
+  ].map(row => Object.freeze({ ...row,
+    supportedNextStep: "Inspect ppa document review --help before an explicit local invocation; retain original v2 request coordinates. No CLI/API effect parity or authenticated human consent is implied.",
+    requiredContext: Object.freeze(["explicit local operator invocation; no caller authentication", "persisted v2 subject and verified original immutable selection for review actions", "original request/revision coordinates; discovery grants no authority"]),
+  })),
   entry("auto.policy.read", ["auto policy", "auto policy status", "auto policy status --json", "auto policy --json", "auto policy --help"], "read", "native", `${pi}auto-policy-cli.ts`, "PPA native document policy inspection", { reason: "Existing-only current/last native policy decisions, full scope and unresolved-review IDs. No initialization, material eligibility check, authority grant, provider, selection or launch." }),
   entry("auto.policy.review", ["auto policy adopt", "auto policy revoke", "auto policy withdraw"], "write", "operator", `${pi}auto-policy-cli.ts`, "PPA native document global policy decision owner", { reason: "Exact native unmanaged foreground review, default Cancel. Original permission request/capture/issuance are distinct and durable. Withdrawal is explicit exceptional original-review fencing, not an old approval import. No ticket selection, provider/worker, effect enablement, qualification, installation or activation. Old manual/content/publish/queue/start scopes are unchanged." }),
   entry("auto.shortlist.read", ["auto shortlist --json", "auto shortlist --help", "auto shortlist --view", "auto shortlist --section", "auto shortlist --page"], "read", "native", `${pi}auto-shortlist-cli.ts`, "PPA retained shortlist/report inventory", { reason: "Existing-only inspection of immutable native report/view/source pages and original cycle/choice/item state. No migration, scan, provider, policy, selection or launch occurs; time-current is not material admission." }),
@@ -234,8 +242,14 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ...["ticket-create", "draft", "freeze", "present", "capture", "revoke", "confirm", "confirm-revoke", "publish", "queue"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "write", `${pi}pi-extension/document-tool.ts`, "versioned document package and decision")),
   nativeEntry("document.native.publication-diagnose", "pa_document", "publication-diagnose", "read", `${pi}pi-extension/document-tool.ts`, "qualified policy-profile document.package; exact retained publication intent; read-only"),
   nativeEntry("document.native.publication-retire", "pa_document", "publication-retire", "write", `${pi}pi-extension/document-tool.ts`, "qualified policy-profile document.package; eligible fresh unpublished intent and exact native retirement consent; no publication or queue"),
-  nativeEntry("handoff.status", "pa_handoff", "status", "read", `${pi}pi-extension/handoff-tool.ts`, "fresh immutable policy document.handoff; original native review coordinates only"),
-  ...["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue"].map(action => nativeEntry(`handoff.${action}`, "pa_handoff", action, "write", `${pi}pi-extension/handoff-tool.ts`, "explicit new native finite handoff owner; no retained grant upgrade, checkout or launch")),
+  nativeEntry("handoff.status", "pa_handoff", "status", "read", `${pi}pi-extension/handoff-tool.ts`, "selected document.handoff; v1 original caller only, v2 shared local show with immutable origin and separate effect states"),
+  ...["show", "preflight", "request", "decide", "refresh"].map(action => nativeEntry(`handoff.${action}`, "pa_handoff", action, ["show", "preflight"].includes(action) ? "read" : "write", `${pi}pi-extension/handoff-tool.ts`,
+    action === "refresh" ? "v2-only exact stale predecessor/plan/link and complete-ticket CAS; no approval or dependent effects"
+      : action === "preflight" ? "v2-only read-only eligibility/local-develop observation; no stale history append or effect grant"
+        : "v2-only immutable document.local-review + document.handoff + document.package; local-unverified decision owner, not authenticated human consent")),
+  ...["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue"].map(action => nativeEntry(`handoff.${action}`, "pa_handoff", action, "write", `${pi}pi-extension/handoff-tool.ts`,
+    action === "revoke" ? "v1 native foreground revocation; v2 request-only revocation finalized by decide using original pre-request revision/key; no rollback"
+      : "explicit native finite handoff owner; v2 fresh selected continuation rechecks current caller and exact ended origin/custody; no retained grant upgrade, checkout or launch")),
   nativeEntry("handoff.open", "pa_handoff", "open", "resource", `${pi}pi-extension/handoff-tool.ts`, "verified native delivery; operator-approved system-default-browser fallback only, no isolation/viewing qualification"),
   ...["capabilities", "read"].map(action => nativeEntry(`workspace.${action}`, "pa_workspace", action, "read", `${pi}pi-extension/workspace-tool.ts`, "versioned document workspace")),
   ...["write", "import", "run"].map(action => nativeEntry(`workspace.${action}`, "pa_workspace", action, "write", `${pi}pi-extension/workspace-tool.ts`, "confined document workspace")),
@@ -248,7 +262,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick", "auto.shortlist.foreground", "auto.policy.review"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick", "auto.shortlist.foreground", "auto.policy.review", "document.review.stdin", "document.review.serve", "handoff.request", "handoff.decide", "handoff.refresh"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();

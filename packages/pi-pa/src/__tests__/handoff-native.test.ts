@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
+import { request as httpRequest } from "node:http";
+import { Readable } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,6 +18,8 @@ import { recordPiProcessIdentity } from "../process-identity.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
 import { createHandoffTool } from "../pi-extension/handoff-tool.js";
 import { createPiSessionLifecycle, registerPiSessionModules, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
+import { runDocumentCommand } from "../document-cli.js";
+import { startLocalReviewServer } from "../local-review-server.js";
 
 function fixture(capabilities = ["document.handoff", "document.package"], supplied = false, outcome = "approved") {
   const env = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "pap312-native-"));
@@ -279,6 +283,111 @@ async function approveLocal(f: ReturnType<typeof fixture>, subjectSha256: string
   assert.equal(decision.outcome, "approved");
   return { request, decision, coordinates: { subjectSha256, decisionId: decision.decisionId } };
 }
+
+test("PAP-314 P4 inert client uses default CLI/API shared state, stale native refresh and original revocation coordinates", async () => {
+  const f = fixture(localCapabilities);
+  const record = (value: unknown): Record<string, unknown> => {
+    assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+    return Object.fromEntries(Object.entries(value));
+  };
+  try {
+    const client = record(JSON.parse(readFileSync(new URL("./fixtures/local-review-client.json", import.meta.url), "utf8")));
+    const local = record(client.localRequests), native = record(client.nativeRequests);
+    const wire = (name: string, subjectSha256: string, fields: Record<string, unknown> = {}) => ({ ...record(local[name]), subjectSha256, ...fields });
+    const cli = async (value: Record<string, unknown>, exit = 0) => {
+      const stdout: string[] = [], stderr: string[] = [];
+      assert.equal(await runDocumentCommand(["review", "--request-stdin"], {
+        stdout: text => { stdout.push(text); }, stderr: text => { stderr.push(text); },
+      }, { stdin: Readable.from([Buffer.from(JSON.stringify(value))]) }), exit);
+      assert.equal(stdout.length, 1); assert.deepEqual(stderr, []);
+      return record(JSON.parse(stdout[0]!));
+    };
+    const p = await prepareLocal(f);
+    assert.equal((await f.execute("pa_handoff", { ...record(native.preflight), subjectSha256: p.subjectSha256 })).result.status, "eligible");
+    for (const action of ["preflight", "refresh"]) {
+      const invalid = await f.execute("pa_handoff", { ...record(native[action]), subjectSha256: p.subjectSha256, baseSha: "a".repeat(40) });
+      assert.equal(invalid.code, "DOCUMENT_INPUT", "native examples cannot accept supplied base pins");
+    }
+    // No injected handler: both transports lazily call executeLocalReview against
+    // the disposable registry, tickets and real native plan/delivery above.
+    const server = await startLocalReviewServer({ port: 0 });
+    try {
+      const address = server.address(); assert.ok(address && typeof address !== "string");
+      const api = async (value: Record<string, unknown>, status = 200) => new Promise<Record<string, unknown>>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port: address.port, method: "POST", path: "/v1/review", headers: { "Content-Type": "application/json" } }, res => {
+          let body = "";
+          res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+          res.once("error", reject);
+          res.once("end", () => {
+            try { assert.equal(res.statusCode, status); resolve(record(JSON.parse(body))); }
+            catch (error) { reject(error); }
+          });
+        });
+        req.once("error", reject); req.setTimeout(10_000, () => req.destroy(new Error("Disposable local review request timed out")));
+        req.end(JSON.stringify(value));
+      });
+      const original = await cli(wire("request", p.subjectSha256));
+      assert.equal(original.expectedRevision, 0);
+      const pending = await api(wire("show", p.subjectSha256));
+      assert.equal(pending.reviewRevision, 1); assert.equal(pending.pendingReview, true);
+      assert.equal(record(pending.latestRequest).requestKey, original.requestKey);
+      assert.ok(Array.isArray(pending.documents)); assert.equal(pending.documents.length, p.document.subject.members.length);
+      const ticketBefore = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+      f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "client stale boundary");
+      const approveOld = wire("decide", p.subjectSha256, { requestKey: original.requestKey });
+      const stale = await api(approveOld);
+      assert.deepEqual(Object.keys(stale).sort(), Object.keys(record(client.staleResponse)).sort());
+      assert.equal(stale.requestKey, original.requestKey);
+      assert.equal(typeof stale.observedAt, "string");
+      assert.equal(new Date(stale.observedAt).toISOString(), stale.observedAt);
+      for (const field of ["schemaVersion", "status", "approval", "effects", "nextOwner", "trust", "authentication"]) {
+        assert.equal(stale[field], record(client.staleResponse)[field]);
+      }
+      assert.equal(stale.oldDevelopSha, p.plan.intent.base.observedDevelopSha); assert.equal(stale.newDevelopSha, f.git("rev-parse", "develop"));
+      assert.deepEqual(await cli(approveOld), stale, "reply-loss stale replay does not mint another outcome");
+      assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), ticketBefore);
+      assert.equal(f.git("for-each-ref", "refs/heads/feature"), "");
+      const old = await api(wire("show", p.subjectSha256));
+      assert.equal(old.approval, "stale"); assert.equal(old.reviewRevision, 2);
+      assert.equal((await api({ ...approveOld, action: "refresh" }, 400)).code, "DOCUMENT_INPUT", "API cannot plan");
+      const refresh = { ...record(native.refresh), subjectSha256: p.subjectSha256, expectedRevision: old.reviewRevision, expectedTicketVersion: old.ticketVersion };
+      const nextResult = await f.execute("pa_handoff", refresh); assert.equal(nextResult.ok, true);
+      const next = record(nextResult.result); assert.equal(typeof next.subjectSha256, "string");
+      const nextSha = next.subjectSha256; assert.notEqual(nextSha, p.subjectSha256);
+      assert.equal((await cli(wire("show", nextSha))).approval, "not-requested");
+      const request = await cli(wire("request", nextSha));
+      assert.deepEqual(await api(wire("request", nextSha)), request);
+      const approve = wire("decide", nextSha, { requestKey: request.requestKey });
+      const decision = await api(approve); assert.equal(decision.principal, "local-unverified");
+      assert.equal(decision.authentication, "not-provided"); assert.equal(decision.method, "unauthenticated-local-confirmation");
+      assert.deepEqual(await cli(approve), decision);
+      assert.equal((await cli({ ...approve, outcome: "rejected" }, 1)).code, "DOCUMENT_CONFLICT");
+      const approved = await f.checked({ action: "show", subjectSha256: nextSha });
+      assert.equal(approved.approval, "approved");
+      for (const effect of ["publish", "branchRef", "queue"]) assert.equal(approved.effects[0][effect].state, "not-started");
+      const revokeInput = wire("revoke", nextSha, { decisionId: decision.decisionId });
+      const revoke = await cli(revokeInput); assert.equal(revoke.expectedRevision, 2);
+      assert.notEqual(revoke.requestKey, request.requestKey);
+      const revocationPending = await api(wire("show", nextSha));
+      assert.equal(revocationPending.reviewRevision, 3); assert.equal(revocationPending.revoked, false);
+      const revokeDecision = wire("decideRevocation", nextSha, { requestKey: revoke.requestKey });
+      assert.equal((await api({ ...revokeDecision, expectedRevision: 3 }, 409)).code, "DOCUMENT_CONFLICT");
+      const revoked = await api(revokeDecision); assert.equal(revoked.operation, "revoke");
+      assert.equal(revoked.targetDecisionId, decision.decisionId);
+      assert.deepEqual(await cli(revokeDecision), revoked);
+      assert.deepEqual(await api(revokeInput), revoke, "revoke replay retains the original pre-request revision");
+      const status = await cli(wire("show", nextSha));
+      assert.equal(status.revoked, true); assert.equal(status.approval, "revoked");
+      assert.equal(status.reviewRevision, 4); assert.equal(status.launchReady, false); assert.equal(status.productUat, "not-asserted");
+      assert.equal((await f.handoff({ action: "publish", subjectSha256: nextSha, decisionId: decision.decisionId })).code, "DOCUMENT_AUTHORITY");
+      assert.equal(new TicketStore().get(p.intake.ticket.id)!.doc_refs.length, 0);
+      assert.equal(f.git("for-each-ref", "refs/heads/feature"), ""); assert.equal(f.prompts(), 0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  } finally { await f.close(); }
+});
 
 test("PAP-314 P3 registered v2 completes actual publication, every attachment, correlated ref/link and queue while preserving canonical dirt", async () => {
   const f = fixture(localCapabilities);
