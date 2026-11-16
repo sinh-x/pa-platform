@@ -535,3 +535,98 @@ reference without rewriting feature commits or historical base21530bc, resolves
 catalogue/inventory overlap while preserving both owners, and revalidates the
 integrated candidate. No merge, complete regression or installed/human acceptance
 is inferred from this pre-integration report.
+
+## Requested canonical-develop integration and final source regression
+
+Merged canonical local develop `5d2c348150e8aef9be56ac155a39f1a7a02da23e`
+(v0.1.169, including PAP-298's explicitly partial/default-off PR178 checkpoint)
+into the feature with merge commit `0004e70f4c9fccc85db58082ace6fc60e425596f`.
+Its parents are feature `0aba10b4450ce4374d34263d6334d20c74becd13` and that exact
+develop commit. No rebase/reset/squash, branch replacement, canonical file edit or
+lease/resource action. The three overlapping catalogue/test/inventory files
+merged automatically, retaining both handoff and selected-host assertions.
+No source digest was blindly refreshed. Both histories and original base21530bc
+remain ancestors; canonical develop was reread unchanged after validation.
+
+Integrated workspace build, typecheck and completions passed. The six affected
+catalogue/recorder/native-handoff/browser-fallback/publication/selected-launch
+suites passed **43/43**, zero skips. Staged secrets scan and whitespace passed
+before the merge commit. These are source tests with labelled synthetic UI and
+launcher boundaries, not installed or genuine human qualification.
+
+### Clean integrated full run — PASS with explicit skips
+
+Exact software candidate: `0004e70f4c9fccc85db58082ace6fc60e425596f`.
+The full command used the same verified development dependencies, this time with
+a 5,400-second external suite budget (individual operation/test deadlines unchanged):
+
+```sh
+timeout --kill-after=20s 5400s nix develop --offline --command \
+  env -u PA_SQLITE_NATIVE_BINDING -u PA_PI_SQLITE_NATIVE_BINDING \
+  -u PA_REQUIRE_PI_SQLITE_NATIVE_BINDING corepack pnpm test
+```
+
+Actual exit0: **4,020pass / 0fail / 20skip**, all six stages complete:
+
+| Stage | Pass | Fail | Skip |
+| --- | ---: | ---: | ---: |
+| Root script tests | 42 | 0 | 0 |
+| pa-core | 2294 | 0 | 14 |
+| OpenCode | 109 | 0 | 1 |
+| Pi script tests | 11 | 0 | 0 |
+| Pi main source tests | 1563 | 0 | 5 |
+| runtime-host | 1 | 0 | 0 |
+
+The 15 external-config fixture skips and 5 pinned/installed AXI/quota/browser/
+dual-host skips remain **unqualified**, not passes. This run does not replace
+PAPC's complete current/retained/common13 lanes, installed/default-entry evidence
+or human UAT. Earlier40-minute/600s failures/timeouts remain unchanged history.
+No test/assertion, contender count, runtime guard or source-pair detector was
+weakened to obtain the complete result.
+
+Full-run before/after HEADs matched and both NUL porcelain-v2 inventories were
+empty (SHA256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+The final ordinary bundle restore completed in the normal test script. No member
+of the recorded validation process group remained at final observation. These
+are bounded observations, not global/escaped-process or browser-cleanup claims.
+The later change is this report only, not changed runtime/test/packaging bytes.
+
+Evidence under `/tmp/pap312-resume-20261116/`:
+- `workspace-merged.log`: `82a672bb051a07bf1b9a4947c9b65b67b47bca60d5d4bd8dd5c22cd942498cf3`.
+- `workspace-merged.exit` (0): `9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa`.
+- `merged-focused.log`: `8a113daf7842b7b182dd8eea1bac0b4538e0eda4c7716dbffb5b9db779dc284e`.
+- `merged-typecheck.log`: `7800234c404e3764961b6da06bfee7157cfb59330256cb9c95030e13258a96fa`.
+- `merged-build.log`: `82bb20aec0d2f14fde3e3eb6dd93a62dde8fb8b1e2cfd594cb62c4ef5d3ec15e`.
+- `merged-completions.log`: `625de326e43200bff571fb976f61778c931b009255ae4836ca9fbf562d9e43e8`.
+
+### Remaining product/qualification scope and requested PR
+
+Most runtime-neutral and opt-in native handoff source is wired. These obligations
+are still not delivered/accepted by the source regression:
+1. The fixed trusted packaged browser/display/network/child-lifecycle owner. The
+   approved system-default-browser convenience fallback explicitly lacks those
+   guarantees. Worst-case worker/resource/cleanup qualification also remains.
+2. PAP-298's actual production custody/publication contract and exact installed
+   guarded-reader qualification. Its merged checkpoint explicitly retains C1/
+   external-Pi final-publication-fence and genuine-host/transport coverage gaps.
+3. Concrete PAPC budget/current-contract/full-completion correction and exact
+   current/retained runtime/config pairing, including complete mandatory lanes.
+4. Protected independent actual-contract/code/security review through its supported
+   exact matrix/readiness/one-use route; no implementer or unit-test substitute.
+5. Actual installed/default-entry/foreground/browser/offline/network/keyboard/
+   zoom/mobile/print/readability, all 18 human UAT scenarios and explicit adoption.
+
+Sinh requested a PR merge and canonical local develop sync to remote after work.
+The agent disclosed the remaining implementation and qualification gaps and asked
+whether that means a default-off partial-source checkpoint or holding until all
+phases. At this report checkpoint that material scope choice is not yet resolved;
+no push/PR/merge is performed or inferred. Hosted CI is not yet run for this
+feature. Any later authorized source integration must document these gaps and
+preserve default-off selection; it is not installation, enablement or ticket-Done.
+
+The requested **Git worktree update is complete** and the feature is clean.
+Native read-only inspection separately reports its ticket link as head-refreshable,
+execution/capacity absent, with historical base/recorded HEAD21530bc unchanged.
+The native owner offers an explicitly authorized metadata-only refresh; that is
+not silently applied or treated as launch admission. No ticket lifecycle/primary
+refs, historical decision, resource, installation or activation was changed.
