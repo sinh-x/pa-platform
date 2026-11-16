@@ -15,11 +15,11 @@ import { registerJsonWorkflowModule } from "./workflow.js";
 import { registerDocumentModule, documentToolDeployment, policyDocumentDeployment, assertNativeDocumentTool } from "./document-tool.js";
 import { filterLocalToolResult, localContentFailure, localProgressResult, safeLocalToolError, registerLocalContentResultModule } from "./local-content-security.js";
 import { registerLocalSourceToolsModule } from "./local-source-tools.js";
+import { recordSourceGuardCoverage } from "./source-guard-coverage.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import { registerRepoSetupModule } from "./repo-setup.js";
 export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
-import { registerQuestionModule } from "./question.js";
-import { registerTodoModule } from "./todo.js";
+import { registerQuestionModule } from "./question.js";import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
 import { registerDirtyBorrowApprovalModule } from "./dirty-borrow-approval.js";
@@ -279,7 +279,10 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
   registerOperationModule(pi, lifecycle);
   pi.on?.("agent_end", (event) => {
     const deployDir = process.env.PA_DEPLOYMENT_DIR;
-    if (deployDir) persistTerminalStatus(event.messages, deployDir, process.env);
+    if (deployDir) {
+      persistTerminalStatus(event.messages, deployDir, process.env);
+      recordSourceGuardCoverage(event.messages, process.env);
+    }
   });
 };
 
