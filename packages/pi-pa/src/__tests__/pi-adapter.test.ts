@@ -408,7 +408,7 @@ test("reuses a successful configurable version preflight and preserves timeout f
   assert.equal(spawned, false);
 });
 
-test("managed foreground and background Pi invocations isolate discovery behind one trusted entrypoint", async () => {
+test("managed foreground and background Pi invocations retain normal discovery and one explicit trusted entrypoint", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
   const primer = join(dir, "primer.md");
   const trustedExtension = join(dir, "pi-pa", "dist", "pi-extension", "index.js");
@@ -442,14 +442,45 @@ test("managed foreground and background Pi invocations isolate discovery behind 
   }
 
   assert.equal(invocations.length, 2);
-  assert.deepEqual(invocations[0]?.slice(0, 4), ["--session-id", invocations[0]?.[1], "--no-skills", "--no-extensions"]);
-  assert.deepEqual(invocations[1]?.slice(0, 7), ["--print", "--mode", "json", "--session-id", invocations[1]?.[4], "--no-skills", "--no-extensions"]);
+  assert.deepEqual(invocations[0]?.slice(0, 2), ["--session-id", invocations[0]?.[1]]);
+  assert.deepEqual(invocations[1]?.slice(0, 5), ["--print", "--mode", "json", "--session-id", invocations[1]?.[4]]);
   for (const args of invocations) {
-    assert.equal(args.filter((arg) => arg === "--no-extensions").length, 1);
+    assert.equal(args.includes("--no-extensions"), false);
+    assert.equal(args.includes("--no-skills"), false);
+    assert.equal(args[args.indexOf("--skill") + 1], executionPlan.skills[0]!.path);
     assert.equal(args.filter((arg) => arg === "--extension").length, 1);
     assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
     assert.equal(args.filter((arg) => /(?:^|\/)\.pi\/extensions(?:\/|$)/.test(arg)).length, 0);
   }
+});
+
+test("Pi spawn and resume preserve default or custom user resource directories without overriding discovery", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-user-discovery-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  try {
+    for (const agentDir of [undefined, join(dir, "custom-agent")]) {
+      const env = { HOME: dir, ...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}) };
+      let calls = 0;
+      const adapter = new PiAdapter({ env, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+        runCommand: (args, options) => {
+          calls++;
+          assert.equal(options.env.HOME, dir);
+          assert.equal(options.env.PI_CODING_AGENT_DIR, agentDir);
+          assert.equal(args.includes("--no-extensions"), false);
+          assert.equal(args.includes("--no-skills"), false);
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      });
+      const executionPlan = { runtime: "pi", team: "rogue-one", mode: "rogue-one", repositoryCwd: dir, skills: [] } as never;
+      for (const mode of ["foreground", "background"] as const) {
+        const opts = { primerPath: primer, deployId: "d-discovery", mode, executionPlan };
+        assert.equal((await adapter.spawn(opts)).exitCode, 0);
+        assert.equal((await adapter.resume({ ...opts, sessionId: "retained-session" })).exitCode, 0);
+      }
+      assert.equal(calls, 4);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("AXI selections preserve all four Pi plugin selections and managed foreground/background discovery with zero tool startup actions", async () => {
@@ -477,8 +508,8 @@ test("AXI selections preserve all four Pi plugin selections and managed foregrou
           assert.equal(options.env.PATH, `${paths.length ? `${paths.join(":")}:` : ""}${inherited}`);
           assert.equal(options.env["PI_PA_PLUGIN_SELECTION"], plugins);
           assert.equal(options.env["HOME"], env.HOME);
-          assert.equal(args.filter((arg) => arg === "--no-skills").length, 1);
-          assert.equal(args.filter((arg) => arg === "--no-extensions").length, 1);
+          assert.equal(args.includes("--no-skills"), false);
+          assert.equal(args.includes("--no-extensions"), false);
           assert.equal(args[args.indexOf("--skill") + 1], skills[0]!.path);
           assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
           assert.equal(args.filter((arg) => arg === "--extension").length, 1);
@@ -571,7 +602,8 @@ test("managed Pi background configuration carries registered and linked-worktree
       worktreeRoot: worktree,
       repositoryCwd: worktree,
       repositoryAdmission: { slot: "implement" },
-      skills: [],
+      skills: [{ name: "selected", path: join(dir, "selected", "SKILL.md"), injectAs: "reference" }],
+      trustedExtension: join(dir, "pi-pa", "index.js"),
     } as never,
   });
 
@@ -580,6 +612,15 @@ test("managed Pi background configuration carries registered and linked-worktree
   assert.equal(observed?.repoRoot, primary);
   assert.equal(observed?.worktreeRoot, worktree);
   assert.equal(observed?.repositorySlot, "implement");
+  assert.ok(observed);
+  const args = buildPiBackgroundArgs(observed);
+  assert.equal(args.includes("--no-extensions"), false);
+  assert.equal(args.includes("--no-skills"), false);
+  assert.equal(args[args.indexOf("--skill") + 1], join(dir, "selected", "SKILL.md"));
+  assert.equal(args[args.indexOf("--extension") + 1], join(dir, "pi-pa", "index.js"));
+  const reviewArgs = buildPiBackgroundArgs({ ...observed, validationHandoffPath: join(dir, "protected-handoff.json") });
+  assert.equal(reviewArgs.filter(arg => arg === "--no-extensions").length, 1);
+  assert.equal(reviewArgs.filter(arg => arg === "--no-skills").length, 1);
 
   const mismatchedConfig = join(dir, "mismatched-background.json");
   writeFileSync(mismatchedConfig, `${JSON.stringify({ ...observed, cwd: primary })}\n`);

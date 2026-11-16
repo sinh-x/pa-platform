@@ -81,6 +81,7 @@ async function run() {
     assertStable();
     const host = await import(pathToFileURL(selection.hostModule).href);
     requireFact(host.VERSION === selection.piVersion && host.PA_READ_PUBLICATION_VERSION === "pa-read-publication/v1"
+      && host.PA_EXTENSION_PATH_FILTER_VERSION === "pa-extension-path-filter/v1"
       && typeof host.main === "function" && typeof host.createReadToolDefinition === "function"
       && fs.realpathSync(host.getPackageDir()) === selection.packageRoot);
     const args = process.argv.slice(2);
@@ -92,7 +93,7 @@ async function run() {
         requireFact(args[++index] === selection.extensionModule && ++extensionCount === 1);
       } else launchArgs.push(args[index]);
     }
-    requireFact(probe || extensionCount === 1 && args.filter(arg => arg === "--no-extensions").length === 1);
+    requireFact(probe || extensionCount === 1 && args.filter(arg => arg === "--no-extensions").length <= 1);
     active = true; process.once("exit", onExit);
     const binding = Object.freeze({ packageRoot: selection.packageRoot, assertStable() {
       requireFact(active, "LIFETIME"); assertStable();
@@ -124,7 +125,15 @@ async function run() {
     // and UI modes. Its build-patched synchronous sink calls this private owner
     // after awaited transforms and before output/persistence, never via JSON.
     binding.assertStable();
-    try { await host.main(launchArgs, { extensionFactories: [factory], paReadPublication: publish }); }
+    // Pi settings may already register this exact PA entrypoint. Its native
+    // factory above owns registration/publication, including on /reload. Exclude
+    // only that physical file before discovered factories execute; unrelated
+    // user/project extensions retain Pi's normal discovery and trust checks.
+    const paExtensionPathFilter = path => {
+      try { return fs.realpathSync(path) !== selection.extensionModule; }
+      catch { return true; } // Preserve Pi's own missing-resource diagnostics.
+    };
+    try { await host.main(launchArgs, { extensionFactories: [factory], paReadPublication: publish, paExtensionPathFilter }); }
     catch (error) { throw factoryFailure ?? error; }
   } finally {
     active = false;

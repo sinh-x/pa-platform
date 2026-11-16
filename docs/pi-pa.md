@@ -108,7 +108,11 @@ disposable tuple remains mandatory; fixture tests alone do not satisfy that gate
 
 ## Managed Deployments
 
-`ppa deploy` is isolated from ordinary Pi discovery. Every managed Pi argv has one `--no-extensions`, exactly one `--extension` naming the trusted `pi-pa` entrypoint, and no discovered user or project extensions. A managed deployment receives only the selected PA skills through explicit resource arguments. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus question, todo, terminal status, safety interception, and the context UI below.
+Ordinary `ppa deploy` sessions, including foreground, background, and resumed sessions, use Pi's normal extension and skill discovery. User resources come from `~/.pi/agent/extensions` and `~/.pi/agent/skills`, or the directory selected by `PI_CODING_AGENT_DIR`; Pi's configured packages and project discovery/trust rules also apply. PPA does not redirect the user agent directory or copy resources into deployment folders. Locally installed extensions execute as trusted user code.
+
+PPA still explicitly supplies the selected PA skills and exactly one `--extension` naming its trusted `pi-pa` entrypoint. The selected native host registers that entrypoint through its owned factory and excludes discovery of the same physical entrypoint (including symlink aliases), preventing duplicate PA registration from `ppa pi setup`. Other extension collisions retain Pi's startup diagnostics; registering a different PA installation is not silently treated as the selected one. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus question, todo, terminal status, safety interception, and the context UI below.
+
+Protected review launches remain explicit-only: `--no-extensions --no-skills` disables ordinary discovery while the trusted PA entrypoint and selected resources remain enabled. Native host binding, source-output protection, safety interception, and review/admission owners are unchanged.
 
 Pi provider/model precedence is explicit CLI flags, the selected flat mode pair (`deploy_modes[].provider` and `deploy_modes[].model`), then the PPA adapter default. A mode must provide both fields or neither. Pi remains an optional runtime; OpenCode remains the default when no runtime is selected.
 
@@ -1177,7 +1181,7 @@ The package targets Node.js 22.19.0 or later and Pi 0.84.4 or later. The questio
 
 An ordinary session can load unrelated extensions that also register `question`, `todo`, `/pa-context`, `/pa-git-context`, Alt+I, or Alt+G. Pi keeps duplicate extension commands and assigns numeric invocation suffixes in load order (for example, `/pa-git-context:1` and `/pa-git-context:2`). For duplicate extension shortcuts, Pi emits a collision diagnostic and the later-loaded shortcut wins; an allowed built-in shortcut conflict is also diagnosed, while a restricted built-in shortcut cannot be overridden. Remove, disable, or reorder the conflicting ordinary-session extension when deterministic routing is required. The selector's plain `r` binding applies only while the Git panel is focused.
 
-Alt+I and `/pa-context` remain independent from Alt+G and `/pa-git-context`: toggling or cleaning up one PA panel does not invoke or dispose the other. Managed PPA deployments avoid unrelated extension collisions by loading `--no-extensions` plus exactly the trusted `pi-pa` extension path.
+Alt+I and `/pa-context` remain independent from Alt+G and `/pa-git-context`: toggling or cleaning up one PA panel does not invoke or dispose the other. Ordinary PPA deployments also load user/project extensions through [normal Pi discovery](#managed-deployments); conflicting tools or shortcuts retain Pi's diagnostics. Protected reviews keep explicit-only extension loading.
 
 ## Immutable Sources, Licenses, and Updates
 

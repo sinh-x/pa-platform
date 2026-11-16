@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { copyFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, readFileSync, readdirSync, writeFileSync, linkSync, statSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, readFileSync, readdirSync, writeFileSync, linkSync, statSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,6 +181,7 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
   const requests = [], failures = [], credentialChecks = [];
   const providerCredential = randomUUID();
   let completionText = "INERT_FIXTURE_DONE", providerBarrier, releaseProvider, preserve = false, completed = false;
+  let discoverUserResources = false;
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", chunk => { body += chunk; });
@@ -192,7 +193,8 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
         const first = requests.length === 1;
         response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "close" });
         const chunk = delta => ({ id: "inert-completion", object: "chat.completion.chunk", created: 0, model: "pap298-fixture", choices: [{ index: 0, delta, finish_reason: null }] });
-        const delta = first ? { role: "assistant", tool_calls: calls.map((call, index) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) }
+        const turnCalls = discoverUserResources ? [...calls, { id: "user-resource", name: "inert_user_discovery", arguments: {} }] : calls;
+        const delta = first ? { role: "assistant", tool_calls: turnCalls.map((call, index) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) }
           : { role: "assistant", content: completionText };
         response.write(`data: ${JSON.stringify(chunk(delta))}\n\n`);
         const final = chunk({}); final.choices[0].finish_reason = first ? "tool_calls" : "stop";
@@ -207,7 +209,22 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
       models: [{ id: "pap298-fixture", name: "Inert local fixture", api: "openai-completions", reasoning: false, contextWindow: 131072, maxTokens: 256,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] };
     writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { openai: provider, "openai-codex": provider } }));
-    writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
+    const defaultAgent = join(directory, ".pi", "agent");
+    for (const agentDir of [agent, defaultAgent]) {
+      mkdirSync(join(agentDir, "extensions"), { recursive: true });
+      mkdirSync(join(agentDir, "skills", "inert-user-skill"), { recursive: true });
+      if (agentDir !== agent) copyFileSync(join(agent, "models.json"), join(agentDir, "models.json"));
+      writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false },
+        packages: [join(fixturePrefix, "packages", "pi-pa")] }));
+      symlinkSync(join(fixturePrefix, "packages", "pi-pa", "dist", "pi-extension", "index.js"), join(agentDir, "extensions", "pa-alias.js"));
+      writeFileSync(join(agentDir, "extensions", "user-discovery.ts"), `export default function(pi) {
+        pi.registerTool({ name: "inert_user_discovery", label: "Inert user resource", description: "Disposable resource discovery fixture.",
+          parameters: { type: "object", properties: {} },
+          async execute() { return { content: [{ type: "text", text: "INERT_USER_EXTENSION_LOADED" }], details: {} }; }
+        });
+      }`);
+      writeFileSync(join(agentDir, "skills", "inert-user-skill", "SKILL.md"), "---\nname: inert-user-skill\ndescription: Disposable user resource discovery fixture.\n---\nInert user skill.\n");
+    }
     const env = fixtureModule.selectedPiEnvironment(launch, { HOME: directory, TMPDIR: directory, PATH: process.env.PATH,
       PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", NO_COLOR: "1", OPENAI_API_KEY: providerCredential, PA_TEAM: "fixture", PA_MODE: "fixture",
       PA_PLATFORM_CONFIG: config, PA_AI_USAGE_HOME: directory, PA_REGISTRY_DB: join(directory, "registry.db") });
@@ -222,6 +239,7 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
     assert.deepEqual(failures, []);
     assert.equal(requests.length, 2, "only the owned loopback simulator receives model requests");
     assert.deepEqual(credentialChecks, [true, true], "finite production environment preserves the required provider credential without publishing it");
+    assert.doesNotMatch(JSON.stringify(requests[0]), /inert_user_discovery|inert-user-skill/);
     const events = result.stdout.split("\n").filter(Boolean).map(line => JSON.parse(line));
     const finished = events.filter(event => event.type === "tool_execution_end");
     assert.equal(finished.length, 6);
@@ -253,13 +271,16 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
     writeFileSync(join(config, "unused.txt"), "Inert configured instruction; rogue-one must ignore this.\n");
     const deployRoot = join(directory, "deployments");
     let original;
+    discoverUserResources = true;
     for (const [phaseIndex, phase] of ["foreground", "resume", "background"].entries()) {
       const prior = phase === "resume" ? readdirSync(deployRoot).filter(name => /^d-[a-f0-9]{6}$/.test(name))[0] : undefined;
       requests.length = 0; credentialChecks.length = 0; completionText = `INERT_FIXTURE_DONE_${phase.toUpperCase()}`;
       const args = ["deploy", "rogue-one", "--repo", "fixture", "--provider", "openai", "--model", "openai/pap298-fixture",
         "--objective", "Run the inert fixture reads.", ...(prior ? ["--resume", prior] : [])];
       let cli;
-      if (phase !== "background") cli = await executeTerminal(fixturePrefix, join(fixture, "bin", "ppa"), args, env, repo, completionText);
+      const phaseEnv = { ...env };
+      if (phase !== "background") delete phaseEnv.PI_CODING_AGENT_DIR;
+      if (phase !== "background") cli = await executeTerminal(fixturePrefix, join(fixture, "bin", "ppa"), args, phaseEnv, repo, completionText);
       else {
         const old = new Set(readdirSync(deployRoot));
         providerBarrier = new Promise(resolve => { releaseProvider = resolve; });
@@ -311,6 +332,11 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
       assert.notEqual(cli.timedOut, true, `public ${phase} did not settle`);
       assert.equal(cli.code, 0, cli.stdout.slice(-2000)); assert.equal(requests.length, 2, phase);
       assert.deepEqual(credentialChecks, [true, true], phase);
+      assert.match(JSON.stringify(requests[0]), /inert_user_discovery/);
+      assert.match(JSON.stringify(requests[0]), /inert-user-skill/);
+      assert.match(JSON.stringify(requests[1]), /INERT_USER_EXTENSION_LOADED/);
+      const paTicketTools = requests[0].tools.filter(tool => tool.function?.name === "pa_ticket");
+      assert.equal(paTicketTools.length, 1, "settings package and symlink discovery do not duplicate native PA registration");
       if (phase !== "background") assert.ok(cli.stdout.includes(completionText));
       assert.match(JSON.stringify(requests[1]), /INERT_PPA_SELECTED_README/); assert.match(JSON.stringify(requests[1]), /INERT_PPA_SELECTED_EXAMPLE/);
       assert.doesNotMatch(JSON.stringify([cli, requests]), /INERT_PRIVATE_DOCUMENT_CANARY|INERT_MUTABLE_DOCUMENT_BODY/);

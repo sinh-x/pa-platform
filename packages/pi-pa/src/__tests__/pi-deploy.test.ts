@@ -3235,7 +3235,10 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
 
     const redacted = redactPiProtectedReviewPrimer(ordinary, authorizationId);
     writeFileSync(primerPath, redacted);
-    const reviewerInput = buildPiBackgroundArgs(config, reviewerContext).at(-1)!;
+    const reviewerArgs = buildPiBackgroundArgs(config, reviewerContext);
+    assert.equal(reviewerArgs.filter(arg => arg === "--no-extensions").length, 1);
+    assert.equal(reviewerArgs.filter(arg => arg === "--no-skills").length, 1);
+    const reviewerInput = reviewerArgs.at(-1)!;
     assert.equal(redacted.includes(authorizationId), false);
     assert.equal(reviewerInput.split(authorizationId).length - 1, 1);
     const protectedStart = reviewerInput.indexOf("<protected-review-metadata>");

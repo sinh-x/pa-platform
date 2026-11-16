@@ -52,7 +52,7 @@ Rogue-one intentionally does not serialize repository mutation, so concurrent or
 
 ### Pi Adapter
 
-See [`docs/pi-pa.md`](docs/pi-pa.md) for setup, status/removal, source paths, `/reload`, managed isolation, migration, and troubleshooting.
+See [`docs/pi-pa.md`](docs/pi-pa.md) for setup, status/removal, source paths, `/reload`, managed resource discovery, protected-review isolation, migration, and troubleshooting.
 
 Pi 0.84.4 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted.
 
