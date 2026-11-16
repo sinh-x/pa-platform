@@ -110,3 +110,23 @@ Earlier notes retain their historical branch/dirty/check coordinates. They are
 not current clean-candidate attestations, native approvals or replacement
 requirements/UAT publications. The PR and normal post-merge workflow are the
 separate source of actual integration/patch-bump outcomes.
+
+## First CI observation and bounded test repair
+
+At head `d63c6ad`, PR CI [43875342074](https://github.com/sinh-x/pa-platform/actions/runs/43875342074)
+passed, including code tests, exact paired-config compatibility and completions.
+The separate push CI [43875333738](https://github.com/sinh-x/pa-platform/actions/runs/43875333738)
+failed one existing `pi-git-context.test.ts` fake-deadline assertion: after one
+`setImmediate`, the call list still ended at reference enumeration rather than
+the expected unstaged diff. The test left reference loading on real asynchronous
+filesystem timing. This original failure is retained, not relabelled as a pass.
+
+The bounded repair is **test-only**: explicit reference-loading and late-Git
+barriers replace the single-event-loop-turn assumption. A deferred reference
+fixture proves the same timer spans both stages. Production Git collection and
+its 2,000 ms deadline are unchanged; abort/stale-snapshot/one-timer/cleanup
+assertions remain. A 5-second test watchdog bounds a broken fixture, not runtime
+work. The complete Git-context file passed 30/30; the repaired case passed 20/20
+isolated repetitions; Pi typecheck passed. Fresh hosted CI must still validate
+the resulting exact PR head before merge. No check or threshold was disabled,
+no unchanged failed job was blindly rerun, and no administrator bypass is selected.

@@ -582,7 +582,7 @@ test("collector models every initial edge state and retains only prior error/tim
   }
 });
 
-test("the complete collection attempt uses one fake 2,000 ms deadline and aborts late Git", async () => {
+test("the complete collection attempt uses one fake 2,000 ms deadline and aborts late Git", { timeout: 5000 }, async () => {
   const previous = await scriptedCollection({ "unstaged-diff": "1\t0\ttracked.txt\0" });
   assert.equal(previous.status, "ready");
   let deadline: (() => void) | undefined;
@@ -599,12 +599,17 @@ test("the complete collection attempt uses one fake 2,000 ms deadline and aborts
   const clearTimer = (() => { clearCount++; }) as typeof clearTimeout;
   const calls: string[][] = [];
   const baseRunner = scriptedRunner({}, calls);
+  let referenceStarted!: () => void, releaseReference!: () => void, lateGitStarted!: () => void;
+  const referenceEntered = new Promise<void>(resolve => { referenceStarted = resolve; });
+  const referenceReady = new Promise<void>(resolve => { releaseReference = resolve; });
+  const lateGitEntered = new Promise<void>(resolve => { lateGitStarted = resolve; });
   const collection = collectGitContext(previous, { cwd: "/repo" }, {
     runGit: async (cwd, args, signal) => {
       if (args[0] === "diff" && args.length === 5) {
         calls.push([...args]);
         return new Promise<string>(() => {
           signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+          lateGitStarted();
         });
       }
       return baseRunner(cwd, args, signal);
@@ -612,13 +617,25 @@ test("the complete collection attempt uses one fake 2,000 ms deadline and aborts
     canonicalize: async () => "/repo",
     setTimer,
     clearTimer,
+    loadReference: async () => {
+      referenceStarted();
+      await referenceReady;
+      return undefined;
+    },
   });
 
-  await new Promise((resolve) => setImmediate(resolve));
+  // Wait for explicit stage barriers, not one event-loop turn or a real /repo
+  // filesystem lookup. The same deadline must span reference loading and Git.
+  await referenceEntered;
   assert.equal(timerCount, 1);
   assert.equal(delay, GIT_CONTEXT_COLLECTION_DEADLINE_MS);
+  assert.deepEqual(calls.at(-1), ["for-each-ref", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"]);
+  releaseReference();
+  await lateGitEntered;
+  assert.equal(timerCount, 1, "reference loading must not renew the collection deadline");
   assert.deepEqual(calls.at(-1), ["diff", "--numstat", "-z", "--find-renames", "--"]);
-  deadline?.();
+  assert.ok(deadline);
+  deadline();
   const state = await collection;
   assert.equal(state.status, "stale");
   if (state.status === "stale" && previous.status === "ready") {
