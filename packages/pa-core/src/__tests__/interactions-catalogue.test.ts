@@ -135,6 +135,26 @@ test("new handoff source dispatch is explicit and does not widen retained docume
   assert.equal(operation("document.native.branch-inspect").nativeBinding, null);
 });
 
+test("PAP-298 selected host changes existing launch/resume mechanics, not public commands or grants", () => {
+  for (const id of ["deploy.launch", "deploy.resume"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "launch"); assert.deepEqual(row.channels, ["cli"]);
+    assert.equal(row.nativeBinding, null); assert.equal(row.delegationBinding, null);
+  }
+  assert.match(operation("deploy.launch").reason, /no caller-controlled host selector/);
+  assert.match(operation("deploy.resume").reason, /before allocation/);
+  for (const row of interactionCatalogue) {
+    assert.equal(row.cliForms.some(form => /--selected-pi|--document-root|--hardlink-grant/.test(form)), false);
+    assert.equal(row.nativeForms.some(form => /pa_selected_pi|pa_hardlink/.test(form)), false);
+  }
+  const manifest = JSON.parse(readFileSync(resolve(root, "packages/pa-core/src/interactions/source-inventory.json"), "utf8"));
+  for (const path of ["nix/selected-pi-production-payload.nix", "nix/selected-pi-production-fixture.nix",
+    "packages/pi-pa/runtime/selected-host-entry.c", "packages/pi-pa/runtime/selected-pi-host.mjs", "packages/pi-pa/runtime/selected-pi-environment.json",
+    "packages/pi-pa/src/adapter.ts", "packages/pi-pa/src/native-host.ts", "packages/pi-pa/src/selected-pi-launch.ts", "packages/pi-pa/src/selected-pi-resume.ts",
+    "packages/pi-pa/src/pi-extension/read-publication.ts", "packages/pa-core/src/runtime-api/types.ts", "scripts/dev/patch-selected-pi.py"])
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked selected-host authority/contract source: ${path}`);
+});
+
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   const commandDir = "packages/pa-core/src/cli/commands";

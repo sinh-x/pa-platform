@@ -2,16 +2,21 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendRegistryEvent, closeDb, verifyRegistryNativeAddon } from "@pa-platform/pa-core";
+import { acquireLocalSourceFile, appendRegistryEvent, closeDb, verifyRegistryNativeAddon } from "@pa-platform/pa-core";
 import registerPiPaExtension, {
   MAX_TOOL_BYTES,
   MAX_TOOL_LINES,
   boundJson,
   createPaTools,
+  createPiSessionLifecycle,
+  registerPiSessionModules,
+  PI_PA_MODULES,
   interceptToolCall,
   type PiToolDefinition,
 } from "./pi-extension/index.js";
 import { BUNDLED_EDITOR_FACTORIES } from "./pi-extension/bundled-editors.js";
+import { bindLocalReadTool } from "./pi-extension/bound-local-read.js";
+import { resolveSelectedPiLaunch } from "./selected-pi-launch.js";
 import { createQuestionTool } from "./pi-extension/question.js";
 import { createTodoTool, reconstructTodoState, TodoStore } from "./pi-extension/todo.js";
 
@@ -87,12 +92,20 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     const commands: string[] = [];
     const shortcuts: string[] = [];
     const handlers: string[] = [];
-    registerPiPaExtension({
+    const runtime: Parameters<typeof registerPiPaExtension>[0] = {
       registerTool: (tool) => { registered.push(tool.name); registeredTools.set(tool.name, tool as unknown as PiToolDefinition); },
       registerCommand: (name) => commands.push(name),
       registerShortcut: (shortcut) => shortcuts.push(shortcut),
       on: (event) => { handlers.push(event); },
-    });
+    };
+    const selected = resolveSelectedPiLaunch();
+    if (selected) {
+      const host = await import(pathToFileURL(join(selected.packageRoot, "dist/bundle/index.js")).href);
+      if (host.VERSION !== "1.4.0" || host.PA_READ_PUBLICATION_VERSION !== "pa-read-publication/v1") throw new Error("selected Pi probe host mismatch");
+      // A probe checks the selected API/Node/addon but receives no production
+      // source binding or hard-link permission for the actual agent session.
+      registerPiSessionModules(runtime, createPiSessionLifecycle(), PI_PA_MODULES, bindLocalReadTool(host.createReadToolDefinition, acquireLocalSourceFile));
+    } else registerPiPaExtension(runtime);
     const expectedRegistered = ["read", "bash", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "pa_template", "pa_workflow", "pa_decision", "question", "todo"];
     assertEqual(registered, expectedRegistered, "registered PA tools");
     if (registered.filter((name) => name === "todo").length !== 1) throw new Error("managed extension smoke did not register Todo exactly once");

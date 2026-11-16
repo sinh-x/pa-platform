@@ -51,7 +51,7 @@ export interface PiTicketToolInput extends Record<string, unknown> {
   search?: string;
 }
 export interface PiTextContent { type: "text"; text: string }
-export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails; isError?: boolean }
+export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails; isError?: boolean; structuredContent?: unknown }
 export interface PiToolTheme {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
@@ -142,7 +142,11 @@ export function registerPiSessionModules(
   pi: PiRuntime,
   lifecycle: PiSessionLifecycle,
   modules: readonly PiExtensionModule[] = PI_PA_MODULES,
+  nativeReadTool?: PiToolDefinition,
 ): void {
+  // Trusted native composition only; a tool definition is not source provenance
+  // and cannot be supplied via model JSON, environment or capability selection.
+  if (nativeReadTool && nativeReadTool.name !== "read") throw new Error("Native reader definition must replace read.");
   const deploymentId = documentToolDeployment(), policyDeploymentId = policyDocumentDeployment();
   // Native per-registration lifetime, never an identity/grant supplied by a
   // tool argument, env or another session. Install revocation before module
@@ -153,7 +157,10 @@ export function registerPiSessionModules(
   // covers direct/delegated custom calls outside document profiles. No role list.
   const guardedRuntime = new Proxy(pi, {
     get(target, property) {
-      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => lifecycle.trackRegistryAccess(async () => {
+      if (property === "registerTool") return (definition: PiToolDefinition) => {
+        const tool = definition.name === "read" && nativeReadTool ? nativeReadTool : definition;
+        return target.registerTool?.({ ...tool, execute: (...args) => {
+        const access = lifecycle.trackRegistryAccess(async () => {
         // Reject late calls before native authentication can reopen the registry.
         // Policy custom tools retain the existing common guard. Retained custom
         // services keep their own finite failure contracts; only the newly
@@ -182,12 +189,29 @@ export function registerPiSessionModules(
             return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
           throw safeLocalToolError(tool.name, error);
         }
-      }).catch(error => {
-        // Preserve retained intake's existing bounded late-call result without
-        // reopening its registry after shutdown. Policy callers keep rejection.
-        if (!policyDeploymentId && tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
-        throw error;
-      }) });
+        });
+        if (tool.name === "read") {
+          // This is the promise returned to the actual registered API caller.
+          // No async wrapper or chained return may sit after its final fence:
+          // checking only the inner registry callback leaves settlement hops in
+          // which shutdown can revoke an as-yet-unpublished result.
+          return new Promise<PiToolResult>((resolve, reject) => {
+            void access.then(result => {
+              const checked = filterLocalToolResult("read", result);
+              resolve(readLifetime.signal.aborted || args[2]?.aborted
+                ? localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"))
+                : checked);
+            }, reject);
+          });
+        }
+        return access.catch(error => {
+          // Preserve retained intake's bounded late-call result without
+          // reopening its registry after shutdown. Policy callers keep rejection.
+          if (!policyDeploymentId && tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
+          throw error;
+        });
+        } });
+      };
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
