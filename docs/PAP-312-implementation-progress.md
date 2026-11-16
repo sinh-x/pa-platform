@@ -630,3 +630,32 @@ execution/capacity absent, with historical base/recorded HEAD21530bc unchanged.
 The native owner offers an explicitly authorized metadata-only refresh; that is
 not silently applied or treated as launch admission. No ticket lifecycle/primary
 refs, historical decision, resource, installation or activation was changed.
+
+## Sinh's explicit integration and administrative closure disposition
+
+After the remaining implementation/dependency/verification items above were listed,
+Sinh instructed: proceed with the PR merge, record those follow-ups in today's
+journal, do not treat them as blockers for PAP-312, mark PAP-312 Done, and sync
+canonical local develop with remote. This supersedes the preceding pending-choice
+and keep-ticket-open instructions for this source integration/administrative
+closure only. It is not an assertion that deferred code or qualification exists.
+
+Proceed through normal hosted CI and repository protections, with no overrides.
+This repository permits squash merges only; phase commits remain preserved on the
+retained feature branch. The exact PR/head/CI/merge and develop auto-bump/sync
+results will be recorded after actual readback, not predicted here.
+
+The trusted-opener/resource work, concrete current/retained PAPC pairing,
+PAP-298 production/installed reader evidence, protected independent review and
+installed/default-entry/browser/all18human UAT/adoption remain explicitly deferred
+follow-up, **non-blocking for PAP-312's administrative closure by Sinh's choice**.
+The source-regression20skips and earlier failures/timeouts are not relabelled.
+Record the follow-ups under the existing Daily Track in
+`learning-management/journals/2026_11_16.md`, preserving other entries and without
+inventing a review date, human work time, timer or new ticket.
+
+Keep new functionality unselected/default-off. Administrative Done and source
+merge do not issue publication/ref/queue/launch grants, install a runtime, activate
+configuration, prove human acceptance, resolve another owner's ticket or return
+this worktree/lease. No historical static UNAPPROVED label or native decision is
+rewritten by this disposition.
