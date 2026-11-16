@@ -15,6 +15,8 @@ import { browserLifecycleEnvironment, cleanupManagedBrowser } from "./axi-browse
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
 import { createRuntimeStartGate } from "./runtime-start-gate.js";
+import { awaitSelectedPiChild, resolveSelectedPiLaunch, selectedPiEnvironment } from "./selected-pi-launch.js";
+import { assertSelectedPiResumeHost, recordSelectedPiLaunch, selectedPiResumeDiagnostic } from "./selected-pi-resume.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
@@ -201,7 +203,7 @@ export class PiAdapter implements RuntimeAdapter {
   }
 
   spawn(opts: SpawnOpts): Promise<SpawnResult> { return this.run(opts); }
-  resume(opts: ResumeOpts): Promise<SpawnResult> { return this.run(opts, opts.sessionId); }
+  resume(opts: ResumeOpts): Promise<SpawnResult> { return this.run(opts, opts.sessionId, opts.resumedFromDeploymentId); }
   extractActivity(deployDir: string): ActivityEvent[] {
     const path = resolve(deployDir, "pi-output.jsonl"); if (!existsSync(path)) return [];
     const projector = new PiActivityProjector(basename(deployDir), this.secretValues);
@@ -235,7 +237,13 @@ export class PiAdapter implements RuntimeAdapter {
   }
 
   allocateSessionId(): string { return this.sessionIdFactory(); }
-  private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
+  private async run(opts: SpawnOpts, resumeId?: string, resumedFromDeploymentId?: string): Promise<SpawnResult> {
+    let selectedHost;
+    try {
+      selectedHost = resolveSelectedPiLaunch();
+      if (resumeId && resumedFromDeploymentId) assertSelectedPiResumeHost(resumedFromDeploymentId, resumeId, dirname(dirname(opts.primerPath)));
+      else if (resumeId && selectedHost) return failure(selectedPiResumeDiagnostic());
+    } catch (error) { return failure(error instanceof Error ? error.message : "Pi host contract is unavailable."); }
     const plan = opts.executionPlan;
     const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
     // Shared Lavish ownership only; selection is resolved by pa-core from the
@@ -274,6 +282,10 @@ export class PiAdapter implements RuntimeAdapter {
     }
     finally { this.preflightPromise = undefined; }
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
+    if (selectedHost) {
+      try { recordSelectedPiLaunch(opts.deployId, id, selectedHost, dirname(opts.primerPath)); }
+      catch (error) { return failure(error instanceof Error ? error.message : "Pi selected-host launch evidence is unavailable."); }
+    }
     const interactive = opts.mode === "foreground";
     const startup: PiStartupContext = { fresh: resumeId === undefined, version: this.runtimeVersion };
     const normalized = normalizePiRuntimeConfig(opts.env?.["PA_PROVIDER"], opts.model);
@@ -657,7 +669,10 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const writeLog = supervision.writeLog ?? writeFileSync;
   // Deployment lifetime is unbounded. Readiness, shutdown and cleanup retain
   // their own finite safety deadlines; legacy opts.timeoutMs is not a kill timer.
-  const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const selected = resolveSelectedPiLaunch();
+  const child = spawnProcess(selected?.entryFile ?? "pi", selected ? ["--pa-managed-child", ...args] : args,
+    { cwd, env: selected ? selectedPiEnvironment(selected, env) : env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let runtimePid = child.pid;
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
     let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let normalExit = false; let rawExitCode: number | undefined; let cleanupPending = false; let cleanupVerified = false; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined; let onShutdown: (() => void) | undefined;
@@ -673,7 +688,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       presentStderr(presentation.close());
       stderr = tail(stderr + visibleDecoder.end(), MAX_STDERR);
       settled = true;
-      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
+      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: runtimePid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const requestCleanup = (status: number, error: Error): void => {
       if (settled || cleanupPending) return;
@@ -736,10 +751,18 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       supervision.shutdownSignal.addEventListener("abort", onShutdown, { once: true });
       if (supervision.shutdownSignal.aborted) onShutdown();
     }
+    const admit = (pid: number): void => {
+      if (settled || cleanupPending) throw new Error("Pi startup was cancelled before native child admission");
+      runtimePid = pid;
+      recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), pid);
+      supervision.onSpawn?.(pid);
+    };
     try {
       if (!child.pid) throw new Error("Pi child did not expose a process id");
-      recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), child.pid);
-      supervision.onSpawn?.(child.pid);
+      if (selected) {
+        void awaitSelectedPiChild(selected, child.pid).then(gate => { admit(gate.pid); gate.release(); })
+          .catch(error => requestCleanup(1, error instanceof Error ? error : new Error(String(error))));
+      } else admit(child.pid);
     } catch (error) {
       requestCleanup(1, error instanceof Error ? error : new Error(String(error)));
     }
@@ -1123,8 +1146,11 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
-  const gate = opts.beforeRuntimeStart ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
-  const pty = (supervision.spawnPty ?? spawnPty)(gate?.file ?? "pi", gate?.args ?? args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env: gate?.env ?? env });
+  const selected = resolveSelectedPiLaunch();
+  const gate = opts.beforeRuntimeStart && !selected ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
+  const pty = (supervision.spawnPty ?? spawnPty)(selected?.entryFile ?? gate?.file ?? "pi", selected ? ["--pa-managed-child", ...args] : gate?.args ?? args,
+    { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env: selected ? selectedPiEnvironment(selected, env) : gate?.env ?? env });
+  let runtimePid = pty.pid;
   const input = supervision.input ?? process.stdin;
   const output = supervision.output ?? process.stdout;
   const outputPath = resolve(deployDir, "pi-output.jsonl");
@@ -1170,7 +1196,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       const restoreError = restoreTerminal();
       const finalError = error ?? restoreError;
       const finalStatus = finalError && status === 0 ? 1 : status;
-      resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: pty.pid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
+      resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: runtimePid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const finishEvidence = (): void => {
       if (evidenceFinished) return;
@@ -1334,12 +1360,17 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       inputFlowOwned = previousFlowing !== true && readableIsFlowing(input);
       input.once("end", onInputClosed); input.once("close", onInputClosed); process.stdout.on("resize", onResize); process.on("SIGINT", onSigint); pty.onData(onData);
       pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
-      recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), pty.pid);
-      opts.onPid?.(pty.pid);
-      if (opts.beforeRuntimeStart) {
-        if (opts.beforeRuntimeStart(pty.pid) !== undefined) throw new Error("native runtime-start admission must be synchronous");
-        gate!.release();
-      }
+      const admit = (pid: number): void => {
+        if (settled || cleanupPending) throw new Error("Pi startup was cancelled before native child admission");
+        runtimePid = pid;
+        recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), pid);
+        opts.onPid?.(pid);
+        if (opts.beforeRuntimeStart && opts.beforeRuntimeStart(pid) !== undefined) throw new Error("native runtime-start admission must be synchronous");
+      };
+      if (selected) {
+        void awaitSelectedPiChild(selected, pty.pid).then(nativeGate => { admit(nativeGate.pid); nativeGate.release(); })
+          .catch(error => requestCleanup(1, error instanceof Error ? error : new Error(String(error))));
+      } else { admit(pty.pid); gate?.release(); }
       void monitorProcessExit();
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
@@ -1392,7 +1423,9 @@ function tail(value: string, max: number): string { return value.length > max ? 
 function basename(path: string): string { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown"; }
 function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): Promise<string> {
   return new Promise<string>((resolveValue, rejectValue) => {
-    const child = spawn("pi", ["--version"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const selected = resolveSelectedPiLaunch();
+    const child = spawn(selected?.entryFile ?? "pi", ["--version"], { cwd,
+      env: selected ? selectedPiEnvironment(selected, piRegistryEnvironment(env)) : env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let settled = false;
     const finish = (error?: Error): void => {

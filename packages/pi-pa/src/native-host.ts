@@ -3,6 +3,7 @@ import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { auditPiValueFromEnvironment } from "./diagnostics.js";
+import { resolveSelectedPiLaunch, selectedPiEnvironment } from "./selected-pi-launch.js";
 
 export const PI_REGISTRY_ADDON_ENV = "PA_PI_SQLITE_NATIVE_BINDING";
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
@@ -80,6 +81,8 @@ export function runPiManagedToolSmoke(env: NodeJS.ProcessEnv = process.env): PiM
 }
 
 export function resolvePiNodeHost(env: NodeJS.ProcessEnv = process.env): string {
+  const selected = resolveSelectedPiLaunch();
+  if (selected) return selected.nodeFile;
   let current = realpathSync(resolveExternalCommand("pi", env));
   for (let depth = 0; depth < 6; depth += 1) {
     const body = readBoundedWrapper(current);
@@ -109,7 +112,10 @@ function runPiHost(nodePath: string, args: string[], env: NodeJS.ProcessEnv): Sp
   const scriptPath = fileURLToPath(new URL("pi-host-smoke.js", import.meta.url));
   return spawnSync(nodePath, [scriptPath, ...args], {
     encoding: "utf8",
-    env: piRegistryEnvironment(env),
+    env: (() => {
+      const selected = resolveSelectedPiLaunch(), environment = piRegistryEnvironment(env);
+      return selected ? selectedPiEnvironment(selected, environment) : environment;
+    })(),
     timeout: HOST_PROBE_TIMEOUT_MS,
     maxBuffer: 64 * 1024,
   });

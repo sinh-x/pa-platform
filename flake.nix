@@ -26,6 +26,10 @@
       selectedPiHostFor = system: import ./nix/selected-pi-host.nix {
         pkgs = piHostNixpkgs.legacyPackages.${system};
       };
+      selectedPiProductionPayloadFor = system: import ./nix/selected-pi-production-payload.nix {
+        pkgs = pkgsFor system;
+        host = selectedPiHostFor system;
+      };
       selectedPiQualificationFor = system: import ./nix/selected-pi-qualification.nix {
         pkgs = pkgsFor system;
         host = selectedPiHostFor system;
@@ -35,18 +39,26 @@
         if builtins.isBool value then value
         else throw "lib.mkPaPlatform: option `${name}` must be a boolean, received ${builtins.typeOf value}.";
 
-      paPlatformFor = system: {
+      paPlatformFor = system: paPlatformForPayload system (selectedPiProductionPayloadFor system);
+      # Private build-time composition, not another public runtime selector. The
+      # inert qualification uses the exact production packager with its own Pi.
+      paPlatformForPayload = system: selectedPiPayload: {
         enablePiVimMode ? false,
         enableProperBase ? false,
         enableGhAxi ? false,
         enableChromeDevtoolsAxi ? false,
         enableQuotaAxi ? false,
         enableLavishAxi ? false,
+        enableSelectedPiHost ? false,
       }:
         let
           pkgs = pkgsFor system;
           packageJson = builtins.fromJSON (builtins.readFile ./package.json);
           treehouse = pkgs.callPackage ./nix/treehouse.nix {};
+          selectedPiEnabled = requireBooleanOption "enableSelectedPiHost" enableSelectedPiHost;
+          selectedPi = if selectedPiEnabled then selectedPiPayload else null;
+          piNode = if selectedPiEnabled then (selectedPiHostFor system).node else pkgs.nodejs_24;
+          selectedPiEnvironmentNames = builtins.fromJSON (builtins.readFile ./packages/pi-pa/runtime/selected-pi-environment.json);
           reviewProvenance = pkgs.writeText "review-runtime-provenance.json" (builtins.toJSON {
             schemaVersion = "pa-review-runtime/v1";
             sourceSha = self.rev or "unversioned-dirty-source";
@@ -103,7 +115,7 @@
           ]);
         in
         # Force all selectors even when a caller requests only drvPath.
-        builtins.deepSeq axiSelection (pkgs.stdenv.mkDerivation (finalAttrs: {
+        builtins.deepSeq [ axiSelection selectedPiEnabled ] (pkgs.stdenv.mkDerivation (finalAttrs: {
           pname = "pa-platform";
           version = packageJson.version;
 
@@ -120,7 +132,7 @@
             gnumake
             sqlite.dev
             node-gyp
-          ];
+          ] ++ pkgs.lib.optionals selectedPiEnabled [ pkgs.pkgsStatic.stdenv.cc piNode ];
 
           buildInputs = with pkgs; [
             sqlite.out
@@ -139,6 +151,8 @@
 
           passthru = {
             inherit pluginSelection axiSelection selectedAxiTools selectedAxiDependencies treehouse;
+            selectedPiHostEnabled = selectedPiEnabled;
+            selectedPiPayload = selectedPi;
           };
 
           pnpmDeps = pkgs.fetchPnpmDeps {
@@ -284,8 +298,8 @@
               rm -rf "$piSqliteSource/build"
               cd "$piSqliteSource"
               patchShebangs .
-              export npm_config_nodedir=${pkgs.nodejs_24}
-              ${pkgs.nodejs_24}/bin/node ${pkgs.nodejs_24}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_24} --force_build=1 --openssl-fips=false
+              export npm_config_nodedir=${piNode}
+              ${piNode}/bin/node ${piNode}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${piNode} --force_build=1 --openssl-fips=false
               install -Dm755 build/Release/better_sqlite3.node "$share/native-addons/pi-node-24/better_sqlite3.node"
             fi
 
@@ -297,6 +311,55 @@
                 ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs_22}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_22}
               fi
             done
+
+            ${pkgs.lib.optionalString selectedPiEnabled ''
+              # Explicit non-default build selection. No pi alias, environment
+              # root switch or caller-supplied record selects this producer.
+              mkdir -p "$share/selected-pi" "$TMPDIR/pa-selected-host"
+              cp ${./packages/pi-pa/runtime/selected-pi-host.mjs} "$share/selected-pi/host.mjs"
+              nodeExecutable="$(readlink -f ${piNode}/bin/node)"
+              cat > "$share/selected-pi/selection.mjs" <<EOF
+              export const selection = Object.freeze(${builtins.toJSON {
+                bootstrapFile = "$share/selected-pi/host.mjs";
+                selectionFile = "$share/selected-pi/selection.mjs";
+                entryFile = "$out/bin/.ppa-selected-pi";
+                packageRoot = "${selectedPi}/lib/node_modules/pi-monorepo";
+                hostModule = "${selectedPi}/lib/node_modules/pi-monorepo/dist/bundle/index.js";
+                nodeFile = "$nodeExecutable";
+                nodeVersion = piNode.version;
+                piVersion = selectedPi.version;
+                piToolsPath = piHostNixpkgs.lib.makeBinPath (with piHostNixpkgs.legacyPackages.${system}; [ ripgrep fd ]);
+                extensionModule = "$share/packages/pi-pa/dist/pi-extension/index.js";
+                sourceModule = "$share/packages/pa-core/dist/local-source-file.js";
+                publicationModule = "$share/packages/pi-pa/dist/pi-extension/read-publication.js";
+                addonFile = "$share/native-addons/pi-node-24/better_sqlite3.node";
+              }});
+              EOF
+              cat > "$share/packages/pi-pa/dist/selected-pi-launch.json" <<EOF
+              ${builtins.toJSON {
+                schemaVersion = 1;
+                entryFile = "$out/bin/.ppa-selected-pi";
+                nodeFile = "$nodeExecutable";
+                packageRoot = "${selectedPi}/lib/node_modules/pi-monorepo";
+                addonFile = "$share/native-addons/pi-node-24/better_sqlite3.node";
+                environmentNames = selectedPiEnvironmentNames;
+              }}
+              EOF
+              cd "$TMPDIR/pa-selected-host"
+              cat > selection.h <<EOF
+              #define SELECTED_ENTRY "$out/bin/.ppa-selected-pi"
+              #define SELECTED_NODE "$nodeExecutable"
+              #define SELECTED_BOOTSTRAP "$share/selected-pi/host.mjs"
+              #define SELECTED_SELECTION "$share/selected-pi/selection.mjs"
+              #define SELECTED_RUNTIME_EXTENSION "$share/packages/pi-pa/dist/pi-extension/index.js"
+              #define SELECTED_NATIVE_ADDON "$share/native-addons/pi-node-24/better_sqlite3.node"
+              #define SELECTED_SUPERVISED 1
+              #define SELECTED_PRODUCTION 1
+              EOF
+              printf '%s\n' '#define SELECTED_ENV_NAMES { ${pkgs.lib.concatStringsSep ", " (map builtins.toJSON selectedPiEnvironmentNames)} }' > production-environment.h
+              ${pkgs.pkgsStatic.stdenv.cc}/bin/${pkgs.pkgsStatic.stdenv.cc.targetPrefix}cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 -static \
+                -I. ${./packages/pi-pa/runtime/selected-host-entry.c} -o "$out/bin/.ppa-selected-pi"
+            ''}
 
             runHook postInstall
           '';
@@ -315,6 +378,12 @@
       # Qualification inputs only. No default wrapper/PATH/launcher selection.
       lib.selectedPiHostFor = selectedPiHostFor;
       lib.selectedPiQualificationFor = selectedPiQualificationFor;
+      lib.selectedPiProductionPayloadFor = selectedPiProductionPayloadFor;
+      lib.selectedPiProductionFixtureFor = system:
+        let
+          fixturePi = import ./nix/selected-pi-production-fixture.nix { payload = selectedPiProductionPayloadFor system; };
+          foundation = paPlatformForPayload system fixturePi { enableSelectedPiHost = true; };
+        in foundation.overrideAttrs (old: { passthru = (old.passthru or {}) // { inherit fixturePi; installed = false; }; });
       lib.selectedPiDocumentMechanicsFixtureFor = system:
         import ./packages/pa-core/src/__tests__/fixtures/immutable-document.nix { pkgs = pkgsFor system; };
       # Build-only inert qualification; no production selector or runtime root.
@@ -333,11 +402,39 @@
           };
         in (axiToolsFor system) // {
           pa-platform = defaultPaPlatform;
+          selected-pi-production-payload = selectedPiProductionPayloadFor system;
+          ppa-selected-pi = paPlatformFor system { enableSelectedPiHost = true; };
           pa-core = defaultPaPlatform;
           opa = defaultPaPlatform;
           ppa = defaultPaPlatform;
           default = defaultPaPlatform;
         });
+
+      apps = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+          host = selectedPiHostFor system;
+          foundation = self.packages.${system}.ppa-selected-pi;
+          ordinary = self.packages.${system}.ppa;
+          fixture = self.lib.selectedPiProductionFixtureFor system;
+          verify = pkgs.writeShellScript "verify-selected-pi-reader" ''
+            set -euo pipefail
+            echo 'Checking selected Pi reader source and native boundaries; no runtime is installed or switched.'
+            export NO_COLOR=1 PI_OFFLINE=1
+            export PATH=${pkgs.lib.makeBinPath [ pkgs.git pkgs.coreutils ]}:$PATH
+            export PA_TEST_ORDINARY_PPA_ROOT=${ordinary}
+            export PA_TEST_SELECTED_PI=${selectedPiProductionPayloadFor system}
+            export PA_TEST_SELECTED_PPA_ROOT=${foundation}
+            export PA_TEST_SELECTED_PPA_FIXTURE=${fixture}
+            export PA_TEST_SELECTED_PI_FIXTURE=${fixture.fixturePi}
+            export PA_SQLITE_NATIVE_BINDING=${foundation}/share/pa-platform/native-addons/pi-node-24/better_sqlite3.node
+            export PA_PI_SQLITE_NATIVE_BINDING=$PA_SQLITE_NATIVE_BINDING
+            export PA_REQUIRE_PI_SQLITE_NATIVE_BINDING=1
+            ${host.node}/bin/node --test ${./scripts/dev/pi-read-publication-runtime.test.mjs}
+            ${pkgs.nodejs_22}/bin/node --test ${./scripts/dev/selected-pi-host.test.mjs}
+            echo 'Source and native qualification passed. Installation and human acceptance remain separate.'
+          '';
+        in { verify-selected-pi-reader = { type = "app"; program = "${verify}"; }; });
 
       checks = forAllSystems (system:
         let
@@ -379,6 +476,23 @@
               export PA_TEST_PI_NODE=${host.node}/bin/node
               export PA_TEST_PI_WRONG_NODE=${pkgs.nodejs_22}/bin/node
               ${host.node}/bin/node --test ${./scripts/dev/selected_pi_host_qualification.test.mjs} ${./scripts/dev/selected_pi_host_entry.test.mjs}
+              touch $out
+            '';
+          # Builder user namespaces can map immutable inputs to overflow UID.
+          # Test that denial plus ordinary publication here; positive production
+          # qualification must run on the actual host via the explicit app above.
+          selected-pi-reader-boundaries =
+            let
+              host = selectedPiHostFor system;
+              foundation = packagesForSystem.ppa-selected-pi;
+            in pkgs.runCommand "pa-selected-pi-reader-boundaries-check" {} ''
+              export NO_COLOR=1 PI_OFFLINE=1
+              export PA_TEST_SELECTED_PI=${selectedPiProductionPayloadFor system}
+              export PA_TEST_SELECTED_PPA_ROOT=${foundation}
+              export PA_SQLITE_NATIVE_BINDING=${foundation}/share/pa-platform/native-addons/pi-node-24/better_sqlite3.node
+              export PA_PI_SQLITE_NATIVE_BINDING=$PA_SQLITE_NATIVE_BINDING
+              export PA_REQUIRE_PI_SQLITE_NATIVE_BINDING=1
+              ${host.node}/bin/node --test ${./scripts/dev/pi-read-publication-runtime.test.mjs} ${./scripts/dev/selected-pi-namespace.test.mjs}
               touch $out
             '';
           selected-pi-host-pin =
