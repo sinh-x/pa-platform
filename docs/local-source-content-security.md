@@ -29,9 +29,13 @@ presentation. This is not a public-web policy reversal or an approval grant.
   into a different silently accepted document.
 - Matchers include configured patterns. Malformed/unavailable policy fails closed.
   Full local scans are bounded to 16MiB UTF-8. Pi file ingress now uses a dedicated
-  Linux descriptor-pinned regular/single-link source reader, separate from strict
-  artifact adoption. All hard-linked sources remain denied pending reviewed
-  selected-host provenance (PAP-298/SR-1); there is no general Nix exception.
+  Linux descriptor-pinned regular-file source reader, separate from strict
+  artifact adoption. Ordinary ingress accepts exactly one link, or a request that
+  uses the file's own `/nix/store` spelling with a root-owned, non-writable, stable
+  ancestry and complete valid text. Hard links outside `/nix/store`, symlink
+  spellings and mutable files remain denied, and reviewed selected-host provenance
+  (PAP-298/SR-1) is still required for selected Pi documents. There is no general
+  Nix exception and no confidentiality grant from the store path alone.
   Unsupported regular-file/link policy returns `LOCAL_SOURCE_UNSUPPORTED_FILE`;
   missing/changing/interrupted or unknown reads remain `LOCAL_SOURCE_UNAVAILABLE`,
   and oversized sources return `LOCAL_CONTENT_LIMIT`. Complete admitted bytes are
