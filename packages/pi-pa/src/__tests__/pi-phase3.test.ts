@@ -19,6 +19,7 @@ import { registerRepoSetupModule } from "../pi-extension/repo-setup.js";
 import { registerLocalSourceToolsModule } from "../pi-extension/local-source-tools.js";
 import { registerLocalContentResultModule } from "../pi-extension/local-content-security.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
+import { registerHerdrLifecycleModule } from "../pi-extension/herdr-lifecycle.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
 test("Pi setup is confirmation-gated and idempotent for local settings", async () => {
@@ -83,7 +84,8 @@ test("trusted entrypoint registers only selected editors while preserving attrib
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 12);
+  assert.equal(PI_PA_MODULES.length, 13);
+  assert.ok(PI_PA_MODULES.includes(registerHerdrLifecycleModule), "default-off lifecycle is composed without adding a peer tool");
   assert.ok(PI_PA_MODULES.includes(registerLocalSourceToolsModule), "secured built-in overrides retain shared admission");
   assert.ok(PI_PA_MODULES.includes(registerLocalContentResultModule), "local result protection is a separate module, not a role grant");
   assert.ok(PI_PA_MODULES.includes(registerDocumentModule), "document tools register lazily only after native session authentication");

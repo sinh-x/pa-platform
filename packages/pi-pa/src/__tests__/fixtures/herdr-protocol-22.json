@@ -1,0 +1,56 @@
+{
+  "provenance": {
+    "source": "herdr api schema --output (installed herdr 0.9.5, /nix/store/1a6fy989j3d68aqicm3gs83y21kkzri1-herdr-0.9.5/bin/herdr)",
+    "protocol": 22,
+    "schemaVersion": 1,
+    "extracted": "2026-11-16",
+    "note": "Subset of schemas.request.$defs copied verbatim for the PAP-303 lifecycle bridge. Not a general Herdr schema mirror; regenerate from the installed CLI when the protocol changes."
+  },
+  "defs": {
+    "PaneAgentState": {
+      "enum": ["idle", "working", "blocked", "unknown"],
+      "type": "string"
+    },
+    "AgentStatus": {
+      "enum": ["idle", "working", "blocked", "done", "unknown"],
+      "type": "string"
+    },
+    "ReadSource": {
+      "enum": ["visible", "recent", "recent_unwrapped", "detection"],
+      "type": "string"
+    },
+    "ReadFormat": {
+      "enum": ["text", "ansi"],
+      "type": "string"
+    },
+    "PaneReportAgentParams": {
+      "properties": {
+        "agent": { "type": "string" },
+        "agent_session_id": { "type": ["string", "null"] },
+        "agent_session_path": { "type": ["string", "null"] },
+        "message": { "type": ["string", "null"] },
+        "pane_id": { "type": "string" },
+        "resume_argv": { "description": "Command that resumes this agent's session after a Herdr restart. The\nfirst element must be a plain command name.", "items": { "type": "string" }, "type": ["array", "null"] },
+        "seq": { "format": "uint64", "minimum": 0, "type": ["integer", "null"] },
+        "source": { "type": "string" },
+        "state": { "$ref": "#/schemas/request/$defs/PaneAgentState" }
+      },
+      "required": ["pane_id", "source", "agent", "state"],
+      "type": "object"
+    },
+    "PaneReportAgentSessionParams": {
+      "properties": {
+        "agent": { "type": "string" },
+        "agent_session_id": { "type": ["string", "null"] },
+        "agent_session_path": { "type": ["string", "null"] },
+        "pane_id": { "type": "string" },
+        "resume_argv": { "description": "Command that resumes this agent's session after a Herdr restart. The\nfirst element must be a plain command name.", "items": { "type": "string" }, "type": ["array", "null"] },
+        "seq": { "format": "uint64", "minimum": 0, "type": ["integer", "null"] },
+        "session_start_source": { "type": ["string", "null"] },
+        "source": { "type": "string" }
+      },
+      "required": ["pane_id", "source", "agent"],
+      "type": "object"
+    }
+  }
+}

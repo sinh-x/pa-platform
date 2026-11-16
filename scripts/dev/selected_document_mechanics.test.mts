@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createReadToolDefinition } from "../../packages/pi-pa/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
 import { bindLocalReadTool } from "../../packages/pi-pa/src/pi-extension/bound-local-read.ts";
+import { createSecureLocalReadTool } from "../../packages/pi-pa/src/pi-extension/local-source-tools.ts";
 import { acquireSelectedPiDocument } from "../../packages/pa-core/dist/local-source-file.js";
 
 // Unit/integration mechanics only: this fixture root and callback are NOT proof
@@ -60,4 +62,31 @@ test("caller cancellation, revoked producer and mutable multi-link fixture never
   const denied = await call(path);
   assert.equal(denied.details.code, "LOCAL_SOURCE_UNSUPPORTED_FILE");
   assert.doesNotMatch(text(denied), /inert mutable fixture/);
+});
+
+test("ordinary read denies exact root-owned immutable store hard links before payload access", async t => {
+  // Last on purpose: no selected-reader retry follows the ordinary denial.
+  // Only the pre-existing, freshly authored inert mechanics fixture is used;
+  // this is not access to installed Pi/Herdr documentation or source.
+  const path = `${root}/README.md`, before = statSync(path, { bigint: true });
+  assert.equal(before.uid, 0n);
+  assert.equal(before.mode & 0o222n, 0n);
+  assert.ok(before.nlink > 1n);
+  const originalRead = fs.readSync;
+  let payloadReads = 0;
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof fs.readSync>) => {
+    const observed = fs.fstatSync(args[0], { bigint: true });
+    if (observed.ino === before.ino && observed.dev === before.dev) {
+      payloadReads++;
+      throw new Error("inert ordinary store payload probe must not run");
+    }
+    return originalRead(...args);
+  }) as typeof fs.readSync);
+  const result = await createSecureLocalReadTool().execute("ordinary-store-negative", { path }, undefined, undefined, { cwd: directory });
+  assert.equal(result.isError, true);
+  assert.equal(result.details.code, "LOCAL_SOURCE_UNSUPPORTED_FILE");
+  assert.equal(payloadReads, 0);
+  assert.doesNotMatch(text(result), /inert immutable readme/);
+  const after = statSync(path, { bigint: true });
+  for (const key of ["dev", "ino", "size", "mode", "nlink", "mtimeNs", "ctimeNs"] as const) assert.equal(after[key], before[key]);
 });

@@ -112,3 +112,20 @@ test("failed directory metadata observation closes even the just-opened descript
   assert.throws(() => acquireLocalSourceFile(path, patterns()), error => code("LOCAL_SOURCE_UNAVAILABLE")(error) && !(error as Error).message.includes("private observation"));
   assert.equal(fs.readdirSync("/proc/self/fd").length, before);
 }));
+
+test("ordinary read-only hard links and their aliases deny before payload access", t => fixture((root, path) => {
+  fs.linkSync(path, join(root, "second.txt"));
+  fs.chmodSync(path, 0o444);
+  const alias = join(root, "alias.txt"); fs.symlinkSync(path, alias);
+  const target = fs.statSync(path), originalRead = fs.readSync;
+  let payloadReads = 0;
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof fs.readSync>) => {
+    const stat = fs.fstatSync(args[0]);
+    if (stat.ino === target.ino && stat.dev === target.dev) payloadReads++;
+    return originalRead(...args);
+  }) as typeof fs.readSync);
+  for (const input of [path, alias]) {
+    assert.throws(() => acquireLocalSourceFile(input, patterns()), code("LOCAL_SOURCE_UNSUPPORTED_FILE"));
+  }
+  assert.equal(payloadReads, 0, "read-only mode and aliases are not selected-source authority");
+}));

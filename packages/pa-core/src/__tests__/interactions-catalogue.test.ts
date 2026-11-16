@@ -170,3 +170,14 @@ test("conservative source inventory rejects any changed or added dispatch source
   const changed = Buffer.concat([baseline, Buffer.from('\n// fixture: new unlisted dispatch\n')]);
   assert.notEqual(createHash("sha256").update(changed).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
 });
+
+test("PAP-303 inventory tracks private observation/lifecycle dependencies without advertising peer effects", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  for (const file of ["source-guard-coverage.ts", "herdr-lifecycle.ts", "herdr-peer-admission.ts", "herdr-peer-exchange.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, `packages/pi-pa/src/pi-extension/${file}`), `untracked PAP-303 dependency: ${file}`);
+  }
+  for (const operation of interactionCatalogue) {
+    assert.equal([...operation.cliForms, ...operation.nativeForms].some(form => /herdr|pa_peer|peer.request/.test(form)), false,
+      "source reconciliation must not invent an available peer request operation");
+  }
+});

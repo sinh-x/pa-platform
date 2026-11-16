@@ -9,10 +9,12 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import sharp from "sharp";
 import { ExtensionRunner } from "@earendil-works/pi-coding-agent";
-import { closeDb, MAX_LOCAL_SECURITY_BYTES, loadSensitivePatterns } from "@pa-platform/pa-core";
+import { existsSync } from "node:fs";
+import { closeDb, MAX_LOCAL_SECURITY_BYTES, loadSensitivePatterns, readActivityEvents } from "@pa-platform/pa-core";
 import { createSecureLocalReadTool, createSecureLocalBashTool, registerLocalSourceToolsModule } from "../pi-extension/local-source-tools.js";
 import { filterLocalToolResult, markNativePublicContent, registerLocalContentResultModule } from "../pi-extension/local-content-security.js";
-import { createPiSessionLifecycle, registerPiSessionModules, interceptToolCall, type PiToolDefinition, type PiToolResult, type PiRuntime } from "../pi-extension/index.js";
+import { recordSourceGuardCoverage, sourceGuardCoverage, SOURCE_GUARD_MARKER } from "../pi-extension/source-guard-coverage.js";
+import { createPiSessionLifecycle, registerPiSessionModules, interceptToolCall, type PiAgentMessage, type PiToolDefinition, type PiToolResult, type PiRuntime } from "../pi-extension/index.js";
 
 async function fixture(run: (f: { root: string; config: string; context: any; canary: string; file: string }) => Promise<void>): Promise<void> {
   const env = { ...process.env }, root = mkdtempSync(join(tmpdir(), "local-source-security-")); closeDb();
@@ -479,4 +481,28 @@ test("invalid policy fails closed before file/shell delivery, hostile getters ar
   const shell = createSecureLocalBashTool({ exec: async () => { spawns++; return { exitCode: 0 }; } });
   const result = await invoke(shell, { command: "inert-fixture" }, f.context);
   assert.equal(result.isError, true); assert.equal(spawns, 0);
+}));
+
+test("PA readers label results; unlabelled results produce an observational coverage warning", async () => fixture(async f => {
+  const tool = createSecureLocalReadTool();
+  const allowed = await invoke(tool, { path: f.file }, f.context);
+  assert.notEqual(allowed.isError, true);
+  assert.equal(allowed.details.sourceGuard, SOURCE_GUARD_MARKER);
+  const blocked = await invoke(tool, { path: join(f.root, ".env") }, f.context);
+  assert.equal(blocked.isError, true); assert.equal(blocked.details.code, "LOCAL_SOURCE_BLOCKED");
+  assert.equal(blocked.details.sourceGuard, SOURCE_GUARD_MARKER, "PA denials are guarded outcomes too");
+  const log = join(f.root, "activity.jsonl");
+  const env = { PA_DEPLOYMENT_ID: "d-inert-coverage", PA_ACTIVITY_LOG: log } as NodeJS.ProcessEnv;
+  const guarded = { role: "toolResult", toolName: "read", details: allowed.details };
+  const foreign = { role: "toolResult", toolName: "read", details: {} };
+  assert.deepEqual(sourceGuardCoverage([guarded] as PiAgentMessage[]), { guarded: 1, unguarded: 0 });
+  assert.equal(recordSourceGuardCoverage([guarded] as PiAgentMessage[], env)?.unguarded, 0);
+  assert.equal(existsSync(log), false, "all-labelled results write no observation event; silence is not proof");
+  recordSourceGuardCoverage([guarded, foreign, { role: "toolResult", toolName: "bash", details: {} }] as PiAgentMessage[], env);
+  const events = readActivityEvents(log);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.metadata?.schema, "pa-source-guard-coverage/v1");
+  assert.equal(events[0]?.metadata?.guarded, 1); assert.equal(events[0]?.metadata?.unguarded, 1);
+  assert.match(events[0]?.body ?? "", /Source-policy coverage unverified/);
+  assert.doesNotMatch(events[0]?.body ?? "", new RegExp(f.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 }));

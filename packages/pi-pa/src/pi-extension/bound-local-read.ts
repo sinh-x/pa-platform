@@ -2,11 +2,12 @@ import { checkSourceContent, loadSensitivePatterns, SourceContentSecurityError, 
 import { detectAdmittedImageMimeType } from "./local-image-type.js";
 import { admitLocalReadPaths } from "./local-read-paths.js";
 import { filterLocalToolResult, localContentFailure } from "./local-content-security.js";
+import { markSourceGuardResult } from "./source-guard-coverage.js";
 import type { PiToolDefinition, PiToolResult } from "./index.js";
 
 /** Native implementation composition, never a root/grant accepted in tool JSON,
  * environment or configuration. The ordinary public constructor fixes its own
- * single-link acquirer. A selected host must construct its private acquirer only
+ * ordinary-policy acquirer. A selected host must construct its private acquirer only
  * after establishing build/execution custody; this factory is not that proof. */
 export function bindLocalReadTool(
   createDefinition: typeof import("@earendil-works/pi-coding-agent").createReadToolDefinition,
@@ -55,9 +56,9 @@ export function bindLocalReadTool(
           const filtered = filterLocalToolResult("read", result, patterns);
           source?.assertStable();
           if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
-          return filtered;
+          return markSourceGuardResult(filtered);
         } finally { source?.close(); }
-      } catch (error) { return localContentFailure(error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE")); }
+      } catch (error) { return markSourceGuardResult(localContentFailure(error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"))); }
     },
   } as unknown as PiToolDefinition;
 }

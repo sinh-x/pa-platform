@@ -18,6 +18,10 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 
 ## Operational Docs
 
+- [PAP-303 source-access audit](PAP-303-source-access-audit.md) records the rogue-one/builder workflow distinction, observed multi-link source denials, proposed owner-scoped repair and incomplete P1–P4 status.
+
+- [PAP-303 source-checkpoint integration](PAP-303-integration-status.md) records default-off lifecycle, effect-free peer hardening, restored finite source scope and separate remaining contract/security/installed/UAT gates. [Source-denial history](PAP-303-source-denial-root-cause.md) retains the original investigation; its broad store-admission experiment was withdrawn, and guard-marker reporting is observation rather than enforcement attestation.
+
 - [PAP-302 runtime phases](PAP-302-runtime-phases.md) records P2–P4 implementation and P5 source hardening. The [qualification handoff](PAP-302-qualification-handoff.md) separates actual checks/timeouts from unperformed manual pairing, installed/independent/desktop/canary/human gates; [P1 evidence](PAP-302-auto-waitlist.md) remains historical.
 
 - [PAP-273 native confirmation and branch bridge](PAP-273-native-confirmation-follow-up.md) records the d-199e82 follow-up, source interfaces, phase results, retained-version behavior and separate installed/UAT gates.

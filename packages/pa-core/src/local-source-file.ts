@@ -6,7 +6,7 @@ import type { SensitivePatternSet } from "./sensitive-patterns.js";
 
 /** Owned acquisition, not artifact adoption or permission to publish raw bytes.
  * Call assertStable immediately before delivery and close in finally. Ordinary
- * ingress is single-link; selected-host provenance is a separate consumer gate. */
+ * ingress mechanics do not themselves establish selected-host provenance. */
 export interface LocalSourceFile {
   readonly bytes: Buffer;
   assertStable(): void;
@@ -31,9 +31,10 @@ function unavailable(error: unknown): never {
   return fail("LOCAL_SOURCE_UNAVAILABLE");
 }
 
-/** Linux descriptor-pinned, bounded, regular/single-link general source ingress.
- * Logical single-link aliases retain their path checks; no physical component
- * symlink is followed. No caller root, filesystem backend or trust override. */
+/** Linux descriptor-pinned, bounded, regular/single-link ordinary ingress.
+ * A store spelling, root owner or read-only mode grants no multi-link exception.
+ * Logical single-link aliases retain path checks; no physical component symlink
+ * is followed. No caller root, filesystem backend or trust override. */
 export function acquireLocalSourceFile(path: string, patterns?: SensitivePatternSet, signal?: AbortSignal): LocalSourceFile {
   return acquirePinnedSource(path, patterns, signal);
 }
@@ -91,10 +92,10 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
     if (before.nlink !== 1n) {
+      // Only the private selected-Pi route may consider multi-link text. Its
+      // finite scope/lifetime was checked above; ordinary ingress never retries
+      // through that route merely because this file lives in the Nix store.
       if (!binding || physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-      // Decide the link route on the very descriptor whose bytes are acquired.
-      // Single-link aliases/images retain ordinary behavior; only the multi-
-      // link route requires exact spelling, immutable ancestry and text bytes.
       for (const directory of directories) immutableMetadata(directory.path, directory.stat);
       immutableMetadata(physical, before);
     }
@@ -130,7 +131,7 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     assertStable();
     if (length !== Number(before.size)) fail("LOCAL_SOURCE_UNAVAILABLE");
     const complete = bytes.subarray(0, length);
-    if (binding && before.nlink > 1n) assertImmutableDocumentText(complete);
+    if (before.nlink > 1n) assertImmutableDocumentText(complete);
     assertStable();
     return { bytes: complete, assertStable, close };
   } catch (error) {
