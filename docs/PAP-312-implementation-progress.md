@@ -487,3 +487,51 @@ Source changes: `test/helpers/git-state-recorder.ts`,
 No human-facing CLI messages, public output/exit/stream contracts or runtime
 permissions changed. Full validation and independent/installed/human gates remain
 separate; a clean committed full rerun follows this test-only repair.
+
+### Exact repair-candidate validation before requested develop integration
+
+Candidate `0bd2d4bf4b4e0725befdcb9679cd5e59549b6b7c` stayed clean and unchanged
+through validation. Workspace typecheck/build/completions passed; default ignored
+extension bundles were restored after test settlement, with no tracked changes.
+
+The first exact `nix develop --offline --command corepack pnpm test` failed at the
+root stage:40pass/2fail, exit1. Both failures inherited the running installed
+Pi24 SQLite binding into development Node22. Loading that addon failed with
+GLIBC_2.44 unavailable in the development closure. This is preserved as a real
+environment failure, not blamed on the contention repair or relabelled passing.
+The development checkout's own addon was verified with Node22.23.2/ABI127 and
+SQLite3.53.4. No addon, runtime, pin or guard was replaced.
+
+The two affected root suites reran12/12, exit0, using the development dependencies
+by unsetting only the three installed native-binding overrides. The subsequent
+full command was exactly:
+
+```sh
+timeout --kill-after=20s 2400s nix develop --offline --command \
+  env -u PA_SQLITE_NATIVE_BINDING -u PA_PI_SQLITE_NATIVE_BINDING \
+  -u PA_REQUIRE_PI_SQLITE_NATIVE_BINDING corepack pnpm test
+```
+
+Actual outcome: **INCOMPLETE, exit124**. Root42pass; core2293pass/14skip;
+OpenCode109pass/1skip; Pi scripts11pass. Main Pi passed the previously stalled
+50-contender test (case712), both mixed PPA/OPA50-contender tests and the new
+recorder/native-handoff cases. It progressed through1033 before the40-minute
+external deadline, with no main-Pi summary; runtime-host aggregate was not reached.
+No failing TAP case was observed in this corrected run, but that is not a full
+pass. The timeout group3785510 had no remaining processes at final observation.
+Original failures/timeouts/skips remain separate. No runtime or test deadline,
+contender count, assertion, selection or admission owner was weakened.
+
+Complete logs/exit files are under `/tmp/pap312-resume-20261116/`:
+- Initial failed full log SHA256: `2b122792fa0776bb9a148907ace384f4f394a9dec6928c9848d2b116ded854ca`.
+- Corrected full log SHA256: `49c644453a2c3d5183bb2b67126f934bf79a028b7532a3c7182eb5f47f707735`.
+- Recorder3/3 log SHA256: `0cc639c6698c7497479b5a32e8bf5181b6ee6e9d5e183770e30d1e6c0cb9bbfb`.
+- Contender1/1 log SHA256: `b4bd785f39340dd52db2c756cb2c590d927e8ea50f9e4066b0a6d5fd8959ff63`.
+
+Sinh then explicitly requested updating this worktree with canonical develop.
+The observed canonical reference is `5d2c348150e8aef9be56ac155a39f1a7a02da23e`,
+version0.1.169/PAP-298 default-off source checkpoint. Next phase merges that local
+reference without rewriting feature commits or historical base21530bc, resolves
+catalogue/inventory overlap while preserving both owners, and revalidates the
+integrated candidate. No merge, complete regression or installed/human acceptance
+is inferred from this pre-integration report.
