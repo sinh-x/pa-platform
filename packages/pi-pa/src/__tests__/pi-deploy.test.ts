@@ -1574,44 +1574,56 @@ test("transition contenders admit exactly one child", { timeout: 120_000 }, asyn
     const repo = join(root, "repo");
     git(["update-ref", "refs/remotes/origin/develop", "HEAD"], repo);
     const parent = await startHeldOrchestrator();
-    const protectedCapability = inspectRepositoryMutationLease(repo).lease!.ownershipToken;
-    git(["checkout", "-b", "feature/PAP-198-contenders"], repo);
-    const protectedDigest = captureRepositoryGitSnapshot(repo).digestSha256!;
-    let protectedBorrowerToken = "";
-    let releaseWinner!: () => void;
-    const heldWinner = new Promise<SpawnResult>((resolveResult) => {
-      releaseWinner = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
-    });
-    let spawns = 0;
-    let completed = 0;
-    await withInheritedEnvironment({
-      PA_DEPLOYMENT_ID: parent.opts.deployId,
-      PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
-      PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
-    }, async () => {
-      const adapter = stubAdapter({ onSpawn: (opts) => { spawns += 1; protectedBorrowerToken = opts.repositoryBorrower?.borrowerToken ?? ""; }, result: () => heldWinner });
-      const contenders = Array.from({ length: 50 }, () => deployWithPi(
-        { team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, adapter,
-      ).then((outcome) => { completed += 1; return outcome; }));
-      await within((async () => { while (completed < 49) await nextTick(); })(), 90_000, () => `only ${completed} transition contenders completed`);
-      assert.equal(spawns, 1);
-      assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
-      releaseWinner();
-      const outcomes = await Promise.all(contenders);
-      assert.equal(outcomes.filter((outcome) => outcome.status === "success").length, 1);
-      const failures = outcomes.filter((outcome) => outcome.status === "failed");
-      assert.equal(failures.length, 49);
-      assert.equal(failures.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
-      assert.equal(failures.every((outcome) => /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(outcome.reason ?? "")), true);
-      assert.ok(protectedBorrowerToken);
-      for (const outcome of failures) {
-        for (const protectedValue of [protectedCapability, protectedBorrowerToken, protectedDigest]) {
-          assert.doesNotMatch(outcome.reason ?? "", new RegExp(escapeRegExp(protectedValue)));
+    try {
+      const protectedCapability = inspectRepositoryMutationLease(repo).lease!.ownershipToken;
+      git(["checkout", "-b", "feature/PAP-198-contenders"], repo);
+      const protectedDigest = captureRepositoryGitSnapshot(repo).digestSha256!;
+      let protectedBorrowerToken = "";
+      let releaseWinner!: () => void;
+      const heldWinner = new Promise<SpawnResult>((resolveResult) => {
+        releaseWinner = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
+      });
+      let spawns = 0;
+      let completed = 0;
+      let waiting = true;
+      await withInheritedEnvironment({
+        PA_DEPLOYMENT_ID: parent.opts.deployId,
+        PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+        PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
+      }, async () => {
+        const adapter = stubAdapter({ onSpawn: (opts) => { spawns += 1; protectedBorrowerToken = opts.repositoryBorrower?.borrowerToken ?? ""; }, result: () => heldWinner });
+        const contenders = Array.from({ length: 50 }, () => deployWithPi(
+          { team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, adapter,
+        ).then((outcome) => { completed += 1; return outcome; }));
+        try {
+          await within((async () => { while (waiting && completed < 49) await nextTick(); })(), 90_000, () => `only ${completed} transition contenders completed`);
+          assert.equal(spawns, 1);
+          assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
+          releaseWinner();
+          const outcomes = await Promise.all(contenders);
+          assert.equal(outcomes.filter((outcome) => outcome.status === "success").length, 1);
+          const failures = outcomes.filter((outcome) => outcome.status === "failed");
+          assert.equal(failures.length, 49);
+          assert.equal(failures.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
+          assert.equal(failures.every((outcome) => /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(outcome.reason ?? "")), true);
+          assert.ok(protectedBorrowerToken);
+          for (const outcome of failures) {
+            for (const protectedValue of [protectedCapability, protectedBorrowerToken, protectedDigest]) {
+              assert.doesNotMatch(outcome.reason ?? "", new RegExp(escapeRegExp(protectedValue)));
+            }
+          }
+        } finally {
+          // A failed assertion/deadline must not retain synthetic live runtimes
+          // or restore their environment while sibling admissions are pending.
+          waiting = false;
+          releaseWinner();
+          await Promise.allSettled(contenders);
         }
-      }
-    });
-    parent.release();
-    assert.equal((await parent.result).status, "success");
+      });
+    } finally {
+      parent.release();
+      assert.equal((await parent.result).status, "success");
+    }
   });
 });
 

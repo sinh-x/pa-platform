@@ -438,3 +438,52 @@ harness; this chronology is retained here, not presented as independent review.
 Source is committed and the new route remains unselected. No push, PR, merge,
 installation, enablement, live product effect, historical repair, ticket-Done or
 resource return is claimed. PAP-312 is still **partial**, not finished acceptance.
+
+## 2026-11-16 recheck and contention-validation repair
+
+Sinh asked to check the other session's resolution and proceed. Clean starting
+HEAD was `722f020`, including6436f19/38d756a native integration/cancellation work;
+those commits and original base/lease/selection are preserved. Current ordinary
+read of the selected installed Pi README returned LOCAL_SOURCE_UNSUPPORTED_FILE.
+The earlier continuation's successful documentation reads remain historical,
+not erased or reused as a current access claim. No alternative reader or copied
+SDK source was used. This does not prevent repository-local test repair.
+Latest PAP-298 owner note describes default-off source PR178, expressly not
+normal installed SDK access or cleared production/human qualification.
+
+### Reproduced blocker and bounded repair
+
+Isolated original `transition contenders admit exactly one child` reached the
+150s external deadline/exit124 without a terminal test result. A measurement-only
+preload run also reached180s/124. Both left a test process after normal timeout;
+only their recorded process groups3290839/3415418 were SIGKILLed and reread empty.
+Original logs/trace are retained under `/tmp/pap312-resume-20261116/`.
+A requested strace attach was denied by host ptrace policy; no workaround used.
+
+The original Git recorder starts Node plus Git for every probe. The isolated
+trace had already logged524 probes. A same-host20-probe comparison measured
+bare Git62ms, original recorder1148ms, new recorder182ms (measurement only, not a
+latency promise). Under the earlier load, bare Git299ms versus recorder4277ms.
+This establishes significant fixture overhead; it is not a claimed production
+admission defect or proof of every historical timeout's internal cause.
+
+Replaced only the test recorder wrapper with fixed resolved Bash/flock/Git:
+complete JSON argv records, exact real Git argv and stdout/exit propagation and
+the original mutation classification remain. Shared fd locking serializes long
+concurrent records; command and operation logs retain their JSONL format. No
+production admission, runtime timeout, assertion or contender count was relaxed.
+The contention test now releases/awaits its synthetic winner and parent on failure,
+settles sibling promises before environment restoration, and stops its poll loop.
+
+New recorder regression tests prove empty/Unicode/quotes/control-character argv,
+50 concurrent long records, real Git execution/mutations and nonzero exits.
+Initial2pass/1fail was a test expectation: argument-free real Git exits1, not0;
+corrected the expectation without changing the wrapper. Final3/3pass, zero skips.
+The unchanged50-contender/one-success/49-denial/security assertions and120s test
+limit now **pass**, exit0, in19.6s on the observed host. Its90s inner deadline and
+60s child bound are unchanged. Workspace typecheck and whitespace checks exit0.
+Source changes: `test/helpers/git-state-recorder.ts`,
+`packages/pi-pa/src/__tests__/{git-state-recorder,pi-deploy}.test.ts`.
+No human-facing CLI messages, public output/exit/stream contracts or runtime
+permissions changed. Full validation and independent/installed/human gates remain
+separate; a clean committed full rerun follows this test-only repair.
