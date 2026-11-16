@@ -163,10 +163,14 @@ for (const selected of [
     process.chdir(repo);
     writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n example:\n  path: ${repo}\n  prefix: EX\n other:\n  path: /tmp/unused-intake-destination\n  prefix: OTH\n`);
     writeFileSync(join(teams, "requirements.yaml"), `name: requirements\nobjective: Source fixture\nagents: []\ndeploy_modes:\n - id: analyze\n   require_ticket: true\n   document_profile: ${selected.config}\n${selected.config === "pa-document-policy/v1" ? '   capability_policy: {version: pa-mode-capabilities/v1, allow: [ticket.intake, capability.discover]}\n' : ""}`);
+    // Include the actual selected completion resource in this disposable closure.
+    // Missing completion must still fail closed; never fall back to host config.
+    mkdirSync(join(root, "primers/fragments/shared"), { recursive: true });
+    writeFileSync(join(root, "primers/fragments/shared/completion.md"), "Synthetic selected completion. Preserve original operation identities; no new effect authority.\n");
     // Native selected-resource owner reads an actual committed disposable config,
     // not a synthetic binding injected past launch selection.
     execFileSync("git", ["init", "-b", "fixture-config"], { cwd: root, stdio: "pipe" });
-    execFileSync("git", ["add", "teams/requirements.yaml"], { cwd: root, stdio: "pipe" });
+    execFileSync("git", ["add", "teams/requirements.yaml", "primers/fragments/shared/completion.md"], { cwd: root, stdio: "pipe" });
     execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source config fixture"], { cwd: root, stdio: "pipe" });
     const configRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe" }).toString().trim();
     const store = new TicketStore(), parent = store.create({ project: "example", title: "Bound fixture", summary: "", description: "", status: "idea", type: "feature", priority: "medium", estimate: "M", assignee: "sinh", from: "", to: "", tags: [], blockedBy: [], comments: [], doc_refs: [] });

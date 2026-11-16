@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures, loadSelectedWorkflows, readReviewEvidenceFile, workflowDigest, validateWorkflowPair, type WorkflowSelection, type WorkflowPrimerView } from "../../packages/pa-core/src/index.js";
+import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures, loadSelectedWorkflows, readReviewEvidenceFile, parseReviewEvidenceJson, workflowDigest, validateWorkflowPair, type WorkflowSelection, type WorkflowPrimerView } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
   configRoot: string;
@@ -230,6 +230,30 @@ export function validateReviewProducerFixtures(configRoot: string): number {
   return readReviewProducerFixtures(resolve(configRoot));
 }
 
+/** Released v1 disabled preparation adds ONE reserved read-only requirements
+ * mode, not an r003 selection/adoption. No arbitrary mode-count allowance. */
+function validateDisabledAutoDraftSource(configRoot: string, directLocal: boolean, read: (path: string) => Uint8Array): boolean {
+  const requirements = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/requirements.yaml"), "utf8"));
+  const modes = requirements.deploy_modes?.filter(mode => mode.id === "auto-draft") ?? [];
+  const contractExists = existsSync(resolve(configRoot, "contracts/auto-waitlist-v1.json"));
+  if (!modes.length && !contractExists) return false;
+  if (!directLocal || modes.length !== 1 || !contractExists) throw new Error("Disabled auto-draft source requires its exact direct-only mode and contract");
+  const contract = parseReviewEvidenceJson(read("contracts/auto-waitlist-v1.json"), "paired.disabled-auto-draft") as Record<string, unknown>;
+  const resources = ["skills/requirements/auto-draft.md", "skills/requirements/auto-draft-objective.md", "skills/requirements/auto-review-start.md"];
+  if (Object.keys(contract).sort().join(",") !== "draftMode,enabled,producer,resources,review,schemaVersion"
+    || contract.schemaVersion !== "pa-auto-pair/v1" || contract.producer !== "pa-auto-draft/v1" || contract.review !== "pa-auto-start/v1"
+    || contract.draftMode !== "auto-draft" || contract.enabled !== false || JSON.stringify(contract.resources) !== JSON.stringify(resources)) {
+    throw new Error("Unsupported or enabled auto-draft source contract; no pairing/activation inferred");
+  }
+  const mode = modes[0]!;
+  if (Object.entries(mode).filter(([, value]) => value !== undefined).map(([key]) => key).sort().join(",") !== "agents,global_docs,id,label,mode_type,model,objective,phone_visible,provider,require_ticket,skills"
+    || mode.phone_visible !== false || mode.mode_type !== "work" || mode.require_ticket !== true || mode.objective !== resources[0]
+    || !Array.isArray(mode.agents) || mode.agents.length || !Array.isArray(mode.skills) || mode.skills.length
+    || !Array.isArray(mode.global_docs) || mode.global_docs.length) throw new Error("Auto-draft mode must remain native-only without inherited instructions or agents");
+  for (const resource of resources) if (!read(resource).length) throw new Error("Disabled auto-draft resource is empty");
+  return true;
+}
+
 export function validatePairedRepository(options: PairedValidationOptions): string[] {
   const configRoot = resolve(options.configRoot);
   const expectedSha = options.expectedSha.trim();
@@ -264,7 +288,8 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
   const planFirstPrimerCount = validateRepositoryContracts(configRoot, workflowProcedures);
   const builderConfig = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams/builder.yaml"), "utf8"));
   const directLocal = builderConfig.deploy_modes?.some((mode) => mode.id === "orchestrator") === true && !builderConfig.deploy_modes.some((mode) => mode.id === "implement");
-  const expected = directLocal ? { modes: 52, builder: 4, requirements: 6, other: 42 } : { modes: 59, builder: 6, requirements: 11, other: 42 };
+  const disabledAutoDraft = validateDisabledAutoDraftSource(configRoot, directLocal, requiredRead);
+  const expected = directLocal ? { modes: 52 + Number(disabledAutoDraft), builder: 4, requirements: 6 + Number(disabledAutoDraft), other: 42 } : { modes: 59, builder: 6, requirements: 11, other: 42 };
 
   const teamFiles = readdirSync(resolve(configRoot, "teams"))
     .filter((name) => name.endsWith(".yaml") && name !== "example.yaml")
@@ -320,6 +345,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     `TEAMS_VALID=${teamFiles.length}/10`,
     `MODES_VALID=${modeCount}/${expected.modes}`,
     ...(directLocal ? ["SOURCE_PROFILE=ordinary-local/v1"] : []),
+    ...(disabledAutoDraft ? ["AUTO_DRAFT_SOURCE=disabled-v1-native-only-not-r003-pairing"] : []),
     "LEGACY_RUNTIMES=0",
     "INVALID_PAIRS=0",
     `BUILDER_EXCLUSIVE=${builderExclusiveCount}/${expected.builder}`,

@@ -28,6 +28,7 @@ import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorize
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { inspectReviewPreflight, formatReviewPreflight } from "./review-preflight.js";
 import { readPiProcessIdentity } from "./process-identity.js";
+import { assertSelectedPiResumeHost } from "./selected-pi-resume.js";
 import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
 export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha" | "approvedReference">;
@@ -805,7 +806,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   // Strict mode rejection precedes resume-file inspection; unsupported historical
   // runtime rejection still precedes workspace/registry allocation and hooks.
   try {
-    if (request.resume) prior = readSession(request.resume, adapter.sessionFileName);
+    if (request.resume) {
+      prior = readSession(request.resume, adapter.sessionFileName);
+      assertSelectedPiResumeHost(request.resume, prior);
+    }
   } catch (error) {
     const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail)
@@ -1164,7 +1168,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const pinned = !currentPlan.rogue_one && currentPlan.ticket && (structuredBaseline || (currentPlan.team === "requirements" && currentPlan.mode === "analyze")) ? readTicketWorkflow(currentPlan.ticket) : null;
     if (pinned && !pinnedConfig) throw new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "workflow-owner");
     if (pinnedConfig) { pinnedConfig.reread(); pinnedConfigRoot = pinnedConfig.materialize(deployDir); }
-    const primer = generatePrimer({ runtime: "pi", requirementsDocument: documentLaunch, ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", requirementsDocument: documentLaunch, ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\ndeployment_runtime_limit: none\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
       : primer;
@@ -1552,7 +1556,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const handoff = retainedResume!.bindChild(pid); activeRepositoryLease = handoff; activeTicketSlot = handoff.ticketSlot;
       if (Date.now() >= Date.parse(retainedResume!.binding.bounds.deadlineAt)) throw workflowError();
     } : undefined;
-    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, ...(advisoryLaunch || request.background || retainedResume || dependencies.autoLaunch ? { timeoutMs: Math.min(plan.timeoutSeconds * 1000, retainedResume ? Math.max(1, Date.parse(retainedResume.binding.bounds.deadlineAt) - Date.now()) : dependencies.autoLaunch ? Math.max(1, Date.parse(dependencies.autoLaunch.deadlineAt) - Date.now()) : Infinity) } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, ...(beforeRuntimeStart ? { beforeRuntimeStart } : {}), mode: request.background ? "background" : "foreground", model, logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
     if (protectedValidationLaunch) {
       (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
     }
@@ -1567,7 +1571,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     // borrower through existing matching cleanup. After it, absent native exit
     // proof must retain the borrower, including thrown/ambiguous spawn failures.
     runtimeLaunchAttempted = true;
-    const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
+    const result = prior ? await adapter.resume({ ...spawnOptions, resumedFromDeploymentId: request.resume }) : await adapter.spawn(spawnOptions);
     if (result.exitCode === 0) retainedResume?.assertCompleted();
     reviewRuntimeTerminated = result.metadata?.["cleanupVerified"] !== false && result.metadata?.["pending"] !== true;
     const rawExitCode = result.metadata?.["rawExitCode"];

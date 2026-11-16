@@ -78,6 +78,13 @@ test("PPA auto refresh writes only coordination data and never becomes a native 
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "auto.scan" ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
   assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(row => row.operationId !== "auto.scan")).includes("missing-effect-variant"));
 });
+test("shortlist foreground is a provider/choice effect while retained report pages stay observational", () => {
+  const foreground = operation("auto.shortlist.foreground"), read = operation("auto.shortlist.read");
+  assert.equal(foreground.effectClass, "launch"); assert.equal(read.effectClass, "read");
+  assert.deepEqual(foreground.nativeForms, []); assert.equal(foreground.nativeBinding, null); assert.equal(foreground.delegationBinding, null);
+  assert.match(foreground.reason, /No ranking\/default\/noninteractive/);
+  assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === foreground.operationId ? { ...row, effectClass: "read" } : row)).includes("effect-regression"));
+});
 test("status owner routes are inventoried without promoting source discovery to authority", () => {
   for (const action of ["inspect", "set"]) {
     const row = operation(`ticket.status.${action}`);
@@ -104,6 +111,48 @@ test("native-only owners are accounted for without inventing CLI commands or gra
   assert.equal(operation("document.native.publication-retire").effectClass, "write");
   assert.deepEqual(operation("document.native.publication-retire").channels, ["native"]);
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "workspace.run" ? { ...row, channels: ["cli"] } : row)).includes("invalid-channel"));
+});
+
+test("new handoff source dispatch is explicit and does not widen retained document owners or claim installed admission", () => {
+  for (const action of ["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue", "open", "status"]) {
+    const row = operation(`handoff.${action}`);
+    assert.deepEqual(row.nativeForms, [`pa_handoff:${action}`]); assert.deepEqual(row.cliForms, []);
+    assert.equal(row.nativeBinding, null); assert.equal(row.sourceHandler, "packages/pi-pa/src/pi-extension/handoff-tool.ts");
+    assert.equal(row.effectClass, action === "status" ? "read" : action === "open" ? "resource" : "write");
+  }
+  for (const id of ["document.native.plan", "document.native.complete-branch", "document.native.open"]) {
+    assert.equal(interactionCatalogue.some(row => row.operationId === id), false);
+  }
+  // The new tool is selected only by its explicit immutable capability. Retained
+  // document/session modules do not directly dispatch low-level finite owners.
+  assert.doesNotMatch(readFileSync(resolve(root, "packages/pa-core/src/index.ts"), "utf8"), /(?:handoff-git|handoff-native-branch)\.js/);
+  for (const path of ["packages/pi-pa/src/pi-extension/document-tool.ts", "packages/pi-pa/src/document-session.ts"]) {
+    const source = readFileSync(resolve(root, path), "utf8");
+    assert.doesNotMatch(source, /(?:handoff-native-branch|handoff-git|handoff-contract|handoff-intake|handoff-planning|handoff-lifecycle|handoff-review|handoff-publication|reader-publication)\.js/);
+  }
+  // Primer resource composition is text projection, not another CLI dispatcher.
+  assert.equal(operation("document.native.branch-inspect").effectClass, "read");
+  assert.equal(operation("document.native.branch-inspect").nativeBinding, null);
+});
+
+test("PAP-298 selected host changes existing launch/resume mechanics, not public commands or grants", () => {
+  for (const id of ["deploy.launch", "deploy.resume"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "launch"); assert.deepEqual(row.channels, ["cli"]);
+    assert.equal(row.nativeBinding, null); assert.equal(row.delegationBinding, null);
+  }
+  assert.match(operation("deploy.launch").reason, /no caller-controlled host selector/);
+  assert.match(operation("deploy.resume").reason, /before allocation/);
+  for (const row of interactionCatalogue) {
+    assert.equal(row.cliForms.some(form => /--selected-pi|--document-root|--hardlink-grant/.test(form)), false);
+    assert.equal(row.nativeForms.some(form => /pa_selected_pi|pa_hardlink/.test(form)), false);
+  }
+  const manifest = JSON.parse(readFileSync(resolve(root, "packages/pa-core/src/interactions/source-inventory.json"), "utf8"));
+  for (const path of ["nix/selected-pi-production-payload.nix", "nix/selected-pi-production-fixture.nix",
+    "packages/pi-pa/runtime/selected-host-entry.c", "packages/pi-pa/runtime/selected-pi-host.mjs", "packages/pi-pa/runtime/selected-pi-environment.json",
+    "packages/pi-pa/src/adapter.ts", "packages/pi-pa/src/native-host.ts", "packages/pi-pa/src/selected-pi-launch.ts", "packages/pi-pa/src/selected-pi-resume.ts",
+    "packages/pi-pa/src/pi-extension/read-publication.ts", "packages/pa-core/src/runtime-api/types.ts", "scripts/dev/patch-selected-pi.py"])
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked selected-host authority/contract source: ${path}`);
 });
 
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {

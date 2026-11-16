@@ -286,8 +286,8 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     }
     const onPid = advisoryLaunch ? (pid: number) => emitPidEvent({ deploymentId, team: teamConfig.name, pid }) : undefined;
     const result = priorSession
-      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, ...(onPid ? { onPid } : {}), sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
+      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, ...(onPid ? { onPid } : {}), sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
     // Only persist a session file when a real opencode session token was captured.
     // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
     // the deploy id as a placeholder, which silently broke `opa deploy --resume`.

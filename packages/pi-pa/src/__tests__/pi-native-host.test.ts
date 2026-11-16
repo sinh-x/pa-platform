@@ -398,6 +398,17 @@ test("direct module shutdown handlers compose into the central awaited boundary"
   assert.equal(legacyCalls, 1, "duplicate shutdown must not repeat composed cleanup");
 });
 
+test("shutdown memoizes before synchronous cleanup reentry and closes exactly once", async () => {
+  let closes = 0, disposal = 0, nested: Promise<void> | undefined;
+  const lifecycle = createPiSessionLifecycle(() => { closes++; });
+  lifecycle.addShutdownStep(() => { disposal++; nested = lifecycle.shutdown(); });
+  const original = lifecycle.shutdown();
+  assert.equal(nested, original, "reentry must observe the same already-memoized promise");
+  await original;
+  assert.equal(closes, 1); assert.equal(disposal, 1);
+  assert.equal(lifecycle.shutdown(), original);
+});
+
 test("shutdown settles context disposal and in-flight registry access before close", async () => {
   const order: string[] = [];
   let releaseAccess: (() => void) | undefined;
@@ -560,7 +571,7 @@ test("a later extension session lazily reopens the registry singleton after shut
     const replacementDb = getDb();
     assert.notEqual(replacementDb, outgoingDb);
     assert.equal(replacementDb.open, true);
-    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "19" });
+    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "22" });
     const replacement = captureExtension();
     await replacement.events.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
     assert.equal(replacementDb.open, false);

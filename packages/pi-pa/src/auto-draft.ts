@@ -83,6 +83,11 @@ export function autoDraftOwner(journal: RegistryAutoJournal, authenticate: () =>
   };
   const admit = (item: AutoItem) => {
     authenticate(); pairing().assertCurrent();
+    // The current native subprocess has no independently enforced CPU/tree
+    // confinement or proof of descendant settlement. Never claim an effect or
+    // start a real provider until its process owner supplies those guarantees.
+    // An injected driver is an internal test seam, not a CLI or config grant.
+    if (!driver) throw new AutoWaitlistError("AUTO_UNAVAILABLE");
     if (Buffer.byteLength(revisionNotes) > 16384) throw new AutoWaitlistError("AUTO_INPUT");
     assertNoSensitiveMatch("content", revisionNotes);
     if (resolveRepoExecutionPath(item.project).repoRoot !== item.repoRoot) throw new AutoWaitlistError("AUTO_SOURCE");

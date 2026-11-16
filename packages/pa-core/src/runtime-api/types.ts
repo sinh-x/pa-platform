@@ -50,6 +50,8 @@ export interface SpawnOpts {
   model?: string;
   autonomy?: string;
   env?: Record<string, string>;
+  /** Legacy caller metadata; Pi/OpenCode deployments do not enforce a runtime
+   * deadline. Tool, readiness, cancellation and cleanup bounds are independent. */
   timeoutMs?: number;
   logFile?: string;
   sessionName?: string;
@@ -68,6 +70,9 @@ export interface SpawnOpts {
 
 export interface ResumeOpts extends SpawnOpts {
   sessionId: string;
+  /** Original deployment identity for adapters with an immutable host contract.
+   * Correlation only, never an execution or source-access grant. */
+  resumedFromDeploymentId?: string;
 }
 
 export interface SpawnResult {

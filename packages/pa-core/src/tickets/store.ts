@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import { handoffKey, handoffFail, parseTicketHandoffChange, handoffCandidate, readHandoffIntent, handoffIntents, publishHandoffIntent, handoffAudit, handoffAuditComplete, type TicketHandoffChange, type TicketHandoffHooks } from "./handoff-intent.js";
 import { statusFail, statusKey, statusVersion, statusCandidate, statusIntents, readStatusIntent, publishStatusIntent, statusAudit, statusAuditComplete, TICKET_STATUSES, type TicketStatusHooks } from "./status-intent.js";
 import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
 import { AdvisoryFiles } from "../operations/files.js";
+import { AUTO_DRAFT_APPEND_ACTOR, AutoDraftTicketAppendError, parseAutoDraftTicketAppend, autoDraftTicketVersion, autoDraftAppendKey, assertAutoDraftAppendScope, autoDraftAppendCandidate, readAutoDraftAppendIntent, autoDraftAppendIntents, autoDraftAppendAudit, autoDraftAppendAuditComplete, type AutoDraftAppendIntent, type AutoDraftTicketAppendHooks } from "./auto-draft-append.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { TicketCreateIntentError, creationDigest, creationKey, creationReservations, publishCreationIntent, readCreationIntent, type TicketCreateIntentIdentity, type TicketCreateIntentHooks } from "./create-intent.js";
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -168,6 +170,22 @@ export class TicketStore {
     });
   }
 
+  /** Original creation inspection only; never reserve an ID or repair an audit.
+   * Used by the separate native intake/association owner after response loss. */
+  inspectCreationWithIntent(identity: TicketCreateIntentIdentity) {
+    return this.withTransaction(() => {
+      const record = readCreationIntent(this.dir, creationKey(identity));
+      if (!record) return undefined;
+      const current = this.get(record.ticket.id);
+      const audits = this.readCreationAudits().entries.filter(row => row.ticket_id === record.ticket.id && row.action === "created");
+      const expected: AuditEntry = { ticket_id: record.ticket.id, action: "created", actor: record.actor, timestamp: record.ticket.createdAt,
+        changes: { status: ["", record.ticket.status], assignee: ["", record.ticket.assignee] } };
+      if (audits.length > 1 || audits.length === 1 && (!current || current.project !== record.ticket.project || creationDigest(audits[0]) !== creationDigest(expected))
+        || audits.length === 0 && current && !isDeepStrictEqual(current, record.ticket)) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
+      return { record: structuredClone(record), ticket: current, complete: audits.length === 1 };
+    });
+  }
+
   /** Finite scalar planning data primitive, NOT native role/lifecycle authority.
    * A future admitted adapter must authenticate ownership on every locked callback.
    * Immutable intent precedes effects; unknown partial state is never rolled back. */
@@ -249,6 +267,102 @@ export class TicketStore {
     });
   }
 
+  /** Finite own-draft additions ONLY. This is a data-owner primitive, not a
+   * native policy/actor/generation grant or a public raw ticket-update port. */
+  appendAutoDraftWithIntent(raw: Uint8Array, hooks: AutoDraftTicketAppendHooks): { ticket: Ticket; appliedVersion: string; reused: boolean } {
+    const input = parseAutoDraftTicketAppend(raw), key = autoDraftAppendKey(input), payloadSha256 = creationDigest(input);
+    const fail = (code: AutoDraftTicketAppendError["code"]): never => { throw new AutoDraftTicketAppendError(code); };
+    if (typeof hooks?.assertCurrent !== "function" || typeof hooks.assertArtifacts !== "function") return fail("TICKET_APPEND_INPUT");
+    const callback = (fn: () => unknown, code: AutoDraftTicketAppendError["code"]) => {
+      const result = fn(); if (result instanceof Promise) void result.catch(() => {});
+      if (result !== undefined) fail(code);
+    };
+    const check = () => {
+      callback(() => hooks.assertCurrent(structuredClone(input)), "TICKET_APPEND_INPUT");
+      callback(() => hooks.assertArtifacts(structuredClone(input)), "TICKET_APPEND_INPUT");
+    };
+    const observed = (stage: "intent" | "ticket" | "audit") => callback(() => hooks.afterPersist?.(stage), "TICKET_APPEND_UNCERTAIN");
+    const audits = () => { try { return this.readCreationAudits(); } catch { return fail("TICKET_APPEND_UNCERTAIN"); } };
+    const readExact = (): Ticket => {
+      try {
+        const bytes = new AdvisoryFiles(this.dir).file(`${input.ticket}.json`) as Buffer;
+        if (bytes.length > 1_048_576) throw new Error();
+        const raw = JSON.parse(JSON.stringify(parseReviewEvidenceJson(bytes, "auto-draft-append-ticket")));
+        const ticket = this.get(input.ticket);
+        // Do not silently drop unknown fields or normalize legacy timestamps
+        // while appending. Aliases, links and unsupported snapshots refuse.
+        if (!ticket || !isDeepStrictEqual(raw, ticket)) throw new Error();
+        return ticket;
+      } catch { return fail("TICKET_APPEND_UNCERTAIN"); }
+    };
+    return this.withTransaction(() => {
+      check(); let record = readAutoDraftAppendIntent(this.dir, key); const reused = Boolean(record);
+      if (record && (record.payloadSha256 !== payloadSha256 || !isDeepStrictEqual(record.input, input))) return fail("TICKET_APPEND_CONFLICT");
+      const history = audits().entries;
+      for (const other of autoDraftAppendIntents(this.dir)) if (other.before.id === input.ticket && other.key !== key && !autoDraftAppendAuditComplete(other, history)) return fail("TICKET_APPEND_UNCERTAIN");
+      if (!record) {
+        const before = readExact(); assertAutoDraftAppendScope(before, input);
+        if (autoDraftTicketVersion(before) !== input.expectedVersion) return fail("TICKET_APPEND_STALE");
+        const after = autoDraftAppendCandidate(before, input, nowUtc(), key);
+        record = { schemaVersion: "pa-auto-draft-append-intent/v1", key, payloadSha256, actor: AUTO_DRAFT_APPEND_ACTOR, input, expectedVersion: input.expectedVersion,
+          appliedVersion: autoDraftTicketVersion(after), before, after };
+        check(); if (!isDeepStrictEqual(readExact(), before)) return fail("TICKET_APPEND_STALE");
+        new AdvisoryFiles(this.dir).file(`.ticket-auto-draft-${key}.json`, JSON.stringify(record));
+        if (!isDeepStrictEqual(readAutoDraftAppendIntent(this.dir, key), record)) return fail("TICKET_APPEND_UNCERTAIN");
+        observed("intent");
+      }
+      if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+        || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) return fail("TICKET_APPEND_UNCERTAIN");
+      if (!autoDraftAppendAuditComplete(record, audits().entries)) {
+        const current = readExact();
+        if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) return fail("TICKET_APPEND_UNCERTAIN");
+        if (isDeepStrictEqual(current, record.before)) {
+          check(); if (!isDeepStrictEqual(readExact(), record.before)) return fail("TICKET_APPEND_UNCERTAIN");
+          new AdvisoryFiles(this.dir).file(`${input.ticket}.json`, JSON.stringify(record.after, null, 2)); observed("ticket");
+        }
+        check(); if (!isDeepStrictEqual(readExact(), record.after)) return fail("TICKET_APPEND_UNCERTAIN");
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${audits().raw}${JSON.stringify(autoDraftAppendAudit(record))}\n`); observed("audit");
+      }
+      check(); const ticket = readExact();
+      if (ticket.id !== input.ticket || ticket.project !== input.project || !autoDraftAppendAuditComplete(record, audits().entries)) return fail("TICKET_APPEND_UNCERTAIN");
+      return { ticket, appliedVersion: record.appliedVersion, reused };
+    });
+  }
+
+  /** Private native recovery observation, NOT admission. Reports only the
+   * original intent's exact data/audit relationship; never repairs or writes. */
+  observeAutoDraftAppend(raw: Uint8Array): { state: "absent" | "intent" | "ticket" | "completed" | "conflict"; expectedVersion: string; appliedVersion: string | null; currentVersion: string | null } {
+    const input = parseAutoDraftTicketAppend(raw), key = autoDraftAppendKey(input);
+    return this.withTransaction(() => {
+      const record = readAutoDraftAppendIntent(this.dir, key), current = this.get(input.ticket), currentVersion = current ? autoDraftTicketVersion(current) : null;
+      const result = { expectedVersion: input.expectedVersion, appliedVersion: record?.appliedVersion ?? null, currentVersion };
+      if (!record) return { state: "absent", ...result };
+      if (record.payloadSha256 !== creationDigest(input) || !isDeepStrictEqual(record.input, input) || !current) return { state: "conflict", ...result };
+      const bytes = new AdvisoryFiles(this.dir).file(`${input.ticket}.json`) as Buffer;
+      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(parseReviewEvidenceJson(bytes, "auto-draft-append-observation"))), current)) return { state: "conflict", ...result };
+      const complete = autoDraftAppendAuditComplete(record, this.readCreationAudits().entries);
+      if (complete) return { state: "completed", ...result };
+      if (isDeepStrictEqual(current, record.before)) return { state: "intent", ...result };
+      if (isDeepStrictEqual(current, record.after)) return { state: "ticket", ...result };
+      return { state: "conflict", ...result };
+    });
+  }
+
+  /** Native quarantine owner can inspect unresolved append identities; absence
+   * of a process or a terminal label is not used to settle these data effects. */
+  pendingAutoDraftAppends(id: string): string[] {
+    if (typeof id !== "string" || id.length > 64 || id !== id.trim() || !/^(?:PAP|PAPC)-\d+$/.test(id)) throw new AutoDraftTicketAppendError("TICKET_APPEND_INPUT");
+    return this.withTransaction(() => {
+      const audits = this.readCreationAudits().entries, pending: string[] = [];
+      for (const record of autoDraftAppendIntents(this.dir)) {
+        if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+          || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) throw new AutoDraftTicketAppendError("TICKET_APPEND_UNCERTAIN");
+        if (record.before.id === id && !autoDraftAppendAuditComplete(record, audits)) pending.push(record.key);
+      }
+      return pending;
+    });
+  }
+
   /** Status-only finite owner. Durable intent precedes ticket/audit writes under
    * the same mutex as legacy writers and protected publication. No approval effect. */
   setStatusWithIntent(id: string, expectedVersion: string, status: TicketStatus, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketStatusHooks): { ticket: Ticket; appliedVersion: string; reused: boolean } {
@@ -303,6 +417,83 @@ export class TicketStore {
       const current = this.get(id);
       if (!current || current.id !== id || current.project !== record.after.project || !statusAuditComplete(record, this.readCreationAudits().entries)) return statusFail("TICKET_STATUS_UNCERTAIN");
       return { ticket: current, appliedVersion: statusVersion(record.after), reused };
+    });
+  }
+
+  /** Finite handoff owner primitive. No public tool dispatch or retained-profile
+   * upgrade. A trusted native adapter must prove association, historical owners,
+   * review/ref evidence and current authority in the synchronous locked hooks.
+   * Original intent precedes ticket/audit effects; no rollback or renamed retry. */
+  applyHandoffWithIntent(id: string, expectedVersion: string, rawChange: TicketHandoffChange, actor: string, identity: TicketCreateIntentIdentity, hooks: TicketHandoffHooks): { ticket: Ticket; appliedVersion: string; key: string; reused: boolean } {
+    const boundIdentity = Object.freeze({ ...identity }), key = handoffKey(boundIdentity), change = parseTicketHandoffChange(rawChange);
+    if (!isCanonicalTicketId(id) || !validPlanningDigest(expectedVersion) || typeof actor !== "string" || !actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)
+      || typeof hooks.assertCurrent !== "function" || typeof hooks.assertSnapshot !== "function") return handoffFail("TICKET_HANDOFF_INPUT");
+    const payloadSha256 = creationDigest({ id, expectedVersion, change, actor });
+    const sync = (value: unknown, code: "TICKET_HANDOFF_INPUT" | "TICKET_HANDOFF_UNCERTAIN") => {
+      if (value instanceof Promise) void value.catch(() => {});
+      if (value !== undefined) handoffFail(code);
+    };
+    const check = () => sync(hooks.assertCurrent(), "TICKET_HANDOFF_INPUT");
+    const observed = (stage: "intent" | "ticket" | "audit") => sync(hooks.afterPersist?.(stage), "TICKET_HANDOFF_UNCERTAIN");
+    return this.withTransaction(() => {
+      check();
+      let record = readHandoffIntent(this.dir, key);
+      const reused = record !== undefined;
+      if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.actor !== actor)) handoffFail("TICKET_HANDOFF_CONFLICT");
+      const audits = () => {
+        try { return this.readCreationAudits(); } catch { return handoffFail("TICKET_HANDOFF_UNCERTAIN"); }
+      };
+      const snapshot = (before: Ticket) => {
+        const current = this.get(id);
+        if (!current) return handoffFail("TICKET_HANDOFF_SCOPE");
+        sync(hooks.assertSnapshot(structuredClone(before), structuredClone(current)), "TICKET_HANDOFF_INPUT");
+      };
+      // All incomplete handoff operations on this ticket, even a visible
+      // candidate with a missing audit, block replacement identities.
+      for (const pending of handoffIntents(this.dir)) if (pending.before.id === id && pending.key !== key && !handoffAuditComplete(pending, audits().entries)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      for (const pending of planningIntents(this.dir)) if (pending.before.id === id && !planningAuditComplete(pending, audits().entries)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      for (const pending of statusIntents(this.dir)) if (pending.before.id === id && !statusAuditComplete(pending, audits().entries)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      if (!record) {
+        const before = this.get(id);
+        if (!before) return handoffFail("TICKET_HANDOFF_SCOPE");
+        if (creationDigest(before) !== expectedVersion) return handoffFail("TICKET_HANDOFF_STALE");
+        snapshot(before);
+        const plan = change.kind === "materialize" ? readHandoffIntent(this.dir, change.planKey, true) : undefined;
+        if (change.kind === "materialize" && (!plan || !handoffAuditComplete(plan, audits().entries))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        const after = handoffCandidate(before, change, actor, nowUtc(), plan);
+        record = { schemaVersion: "pa-ticket-handoff-intent/v1", key, ...boundIdentity, payloadSha256, actor, expectedVersion, change, before, after };
+        check(); snapshot(before);
+        if (!isDeepStrictEqual(this.get(id), before)) handoffFail("TICKET_HANDOFF_STALE");
+        publishHandoffIntent(this.dir, record); observed("intent");
+      }
+      snapshot(record.before);
+      if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
+        || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      if (!handoffAuditComplete(record, audits().entries)) {
+        const current = this.get(id);
+        if (!isDeepStrictEqual(current, record.before) && !isDeepStrictEqual(current, record.after)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        if (!isDeepStrictEqual(current, record.after)) {
+          check(); snapshot(record.before);
+          if (!isDeepStrictEqual(this.get(id), record.before)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+          new AdvisoryFiles(this.dir).file(`${id}.json`, JSON.stringify(record.after, null, 2)); observed("ticket");
+        }
+        check(); snapshot(record.before);
+        if (!isDeepStrictEqual(this.get(id), record.after)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        new AdvisoryFiles(this.dir).file("audit.jsonl", `${audits().raw}${JSON.stringify(handoffAudit(record))}\n`); observed("audit");
+      }
+      check(); snapshot(record.before);
+      const ticket = this.get(id);
+      if (!ticket || ticket.project !== record.after.project || !handoffAuditComplete(record, audits().entries)) return handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      return { ticket, key, appliedVersion: creationDigest(record.after), reused };
+    });
+  }
+
+  /** Internal original-operation observation; no repair, authority or public
+   * request dispatch. Used under the same outer native admission as the writer. */
+  inspectHandoffWithIntent(identity: TicketCreateIntentIdentity) {
+    return this.withTransaction(() => {
+      const record = readHandoffIntent(this.dir, handoffKey(identity));
+      return record ? { record, complete: handoffAuditComplete(record, this.readCreationAudits().entries) } : undefined;
     });
   }
 

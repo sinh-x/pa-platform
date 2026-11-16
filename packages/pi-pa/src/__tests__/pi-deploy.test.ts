@@ -876,6 +876,25 @@ test("Pi strict mode entry rejects retired/unknown/default, force, resume and in
   });
 });
 
+test("Pi generic deployment refuses native auto-draft before allocation or adapter effects", async () => {
+  await withPiEnv(async (root, gitState) => {
+    writeFileSync(join(root, "teams", "requirements.yaml"), ["name: requirements", "description: fixture", "objective: Draft", "agents: []",
+      "default_mode: auto-draft", "deploy_modes:", "  - id: auto-draft", "    label: Native draft"].join("\n"));
+    const effects: string[] = [];
+    const adapter = stubAdapter({ preflight: async () => { effects.push("preflight"); }, onInstall: () => effects.push("hooks"), onDescribe: () => effects.push("tools"), onSpawn: () => effects.push("spawn"), onResume: () => effects.push("resume") });
+    for (const selection of [{ mode: "auto-draft" }, {}, { mode: "auto-draft", force: true, background: true }, { mode: "auto-draft", dryRun: true }]) {
+      const request = { team: "requirements", ticket: "PAP-198", ...selection };
+      const result = await deployWithPi(request, adapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined); assert.match(result.reason!, /^Draft not started:/);
+      const preflight = await createPiHooks(adapter).deployPreflight!(request);
+      assert.equal(preflight?.reason, result.reason);
+    }
+    assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+    assert.equal(existsSync(join(root, "deployments")), false);
+    assert.equal(existsSync(join(root, "registry.db")), false);
+  });
+});
+
 test("Pi rejects opaque unsupported resume files before allocation, hooks or preflight", async () => {
   await withPiEnv(async (root) => {
     const id = "d-abcdef";
@@ -1555,44 +1574,56 @@ test("transition contenders admit exactly one child", { timeout: 120_000 }, asyn
     const repo = join(root, "repo");
     git(["update-ref", "refs/remotes/origin/develop", "HEAD"], repo);
     const parent = await startHeldOrchestrator();
-    const protectedCapability = inspectRepositoryMutationLease(repo).lease!.ownershipToken;
-    git(["checkout", "-b", "feature/PAP-198-contenders"], repo);
-    const protectedDigest = captureRepositoryGitSnapshot(repo).digestSha256!;
-    let protectedBorrowerToken = "";
-    let releaseWinner!: () => void;
-    const heldWinner = new Promise<SpawnResult>((resolveResult) => {
-      releaseWinner = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
-    });
-    let spawns = 0;
-    let completed = 0;
-    await withInheritedEnvironment({
-      PA_DEPLOYMENT_ID: parent.opts.deployId,
-      PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
-      PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
-    }, async () => {
-      const adapter = stubAdapter({ onSpawn: (opts) => { spawns += 1; protectedBorrowerToken = opts.repositoryBorrower?.borrowerToken ?? ""; }, result: () => heldWinner });
-      const contenders = Array.from({ length: 50 }, () => deployWithPi(
-        { team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, adapter,
-      ).then((outcome) => { completed += 1; return outcome; }));
-      await within((async () => { while (completed < 49) await nextTick(); })(), 90_000, () => `only ${completed} transition contenders completed`);
-      assert.equal(spawns, 1);
-      assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
-      releaseWinner();
-      const outcomes = await Promise.all(contenders);
-      assert.equal(outcomes.filter((outcome) => outcome.status === "success").length, 1);
-      const failures = outcomes.filter((outcome) => outcome.status === "failed");
-      assert.equal(failures.length, 49);
-      assert.equal(failures.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
-      assert.equal(failures.every((outcome) => /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(outcome.reason ?? "")), true);
-      assert.ok(protectedBorrowerToken);
-      for (const outcome of failures) {
-        for (const protectedValue of [protectedCapability, protectedBorrowerToken, protectedDigest]) {
-          assert.doesNotMatch(outcome.reason ?? "", new RegExp(escapeRegExp(protectedValue)));
+    try {
+      const protectedCapability = inspectRepositoryMutationLease(repo).lease!.ownershipToken;
+      git(["checkout", "-b", "feature/PAP-198-contenders"], repo);
+      const protectedDigest = captureRepositoryGitSnapshot(repo).digestSha256!;
+      let protectedBorrowerToken = "";
+      let releaseWinner!: () => void;
+      const heldWinner = new Promise<SpawnResult>((resolveResult) => {
+        releaseWinner = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
+      });
+      let spawns = 0;
+      let completed = 0;
+      let waiting = true;
+      await withInheritedEnvironment({
+        PA_DEPLOYMENT_ID: parent.opts.deployId,
+        PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+        PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
+      }, async () => {
+        const adapter = stubAdapter({ onSpawn: (opts) => { spawns += 1; protectedBorrowerToken = opts.repositoryBorrower?.borrowerToken ?? ""; }, result: () => heldWinner });
+        const contenders = Array.from({ length: 50 }, () => deployWithPi(
+          { team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, adapter,
+        ).then((outcome) => { completed += 1; return outcome; }));
+        try {
+          await within((async () => { while (waiting && completed < 49) await nextTick(); })(), 90_000, () => `only ${completed} transition contenders completed`);
+          assert.equal(spawns, 1);
+          assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
+          releaseWinner();
+          const outcomes = await Promise.all(contenders);
+          assert.equal(outcomes.filter((outcome) => outcome.status === "success").length, 1);
+          const failures = outcomes.filter((outcome) => outcome.status === "failed");
+          assert.equal(failures.length, 49);
+          assert.equal(failures.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
+          assert.equal(failures.every((outcome) => /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(outcome.reason ?? "")), true);
+          assert.ok(protectedBorrowerToken);
+          for (const outcome of failures) {
+            for (const protectedValue of [protectedCapability, protectedBorrowerToken, protectedDigest]) {
+              assert.doesNotMatch(outcome.reason ?? "", new RegExp(escapeRegExp(protectedValue)));
+            }
+          }
+        } finally {
+          // A failed assertion/deadline must not retain synthetic live runtimes
+          // or restore their environment while sibling admissions are pending.
+          waiting = false;
+          releaseWinner();
+          await Promise.allSettled(contenders);
         }
-      }
-    });
-    parent.release();
-    assert.equal((await parent.result).status, "success");
+      });
+    } finally {
+      parent.release();
+      assert.equal((await parent.result).status, "success");
+    }
   });
 });
 
@@ -4294,14 +4325,14 @@ test("new foreground Pi deployments omit the adapter deadline but retain timeout
   });
 });
 
-test("new background Pi deployments pass the resolved adapter deadline while retaining supervision metadata", async () => {
+test("new background Pi deployments omit adapter deadlines while retaining legacy planning metadata", async () => {
   await withPiEnv(async () => {
     let captured: SpawnOpts | undefined;
     const result = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 2400 }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
     assert.equal(result.status, "success");
     assert.ok(captured);
     assert.equal(captured.mode, "background");
-    assert.equal(captured.timeoutMs, 2_400_000);
+    assert.equal(Object.hasOwn(captured, "timeoutMs"), false);
     assertTimeoutMetadata(captured, 2400);
   });
 });
@@ -4336,14 +4367,15 @@ test("ordinary background termination retains one causal failure with no Git sta
     } });
     const deployed = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 60 }, adapter);
     assert.equal(deployed.status, "pending");
-    assert.equal(config?.timeoutMs, 60_000);
+    assert.equal(config?.timeoutMs, undefined);
 
     const child = new BackgroundDeploymentProcess(88_002);
+    const shutdown = new AbortController();
     let timeoutCallback: (() => void) | undefined;
     let now = 0;
     let gone = false;
     const signals: NodeJS.Signals[] = [];
-    const running = runPiBackgroundRunner(config!, { supervision: {
+    const running = runPiBackgroundRunner(config!, { shutdownSignal: shutdown.signal, supervision: {
       spawnProcess: (() => child as never) as never,
       now: () => now,
       sleep: async (milliseconds) => { now += milliseconds; },
@@ -4356,15 +4388,30 @@ test("ordinary background termination retains one causal failure with no Git sta
       },
     } });
     await nextTick();
-    timeoutCallback?.();
+    assert.equal(timeoutCallback, undefined);
+    shutdown.abort("SIGTERM");
     await running;
     const terminal = getDeploymentEvents(deployed.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0]?.summary ?? "", /runner-timeout:/);
+    assert.match(terminal[0]?.summary ?? "", /runner-shutdown:.*SIGTERM/);
     assert.equal(queryDeploymentStatus(deployed.deploymentId!)?.status, "failed");
     assert.ok(now < 5_000);
     assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("background standalone, ticketed, resumed and evaluator routes never forward deployment deadlines", async () => {
+  await withPiEnv(async () => {
+    const captured: SpawnOpts[] = [];
+    const adapter = stubAdapter({ onSpawn: opts => { captured.push(opts); }, onResume: opts => { captured.push(opts); } });
+    const standalone = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 60 }, adapter);
+    const ticketed = await deployWithPi({ team: "builder", mode: "implement", background: true, ticket: "PAP-159", timeout: 60 }, adapter);
+    const resumed = await deployWithPi({ team: "builder", mode: "implement", background: true, resume: standalone.deploymentId, timeout: 60 }, adapter);
+    const evaluator = await deployWithPi({ team: "builder", mode: "implement", background: true, evaluateDeployment: "d-abcdef", timeout: 60 }, adapter);
+    for (const result of [standalone, ticketed, resumed, evaluator]) assert.equal(result.status, "success", result.reason);
+    assert.equal(captured.length, 4);
+    for (const opts of captured) { assert.equal(opts.mode, "background"); assert.equal(Object.hasOwn(opts, "timeoutMs"), false); assertTimeoutMetadata(opts, 60); }
   });
 });
 

@@ -8,6 +8,7 @@ import type { PiDocumentConfirmationContext } from "../document-confirmation-nat
 import { createWorkspaceTool } from "./workspace-tool.js";
 import { createPublicWebTool } from "./web-read-tool.js";
 import { createTicketStatusTool } from "./ticket-status-tool.js";
+import { createHandoffTool } from "./handoff-tool.js";
 import { confirmationDocumentCaller, DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
 import { createPaTicketIntakeTool, ticketIntakeFailure } from "./ticket-intake-tool.js";
 import { createPaCapabilitiesTool } from "./capability-tool.js";
@@ -112,6 +113,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
     if (caller.capabilities) document.description = "Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
     const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
+      ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_handoff") ? [createHandoffTool(caller.handoffIdentitySha256!)] : []),
       ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_ticket_status") ? [createTicketStatusTool(caller.identitySha256)] : []),
       ...(caller.capabilities && caller.sessionId && capabilityToolSelected(caller.capabilities.policy, "pa_web_read") ? [createPublicWebTool(caller.deploymentId, caller.sessionId, lifecycle)] : [])];
     if (interactionsProfile || caller.capabilities) {

@@ -1,6 +1,6 @@
 {
   "name": "pa-platform",
-  "version": "0.1.165",
+  "version": "0.1.170",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "test:paired": "bash scripts/dev/test_paired_repository.sh",
     "test:paired-gate": "tsx --test scripts/dev/validate_paired_repository.test.mts scripts/dev/verify_workflow_source_pair.test.mts",
     "verify:document-installed": "node scripts/dev/verify_document_runtime.mjs",
+    "verify:selected-pi-reader": "nix run -L .#verify-selected-pi-reader",
     "verify:workflow-source-pair": "tsx scripts/dev/verify_workflow_source_pair.mts",
     "verify:paired-config": "tsx scripts/dev/validate_paired_repository.mts",
     "typecheck": "corepack pnpm -r typecheck",

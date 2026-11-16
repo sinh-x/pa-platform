@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 22;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -25,6 +25,19 @@ export function getDb(dbPath = getRegistryDbPath()): Database.Database {
   migrate(db);
   if (dbPath === getRegistryDbPath()) singleton = db;
   return db;
+}
+
+/** A caller-owned connection for finite journals requiring FULL synchronous
+ * durability. Opens only the already initialized registry; never migrates it or
+ * changes the historical singleton's settings. The caller must close it. */
+export function openDurableRegistryDatabase(): Database.Database {
+  const nativeBinding = process.env[REGISTRY_NATIVE_BINDING_ENV]?.trim();
+  const db = new Database(getRegistryDbPath(), { fileMustExist: true, ...(nativeBinding ? { nativeBinding } : {}) });
+  try {
+    db.pragma("busy_timeout = 5000"); db.pragma("foreign_keys = ON"); db.pragma("synchronous = FULL");
+    if (db.pragma("journal_mode", { simple: true }) !== "wal" || db.pragma("synchronous", { simple: true }) !== 2) throw new Error("durable registry connection unavailable");
+    return db;
+  } catch (error) { db.close(); throw error; }
 }
 
 export type RegistryReadCause = "registry-missing" | "registry-unreadable" | "registry-unsafe" | "registry-over-limit" | "registry-unstable";
@@ -241,6 +254,63 @@ function migrate(db: Database.Database): void {
       BEGIN SELECT RAISE(ABORT, 'auto events are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS auto_events_no_delete BEFORE DELETE ON auto_events
       BEGIN SELECT RAISE(ABORT, 'auto events are append-only'); END;
+    CREATE TABLE IF NOT EXISTS auto_reasoning_cycles (
+      cycle_id TEXT PRIMARY KEY, active_slot INTEGER UNIQUE CHECK(active_slot IS NULL OR active_slot=1),
+      revision INTEGER NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS auto_reasoning_session ON auto_reasoning_cycles(json_extract(body,'$.context.sessionId'));
+    CREATE TABLE IF NOT EXISTS auto_reasoning_events (
+      cycle_id TEXT NOT NULL, revision INTEGER NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(cycle_id, revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_events_no_update BEFORE UPDATE ON auto_reasoning_events BEGIN SELECT RAISE(ABORT, 'auto reasoning events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_events_no_delete BEFORE DELETE ON auto_reasoning_events BEGIN SELECT RAISE(ABORT, 'auto reasoning events are append-only'); END;
+    CREATE TABLE IF NOT EXISTS auto_shortlist_blobs (sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_shortlist_blobs_no_update BEFORE UPDATE ON auto_shortlist_blobs BEGIN SELECT RAISE(ABORT, 'auto shortlist bytes are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_shortlist_blobs_no_delete BEFORE DELETE ON auto_shortlist_blobs BEGIN SELECT RAISE(ABORT, 'auto shortlist bytes are immutable'); END;
+    CREATE TABLE IF NOT EXISTS auto_shortlists (version TEXT PRIMARY KEY, cycle_id TEXT UNIQUE NOT NULL, sha256 TEXT NOT NULL, report_sha256 TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_shortlists_no_update BEFORE UPDATE ON auto_shortlists BEGIN SELECT RAISE(ABORT, 'auto shortlists are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_shortlists_no_delete BEFORE DELETE ON auto_shortlists BEGIN SELECT RAISE(ABORT, 'auto shortlists are immutable'); END;
+    CREATE TABLE IF NOT EXISTS auto_shortlist_head (singleton INTEGER PRIMARY KEY CHECK(singleton=1), version TEXT NOT NULL REFERENCES auto_shortlists(version));
+    CREATE TABLE IF NOT EXISTS auto_choice_requests (
+      request_id TEXT PRIMARY KEY, active_slot INTEGER UNIQUE CHECK(active_slot IS NULL OR active_slot=1),
+      revision INTEGER NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auto_choice_events (
+      request_id TEXT NOT NULL, revision INTEGER NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(request_id, revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_choice_events_no_update BEFORE UPDATE ON auto_choice_events BEGIN SELECT RAISE(ABORT, 'auto choice events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_choice_events_no_delete BEFORE DELETE ON auto_choice_events BEGIN SELECT RAISE(ABORT, 'auto choice events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_items_reasoning_insert BEFORE INSERT ON auto_items WHEN NEW.active_slot=1 AND
+      (EXISTS(SELECT 1 FROM auto_reasoning_cycles WHERE active_slot=1) OR EXISTS(SELECT 1 FROM auto_choice_requests WHERE active_slot=1))
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_items_reasoning_update BEFORE UPDATE ON auto_items WHEN NEW.active_slot=1 AND
+      (EXISTS(SELECT 1 FROM auto_reasoning_cycles WHERE active_slot=1) OR EXISTS(SELECT 1 FROM auto_choice_requests WHERE active_slot=1))
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_items_insert BEFORE INSERT ON auto_reasoning_cycles WHEN NEW.active_slot=1 AND EXISTS(SELECT 1 FROM auto_items WHERE active_slot=1)
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_reasoning_items_update BEFORE UPDATE ON auto_reasoning_cycles WHEN NEW.active_slot=1 AND EXISTS(SELECT 1 FROM auto_items WHERE active_slot=1)
+      BEGIN SELECT RAISE(ABORT, 'auto global slot busy'); END;
+    CREATE TABLE IF NOT EXISTS auto_draft_generations (
+      item_id TEXT NOT NULL, generation INTEGER NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(item_id,generation)
+    );
+    CREATE TABLE IF NOT EXISTS auto_draft_events (
+      item_id TEXT NOT NULL, generation INTEGER NOT NULL, revision INTEGER NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(item_id,generation,revision)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_draft_events_no_update BEFORE UPDATE ON auto_draft_events BEGIN SELECT RAISE(ABORT, 'auto draft events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_draft_events_no_delete BEFORE DELETE ON auto_draft_events BEGIN SELECT RAISE(ABORT, 'auto draft events are append-only'); END;
+    CREATE TABLE IF NOT EXISTS auto_draft_snapshots (sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS auto_draft_snapshots_no_update BEFORE UPDATE ON auto_draft_snapshots BEGIN SELECT RAISE(ABORT, 'auto draft bytes are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_draft_snapshots_no_delete BEFORE DELETE ON auto_draft_snapshots BEGIN SELECT RAISE(ABORT, 'auto draft bytes are immutable'); END;
+    CREATE TABLE IF NOT EXISTS auto_draft_turns (
+      item_id TEXT NOT NULL, generation INTEGER NOT NULL, turn INTEGER NOT NULL, phase TEXT NOT NULL, predecessor TEXT, body TEXT NOT NULL, sha256 TEXT NOT NULL,
+      PRIMARY KEY(item_id,generation,turn,phase)
+    );
+    CREATE TRIGGER IF NOT EXISTS auto_draft_turns_no_update BEFORE UPDATE ON auto_draft_turns BEGIN SELECT RAISE(ABORT, 'auto draft turns are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS auto_draft_turns_no_delete BEFORE DELETE ON auto_draft_turns BEGIN SELECT RAISE(ABORT, 'auto draft turns are append-only'); END;
     CREATE TABLE IF NOT EXISTS auto_effect_claims (
       operation_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, body TEXT NOT NULL
     );
@@ -256,6 +326,22 @@ function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS document_snapshots (
       sha256 TEXT PRIMARY KEY, raw BLOB NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS document_auto_policy_events (
+      domain TEXT NOT NULL, revision INTEGER NOT NULL, review_id TEXT NOT NULL, phase TEXT NOT NULL,
+      predecessor TEXT, sha256 TEXT NOT NULL, body TEXT NOT NULL, decision_claim TEXT UNIQUE, interaction_claim TEXT UNIQUE, policy_claim TEXT UNIQUE,
+      PRIMARY KEY (domain, revision), UNIQUE (domain, review_id, phase)
+    );
+    CREATE TABLE IF NOT EXISTS document_auto_policy_captures (
+      domain TEXT NOT NULL, review_id TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY (domain, review_id)
+    );
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_captures_no_update BEFORE UPDATE ON document_auto_policy_captures
+      BEGIN SELECT RAISE(ABORT, 'native policy captures are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_captures_no_delete BEFORE DELETE ON document_auto_policy_captures
+      BEGIN SELECT RAISE(ABORT, 'native policy captures are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_events_no_update BEFORE UPDATE ON document_auto_policy_events
+      BEGIN SELECT RAISE(ABORT, 'native document policy events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS document_auto_policy_events_no_delete BEFORE DELETE ON document_auto_policy_events
+      BEGIN SELECT RAISE(ABORT, 'native document policy events are append-only'); END;
     CREATE TABLE IF NOT EXISTS document_subjects (
       sha256 TEXT PRIMARY KEY, repo_key TEXT NOT NULL, ticket TEXT NOT NULL,
       package_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,

@@ -43,29 +43,42 @@ export function assertBuilderExclusiveRepositoryAdmission(plan: PlanWithReposito
 
 /** Records Git commands that can mutate checkout, branch, or worktree state. */
 export function installGitStateRecorder(root: string): GitStateRecorder {
-  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const executable = (name: "git" | "bash" | "flock") => execFileSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim();
+  const realGit = executable("git"), bash = executable("bash"), flock = executable("flock");
+  const word = (value: string) => `$'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/[\u0001-\u001f]/g, char => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`)}'`;
+  const escapes = [["\\", "\\\\"], ['"', '\\"'], ...Array.from({ length: 31 }, (_, index) => [String.fromCharCode(index + 1), `\\u${(index + 1).toString(16).padStart(4, "0")}`])];
   const binDir = join(root, "git-state-recorder-bin");
   const commandLogPath = join(root, "git-state-commands.jsonl");
   const logPath = join(root, "git-state-operations.jsonl");
   const wrapperPath = join(binDir, "git");
   mkdirSync(binDir, { recursive: true });
-  writeFileSync(wrapperPath, `#!/usr/bin/env node
-const { appendFileSync } = require("node:fs");
-const { spawnSync } = require("node:child_process");
-const args = process.argv.slice(2);
-const command = args[0];
-appendFileSync(${JSON.stringify(commandLogPath)}, JSON.stringify(args) + "\\n");
-const branchDelete = command === "branch" && args.slice(1).some((arg) => arg === "-d" || arg === "-D" || arg === "--delete");
-if (["stash", "commit", "checkout", "reset", "clean", "restore", "worktree"].includes(command) || branchDelete) {
-  appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
-}
-const result = spawnSync(${JSON.stringify(realGit)}, args, { env: process.env, stdio: "inherit" });
-if (result.error) {
-  process.stderr.write(result.error.message + "\\n");
-  process.exit(127);
-}
-if (result.signal) process.kill(process.pid, result.signal);
-process.exit(result.status ?? 1);
+  // Keep complete JSON argv and real Git execution, without starting a Node VM
+  // for every probe. Hundreds of probes before an async yield otherwise make
+  // contention fixtures miss their deadlines on a loaded host. The shared fd
+  // lock also prevents long concurrent command records from interleaving.
+  writeFileSync(wrapperPath, `#!${bash}
+record='['
+separator=''
+for value in "$@"; do
+${escapes.map(([from, to]) => `  value=\${value//${word(from!)}/${word(to!)}}`).join("\n")}
+  record+="$separator\\\"$value\\\""
+  separator=','
+done
+record+=']'
+mutating=false
+case "\${1-}" in
+  stash|commit|checkout|reset|clean|restore|worktree) mutating=true ;;
+  branch)
+    for argument in "\${@:2}"; do
+      case "$argument" in -d|-D|--delete) mutating=true ;; esac
+    done ;;
+esac
+{
+  ${word(flock)} --exclusive 9 || exit 127
+  printf '%s\\n' "$record" >&9 || exit 127
+  if "$mutating"; then printf '%s\\n' "$record" >> ${word(logPath)} || exit 127; fi
+} 9>> ${word(commandLogPath)}
+exec ${word(realGit)} "$@"
 `, "utf8");
   chmodSync(wrapperPath, 0o755);
   const readLog = (path: string): string[][] => existsSync(path)

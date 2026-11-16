@@ -1,5 +1,5 @@
 import { Type, type TSchema } from "typebox";
-import { BulletinStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
+import { BulletinStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, SourceContentSecurityError } from "@pa-platform/pa-core";
 import { interceptToolCall } from "./safety.js";
 export { interceptToolCall } from "./safety.js";
 import { auditPiValueFromEnvironment } from "../diagnostics.js";
@@ -13,7 +13,7 @@ import { registerOperationModule } from "./operation-tool.js";
 import { registerTemplateModule } from "./template-tool.js";
 import { registerJsonWorkflowModule } from "./workflow.js";
 import { registerDocumentModule, documentToolDeployment, policyDocumentDeployment, assertNativeDocumentTool } from "./document-tool.js";
-import { filterLocalToolResult, localProgressResult, safeLocalToolError, registerLocalContentResultModule } from "./local-content-security.js";
+import { filterLocalToolResult, localContentFailure, localProgressResult, safeLocalToolError, registerLocalContentResultModule } from "./local-content-security.js";
 import { registerLocalSourceToolsModule } from "./local-source-tools.js";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import { registerRepoSetupModule } from "./repo-setup.js";
@@ -51,7 +51,7 @@ export interface PiTicketToolInput extends Record<string, unknown> {
   search?: string;
 }
 export interface PiTextContent { type: "text"; text: string }
-export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails; isError?: boolean }
+export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails; isError?: boolean; structuredContent?: unknown }
 export interface PiToolTheme {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
@@ -119,7 +119,12 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
     shutdown(event?: unknown, context?: unknown): Promise<void> {
       if (shutdownPromise) return shutdownPromise;
       closing = true;
-      shutdownPromise = (async () => {
+      // Memoize BEFORE synchronous shutdown/abort callbacks can re-enter.
+      // Keep immediate revocation; deferring the whole cleanup would reopen a
+      // publication window between shutdown() and its first microtask.
+      let resolveShutdown!: () => void, rejectShutdown!: (error: unknown) => void;
+      shutdownPromise = new Promise<void>((resolve, reject) => { resolveShutdown = resolve; rejectShutdown = reject; });
+      void (async () => {
         const disposal = shutdownSteps.map((step) => {
           try { return Promise.resolve(step(event, context)); }
           catch (error) { return Promise.reject(error); }
@@ -127,7 +132,7 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
         await Promise.allSettled(disposal);
         await Promise.allSettled([...registryAccess]);
         closeRegistry();
-      })();
+      })().then(resolveShutdown, rejectShutdown);
       return shutdownPromise;
     },
   };
@@ -137,13 +142,25 @@ export function registerPiSessionModules(
   pi: PiRuntime,
   lifecycle: PiSessionLifecycle,
   modules: readonly PiExtensionModule[] = PI_PA_MODULES,
+  nativeReadTool?: PiToolDefinition,
 ): void {
+  // Trusted native composition only; a tool definition is not source provenance
+  // and cannot be supplied via model JSON, environment or capability selection.
+  if (nativeReadTool && nativeReadTool.name !== "read") throw new Error("Native reader definition must replace read.");
   const deploymentId = documentToolDeployment(), policyDeploymentId = policyDocumentDeployment();
+  // Native per-registration lifetime, never an identity/grant supplied by a
+  // tool argument, env or another session. Install revocation before module
+  // cleanup; shutdown still awaits in-flight accesses before registry close.
+  const readLifetime = new AbortController();
+  lifecycle.addShutdownStep(() => { readLifetime.abort(); });
   // Capability admission precedes execution. Source-aware output protection also
   // covers direct/delegated custom calls outside document profiles. No role list.
   const guardedRuntime = new Proxy(pi, {
     get(target, property) {
-      if (property === "registerTool") return (tool: PiToolDefinition) => target.registerTool?.({ ...tool, execute: async (...args) => lifecycle.trackRegistryAccess(async () => {
+      if (property === "registerTool") return (definition: PiToolDefinition) => {
+        const tool = definition.name === "read" && nativeReadTool ? nativeReadTool : definition;
+        return target.registerTool?.({ ...tool, execute: (...args) => {
+        const access = lifecycle.trackRegistryAccess(async () => {
         // Reject late calls before native authentication can reopen the registry.
         // Policy custom tools retain the existing common guard. Retained custom
         // services keep their own finite failure contracts; only the newly
@@ -155,15 +172,46 @@ export function registerPiSessionModules(
         // Partial custom output may split a secret across updates. Never forward
         // unchecked fragments to the TUI or its runtime capture.
         const checkedArgs = [...args] as Parameters<PiToolDefinition["execute"]>;
-        if (update) checkedArgs[3] = () => update(localProgressResult());
-        try { return filterLocalToolResult(tool.name, await tool.execute(...checkedArgs)); }
-        catch (error) { throw safeLocalToolError(tool.name, error); }
-      }).catch(error => {
-        // Preserve retained intake's existing bounded late-call result without
-        // reopening its registry after shutdown. Policy callers keep rejection.
-        if (!policyDeploymentId && tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
-        throw error;
-      }) });
+        if (tool.name === "read") checkedArgs[2] = args[2]
+          ? AbortSignal.any([readLifetime.signal, args[2]]) : readLifetime.signal;
+        if (update) checkedArgs[3] = () => {
+          if (tool.name !== "read" || !checkedArgs[2]?.aborted) update(localProgressResult());
+        };
+        try {
+          const result = filterLocalToolResult(tool.name, await tool.execute(...checkedArgs));
+          // Defense in depth for a delegated reader that ignores its signal.
+          // Checked bytes are still withheld after revocation/cancellation.
+          if (tool.name === "read" && checkedArgs[2]?.aborted)
+            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+          return result;
+        } catch (error) {
+          if (tool.name === "read" && checkedArgs[2]?.aborted)
+            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+          throw safeLocalToolError(tool.name, error);
+        }
+        });
+        if (tool.name === "read") {
+          // This is the promise returned to the actual registered API caller.
+          // No async wrapper or chained return may sit after its final fence:
+          // checking only the inner registry callback leaves settlement hops in
+          // which shutdown can revoke an as-yet-unpublished result.
+          return new Promise<PiToolResult>((resolve, reject) => {
+            void access.then(result => {
+              const checked = filterLocalToolResult("read", result);
+              resolve(readLifetime.signal.aborted || args[2]?.aborted
+                ? localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"))
+                : checked);
+            }, reject);
+          });
+        }
+        return access.catch(error => {
+          // Preserve retained intake's bounded late-call result without
+          // reopening its registry after shutdown. Policy callers keep rejection.
+          if (!policyDeploymentId && tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
+          throw error;
+        });
+        } });
+      };
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },

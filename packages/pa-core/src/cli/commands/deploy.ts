@@ -157,7 +157,7 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
     io.stdout("                     Excluded from builder, other binaries and Agent API; eligible mode rollout requires paired config validation (PAPC-038).");
   }
   io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
-  io.stdout("  --timeout <seconds>    Override deployment timeout");
+  io.stdout("  --timeout <seconds>    Legacy planning budget; does not stop the deployment");
   io.stdout("  --resume <id>          Resume a prior deployment");
   io.stdout("  --autonomy <low|medium|high>  Override autonomy level (default: medium)");
   io.stdout("");

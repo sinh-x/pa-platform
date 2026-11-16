@@ -1,9 +1,10 @@
 import {
-  AutoCoordinator, AutoWaitlistError, AutoWaitlistStore, RegistryAutoJournal, RegistryDocumentJournal, RegistryAutoNotifications, AutoStartDecisionService,
+  AutoCoordinator, AutoWaitlistError, AutoWaitlistStore, RegistryAutoJournal, RegistryAutoShortlists, RegistryDocumentJournal, RegistryAutoNotifications, AutoStartDecisionService,
   getDb, openReadonlyRegistryDatabase, scanAutoWaitlist, formatAutoWaitlist, autoWaitlistDiagnostic,
   resolveRepoExecutionPath, type AutoControl, type AutoItem,
 } from "@pa-platform/pa-core";
 import { autoDraftOwner } from "./auto-draft.js";
+import { runAutoShortlistForeground } from "./auto-shortlist-cli.js";
 import { runPiAutoScanWorker } from "./auto-scan-client.js";
 import { inspectAutoNativeResult } from "./auto-result.js";
 import { nativeAutoTerminal, displayAutoFullPackage, type AutoTerminal } from "./auto-terminal.js";
@@ -34,10 +35,16 @@ export interface AutoForegroundHooks {
 export async function runAutoForeground(terminal: AutoTerminal = nativeAutoTerminal(), hooks: AutoForegroundHooks = {}): Promise<number> {
   try {
     terminal.authenticate();
-    const snapshots = new AutoWaitlistStore(), view = snapshots.scan(runPiAutoScanWorker);
-    terminal.display(formatAutoWaitlist(view));
     const journal = new RegistryAutoJournal(getDb()), coordinator = new AutoCoordinator(journal, () => terminal.authenticate());
     let active = journal.active();
+    const shortlists = new RegistryAutoShortlists(journal.db);
+    if (shortlists.activeCycle() || shortlists.pendingChoice() || active && shortlists.selectionForItem(active.itemId)) {
+      // Existing native r003 ownership cannot be translated into an old manual
+      // start proposal, repeated choice, replacement producer or v1 receipt.
+      return runAutoShortlistForeground(terminal, { store: shortlists });
+    }
+    const snapshots = new AutoWaitlistStore(), view = snapshots.scan(runPiAutoScanWorker);
+    terminal.display(formatAutoWaitlist(view));
     if (!active) {
       if (view.freshness !== "fresh" || !view.state?.snapshot) throw new AutoWaitlistError("AUTO_SOURCE");
       const candidates = view.state.snapshot.entries.filter(e => e.route !== "observe");

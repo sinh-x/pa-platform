@@ -412,7 +412,13 @@ test("generatePrimer live requirements config satisfies the versioned compatibil
       // requiring obsolete procedural paragraphs or skipping compatibility.
       assert.match(piPrimer, /## Requirements supporting capabilities/);
       assert.ok(piPrimer.includes(`Native profile: ${documentProfile}.`));
-      assert.match(piPrimer, /no shell, generic source\/Git writers, builder preparation or resource operations are granted/);
+      if (documentProfile === "pa-document-policy/v1") {
+        assert.match(piPrimer, /ordinary bash\/read\/edit\/write may be used only when selected/);
+        assert.match(piPrimer, /Repository\/Git writing, builder preparation and resource operations are not granted/);
+        assert.match(piPrimer, /pa:selected-completion path=primers\/fragments\/shared\/completion.md sha256=[a-f0-9]{64}/);
+        const completion = readFileSync(configPath("primers", "fragments", "shared", "completion.md"), "utf8").replaceAll("{{RUNTIME_ADAPTER}}", "ppa");
+        assert.ok(piPrimer.includes(completion), "entire actual selected PAPC completion body must be consumed, not just matching tokens");
+      } else assert.match(piPrimer, /no shell, generic source\/Git writers, builder preparation or resource operations are granted/);
       assert.doesNotMatch(piPrimer, /Operator-Prepared Checkout Evidence:|must carry authenticated worktree_root and operator-prepared checkout evidence before orchestrator dispatch/i);
       if (documentProfile === "pa-document-interactions/v4") {
         assert.match(piPrimer, /Additive pa_ticket_intake/);

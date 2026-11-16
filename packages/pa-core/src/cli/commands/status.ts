@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { maskSecrets, readActivityEvents } from "../../activity/index.js";
 import type { ActivityEvent } from "../../activity/index.js";
 import {
-  DEFAULT_DEPLOY_TIMEOUT_SECONDS,
   MAX_DEPLOY_TIMEOUT_SECONDS,
   MIN_DEPLOY_TIMEOUT_SECONDS,
   deploymentTaskSnapshotPath,
@@ -125,7 +124,7 @@ function validateTimeoutSeconds(timeout: number, label: string): string | undefi
   return undefined;
 }
 
-function resolveStatusWaitTimeout(deployment: DeploymentStatus): { seconds: number } | { error: string } {
+function resolveStatusWaitTimeout(): { seconds: number | undefined } | { error: string } {
   const rawOverride = process.env[STATUS_WAIT_OVERRIDE_ENV];
   if (rawOverride !== undefined && rawOverride !== "") {
     const override = Number(rawOverride);
@@ -133,7 +132,9 @@ function resolveStatusWaitTimeout(deployment: DeploymentStatus): { seconds: numb
     if (error) return { error };
     return { seconds: override };
   }
-  return { seconds: deployment.effective_timeout_seconds ?? DEFAULT_DEPLOY_TIMEOUT_SECONDS };
+  // A deployment's legacy planning metadata must never bound its lifetime or
+  // make the observer stop waiting. Only an explicit wait-only override applies.
+  return { seconds: undefined };
 }
 
 interface WaitForDeploymentOptions {
@@ -145,11 +146,11 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
   ttyTailLineCount = 0;
   const initial = queryDeploymentStatus(deployId);
   if (!initial) return printError(`Deployment not found: ${deployId}`, io);
-  const timeout = resolveStatusWaitTimeout(initial);
+  const timeout = resolveStatusWaitTimeout();
   if ("error" in timeout) return printError(timeout.error, io);
 
   io.stdout(`Waiting for deployment: ${deployId}`);
-  io.stdout(`Wait timeout: ${timeout.seconds}s`);
+  io.stdout(timeout.seconds === undefined ? "Wait timeout: none" : `Wait timeout: ${timeout.seconds}s (waiting only; deployment is not stopped)`);
   io.stdout(`Poll interval: ${STATUS_WAIT_POLL_INTERVAL_SECONDS}s`);
   io.stdout(`Override env: ${STATUS_WAIT_OVERRIDE_ENV}`);
 
@@ -230,7 +231,7 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
     }
     if (options?.activity) activityCursor = showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
-    if (runtime.clock() - startedAt >= timeout.seconds * 1000) {
+    if (timeout.seconds !== undefined && runtime.clock() - startedAt >= timeout.seconds * 1000) {
       io.stderr(`Timed out waiting for deployment ${deployId} after ${timeout.seconds}s`);
       return 1;
     }

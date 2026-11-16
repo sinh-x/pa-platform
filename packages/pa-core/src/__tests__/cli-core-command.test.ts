@@ -1498,7 +1498,7 @@ test("runCoreCommand rejects invalid PA_MAX_RUNTIME before deployment hook", asy
   });
 });
 
-test("runCoreCommand status wait polls until deployment reaches terminal status", async () => {
+test("runCoreCommand status wait outlives deployment timeout metadata and polls until terminal status", async () => {
   await withCliEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-wait-poll", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
     const captured = capture();
@@ -1509,15 +1509,15 @@ test("runCoreCommand status wait polls until deployment reaches terminal status"
       clock: () => nowMs,
       sleep: async (ms) => {
         sleeps += 1;
-        nowMs += ms;
-        appendRegistryEvent({ deployment_id: "d-wait-poll", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "partial", summary: "usable with warnings" });
+        nowMs += Math.max(ms, 121_000);
+        if (sleeps === 2) appendRegistryEvent({ deployment_id: "d-wait-poll", team: "builder", event: "completed", timestamp: "2026-04-26T00:04:02.000Z", status: "partial", summary: "usable with warnings" });
       },
     });
 
     assert.equal(code, 0);
-    assert.equal(sleeps, 1);
+    assert.equal(sleeps, 2);
     assert.match(captured.stdout.join("\n"), /Waiting for deployment: d-wait-poll/);
-    assert.match(captured.stdout.join("\n"), /Wait timeout: 120s/);
+    assert.match(captured.stdout.join("\n"), /Wait timeout: none/);
     assert.match(captured.stdout.join("\n"), /Poll interval: 10s/);
     assert.match(captured.stdout.join("\n"), /Override env: PA_STATUS_WAIT_TIMEOUT/);
     assert.match(captured.stdout.join("\n"), /partial - usable with warnings/);
@@ -1552,7 +1552,8 @@ test("runCoreCommand status wait supports override timeout without mutating stor
 
     const detail = capture();
     assert.equal(await runCoreCommand(["status", "d-wait-override"], { io: detail.io }), 0);
-    assert.match(detail.stdout.join("\n"), /Timeout:\s+1800s/);
+    assert.match(detail.stdout.join("\n"), /Timeout metadata: 1800s \(not a deployment runtime limit\)/);
+    assert.equal(queryDeploymentStatus("d-wait-override")?.status, "running", "wait-only timeout must not stop the deployment");
   });
 });
 

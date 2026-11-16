@@ -93,7 +93,8 @@ export class RegistryAutoJournal {
   select(entry: AutoWaitlistEntry, repoRoot: string, reobserve: () => AutoWaitlistEntry, authenticate: () => void): AutoItem {
     if (entry.route === "observe") throw new AutoWaitlistError("AUTO_UNAVAILABLE");
     return this.db.transaction(() => {
-      authenticate(); if (this.active()) throw new AutoWaitlistError("AUTO_BUSY");
+      authenticate(); if (this.active() || this.db.prepare("SELECT 1 FROM auto_reasoning_cycles WHERE active_slot=1").get()
+        || this.db.prepare("SELECT 1 FROM auto_choice_requests WHERE active_slot=1").get()) throw new AutoWaitlistError("AUTO_BUSY");
       if (JSON.stringify(reobserve()) !== JSON.stringify(entry)) throw new AutoWaitlistError("AUTO_SOURCE");
       const item: AutoItem = { schemaVersion: AUTO_RUNTIME_VERSION, itemId: `auto-${randomUUID()}`, revision: 1,
         project: entry.project, repoRoot, ticket: entry.id, ticketSha256: entry.ticketSha256, selectedAt: new Date().toISOString(), route: entry.route as AutoItem["route"],

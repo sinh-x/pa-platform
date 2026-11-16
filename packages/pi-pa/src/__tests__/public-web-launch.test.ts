@@ -38,11 +38,15 @@ async function withFixture(run: (fixture: {
     process.chdir(repo);
     writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
     const resource = join(teams, "requirements.yaml");
+    // The policy composer consumes this selected resource, not today's host
+    // config. Commit a complete self-contained fixture closure before launch.
+    mkdirSync(join(root, "primers/fragments/shared"), { recursive: true });
+    writeFileSync(join(root, "primers/fragments/shared/completion.md"), "Synthetic selected completion. Preserve original operation identities; no new effect authority.\n");
     let spawns = 0, preflights = 0;
     await run({ repo, resource,
       select(allow, profile = "pa-document-policy/v1") {
         writeFileSync(resource, `name: requirements\nobjective: Disposable source reader fixture\nagents: []\ndeploy_modes:\n - id: analyze\n   document_profile: ${profile}\n${allow ? `   capability_policy: {version: pa-mode-capabilities/v1, allow: [${allow.join(", ")}]}\n` : ""}`);
-        git(root, "add", "teams/requirements.yaml");
+        git(root, "add", "teams/requirements.yaml", "primers/fragments/shared/completion.md");
         git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "select source fixture policy");
         return { revision: git(root, "rev-parse", "HEAD"), sha256: createHash("sha256").update(readFileSync(resource)).digest("hex") };
       },
