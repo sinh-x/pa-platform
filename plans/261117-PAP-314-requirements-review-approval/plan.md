@@ -13,7 +13,7 @@ Sinh changed two requirements during this implementation session:
 
 - [x] P0: versioned local confirmation/continuation contract and independent review. Three initial transition gaps corrected; independent contract re-review passed. PAPC-090 created.
 - [x] P1: shared local confirmation owner, Pi/CLI/loopback API bindings and tests. Focused checks passed after dependency/actor integration corrections; P3 effects deliberately remain closed at this boundary.
-- [ ] P2: summary-first entry with complete member pages, raw sources, full offline view and bound opening.
+- [x] P2: summary-first entry with complete member pages, raw sources, full offline view and bound opening. All 34 reader/worker/opening tests passed; actual browser/human accessibility remains unverified.
 - [ ] P3: publication preflight, approval-boundary local develop observation/refresh and ordered effect recovery.
 - [ ] P4: runtime selection/discovery/compatibility contract and PAPC-090 handoff; no PAPC source mutation.
 - [ ] P5: source verification, independent review and honest installed/CI/browser/human qualification accounting.

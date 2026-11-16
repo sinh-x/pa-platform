@@ -19,3 +19,9 @@ Actual source checks: core build and 65 core contract/review/local tests passed;
 Messages: new CLI help/server notice/Pi review disclose unauthenticated local confirmation, separate approval/effects and PAPC activation. Before: CLI had no review operation. After: `Decisions are local-unverified, not authenticated human consent.` Fixed transport failures use one bounded five-label envelope without arbitrary exception text. Structural/plain-output tests are not independent human readability acceptance.
 
 No actual human decisions, browser observations, installed qualification or CI pass is claimed.
+
+## P2
+
+The full brief is the executive entry regardless of manifest position. Index links every complete member HTML/raw source and keeps a searchable printable full-package view in manifest order. Member pages have genuine previous/next/back/skip links. Existing inert CSP, output limits and immutable renderer-derived identities remain controlling.
+
+Actual focused reader/summary/worker/opening suites passed 34/34 (zero skips); core build/typecheck passed. Static accessibility assertions are not browser/375px/zoom/keyboard/human evidence. Opening remains a bound request through the existing owner, never a viewing claim.

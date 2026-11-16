@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderPackageMarkdown, renderMarkdown } from "../artifacts/render.js";
 import { DOCUMENT_READER_VERSION, renderDocumentReader } from "../documents/reader.js";
@@ -32,7 +32,7 @@ test("full reader contains every ordered semantic member and described image, wi
     assert.equal(bundle.manifest.schemaVersion, DOCUMENT_READER_VERSION);
     assert.equal(bundle.manifest.members.length, f.subject.members.length);
     for (const tag of ["<strong>", "<em>", "<ul>", "<table>", "<pre>", "<code>", "<main", "<aside", "<details"]) assert.ok(html.includes(tag), tag);
-    assert.equal((html.match(/LAST-MEMBER-SENTINEL/g) ?? []).length, 5);
+    assert.equal((html.match(/LAST-MEMBER-SENTINEL/g) ?? []).length, 6, "complete brief appears in both the executive entry and manifest-order view");
     assert.match(html, /<img src="raw\/member-6.png" alt="A one-pixel described test diagram">/);
     let position = -1;
     for (const [i, member] of bundle.manifest.members.entries()) {
@@ -123,6 +123,32 @@ test("full reader publication uses native-derived paths, exact readback, repeat 
     writeFileSync(fileURLToPath(second.entry as string), "tampered output");
     await assert.rejects(() => f.present(), (e: unknown) => e instanceof DocumentPackageError && e.code === "DOCUMENT_CONFLICT");
     await assert.rejects(() => inspectFullDocumentReader(f.subject, f.root, f.snapshot, second.deliverySha256 as string));
+  } finally { f.close(); }
+});
+
+test("a changed renderer implementation selects a new delivery without migrating a synthetic historical bundle", async () => {
+  const f = fixture();
+  try {
+    const current = await renderDocumentReaderInWorker(f.subject, f.snapshot), renderer = { ...current.manifest.renderer, implementationSha256: "0".repeat(64) };
+    assert.notEqual(renderer.implementationSha256, current.manifest.renderer.implementationSha256);
+    const deliverySha256 = digest(JSON.stringify({ schemaVersion: "pa-document-reader-identity/v1", subjectSha256: current.manifest.subjectSha256,
+      revision: current.manifest.revision, effects: current.manifest.effects, members: current.manifest.members, renderer }));
+    const files = new Map(current.files);
+    files.set("index.html", Buffer.from("<!doctype html><title>Synthetic historical renderer</title><p>Historical bytes stay unchanged.</p>\n"));
+    const manifest = { ...current.manifest, deliverySha256, renderer, outputs: [...files].filter(([path]) => path !== "manifest.json")
+      .map(([path, bytes]) => ({ path, bytes: bytes.length, sha256: digest(bytes) })) };
+    files.set("manifest.json", Buffer.from(JSON.stringify(manifest, null, 2) + "\n"));
+    const folder = join(f.root, "agent-teams/requirements/artifacts/presentations", manifest.subjectSha256, deliverySha256);
+    for (const [path, bytes] of files) { mkdirSync(dirname(join(folder, path)), { recursive: true }); writeFileSync(join(folder, path), bytes); }
+    const resultFolder = join(f.root, "agent-teams/requirements/artifacts/presentation-results", manifest.subjectSha256);
+    mkdirSync(resultFolder, { recursive: true });
+    const resultPath = join(resultFolder, `${deliverySha256}.json`), resultBytes = Buffer.from(JSON.stringify({ schemaVersion: "pa-document-reader-publication/v1", deliverySha256, manifestSha256: digest(files.get("manifest.json")!) }));
+    writeFileSync(resultPath, resultBytes);
+    const next = await f.present();
+    assert.equal(next.deliverySha256, current.deliverySha256); assert.notEqual(next.deliverySha256, deliverySha256);
+    await assert.rejects(() => inspectFullDocumentReader(f.subject, f.root, f.snapshot, deliverySha256), (error: unknown) => error instanceof DocumentPackageError && error.code === "DOCUMENT_STALE");
+    for (const [path, bytes] of files) assert.deepEqual(readFileSync(join(folder, path)), bytes);
+    assert.deepEqual(readFileSync(resultPath), resultBytes);
   } finally { f.close(); }
 });
 
