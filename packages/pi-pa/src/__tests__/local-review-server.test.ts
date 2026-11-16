@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { connect, type Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
@@ -7,9 +10,9 @@ import { LOCAL_REVIEW_MAX_RESPONSE, type LocalReviewHandler } from "../local-rev
 import { LOCAL_REVIEW_HEALTH, startLocalReviewServer, type LocalReviewServerOptions } from "../local-review-server.js";
 
 const raw = '{"schemaVersion":"pa-local-review/v1","action":"show","subjectSha256":"' + "a".repeat(64) + '"}';
-async function fixture(t: TestContext, handler?: LocalReviewHandler, deadlines?: LocalReviewServerOptions["deadlines"]) {
+async function fixture(t: TestContext, handler?: LocalReviewHandler | "default", deadlines?: LocalReviewServerOptions["deadlines"]) {
   const seen: string[] = [];
-  const server = await startLocalReviewServer({ port: 0, deadlines, handler: async value => { seen.push(value); return handler ? handler(value) : { ok: true }; } });
+  const server = await startLocalReviewServer({ port: 0, deadlines, handler: handler === "default" ? undefined : async value => { seen.push(value); return handler ? handler(value) : { ok: true }; } });
   t.after(async () => { const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); server.closeAllConnections(); await closed; });
   const address = server.address(); assert.ok(address && typeof address !== "string");
   assert.equal(address.address, "127.0.0.1"); assert.equal(address.family, "IPv4");
@@ -49,6 +52,28 @@ test("loopback health is constant version/trust and never invokes the review own
   const f = await fixture(t);
   const result = response(await exchange(f.port, `GET /v1/health HTTP/1.1\r\nHost: ${f.host}\r\n\r\n`));
   assert.equal(result.status, 200); assert.deepEqual(result.body, LOCAL_REVIEW_HEALTH); assert.deepEqual(f.seen, []);
+});
+
+test("default dispatcher rejects malformed, duplicate and unknown input before any store IO", async t => {
+  const root = mkdtempSync(join(tmpdir(), "pap314-default-http-"));
+  const overrides = { PA_AI_USAGE_HOME: join(root, "usage"), PA_PLATFORM_CONFIG: join(root, "config"), PA_PLATFORM_HOME: join(root, "home"), PA_REGISTRY_DB: join(root, "absent.db") };
+  const original = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
+  Object.assign(process.env, overrides);
+  try {
+    const f = await fixture(t, "default");
+    for (const body of [raw.slice(0, -1), raw.replace('"action":"show"', '"action":"show","action":"show"'), raw.replace('"action":"show"', '"action":"show","actor":"human"')]) {
+      const result = response(await exchange(f.port, f.request(body)));
+      assert.equal(result.status, 400); assert.equal(result.body.code, "DOCUMENT_INPUT");
+      assert.ok(typeof result.body.message === "string" && result.body.message.length <= 2000);
+      assert.doesNotMatch(JSON.stringify(result.body), /"actor"|"human"/);
+      assert.deepEqual(readdirSync(root), [], "invalid input must not initialize stores");
+    }
+  } finally {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("POST passes identical raw schema bytes unchanged and returns the owner's complete record", async t => {

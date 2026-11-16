@@ -152,7 +152,10 @@ export async function startLocalReviewServer(options: LocalReviewServerOptions):
       } catch (error) {
         const failure = localReviewFailure(error);
         const status = failure.code === "LOCAL_REVIEW_BODY_LIMIT" ? 413 : failure.code === "LOCAL_REVIEW_DEADLINE" ? 408
-          : failure.code === "LOCAL_REVIEW_UTF8" || failure.code === "LOCAL_REVIEW_INPUT" ? 400 : 500;
+          : failure.code === "LOCAL_REVIEW_UTF8" || failure.code === "LOCAL_REVIEW_INPUT" || failure.code === "DOCUMENT_INPUT" ? 400
+          : failure.code === "DOCUMENT_AUTHORITY" ? 403
+          : ["DOCUMENT_SOURCE", "DOCUMENT_CONFLICT", "DOCUMENT_STALE", "DOCUMENT_UNCERTAIN"].includes(failure.code) ? 409
+          : failure.code === "DOCUMENT_UNAVAILABLE" ? 503 : 500;
         if (!state.responding) send(status, JSON.stringify(failure));
       }
     })();

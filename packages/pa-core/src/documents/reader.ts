@@ -62,17 +62,27 @@ export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: 
     const link = (target: number) => `${standalone ? basename(members[target]!.companion) : ""}#member-${target + 1}`;
     return `<nav class="member-nav" aria-label="Member navigation">${i ? `<a href="${link(i - 1)}">Previous: ${e(members[i - 1]!.description)}</a>` : ""}${i + 1 < members.length ? `<a href="${link(i + 1)}">Next: ${e(members[i + 1]!.description)}</a>` : ""}<a href="${standalone ? "../index.html" : ""}#contents">Back to contents</a></nav>`;
   };
+  // Reserve every canonical full source path before any document-relative or
+  // convenience alias. Inventory order must never retarget a canonical link.
+  const canonical = new Map(subject.members.map((member, index) => [member.source, `#member-${index + 1}`]));
   members.forEach((member, index) => {
     const source = subject.members[index]!, bytes = sources[index]!, id = `member-${index + 1}`;
     save(member.raw, bytes);
     let body: string, headings: { id: string; level: number; label: string }[] = [];
     if (source.mediaType === "text/markdown") {
-      const aliases = new Map<string, string>();
+      const aliases = new Map(canonical), ambiguous = new Set<string>();
+      const alias = (path: string, anchor: string) => {
+        if (canonical.has(path) || ambiguous.has(path)) return;
+        const previous = aliases.get(path);
+        if (previous !== undefined && previous !== anchor) {
+          aliases.delete(path); ambiguous.add(path);
+        } else aliases.set(path, anchor);
+      };
       subject.members.forEach((target, targetIndex) => {
         const anchor = `#member-${targetIndex + 1}`;
-        aliases.set(target.source, anchor); aliases.set(posix.relative(dirname(source.source), target.source), anchor);
+        alias(posix.relative(dirname(source.source), target.source), anchor);
         const name = basename(target.source);
-        if (subject.members.filter(m => basename(m.source) === name).length === 1) { aliases.set(name, anchor); aliases.set(`./${name}`, anchor); }
+        if (subject.members.filter(m => basename(m.source) === name).length === 1) { alias(name, anchor); alias(`./${name}`, anchor); }
       });
       ({ html: body, headings } = renderPackageMarkdown(bytes, id, aliases));
     } else if (source.mediaType === "text/plain") {

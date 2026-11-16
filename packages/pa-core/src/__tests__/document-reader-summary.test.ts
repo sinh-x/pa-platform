@@ -130,6 +130,60 @@ test("member pages have real previous/next siblings, back/skip links and local c
   checkLinks(bundle);
 });
 
+test("canonical full source paths cannot be redirected by relative aliases in any inventory order", () => {
+  const f = fixture(), base = "agent-teams/requirements/artifacts/reviews/EX-1/r001";
+  const requirements = f.subject.members.find(member => member.role === "requirements")!;
+  requirements.source = `${base}/requirements.md`;
+  const deepBytes = Buffer.from("# Different specification\n\nNOT_THE_REQUIREMENTS\n");
+  const deep: DocumentMember = { id: "deep-specification", role: "specification", mediaType: "text/markdown", source: `${base}/${base}/requirements.md`, description: "Not the requirements", bytes: deepBytes.length, sha256: digest(deepBytes) };
+  f.sources.set(deep.sha256, deepBytes);
+  const bytes = Buffer.from(`# Decision\n\n[Canonical requirements](${requirements.source}) [Relative requirements](requirements.md) [Deep specification](${deep.source})\n`);
+  f.brief.bytes = bytes.length; f.brief.sha256 = digest(bytes); f.sources.set(f.brief.sha256, bytes);
+  const original = [...f.subject.members, deep];
+  for (const order of [original, [...original].reverse(), [deep, ...original.slice(0, -1)], [...original.slice(2), ...original.slice(0, 2)]]) {
+    f.subject.members = order;
+    const bundle = f.render(), index = bundle.files.get("index.html")!.toString();
+    const brief = bundle.manifest.members.find(member => member.id === f.brief.id)!;
+    const sections = [
+      index.slice(index.indexOf('id="executive-summary"'), index.indexOf('<div id="complete-view">')),
+      index.slice(index.indexOf('<div id="complete-view">')),
+      bundle.files.get(brief.companion)!.toString(),
+    ];
+    for (const [sectionIndex, html] of sections.entries()) {
+      for (const [label, intended] of [["Canonical requirements", requirements], ["Relative requirements", requirements], ["Deep specification", deep]] as const) {
+        const ordinal = order.findIndex(member => member.id === intended.id) + 1;
+        const href = `${sectionIndex === 2 ? `member-${ordinal}.html` : ""}#member-${ordinal}`;
+        assert.ok(html.includes(`href="${href}" rel="noreferrer">${label}</a>`), `${label} must target ${intended.id} in ${order.map(member => member.id)}`);
+        assert.equal(bundle.manifest.members[ordinal - 1]!.id, intended.id);
+        assert.deepEqual(bundle.files.get(bundle.manifest.members[ordinal - 1]!.raw), f.snapshot(intended.sha256));
+      }
+    }
+    checkLinks(bundle);
+  }
+});
+
+test("ambiguous short aliases stay inert while unambiguous relative and canonical links keep their intended member", () => {
+  const f = fixture(), base = "agent-teams/requirements/artifacts/reviews/EX-1/r001";
+  const requirements = f.subject.members.find(member => member.role === "requirements")!;
+  const duplicate = { ...requirements, id: "other-requirements", role: "specification" as const, source: `${base}/other/requirements.md` };
+  const bytes = Buffer.from(`# Decision\n\n[Ambiguous](requirements.md) [Ambiguous dot](./requirements.md) [Intended](nested/requirements.md) [Canonical](${requirements.source})\n`);
+  f.brief.bytes = bytes.length; f.brief.sha256 = digest(bytes); f.sources.set(f.brief.sha256, bytes);
+  const original = [...f.subject.members, duplicate];
+  for (const order of [original, [...original].reverse(), [duplicate, ...original.slice(0, -1)]]) {
+    f.subject.members = order;
+    const bundle = f.render(), ordinal = order.findIndex(member => member.id === requirements.id) + 1;
+    const brief = bundle.manifest.members.find(member => member.id === f.brief.id)!;
+    for (const path of ["index.html", brief.companion]) {
+      const html = bundle.files.get(path)!.toString();
+      assert.match(html, /\[Ambiguous\]\(requirements.md\)/);
+      assert.match(html, /\[Ambiguous dot\]\(\.\/requirements.md\)/);
+      for (const label of ["Intended", "Canonical"]) assert.ok(html.includes(`href="${path === "index.html" ? "" : `member-${ordinal}.html`}#member-${ordinal}" rel="noreferrer">${label}</a>`));
+      assert.equal(bundle.manifest.members[ordinal - 1]!.id, requirements.id);
+    }
+    checkLinks(bundle);
+  }
+});
+
 test("all HTML keeps inert hashed CSP, escaped metadata, local assets and static focus/print/overflow affordances", () => {
   const bundle = fixture().render();
   for (const [path, bytes] of bundle.files) {

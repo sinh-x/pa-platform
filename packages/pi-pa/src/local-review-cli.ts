@@ -1,4 +1,6 @@
 import { Readable, Writable } from "node:stream";
+import { types } from "node:util";
+import type { DocumentPackageError } from "@pa-platform/pa-core";
 
 export type LocalReviewHandler = (raw: string) => Promise<Record<string, unknown>>;
 export const LOCAL_REVIEW_VERSION = "pa-local-review/v1";
@@ -44,6 +46,17 @@ const reasons: Record<FailureCode, string> = {
   output: "The result could not be written completely. The operation may already have completed.",
 };
 const failures = new WeakMap<object, FailureCode>();
+type DocumentFailureCode = DocumentPackageError["code"];
+const documentFailures = new WeakMap<object, DocumentFailureCode>();
+const documentCauses: Record<DocumentFailureCode, { headline: string; reason: string }> = {
+  DOCUMENT_INPUT: { headline: "Local review request was rejected.", reason: "The document review owner rejected the request schema, fields or values." },
+  DOCUMENT_SOURCE: { headline: "Local review could not verify its document sources.", reason: "The document review owner rejected missing, invalid or changed source evidence." },
+  DOCUMENT_CONFLICT: { headline: "Local review request conflicts with retained state.", reason: "The document review owner found conflicting request coordinates or retained evidence." },
+  DOCUMENT_STALE: { headline: "Local review request is stale.", reason: "The document review owner rejected coordinates or evidence that are no longer current." },
+  DOCUMENT_AUTHORITY: { headline: "Local review request is not authorized by the document owner.", reason: "The document review owner's authority checks did not permit this request. Local confirmation is not authenticated human consent." },
+  DOCUMENT_UNCERTAIN: { headline: "Local review outcome remains unknown. Do not repeat the request yet.", reason: "The document review owner reported uncertain retained state. An effect may have started; completion or rollback is not established." },
+  DOCUMENT_UNAVAILABLE: { headline: "Local review could not complete.", reason: "The document review owner reported that a required operation or prerequisite is unavailable." },
+};
 
 export class LocalReviewTransportError extends Error {
   constructor(code: FailureCode) {
@@ -52,9 +65,25 @@ export class LocalReviewTransportError extends Error {
   }
 }
 
-/** Only locally constructed, typed failures are trusted; never inspect an exception. */
+/** Trust only private registrations, including verified causes from the core boundary. */
 export function localReviewFailure(error: unknown): { ok: false; code: string; message: string } {
-  const cause = ((typeof error === "object" && error !== null) || typeof error === "function") ? failures.get(error) : undefined;
+  const key = ((typeof error === "object" && error !== null) || typeof error === "function") ? error : undefined;
+  const documentCode = key ? documentFailures.get(key) : undefined;
+  if (documentCode) {
+    const cause = documentCauses[documentCode];
+    const message = [
+      cause.headline,
+      documentCode === "DOCUMENT_UNCERTAIN" ? "Condition: The requested local review outcome is unproven; interruption does not undo an effect." : "Condition: The requested local review action did not complete as requested.",
+      "Source: Document review owner's validation and retained-state checks.",
+      `Reason: ${cause.reason} (${documentCode})`,
+      "Correction: Ask the operator to inspect the original request and the reported owner prerequisite. Impact: none. Actor: operator. New approval: not required to ask. Prerequisite: preserve the original coordinates and evidence; inspection or repair needs its own authority.",
+      documentCode === "DOCUMENT_UNCERTAIN"
+        ? "Resume Action: Continue only after the document review owner establishes the original result or authorizes reconciliation. Do not create a replacement intent or blindly repeat a decision. Any resumed effect request rechecks admission."
+        : "Resume Action: Continue only after the reported prerequisite is corrected and the document review owner verifies matching current state. Preserve prior requests and evidence; any resumed effect request rechecks admission.",
+    ].join("\n");
+    return { ok: false, code: documentCode, message };
+  }
+  const cause = key ? failures.get(key) : undefined;
   const code = cause ?? "internal";
   const message = [
     "Local review did not return a complete result.",
@@ -71,7 +100,22 @@ export function localReviewFailure(error: unknown): { ok: false; code: string; m
 export const executeCoreLocalReview: LocalReviewHandler = async raw => {
   const core = await import("@pa-platform/pa-core");
   if (!("executeLocalReview" in core) || typeof core.executeLocalReview !== "function") throw new LocalReviewTransportError("unavailable");
-  const result: unknown = await core.executeLocalReview(raw);
+  let result: unknown;
+  try { result = await core.executeLocalReview(raw); }
+  catch (error) {
+    // Native-error detection does not traverse proxies. Exact prototype identity
+    // and an own data property trust only the actual imported error type, never
+    // exception prose, getters, lookalikes or errors from injected handlers.
+    if (types.isNativeError(error) && Object.getPrototypeOf(error) === core.DocumentPackageError.prototype) {
+      const code: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
+      switch (code) {
+        case "DOCUMENT_INPUT": case "DOCUMENT_SOURCE": case "DOCUMENT_CONFLICT": case "DOCUMENT_STALE":
+        case "DOCUMENT_AUTHORITY": case "DOCUMENT_UNCERTAIN": case "DOCUMENT_UNAVAILABLE":
+          documentFailures.set(error, code);
+      }
+    }
+    throw error;
+  }
   if (typeof result !== "object" || result === null || Array.isArray(result)) throw new LocalReviewTransportError("internal");
   // Object.entries creates a typed record without assuming the core's result schema.
   return Object.fromEntries(Object.entries(result));

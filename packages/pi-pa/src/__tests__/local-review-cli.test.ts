@@ -136,12 +136,88 @@ test("source public CLI propagates help and bounded failures without stores or a
       [["--request-stdin", "--actor", "human"], Buffer.from(raw), "LOCAL_REVIEW_ARGUMENTS"],
       [["--request-stdin"], Buffer.from([0xc0, 0xaf]), "LOCAL_REVIEW_UTF8"],
       [["--request-stdin"], Buffer.alloc(65537), "LOCAL_REVIEW_BODY_LIMIT"],
+      [["--request-stdin"], Buffer.from(raw.slice(0, -1)), "DOCUMENT_INPUT"],
+      [["--request-stdin"], Buffer.from(raw.replace('"action":"show"', '"action":"show","action":"show"')), "DOCUMENT_INPUT"],
+      [["--request-stdin"], Buffer.from(raw.replace('"action":"show"', '"action":"show","actor":"human"')), "DOCUMENT_INPUT"],
     ] as const) {
       const execution = spawnSync(process.execPath, ["--import=tsx", cli, "document", "review", ...args], { env, input, encoding: "utf8", timeout: 10_000 });
       assert.equal(execution.status, 1); assert.equal(execution.stderr, ""); assert.equal(result(execution.stdout).code, code);
     }
     assert.deepEqual(readdirSync(root), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("trusted core throws preserve allowlisted causes through CLI and HTTP without inspecting hostile exceptions", () => {
+  // Keep the real error constructor but isolate dispatcher failures at the lazy
+  // import boundary. Invalid-input tests above use the actual default dispatcher.
+  const script = `
+    import assert from "node:assert/strict";
+    import { mock } from "node:test";
+    import { Readable } from "node:stream";
+    import { request } from "node:http";
+    const { DocumentPackageError } = await import("@pa-platform/pa-core");
+    let thrown;
+    mock.module("@pa-platform/pa-core", { namedExports: {
+      DocumentPackageError, executeLocalReview: async () => { throw thrown; },
+    } });
+    const { runLocalReviewCommand, localReviewFailure } = await import(${JSON.stringify(new URL("../local-review-cli.ts", import.meta.url).href)});
+    const { startLocalReviewServer } = await import(${JSON.stringify(new URL("../local-review-server.ts", import.meta.url).href)});
+    let traps = 0;
+    const hostile = () => { traps++; throw new Error("SYNTHETIC_PRIVATE"); };
+    const cases = [
+      ...Object.entries({ DOCUMENT_INPUT: 400, DOCUMENT_SOURCE: 409, DOCUMENT_CONFLICT: 409,
+        DOCUMENT_STALE: 409, DOCUMENT_AUTHORITY: 403, DOCUMENT_UNCERTAIN: 409, DOCUMENT_UNAVAILABLE: 503 })
+        .map(([code, status]) => [Object.defineProperty(new DocumentPackageError(code), "message", { get: hostile }), code, status]),
+      [new Error("SYNTHETIC_PRIVATE after a possible partial effect"), "LOCAL_REVIEW_INTERNAL", 500],
+      [{ code: "DOCUMENT_INPUT", message: "SYNTHETIC_PRIVATE" }, "LOCAL_REVIEW_INTERNAL", 500],
+      [new Proxy(new DocumentPackageError("DOCUMENT_INPUT"), { get: hostile, getPrototypeOf: hostile, getOwnPropertyDescriptor: hostile }), "LOCAL_REVIEW_INTERNAL", 500],
+      [Object.defineProperty(new DocumentPackageError("DOCUMENT_INPUT"), "code", { get: hostile }), "LOCAL_REVIEW_INTERNAL", 500],
+      [Object.assign(new DocumentPackageError("DOCUMENT_INPUT"), { code: "DOCUMENT_FORGED" }), "LOCAL_REVIEW_INTERNAL", 500],
+    ];
+    // Merely throwing a typed-looking value at an untrusted seam is not enough.
+    assert.equal(localReviewFailure(cases[0][0]).code, "LOCAL_REVIEW_INTERNAL");
+    const server = await startLocalReviewServer({ port: 0 });
+    try {
+      const address = server.address();
+      for (const [error, code, status] of cases) {
+        thrown = error;
+        const stdout = [], stderr = [];
+        assert.equal(await runLocalReviewCommand(["--request-stdin"], {
+          stdout: text => { stdout.push(text); }, stderr: text => { stderr.push(text); },
+        }, { stdin: Readable.from([Buffer.from(${JSON.stringify(raw)})]) }), 1);
+        assert.equal(stdout.length, 1); assert.deepEqual(stderr, []);
+        const cli = JSON.parse(stdout[0]); assert.equal(cli.code, code);
+        const http = await new Promise((resolve, reject) => {
+          const req = request({ host: "127.0.0.1", port: address.port, path: "/v1/review", method: "POST",
+            headers: { "Content-Type": "application/json" } }, res => {
+              let body = ""; res.on("data", chunk => { body += chunk; });
+              res.once("error", reject); res.once("end", () => resolve({ status: res.statusCode, body: JSON.parse(body) }));
+          });
+          req.once("error", reject); req.setTimeout(3000, () => req.destroy(new Error("Test response timed out")));
+          req.end(${JSON.stringify(raw)});
+        });
+        assert.equal(http.status, status); assert.deepEqual(http.body, cli);
+        assert.ok(cli.message.length <= 2000); assert.doesNotMatch(cli.message, /SYNTHETIC_PRIVATE|DOCUMENT_FORGED/);
+        for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"])
+          assert.equal(cli.message.split(label + ":").length - 1, 1);
+        if (code === "DOCUMENT_UNCERTAIN" || code === "LOCAL_REVIEW_INTERNAL") {
+          assert.match(cli.message, /unknown|unproven|uncertain/);
+          assert.doesNotMatch(cli.message, /not started|nothing changed|no changes|rolled back/i);
+        }
+      }
+      assert.equal(traps, 0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+    console.log("trusted core CLI/HTTP propagation passed");
+  `;
+  const execution = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--import=tsx", "--input-type=module", "-e", script], {
+    cwd: fileURLToPath(new URL("../..", import.meta.url)),
+    env: { ...process.env, TZ: "Asia/Saigon", LANG: "en_US.UTF-8", NO_COLOR: "1" }, encoding: "utf8", timeout: 20_000,
+  });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /trusted core CLI\/HTTP propagation passed/);
 });
 
 test("source serve command announces numeric loopback, serves store-free health and shuts down cleanly", async t => {
