@@ -22,6 +22,7 @@ export { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
 import { registerQuestionModule } from "./question.js";import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
+import { registerHerdrLifecycleModule } from "./herdr-lifecycle.js";
 import { registerDirtyBorrowApprovalModule } from "./dirty-borrow-approval.js";
 import { registerChildReconciliationModule } from "../child-reconciliation.js";
 import { registerExecutionCustodyModule, registerPhaseReportModule, registerPreparedWorkflowModule, registerWorkflowPolicyModule } from "./prepared-workflow.js";
@@ -298,6 +299,7 @@ export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
   registerTodoModule,
   registerContextUiModule,
   registerGitContextUiModule,
+  registerHerdrLifecycleModule,
 ];
 
 export function createPiPaModules(editorFactories: readonly BundledEditorFactory[]): readonly PiExtensionModule[] {
