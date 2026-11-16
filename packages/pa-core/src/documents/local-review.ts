@@ -10,7 +10,9 @@ import { TicketStore } from "../tickets/store.js";
 import { digest, object, strictJson, text } from "../workflows/contracts.js";
 import { handoffBranchIntentSha, parseLocalReviewRequest, type HandoffBranchIntent, type LocalHandoffReviewSubject } from "./handoff-contract.js";
 import { nativeHandoffPlanIdentity } from "./handoff-planning.js";
-import { LocalHandoffReviewService } from "./handoff-review.js";
+import { LocalHandoffReviewService, type LocalHandoffReviewHooks, type LocalReviewBoundaryResult } from "./handoff-review.js";
+import { assertLocalHandoffCaller, inspectLocalHandoffEffects, inspectLocalHandoffEligibility, localHandoffEligibility, observeLocalHandoffDevelop, withLocalHandoffRepository } from "./handoff-preflight.js";
+import { handoffReviewSubjectSha } from "./handoff-contract.js";
 import { DocumentPackageError, documentReject } from "./package-contract.js";
 
 /** Saved native provenance only. It neither authenticates a local process nor
@@ -54,6 +56,59 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
     || subject.callerIdentitySha256 !== intent.callerIdentitySha256) documentReject("DOCUMENT_AUTHORITY");
 }
 
+export function localHandoffReviewHooks(db: Database.Database, tickets: TicketStore, journal: RegistryHandoffReviewJournal, artifactRoot: string): LocalHandoffReviewHooks {
+  const assertOrigin = (subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent) => verifyLocalReviewOrigin(db, tickets, subject, intent);
+  const inspect: NonNullable<LocalHandoffReviewHooks["inspectEligibility"]> = (subject, intent, presentation) => {
+    let entered = false;
+    try { return withLocalHandoffRepository(intent, admission => { entered = true; return tickets.withWorkflowTransaction(() => {
+      assertOrigin(subject, intent);
+      const eligibility = inspectLocalHandoffEligibility(db, tickets, journal, artifactRoot, subject, intent, presentation, admission), causes = [...eligibility.causes];
+      if (!journal.events(handoffReviewSubjectSha(subject)).some(event => event.kind === "issued" && event.decision.outcome === "approved")) {
+        try { if (observeLocalHandoffDevelop(intent) !== intent.base.observedDevelopSha) causes.push("local-develop-drift"); }
+        catch { causes.push("local-develop"); }
+      }
+      return localHandoffEligibility(causes);
+    }); }); }
+    catch (error) {
+      if (entered) throw error;
+      return tickets.withWorkflowTransaction(() => inspectLocalHandoffEligibility(db, tickets, journal, artifactRoot, subject, intent, presentation));
+    }
+  };
+  return { assertOrigin, inspectEligibility: inspect,
+    inspectEffects: (subject, intent, decisionId, presentation) => inspectLocalHandoffEffects(db, tickets, journal, artifactRoot, subject, intent, decisionId, presentation),
+    assertEffectCaller(subject, intent, caller) { assertOrigin(subject, intent); assertLocalHandoffCaller(db, subject, intent, caller); },
+    withEffectBoundary(subject, intent, run) { return withLocalHandoffRepository(intent, admission => tickets.withWorkflowTransaction(() => { assertOrigin(subject, intent); return run(admission); })); },
+    withApprovalBoundary<T>(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, run: () => T, presentation: Record<string, unknown>, disposition: "observe" | "settle" = "settle"): LocalReviewBoundaryResult<T> {
+      let entered = false;
+      try { return withLocalHandoffRepository(intent, admission => { entered = true; return tickets.withWorkflowTransaction(() => journal.transaction(() => {
+        assertOrigin(subject, intent);
+        const sha = handoffReviewSubjectSha(subject), events = journal.events(sha), previous = events.find(e => e.kind === "stale");
+        if (previous?.kind === "stale") return { status: "stale", ...previous.stale };
+        let current: string;
+        try { current = observeLocalHandoffDevelop(intent); }
+        catch {
+          const eligibility = inspectLocalHandoffEligibility(db, tickets, journal, artifactRoot, subject, intent, presentation, admission);
+          return { status: "blocked", eligibility: localHandoffEligibility([...eligibility.causes, "local-develop"]) };
+        }
+        if (current !== intent.base.observedDevelopSha) {
+          const last = events.at(-1);
+          return { status: "stale", ...(disposition === "settle" ? journal.markStale(sha, current) : {
+            requestKey: last?.kind === "requested" ? last.request.requestKey : null, oldDevelopSha: intent.base.observedDevelopSha, newDevelopSha: current, observedAt: new Date().toISOString(),
+          }) };
+        }
+        const eligibility = inspectLocalHandoffEligibility(db, tickets, journal, artifactRoot, subject, intent, presentation, admission);
+        if (eligibility.status !== "eligible") return { status: "blocked", eligibility };
+        return { status: "current", value: run(), developObservation: { ref: "refs/heads/develop", sha: current, observedAt: new Date().toISOString(), remoteFreshness: "not-established" } };
+      })); }); }
+      catch (error) {
+        if (entered) throw error;
+        return { status: "blocked", eligibility: tickets.withWorkflowTransaction(() =>
+          inspectLocalHandoffEligibility(db, tickets, journal, artifactRoot, subject, intent, presentation)) };
+      }
+    },
+  };
+}
+
 function existingDirectory(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) documentReject("DOCUMENT_SOURCE");
@@ -76,8 +131,7 @@ export async function executeLocalReview(raw: string): Promise<Record<string, un
       // Constructor sees an existing-only directory. Review writes only its
       // journal; TicketStore is used for original intent verification/mutexes.
       const tickets = new TicketStore(ticketRoot);
-      const service = new LocalHandoffReviewService(journal, { artifactRoot, tickets,
-        assertOrigin: (value, plan) => verifyLocalReviewOrigin(db, tickets, value, plan) });
+      const service = new LocalHandoffReviewService(journal, { artifactRoot, tickets, ...localHandoffReviewHooks(db, tickets, journal, artifactRoot) });
       const result = await service.execute(request);
       if (Buffer.byteLength(JSON.stringify(result)) > 32 * 1024 * 1024) documentReject("DOCUMENT_UNAVAILABLE");
       return result;

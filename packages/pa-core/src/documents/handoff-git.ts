@@ -25,10 +25,11 @@ export interface NativeHandoffGit {
 interface GitIntent { binding: string; marker: string }
 export type HandoffGitBoundary = "intent" | "ref" | "synced";
 export class RegistryHandoffGitOwner {
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: Database.Database, initialize = true) {
     // Original operation must be durable before any Git effect. Do not silently
     // weaken the connection's existing durability configuration.
-    if (Number(db.pragma("synchronous", { simple: true })) < 2) documentReject("DOCUMENT_UNCERTAIN");
+    if (!db.readonly && Number(db.pragma("synchronous", { simple: true })) < 2) documentReject("DOCUMENT_UNCERTAIN");
+    if (!initialize) return;
     db.exec("CREATE TABLE IF NOT EXISTS handoff_git_intents (operation_id TEXT PRIMARY KEY, binding TEXT NOT NULL, marker TEXT NOT NULL)");
     // Separate additive original-source record; never alter/backfill old intent
     // bytes. Both rows are committed atomically before a NEW ref creation.
@@ -81,7 +82,7 @@ export class RegistryHandoffGitOwner {
         let active = true;
         const check = () => {
           if (!active) documentReject("DOCUMENT_AUTHORITY"); registered();
-          if (Number(this.db.pragma("synchronous", { simple: true })) < 2) documentReject("DOCUMENT_UNCERTAIN");
+          if (!this.db.readonly && Number(this.db.pragma("synchronous", { simple: true })) < 2) documentReject("DOCUMENT_UNCERTAIN");
         };
         const storage = () => {
           for (const relative of [ref, `logs/${ref}`]) {

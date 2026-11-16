@@ -9,8 +9,9 @@ import {
   handoffBranchIntentSha, inspectFullDocumentReader, intakeNativeHandoffTicket, nativeHandoffPlanIdentity, nativeHandoffTicketVersion, openBoundDocumentReader, openDurableRegistryDatabase, parseWorkflowRequest,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow,
   planNativeHandoffTicket, presentFullDocumentReader, readArtifactFile, resolveTrustedTicketMutationContext, stageNativeHandoffTicket,
-  workflowDigest, executeLocalReview, verifyLocalReviewOrigin, type NativeHandoffPlanningHost, type NativeHandoffReviewHost, type LocalReviewOutcome,
+  workflowDigest, executeLocalReview, getDeployPaths, assertNativeRestartProcessDead, localHandoffReviewHooks, refreshNativeHandoffTicket, withLocalHandoffRepository, type NativeHandoffPlanningHost, type NativeHandoffReviewHost, type LocalReviewOutcome,
 } from "@pa-platform/pa-core";
+import { readPiProcessIdentity } from "./process-identity.js";
 import { authenticatePiDocumentCaller } from "./document-session.js";
 import { SystemDocumentBrowserFallback } from "./handoff-browser-fallback.js";
 import { showHandoffReview, type HandoffReviewUi } from "./pi-extension/handoff-review-ui.js";
@@ -30,7 +31,8 @@ type Request =
   | { action: "revoke"; subjectSha256: string; expectedRevision: number; decisionId: string }
   | { action: "publish" | "complete-branch" | "queue"; subjectSha256: string; decisionId: string }
   | { action: "open"; subjectSha256: string; deliverySha256: string }
-  | { action: "status"; subjectSha256: string };
+  | { action: "status" | "preflight"; subjectSha256: string }
+  | { action: "refresh"; subjectSha256: string; expectedRevision: number; expectedTicketVersion: string };
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new DocumentPackageError("DOCUMENT_INPUT");
@@ -52,6 +54,8 @@ function parse(row: Record<string, unknown>): Request {
   const action = text(row.action, undefined, 32);
   if (row.schemaVersion !== VERSION && row.schemaVersion !== LOCAL_VERSION) throw new DocumentPackageError("DOCUMENT_INPUT");
   if (row.schemaVersion === LOCAL_VERSION) {
+    if (action === "preflight") { exact(row, ["schemaVersion", "action", "subjectSha256"]); return { action, subjectSha256: sha(row.subjectSha256) }; }
+    if (action === "refresh") { exact(row, ["schemaVersion", "action", "subjectSha256", "expectedRevision", "expectedTicketVersion"]); return { action, subjectSha256: sha(row.subjectSha256), expectedRevision: revision(row.expectedRevision), expectedTicketVersion: sha(row.expectedTicketVersion) }; }
     if (action === "show") { exact(row, ["schemaVersion", "action", "subjectSha256"]); return { action, subjectSha256: sha(row.subjectSha256) }; }
     if (action === "request") { exact(row, ["schemaVersion", "action", "subjectSha256", "expectedRevision"]); return { action, subjectSha256: sha(row.subjectSha256), expectedRevision: revision(row.expectedRevision) }; }
     if (action === "decide") {
@@ -112,9 +116,17 @@ function reviewHost(context: PiHandoffContext, tickets: TicketStore, db: ReturnT
   const authenticate = () => {
     const caller = planningHost(context, signal).authenticate(); return caller;
   };
+  const localHooks = localHandoffReviewHooks(db, tickets, new RegistryHandoffReviewJournal(db, false), getAiUsageDir());
   return { artifactRoot: getAiUsageDir(), tickets, authenticate,
     localReview: {
-      assertOrigin(subject, intent) { verifyLocalReviewOrigin(db, tickets, subject, intent); },
+      ...localHooks,
+      assertEffectCaller(subject, intent, caller) {
+        localHooks.assertEffectCaller!(subject, intent, caller);
+        if (caller.deploymentId !== subject.origin.deploymentId) {
+          const original = readPiProcessIdentity(subject.origin.deploymentId, getDeployPaths(subject.origin.deploymentId).deployDir);
+          assertNativeRestartProcessDead(original);
+        }
+      },
       async capture(request, view) {
         const before = authenticate();
         if (context.mode !== "tui" || !context.ui?.custom || signal?.aborted) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
@@ -155,8 +167,8 @@ function services(context: PiHandoffContext, db: ReturnType<typeof getDb>, signa
   const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
   const journal = new RegistryHandoffReviewJournal(db), review = new HandoffReviewService(journal, reviewHost(context, tickets, db, signal));
   const publication = (subjectSha256: string) => {
-    const { intent } = journal.subject(subjectSha256);
-    return new HandoffPublicationService(db, review, nativeHandoffPlanIdentity(planningHost(context, signal).authenticate(), intent.requestId));
+    const { subject, intent } = journal.subject(subjectSha256);
+    return new HandoffPublicationService(db, review, subject.schemaVersion === "pa-handoff-review/v2" ? subject.origin.planIdentity : nativeHandoffPlanIdentity(planningHost(context, signal).authenticate(), intent.requestId));
   };
   return { caller, tickets, db, journal, review, publication, host: planningHost(context, signal) };
 }
@@ -208,7 +220,7 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
     return await executeHandoff(request, context, db, local, signal);
   } finally { db.close(); }
 }
-async function executeHandoff(request: Exclude<Request, { action: "status" }>,  context: PiHandoffContext, db: ReturnType<typeof getDb>, local: boolean, signal?: AbortSignal): Promise<Record<string, unknown>> {
+async function executeHandoff(request: Request,  context: PiHandoffContext, db: ReturnType<typeof getDb>, local: boolean, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const s = services(context, db, signal);
   if (request.action === "intake") {
     const host = { authenticate: () => authenticatePiHandoffCaller(context, signal), assertAvailable(expected: ReturnType<typeof authenticatePiHandoffCaller>) {
@@ -229,8 +241,9 @@ async function executeHandoff(request: Exclude<Request, { action: "status" }>,  
   if ("subjectSha256" in request) {
     const { subject, intent } = s.journal.subject(request.subjectSha256);
     if ((subject.schemaVersion === "pa-handoff-review/v2") !== local) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
-    if (subject.callerIdentitySha256 !== s.caller.identitySha256 || subject.selectionSha256 !== s.caller.selectionSha256
-      || intent.ticket !== s.caller.ticket || intent.repository.key !== s.caller.repoKey || intent.repository.root !== s.caller.repoRoot) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+    if (intent.ticket !== s.caller.ticket || intent.repository.key !== s.caller.repoKey || intent.repository.root !== s.caller.repoRoot) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+    if (subject.schemaVersion === "pa-handoff-review/v1" && (subject.callerIdentitySha256 !== s.caller.identitySha256 || subject.selectionSha256 !== s.caller.selectionSha256)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+    if (subject.schemaVersion === "pa-handoff-review/v2" && ["publish", "complete-branch", "queue", "refresh"].includes(request.action)) s.review.assertEffectCaller(request.subjectSha256);
   }
   if (request.action === "prepare-review") {
     const caller = s.host.authenticate(), planIdentity = nativeHandoffPlanIdentity(caller, request.planRequestId), plan = s.tickets.inspectHandoffWithIntent(planIdentity);
@@ -245,9 +258,28 @@ async function executeHandoff(request: Exclude<Request, { action: "status" }>,  
       origin: { deploymentId: caller.deploymentId, sessionId: caller.sessionId, planIdentity } }
       : { schemaVersion: "pa-handoff-review/v1" as const, ...bindings };
     const subjectSha256 = await s.review.freeze(subject, intent, planIdentity);
+    const preflight = local && Object.values(request.effects).some(Boolean)
+      ? await new LocalHandoffReviewService(s.journal, { ...s.review.host.localReview!, artifactRoot: getAiUsageDir(), tickets: s.tickets }).preflight(subjectSha256, true) : null;
     return { schemaVersion: local ? "pa-handoff-preparation-result/v2" : "pa-handoff-preparation-result/v1", subjectSha256, subject, intent, delivery,
-      ...(local ? { trust: "local-unverified", authentication: "not-provided" } : {}),
+      ...(local ? { trust: "local-unverified", authentication: "not-provided", preflight } : {}),
       approval: "not-issued", publication: "not-performed", branch: "not-performed", queue: "not-performed", opening: "not-requested", launchReady: false };
+  }
+  if (local && request.action === "refresh") {
+    const previous = s.journal.subject(request.subjectSha256);
+    if (previous.subject.schemaVersion !== "pa-handoff-review/v2") throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+    const refreshed = refreshNativeHandoffTicket(s.tickets, s.journal, request.subjectSha256, request.expectedRevision, request.expectedTicketVersion,
+      () => s.review.assertEffectCaller(request.subjectSha256), s.db);
+    const subject = { ...previous.subject, branchIntentSha256: refreshed.intentSha256, origin: { ...previous.subject.origin, planIdentity: refreshed.identity } };
+    const subjectSha256 = withLocalHandoffRepository(refreshed.intent, () => s.tickets.withWorkflowTransaction(() => {
+      s.review.assertEffectCaller(request.subjectSha256); return s.journal.freeze(subject, refreshed.intent);
+    }));
+    const owner = new LocalHandoffReviewService(s.journal, { ...s.review.host.localReview!, artifactRoot: getAiUsageDir(), tickets: s.tickets });
+    const preflight = await owner.preflight(subjectSha256, true);
+    return { schemaVersion: "pa-handoff-refresh-result/v2", ...refreshed, subjectSha256, subject, preflight, ticketVersion: nativeHandoffTicketVersion(refreshed.ticket),
+      approval: "not-issued-by-this-operation", nextOwner: preflight.nextOwner, trust: "local-unverified", authentication: "not-provided" };
+  }
+  if (local && request.action === "preflight") {
+    return new LocalHandoffReviewService(s.journal, { ...s.review.host.localReview!, artifactRoot: getAiUsageDir(), tickets: s.tickets }).preflight(request.subjectSha256);
   }
   if (local && (request.action === "request" || request.action === "revoke" || request.action === "decide" || request.action === "show")) {
     const hooks = s.review.host.localReview;

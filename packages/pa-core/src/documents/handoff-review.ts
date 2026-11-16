@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { RegistryHandoffReviewJournal, handoffReviewRequestKey, type HandoffReviewRequest } from "../registry/handoff-reviews.js";
+import { RegistryHandoffReviewJournal, handoffReviewRequestKey, type HandoffReviewRequest, type HandoffStaleDisposition } from "../registry/handoff-reviews.js";
 import type { TicketStore } from "../tickets/store.js";
+import type { RepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { ID, integer, text } from "../workflows/contracts.js";
 import { documentReject } from "./package-contract.js";
 import { handoffBranchIntentSha, parseHandoffBranchIntent, parseHandoffReviewSubject, type HandoffBranchIntent, type HandoffReviewSubject, type LocalHandoffReviewSubject, type LocalReviewOutcome, type LocalReviewRequest } from "./handoff-contract.js";
-import { nativeHandoffPlanIdentity } from "./handoff-planning.js";
+import { nativeHandoffPlanIdentity, nativeHandoffTicketVersion } from "./handoff-planning.js";
 import { inspectFullDocumentReader } from "./reader-publication.js";
 import { documentText, validateDocumentBytes } from "./package-tools.js";
 
@@ -34,19 +35,29 @@ export interface HandoffReviewView {
 export interface LocalReviewEligibility {
   status: "eligible" | "blocked" | "not-assessed";
   causes: readonly string[];
+  owners?: readonly { cause: string; owner: string }[];
 }
+export interface LocalEffectState { operationId: string; started: boolean; completed: boolean; verified?: boolean; state?: "not-started" | "partial" | "verified" | "conflict-or-unknown" }
+export type LocalReviewBoundaryResult<T> = { status: "current"; value: T; developObservation?: { ref: "refs/heads/develop"; sha: string; observedAt: string; remoteFreshness: "not-established" } }
+  | ({ status: "stale" } & HandoffStaleDisposition) | { status: "blocked"; eligibility: LocalReviewEligibility };
 export interface LocalHandoffReviewHooks {
   /** Validate saved ORIGINAL native selection, association and plan. This is not
    * authentication of a local caller or adoption of writer custody. */
   assertOrigin(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent): void;
-  inspectEligibility?(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent): LocalReviewEligibility;
+  inspectEligibility?(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, presentation: Record<string, unknown>): LocalReviewEligibility;
+  inspectEffects?(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, decisionId: string, presentation: Record<string, unknown>): { publish: LocalEffectState; branchRef: LocalEffectState; queue: LocalEffectState };
+  assertEffectCaller?(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, caller: NativeHandoffReviewCaller): void;
+  withEffectBoundary?<T>(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, run: (admission: RepositoryRefAdmission) => T): T;
   /** P3 owner seam: repository -> ticket -> journal serialization. No lock may
    * span reading/UI. The owner reobserves eligibility/develop before run(). */
-  withApprovalBoundary?<T>(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, run: () => T): T;
+  withApprovalBoundary?<T>(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, run: () => T, presentation: Record<string, unknown>, disposition?: "observe" | "settle"): LocalReviewBoundaryResult<T>;
 }
 export interface LocalHandoffReviewHost extends LocalHandoffReviewHooks {
   artifactRoot: string; tickets: TicketStore;
   afterPersist?(stage: "requested" | "issued"): void;
+}
+function localReviewGuidance(stale = false): string {
+  return `${stale ? "Approval was not issued because local develop changed." : "Final review is blocked; no approval was issued."}\nCondition: The exact finite handoff cannot receive a usable grant yet.\nSource: Serialized local review eligibility and develop checks.\nReason: ${stale ? "The saved and newly observed full SHAs differ; the old review is retained without a human outcome." : "The independent typed eligibility causes identify the unproven prerequisites; no lifecycle, reference or custody repair was performed."}\nCorrection: Ask the named native owner to inspect the original subject and causes${stale ? ", then use the selected native refresh with its exact predecessor revision and complete-ticket version" : " before requesting an effect"}. Impact: ${stale ? "read-only for inspection; state-changing for refresh" : "read-only for inspection"}. Actor: agent or operator. New approval: ${stale ? "required on the successor subject, not for inspection" : "not required for inspection; approval cannot repair blocked prerequisites"}. Prerequisite: preserve original plans, requests, audit, links and partial effects.\nResume Action: ${stale ? "Review and deliberately approve the successor only after native refresh succeeds; retained refresh coordinates recover reply loss." : "Recheck the same subject after its owning prerequisites are resolved."} Every remaining effect rechecks admission; do not delete history or reset custody.`;
 }
 function sync(value: unknown): void {
   if (value instanceof Promise) void value.catch(() => {});
@@ -85,31 +96,57 @@ export class HandoffReviewService {
   }
   authorize(subjectSha256: string, decisionId: string, effect: "publish" | "branchRef" | "queue"): void {
     const { subject, intent } = this.journal.subject(subjectSha256);
-    // Local confirmation is not P3 effect admission. Keep v2 fail-closed until
-    // its finite-effect/continuation owners are explicitly integrated.
-    if (subject.schemaVersion === "pa-handoff-review/v2") documentReject("DOCUMENT_UNAVAILABLE");
+    if (subject.schemaVersion === "pa-handoff-review/v2") {
+      this.assertEffectCaller(subjectSha256);
+      const request = this.journal.approved(subjectSha256, decisionId, effect);
+      if (request.schemaVersion !== "pa-handoff-local-request/v2" || request.deploymentId !== subject.origin.deploymentId
+        || request.sessionId !== subject.origin.sessionId || this.journal.evidence(request).principal !== "local-unverified") documentReject("DOCUMENT_AUTHORITY");
+      return;
+    }
     this.current(subject, intent);
     const request = this.journal.approved(subjectSha256, decisionId, effect), caller = this.host.authenticate();
     if (request.deploymentId !== caller.deploymentId || request.sessionId !== caller.sessionId
       || this.journal.evidence(request).principal !== `local-uid:${process.getuid?.()}`) documentReject("DOCUMENT_AUTHORITY");
   }
+  assertEffectCaller(sha: string): void {
+    const { subject, intent } = this.journal.subject(sha);
+    if (subject.schemaVersion === "pa-handoff-review/v1") { this.current(subject, intent); return; }
+    const hooks = this.host.localReview;
+    if (!hooks?.assertEffectCaller) documentReject("DOCUMENT_UNAVAILABLE");
+    sync(hooks.assertOrigin(subject, intent));
+    sync(hooks.assertEffectCaller(subject, intent, structuredClone(this.host.authenticate())));
+  }
+  withEffectBoundary<T>(sha: string, run: (admission?: RepositoryRefAdmission) => T): T {
+    const { subject, intent } = this.journal.subject(sha);
+    if (subject.schemaVersion === "pa-handoff-review/v1") return run();
+    const hooks = this.host.localReview;
+    if (!hooks?.withEffectBoundary) documentReject("DOCUMENT_UNAVAILABLE");
+    return hooks.withEffectBoundary(subject, intent, run);
+  }
   async review(subjectSha256: string, expectedRevision: number, operation: "capture" | "revoke" = "capture", targetDecisionId: string | null = null) {
     text(subjectSha256, /^[a-f0-9]{64}$/); integer(expectedRevision, 0, 1021);
     if (operation === "capture" ? targetDecisionId !== null : targetDecisionId === null) documentReject("DOCUMENT_INPUT");
     if (targetDecisionId !== null) text(targetDecisionId, ID);
-    const { subject, intent, document } = this.journal.subject(subjectSha256), caller = this.current(subject, intent);
+    const { subject, intent, document } = this.journal.subject(subjectSha256);
+    const caller = subject.schemaVersion === "pa-handoff-review/v2" ? this.host.authenticate() : this.current(subject, intent);
     if (subject.schemaVersion === "pa-handoff-review/v2") {
       const hooks = this.host.localReview;
-      if (!hooks || subject.origin.deploymentId !== caller.deploymentId || subject.origin.sessionId !== caller.sessionId) documentReject("DOCUMENT_AUTHORITY");
+      if (!hooks) documentReject("DOCUMENT_AUTHORITY");
+      // Foreground continuation still uses the actual current Pi caller. The
+      // request/decision itself remains attributable to the immutable origin.
+      if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256);
+      else this.current(subject, intent);
       const local = new LocalHandoffReviewService(this.journal, { ...hooks, artifactRoot: this.host.artifactRoot, tickets: this.host.tickets });
       const pending = operation === "revoke" ? await local.revoke(subjectSha256, expectedRevision, targetDecisionId!) : await local.request(subjectSha256, expectedRevision);
       const events = this.journal.events(subjectSha256), original = events.find(e => e.kind === "requested" && e.request.requestKey === pending.requestKey);
-      if (original?.kind !== "requested") return documentReject("DOCUMENT_UNCERTAIN");
+      if (original?.kind !== "requested") return pending;
       const issued = events.find(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey);
       if (issued?.kind === "issued") return local.decide(subjectSha256, expectedRevision, original.request.requestKey, issued.decision.outcome);
+      const stale = events.find(e => e.kind === "stale");
+      if (stale?.kind === "stale") return local.staleResult(subjectSha256, stale.stale);
       const view = await local.view(subjectSha256);
       const outcome = await hooks.capture(original.request, view);
-      this.current(subject, intent);
+      if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
       return local.decide(subjectSha256, expectedRevision, original.request.requestKey, outcome);
     }
     const requestKey = handoffReviewRequestKey(subjectSha256, expectedRevision, operation, targetDecisionId);
@@ -180,9 +217,17 @@ export class LocalHandoffReviewService {
     sync(this.host.assertOrigin(structuredClone(value.subject), structuredClone(value.intent)));
     return { ...value, subject: value.subject };
   }
-  async view(sha: string): Promise<HandoffReviewView> {
+  async view(sha: string, tolerateUnavailableDelivery = false): Promise<HandoffReviewView & { subject: LocalHandoffReviewSubject }> {
     const { subject, intent, document } = this.selected(sha);
-    const presentation = await inspectFullDocumentReader(document, this.host.artifactRoot, hash => this.journal.documents.snapshot(hash), subject.deliverySha256);
+    let presentation: Record<string, unknown>;
+    try { presentation = await inspectFullDocumentReader(document, this.host.artifactRoot, hash => this.journal.documents.snapshot(hash), subject.deliverySha256); }
+    catch (error) {
+      if (!tolerateUnavailableDelivery) throw error;
+      // Status still exposes independently verified snapshot content/history.
+      // Missing/tampered delivery is explicit, never repaired or called exact.
+      presentation = { status: "unverified", subjectSha256: subject.documentSubjectSha256, deliverySha256: subject.deliverySha256,
+        nextOwner: "reader-publication", guidance: "The bound reader delivery could not be verified. Saved document snapshots and decision history remain independently checked. Ask the reader owner to inspect the original delivery; no repair was attempted." };
+    }
     const documents = document.members.map(member => {
       const raw = this.journal.documents.snapshot(member.sha256); validateDocumentBytes(member, raw);
       return { id: member.id, mediaType: member.mediaType, sha256: member.sha256, content: member.mediaType.startsWith("text/") ? documentText(raw) : null };
@@ -191,21 +236,51 @@ export class LocalHandoffReviewService {
     return { subject, intent, presentation, documents };
   }
   async show(sha: string): Promise<Record<string, unknown>> {
-    const view = await this.view(sha), { document, subject } = this.selected(sha), history = this.journal.events(sha);
-    const effects = history.flatMap(event => event.kind === "requested" && event.request.operation === "capture"
-      ? [{ decisionId: event.request.decisionId, publish: this.journal.effect(sha, event.request.decisionId, "publish"),
-        branchRef: { state: "not-assessed", reason: "P3-effect-admission-not-integrated" },
-        queue: this.journal.effect(sha, event.request.decisionId, "queue") }] : []);
+    const view = await this.view(sha, true), { document, subject } = this.selected(sha), history = this.journal.events(sha);
+    const effects: { decisionId: string; publish: LocalEffectState; branchRef: LocalEffectState; queue: LocalEffectState }[] = history.flatMap(event => event.kind === "requested" && event.request.operation === "capture"
+      ? [{ decisionId: event.request.decisionId, ...(this.host.inspectEffects?.(subject, view.intent, event.request.decisionId, view.presentation) ?? {
+        publish: this.journal.effect(sha, event.request.decisionId, "publish"), branchRef: this.journal.branchEffect(sha, event.request.decisionId),
+        queue: this.journal.effect(sha, event.request.decisionId, "queue") }) }] : []);
     const documents = view.documents.map(member => ({ ...member,
       encoding: member.content === null ? "base64" : "utf-8",
       content: member.content ?? this.journal.documents.snapshot(member.sha256).toString("base64") }));
-    const eligibility = this.host.inspectEligibility?.(subject, view.intent)
-      ?? { status: "not-assessed", causes: ["P3-effect-eligibility-not-integrated"] };
+    const eligibility = this.host.inspectEligibility?.(subject, view.intent, view.presentation)
+      ?? { status: "not-assessed", causes: ["eligibility-owner-unavailable"] };
+    const latest = effects.at(-1), capture = history.filter(event => event.kind === "requested" && event.request.operation === "capture").at(-1);
+    const issued = capture?.kind === "requested" ? history.find(event => event.kind === "issued" && event.decision.requestKey === capture.request.requestKey) : undefined;
+    const revoked = capture?.kind === "requested" && history.some(event => event.kind === "requested" && event.request.operation === "revoke" && event.request.targetDecisionId === capture.request.decisionId
+      && history.some(decision => decision.kind === "issued" && decision.decision.requestKey === event.request.requestKey && decision.decision.outcome === "approved"));
+    const approval = history.at(-1)?.kind === "stale" ? "stale" : history.at(-1)?.kind === "requested" ? "pending" : revoked ? "revoked" : issued?.kind === "issued" ? issued.decision.outcome : "not-requested";
+    const firstUnprovenEffect = !latest ? (subject.effects.publish ? "publication" : "none") : !(latest.publish.verified ?? latest.publish.completed) && subject.effects.publish ? "publication"
+      : !(latest.branchRef.verified ?? latest.branchRef.completed) && subject.effects.branchRef ? "repository-ref-link" : !(latest.queue.verified ?? latest.queue.completed) && subject.effects.queue ? "ticket-queue" : "none";
+    const nextOwner = approval === "stale" ? "native-refresh" : approval === "revoked" ? "finite-effect-owner-reconciliation" : approval === "changes-requested" ? "requirements-analysis" : approval !== "approved" ? "local-review" : firstUnprovenEffect;
+    const currentTicket = this.host.tickets.get(view.intent.ticket);
     return { schemaVersion: "pa-local-review-show/v1", subjectSha256: sha, ...view, documents, document, inventory: document.members,
-      reviewRevision: history.length, pendingReview: history.at(-1)?.kind === "requested",
+      ticketVersion: currentTicket ? nativeHandoffTicketVersion(currentTicket) : null, reviewRevision: history.length, pendingReview: history.at(-1)?.kind === "requested",
       latestRequest: history.filter(event => event.kind === "requested").at(-1)?.request ?? null,
       latestDecision: history.filter(event => event.kind === "issued").at(-1)?.decision ?? null, history, effects,
-      eligibility, trust: "local-unverified", authentication: "not-provided", effectAdmission: "not-established", productUat: "not-asserted" };
+      eligibility, approval, revoked, firstUnprovenEffect, nextOwner, trust: "local-unverified", authentication: "not-provided", effectAdmission: "checked-at-each-remaining-write", launchReady: false, productUat: "not-asserted" };
+  }
+  staleResult(sha: string, value: HandoffStaleDisposition): Record<string, unknown> {
+    return { schemaVersion: "pa-local-review-stale/v1", subjectSha256: sha, status: "stale", ...value,
+      approval: "not-issued", effects: "not-performed", nextOwner: "native-refresh", guidance: localReviewGuidance(true), trust: "local-unverified", authentication: "not-provided" };
+  }
+  async preflight(sha: string, settle = false): Promise<Record<string, unknown>> {
+    const selected = this.selected(sha), hooks = this.host;
+    let presentation: Record<string, unknown>;
+    try { presentation = (await this.view(sha)).presentation; }
+    catch {
+      const eligibility = hooks.inspectEligibility?.(selected.subject, selected.intent, {}) ?? { status: "blocked", causes: ["source-delivery-integrity"] };
+      return { schemaVersion: "pa-local-review-preflight/v1", subjectSha256: sha, status: "blocked", eligibility, approval: "not-issued", nextOwner: "eligibility-owner", guidance: localReviewGuidance() };
+    }
+    if (!hooks.withApprovalBoundary) return { status: "blocked", eligibility: { status: "blocked", causes: ["approval-boundary-unavailable"] } };
+    const history = this.journal.events(sha);
+    if (history.at(-1)?.kind === "issued") return { schemaVersion: "pa-local-review-preflight/v1", subjectSha256: sha, status: "decision-recorded",
+      eligibility: hooks.inspectEligibility?.(selected.subject, selected.intent, presentation), nextOwner: "same-operation-status", approval: "preserved-in-history", effects: "not-performed" };
+    const result = hooks.withApprovalBoundary(selected.subject, selected.intent, () => true, presentation, settle ? "settle" : "observe");
+    return result.status === "stale" ? this.staleResult(sha, result) : { schemaVersion: "pa-local-review-preflight/v1", subjectSha256: sha,
+      status: result.status === "blocked" ? "blocked" : "eligible", eligibility: result.status === "blocked" ? result.eligibility : { status: "eligible", causes: [] }, effects: "not-performed", nextOwner: result.status === "blocked" ? "eligibility-owner" : "local-review",
+      ...(result.status === "blocked" ? { guidance: localReviewGuidance() } : { developObservation: result.developObservation }) };
   }
   request(sha: string, expectedRevision: number): Promise<Record<string, unknown> & { requestKey: string }> {
     return this.requestOperation(sha, expectedRevision, "capture", null);
@@ -221,11 +296,17 @@ export class LocalHandoffReviewService {
     const response = (request: HandoffReviewRequest) => ({ schemaVersion: "pa-local-review-request-result/v1", subjectSha256: sha, requestKey,
       expectedRevision: request.expectedRevision, request, trust: "local-unverified", authentication: "not-provided",
       approval: "not-issued-by-this-operation", effects: "not-performed" });
-    const previous = this.journal.events(sha).find(e => e.kind === "requested" && e.request.requestKey === requestKey);
+    const existingHistory = this.journal.events(sha), previous = existingHistory.find(e => e.kind === "requested" && e.request.requestKey === requestKey);
     if (previous?.kind === "requested") return response(previous.request);
+    if (operation === "capture" && Object.values(subject.effects).some(Boolean) && existingHistory.some(event => event.kind === "issued" && event.decision.outcome === "approved")) documentReject("DOCUMENT_CONFLICT");
     // Verification-only: never create/repair a delivery. Original request replay
     // above retains its saved coordinates even after later delivery changes.
-    await this.view(sha);
+    const view = await this.view(sha);
+    if (operation === "capture" && Object.values(subject.effects).some(Boolean)) {
+      if (!this.host.withApprovalBoundary) documentReject("DOCUMENT_UNAVAILABLE");
+      const checked = this.host.withApprovalBoundary(subject, view.intent, () => true, view.presentation);
+      if (checked.status !== "current") return { ...(checked.status === "stale" ? this.staleResult(sha, checked) : { status: "blocked", eligibility: checked.eligibility, approval: "not-issued", nextOwner: "eligibility-owner", guidance: localReviewGuidance() }), requestKey };
+    }
     const request = this.host.tickets.withWorkflowTransaction(() => this.journal.transaction(() => {
       this.selected(sha);
       const history = this.journal.events(sha), original = history.find(e => e.kind === "requested" && e.request.requestKey === requestKey);
@@ -254,16 +335,25 @@ export class LocalHandoffReviewService {
     const before = original();
     // Issued replay must return its exact historical result even if delivery or
     // develop moved later. Only an unissued decision revalidates the delivery.
-    if (!before.issued) await this.view(sha);
+    const disposition = this.journal.events(sha).find(e => e.kind === "stale");
+    if (!before.issued && disposition?.kind === "stale") return this.staleResult(sha, disposition.stale);
+    const view = !before.issued ? await this.view(sha) : null;
     const issue = () => this.host.tickets.withWorkflowTransaction(() => this.journal.transaction(() => {
       const { request } = original(); return this.journal.issueLocal(sha, request, outcome);
     }));
-    const decision = !before.issued && outcome === "approved" && before.request.operation === "capture" && this.host.withApprovalBoundary
-      ? this.host.withApprovalBoundary(subject, intent, issue) : issue();
+    const requiresBoundary = !before.issued && outcome === "approved" && before.request.operation === "capture" && Object.values(subject.effects).some(Boolean);
+    if (requiresBoundary && !this.host.withApprovalBoundary) documentReject("DOCUMENT_UNAVAILABLE");
+    const boundary = requiresBoundary && this.host.withApprovalBoundary
+      ? this.host.withApprovalBoundary(subject, intent, issue, view!.presentation) : { status: "current" as const, value: issue() };
+    if (boundary.status === "stale") return this.staleResult(sha, boundary);
+    if (boundary.status === "blocked") return { schemaVersion: "pa-local-review-blocked/v1", subjectSha256: sha, ...boundary, approval: "not-issued", nextOwner: "eligibility-owner", guidance: localReviewGuidance() };
+    const decision = boundary.value;
     sync(this.host.afterPersist?.("issued"));
     return { schemaVersion: "pa-local-review-decision-result/v1", subjectSha256: sha, decisionId: before.request.decisionId,
       expectedRevision, operation: before.request.operation, targetDecisionId: before.request.targetDecisionId,
       ...decision, trust: "local-unverified", authentication: "not-provided", method: "unauthenticated-local-confirmation",
+      approvalBoundary: before.request.operation === "capture" && decision.outcome === "approved" && Object.values(subject.effects).some(Boolean)
+        ? { ref: intent.base.ref, sha: intent.base.observedDevelopSha, recordedAt: decision.recordedAt, remoteFreshness: "not-established" } : null,
       effects: subject.effects, publication: "not-performed-by-this-operation", branch: "not-performed-by-this-operation",
       queue: "not-performed-by-this-operation", productUat: "not-asserted" };
   }

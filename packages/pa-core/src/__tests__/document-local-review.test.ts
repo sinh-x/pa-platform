@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
 import { LocalHandoffReviewService, HandoffReviewService, type LocalHandoffReviewHost } from "../documents/handoff-review.js";
-import { executeLocalReview, verifyLocalReviewOrigin } from "../documents/local-review.js";
+import { executeLocalReview, localHandoffReviewHooks, verifyLocalReviewOrigin } from "../documents/local-review.js";
 import { handoffBranchIntentSha, handoffReviewSubjectSha, parseHandoffReviewSubject, parseLocalReviewRequest, type HandoffBranchIntent, type LocalHandoffReviewSubject } from "../documents/handoff-contract.js";
 import { nativeHandoffPlanIdentity } from "../documents/handoff-planning.js";
 import { presentFullDocumentReader } from "../documents/reader-publication.js";
@@ -13,6 +13,9 @@ import { readDocumentSources } from "../documents/package-tools.js";
 import { creationDigest } from "../tickets/create-intent.js";
 import { digest } from "../workflows/contracts.js";
 import { MODE_CAPABILITY_SESSION } from "../mode-capabilities.js";
+import { readProcessFingerprint, withRepositoryRefAdmission } from "../deploy/repository-admission.js";
+import { preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
+import { assertLocalHandoffRepository, withLocalHandoffRepository } from "../documents/handoff-preflight.js";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
 
 async function fixture(verify = false, allow = ["document.handoff", "document.local-review", "document.package"]) {
@@ -25,8 +28,9 @@ async function fixture(verify = false, allow = ["document.handoff", "document.lo
   const binding = JSON.stringify({ schemaVersion: "pa-mode-capability-binding/v1", configRevision: "a".repeat(40), resourcePath: "teams/requirements.yaml", resourceSha256: "b".repeat(64), profile: "pa-document-policy/v1", policy: { version: "pa-mode-capabilities/v1", allow: [...allow].sort() } });
   const caller = { identitySha256: "a".repeat(64), selectionSha256: digest(binding), deploymentId: "d-314001", sessionId: "original-native-session", repoKey: "example", repoRoot: f.repo, ticket: "EX-1" };
   const planIdentity = nativeHandoffPlanIdentity(caller, "native-plan"), before = f.store.get("EX-1")!, base = git("rev-parse", "HEAD");
+  const physicalIdentitySha256 = withRepositoryRefTicketExclusion("example", f.repo, exclusion => withRepositoryRefAdmission(f.repo, exclusion, id => id));
   const intent: HandoffBranchIntent = { schemaVersion: "pa-handoff-branch-intent/v1", requestId: "native-plan", callerIdentitySha256: caller.identitySha256, expectedTicketVersion: creationDigest(before),
-    repository: { key: "example", root: f.repo, physicalIdentitySha256: "c".repeat(64) }, ticket: "EX-1", branch: "feature/EX-1-local", action: "create",
+    repository: { key: "example", root: f.repo, physicalIdentitySha256 }, ticket: "EX-1", branch: "feature/EX-1-local", action: "create",
     base: { ref: "refs/heads/develop", sha: base, observedDevelopSha: base, observedAt: "2026-11-17T00:00:00.000Z", provenance: "local-develop-ref", remoteFreshness: "not-established" }, plannedLinkSha256: creationDigest(null), lineage: null };
   f.store.applyHandoffWithIntent("EX-1", creationDigest(before), { kind: "plan", intent }, "requirements/analyze", planIdentity, { assertCurrent() {}, assertSnapshot() {} });
   f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
@@ -40,12 +44,42 @@ async function fixture(verify = false, allow = ["document.handoff", "document.lo
     selectionSha256: caller.selectionSha256, callerIdentitySha256: caller.identitySha256, effects: { publish: true, branchRef: true, queue: false }, origin: { deploymentId: caller.deploymentId, sessionId: caller.sessionId, planIdentity } };
   const journal = new RegistryHandoffReviewJournal(f.db), sha = journal.freeze(subject, intent);
   let checks = 0;
-  const host: LocalHandoffReviewHost = { artifactRoot: f.root, tickets: f.store, assertOrigin(value, plan) { checks++; if (verify) verifyLocalReviewOrigin(f.db, f.store, value, plan); } };
+  const host: LocalHandoffReviewHost = { artifactRoot: f.root, tickets: f.store, ...localHandoffReviewHooks(f.db, f.store, journal, f.root), assertOrigin(value, plan) { checks++; if (verify) verifyLocalReviewOrigin(f.db, f.store, value, plan); } };
   const local = new LocalHandoffReviewService(journal, host);
   const call = (input: Record<string, unknown>) => executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", subjectSha256: sha, ...input }));
   return { ...f, git, intent, localSubject: subject, caller, planIdentity, journal, sha, host, local, call, checks: () => checks };
   } catch (error) { f.close(); throw error; }
 }
+
+for (const sameTicket of [false, true]) test(`local handoff inventory admits only proven unrelated idle custody; same ticket: ${sameTicket}`, async () => {
+  const f = await fixture();
+  try {
+    const ticket = sameTicket ? f.intent.ticket : "EX-999";
+    const options = { canonicalRepoKey: "example", canonicalRepoRoot: f.repo };
+    const reservation = withPreparedTicketCapacity(options, tx => {
+      const result = tx.reserve({ ticket, operationId: "1".repeat(64), reservationId: "2".repeat(64), retainedAt: new Date().toISOString() });
+      if (result.status !== "reserved") throw Error("fixture has no capacity");
+      return result.reservation;
+    });
+    const path = preparedRepositoryTicketReservationPath(f.repo, ticket);
+    const observe = (allowed: boolean) => {
+      const before = readFileSync(path);
+      if (allowed) withLocalHandoffRepository(f.intent, admission => assertLocalHandoffRepository(f.intent, admission));
+      else assert.throws(() => withLocalHandoffRepository(f.intent, () => {}));
+      assert.deepEqual(readFileSync(path), before, "custody observation must not reconcile retained evidence");
+    };
+    observe(false); // preparing, even though its custody.state is idle
+    const ready = withPreparedTicketCapacity(options, tx => tx.update(reservation, { ...reservation, occupancy: "idle-ready", receiptId: "3".repeat(64) }));
+    observe(!sameTicket);
+    const processIdentity = readProcessFingerprint(process.pid); if (!processIdentity) throw Error("fixture process missing");
+    const active = withPreparedTicketCapacity(options, tx => tx.update(ready, { ...ready, occupancy: "active", lineageId: "fixture-lineage",
+      custody: { state: "orchestrator-direct", holder: { deploymentId: "d-314001", process: processIdentity }, inFlightOperation: null } }));
+    observe(false);
+    withPreparedTicketCapacity(options, tx => tx.update(active, { ...active, occupancy: "uncertain-retained", custody: { state: "uncertain-blocked", holder: null, inFlightOperation: null } }));
+    observe(false);
+    assert.throws(() => assertLocalHandoffRepository(f.intent, { identitySha256: f.intent.repository.physicalIdentitySha256 }), /absent/);
+  } finally { f.close(); }
+});
 
 const request = (action: string, extra = {}) => JSON.stringify({ schemaVersion: "pa-local-review/v1", action, subjectSha256: "a".repeat(64), ...extra });
 test("strict local request grammar accepts no actor, provenance, coordinates, duplicate keys or effects", () => {
@@ -157,13 +191,28 @@ test("cross-subject keys, conflicting concurrent decisions and imported local ca
   } finally { f.close(); }
 });
 
+test("v2 effect approval fails closed without the serialized eligibility owner, while nonapproval can settle the request", async () => {
+  const f = await fixture();
+  try {
+    const boundary = f.host.withApprovalBoundary;
+    delete f.host.withApprovalBoundary;
+    await assert.rejects(() => f.local.request(f.sha, 0), /DOCUMENT_UNAVAILABLE/); assert.equal(f.journal.events(f.sha).length, 0);
+    f.host.withApprovalBoundary = boundary;
+    const request = await f.local.request(f.sha, 0);
+    delete f.host.withApprovalBoundary;
+    await assert.rejects(() => f.local.decide(f.sha, 0, request.requestKey, "approved"), /DOCUMENT_UNAVAILABLE/);
+    assert.equal(f.journal.capture(request.requestKey), null);
+    assert.equal((await f.local.decide(f.sha, 0, request.requestKey, "rejected")).outcome, "rejected");
+  } finally { f.close(); }
+});
+
 test("native v2 foreground shares the local owner, never manufactures native-human evidence, and replays without UI", async () => {
   const f = await fixture();
   try {
     let prompts = 0;
     const native = new HandoffReviewService(f.journal, { artifactRoot: f.root, tickets: f.store, authenticate: () => f.caller, assertAvailable() {},
       async capture() { throw Error("v1 evidence owner must not run"); }, localReview: {
-        assertOrigin: f.host.assertOrigin,
+        ...localHandoffReviewHooks(f.db, f.store, f.journal, f.root), assertOrigin: f.host.assertOrigin,
         async capture(request, view) { prompts++; assert.equal(request.schemaVersion, "pa-handoff-local-request/v2"); assert.equal(view.documents.length, f.subject.members.length); return "approved"; },
       } });
     assert.equal(await native.freeze(f.localSubject, f.intent, f.planIdentity), f.sha);

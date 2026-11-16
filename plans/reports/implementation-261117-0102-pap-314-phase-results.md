@@ -25,3 +25,11 @@ No actual human decisions, browser observations, installed qualification or CI p
 The full brief is the executive entry regardless of manifest position. Index links every complete member HTML/raw source and keeps a searchable printable full-package view in manifest order. Member pages have genuine previous/next/back/skip links. Existing inert CSP, output limits and immutable renderer-derived identities remain controlling.
 
 Actual focused reader/summary/worker/opening suites passed 34/34 (zero skips); core build/typecheck passed. Static accessibility assertions are not browser/375px/zoom/keyboard/human evidence. Opening remains a bound request through the existing owner, never a viewing claim.
+
+## P3
+
+Implemented eligibility preflight, serialized local-develop observations, append-only stale disposition and native plan refresh, exact publication/attachment ordering, ref/link/queue effects and fresh explicitly selected continuation. Original v1 remains isolated.
+
+Independent review reproduced four defects in custody, pre-ref validation, replaced link attribution and revoked queue settlement. All were repaired; seven permanent regressions and the unchanged independent probes pass. Independent re-review reports no remaining source blocker in scope. Latest independent checks passed 70 registered/transport tests, 213 core/reader tests and workspace typecheck. Workspace build passed in repair verification. The simplifier ran clean with no edits. Detailed original failures and exact commands remain in P3 review/repair reports.
+
+This source completion does not establish installed/default-entry, hosted CI, browser/accessibility or human acceptance.

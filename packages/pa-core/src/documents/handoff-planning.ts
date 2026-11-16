@@ -15,6 +15,8 @@ import { handoffBranchIntentSha, parseHandoffRequest, type HandoffBranchIntent }
 import { intakeNativeHandoffTicket, type HandoffIntakeCaller, type HandoffIntakeHost } from "./handoff-intake.js";
 import { DocumentPackageError, documentReject } from "./package-contract.js";
 import { RegistryHandoffGitOwner } from "./handoff-git.js";
+import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
+import { assertLocalHandoffBranchTarget, observeLocalHandoffDevelop, withLocalHandoffRepository } from "./handoff-preflight.js";
 
 export interface NativeHandoffPlanningCaller extends HandoffIntakeCaller {
   identitySha256: string;
@@ -27,6 +29,62 @@ export function nativeHandoffTicketVersion(ticket: Ticket): string { return crea
 export function nativeHandoffPlanIdentity(caller: NativeHandoffPlanningCaller, requestId: string) {
   return { scope: creationDigest({ domain: "pa-handoff-plan/v1", deploymentId: caller.deploymentId, sessionId: caller.sessionId,
     identitySha256: caller.identitySha256, selectionSha256: caller.selectionSha256, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket }), requestId };
+}
+
+/** Native v2 successor only. Stable identity is derived from the exact stale
+ * predecessor, never a replacement namespace supplied to hide uncertainty. */
+export function refreshNativeHandoffTicket(store: TicketStore, journal: RegistryHandoffReviewJournal, subjectSha256: string,
+  expectedRevision: number, expectedTicketVersion: string, assertCurrent: () => void, db: Database.Database) {
+  const { subject, intent } = journal.subject(subjectSha256);
+  if (subject.schemaVersion !== "pa-handoff-review/v2") return documentReject("DOCUMENT_AUTHORITY");
+  const identity = { scope: subject.origin.planIdentity.scope, requestId: `refresh-${subjectSha256}` };
+  return withLocalHandoffRepository(intent, admission => store.withWorkflowTransaction(() => journal.transaction(() => {
+    assertCurrent();
+    const history = journal.events(subjectSha256), disposition = history.at(-1);
+    if (history.length !== expectedRevision || disposition?.kind !== "stale") documentReject("DOCUMENT_CONFLICT");
+    const predecessor = store.inspectHandoffWithIntent(subject.origin.planIdentity);
+    if (!predecessor?.complete || predecessor.record.change.kind !== "plan" || handoffBranchIntentSha(predecessor.record.change.intent) !== handoffBranchIntentSha(intent)) documentReject("DOCUMENT_AUTHORITY");
+    const original = store.inspectHandoffWithIntent(identity), ticket = store.get(intent.ticket);
+    if (!ticket || ticket.project !== intent.repository.key) documentReject("DOCUMENT_CONFLICT");
+    if (original && (original.record.change.kind !== "plan" || original.record.change.predecessorPlanKey !== predecessor.record.key || original.record.expectedVersion !== expectedTicketVersion)) documentReject("DOCUMENT_CONFLICT");
+    if (original?.complete && original.record.change.kind === "plan") {
+      // Historical observation only: a successor may already have materialized
+      // the link or develop may have moved again. Never redo CAS, repin or write
+      // another audit to recover this completed preparation's lost response.
+      const saved = original.record.change.intent;
+      return { identity, intent: saved, intentSha256: handoffBranchIntentSha(saved), ticket, reused: true,
+        predecessorSubjectSha256: subjectSha256, oldDevelopSha: intent.base.observedDevelopSha, newDevelopSha: saved.base.observedDevelopSha };
+    }
+    if (!isDeepStrictEqual(ticket.linkedBranches, predecessor.record.after.linkedBranches)) documentReject("DOCUMENT_CONFLICT");
+    journal.assertSettled(subjectSha256);
+    for (const event of history) if (event.kind === "requested" && event.request.operation === "capture") {
+      if (journal.effect(subjectSha256, event.request.decisionId, "publish").started || journal.effect(subjectSha256, event.request.decisionId, "queue").started
+        || journal.branchEffect(subjectSha256, event.request.decisionId).started) documentReject("DOCUMENT_UNCERTAIN");
+    }
+    const develop = observeLocalHandoffDevelop(intent);
+    const next: HandoffBranchIntent = original?.record.change.kind === "plan" ? original.record.change.intent : {
+      ...intent, requestId: identity.requestId, expectedTicketVersion,
+      plannedLinkSha256: creationDigest(ticket.linkedBranches[0] ?? null),
+      base: { ...intent.base, sha: intent.action === "create" ? develop : intent.base.sha, observedDevelopSha: develop, observedAt: new Date().toISOString() },
+    };
+    const verify = () => {
+      assertCurrent();
+      assertLocalHandoffBranchTarget(db, intent, admission);
+    };
+    verify();
+    const result = store.applyHandoffWithIntent(intent.ticket, expectedTicketVersion, { kind: "plan", intent: next, predecessorPlanKey: predecessor.record.key }, "requirements/analyze", identity, {
+      assertCurrent: verify,
+      assertSnapshot(before, current) {
+        verify();
+        if (creationDigest(before) !== expectedTicketVersion || !isDeepStrictEqual(current.linkedBranches, predecessor.record.after.linkedBranches)) documentReject("DOCUMENT_CONFLICT");
+        if (!original && observeLocalHandoffDevelop(intent) !== next.base.observedDevelopSha) documentReject("DOCUMENT_STALE");
+      },
+    });
+    const saved = store.inspectHandoffWithIntent(identity);
+    if (!saved?.complete || saved.record.change.kind !== "plan" || !isDeepStrictEqual(saved.record.change.intent, next)) documentReject("DOCUMENT_UNCERTAIN");
+    return { identity, intent: next, intentSha256: handoffBranchIntentSha(next), ticket: result.ticket, reused: result.reused,
+      predecessorSubjectSha256: subjectSha256, oldDevelopSha: intent.base.observedDevelopSha, newDevelopSha: next.base.observedDevelopSha };
+  })));
 }
 
 /** Internal fresh/advanced composition, NOT selected tool grammar or authority.

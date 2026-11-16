@@ -16,8 +16,19 @@ export interface HandoffIssuedDecision {
   requestKey: string; outcome: "approved" | "changes-requested" | "rejected" | "cancelled";
   principal: string; interactionId: string; evidenceSha256: string; recordedAt: string;
 }
+export interface HandoffStaleDisposition {
+  requestKey: string | null; oldDevelopSha: string; newDevelopSha: string; observedAt: string;
+}
 export type HandoffReviewEvent = { revision: number; predecessor: string | null } & (
-  { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision });
+  { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision }
+  | { kind: "stale"; stale: HandoffStaleDisposition });
+function stale(value: unknown): HandoffStaleDisposition {
+  const row = object(value, ["requestKey", "oldDevelopSha", "newDevelopSha", "observedAt"]);
+  const result = { requestKey: row.requestKey === null ? null : text(row.requestKey, SHA256),
+    oldDevelopSha: text(row.oldDevelopSha, /^[a-f0-9]{40}$/), newDevelopSha: text(row.newDevelopSha, /^[a-f0-9]{40}$/), observedAt: time(row.observedAt) };
+  if (result.oldDevelopSha === result.newDevelopSha) documentReject("DOCUMENT_INPUT");
+  return result;
+}
 const json = (value: unknown) => Buffer.from(JSON.stringify(value));
 function time(value: unknown): string {
   const at = text(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
@@ -124,10 +135,11 @@ export class RegistryHandoffReviewJournal {
     let predecessor: string | null = null; const events: HandoffReviewEvent[] = [];
     for (const row of rows) {
       const value = strictJson(Buffer.from(row.body), 65536), k = (value as { kind?: unknown }).kind;
-      const e = object(value, ["revision", "predecessor", "kind", k === "requested" ? "request" : "decision"]);
+      const e = object(value, ["revision", "predecessor", "kind", k === "requested" ? "request" : k === "stale" ? "stale" : "decision"]);
       if (row.revision !== events.length + 1 || e.revision !== row.revision || e.predecessor !== predecessor || digest(row.body) !== row.sha256) documentReject("DOCUMENT_UNCERTAIN");
       const event: HandoffReviewEvent = k === "requested" ? { revision: row.revision, predecessor, kind: "requested", request: request(e.request) }
-        : k === "issued" ? { revision: row.revision, predecessor, kind: "issued", decision: issued(e.decision, local) } : documentReject("DOCUMENT_UNCERTAIN");
+        : k === "issued" ? { revision: row.revision, predecessor, kind: "issued", decision: issued(e.decision, local) }
+        : k === "stale" && local ? { revision: row.revision, predecessor, kind: "stale", stale: stale(e.stale) } : documentReject("DOCUMENT_UNCERTAIN");
       this.transition(subjectSha256, events, event); events.push(event); predecessor = row.sha256;
     } return events;
   }
@@ -138,9 +150,14 @@ export class RegistryHandoffReviewJournal {
       if (subject.schemaVersion === "pa-handoff-review/v2") {
         if (r.schemaVersion !== "pa-handoff-local-request/v2" || r.deploymentId !== subject.origin.deploymentId || r.sessionId !== subject.origin.sessionId) documentReject("DOCUMENT_AUTHORITY");
       } else if (r.schemaVersion !== "pa-handoff-native-request/v1") documentReject("DOCUMENT_AUTHORITY");
-      if (last?.kind === "requested" || r.expectedRevision !== prior.length || r.subjectSha256 !== sha || r.callerIdentitySha256 !== subject.callerIdentitySha256
+      if (last?.kind === "requested" || prior.some(e => e.kind === "stale") || r.expectedRevision !== prior.length || r.subjectSha256 !== sha || r.callerIdentitySha256 !== subject.callerIdentitySha256
         || r.selectionSha256 !== subject.selectionSha256 || prior.some(e => e.kind === "requested" && (e.request.requestKey === r.requestKey || e.request.decisionId === r.decisionId))) documentReject("DOCUMENT_CONFLICT");
       if (r.operation === "revoke") this.approvedFrom(prior, r.targetDecisionId!);
+    } else if (next.kind === "stale") {
+      const disposition = stale(next.stale), { intent } = this.subject(sha);
+      if (subject.schemaVersion !== "pa-handoff-review/v2" || disposition.oldDevelopSha !== intent.base.observedDevelopSha
+        || prior.some(e => e.kind === "stale" || e.kind === "issued" && e.decision.outcome === "approved")
+        || (last?.kind === "requested" ? last.request.operation !== "capture" || disposition.requestKey !== last.request.requestKey : disposition.requestKey !== null)) documentReject("DOCUMENT_CONFLICT");
     } else {
       if (last?.kind !== "requested" || last.request.requestKey !== next.decision.requestKey) documentReject("DOCUMENT_CONFLICT");
       const { recordedAt: _at, ...d } = next.decision;
@@ -212,7 +229,25 @@ export class RegistryHandoffReviewJournal {
       return decision;
     });
   }
-  private append(sha: string, revision: number, data: { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision }): void {
+  markStale(sha: string, newDevelopSha: string): HandoffStaleDisposition {
+    return this.transaction(() => {
+      const events = this.events(sha), previous = events.find(e => e.kind === "stale");
+      if (previous?.kind === "stale") return previous.stale;
+      const { intent } = this.subject(sha), last = events.at(-1);
+      const value = stale({ requestKey: last?.kind === "requested" ? last.request.requestKey : null,
+        oldDevelopSha: intent.base.observedDevelopSha, newDevelopSha, observedAt: new Date().toISOString() });
+      this.append(sha, events.length, { kind: "stale", stale: value }); return value;
+    });
+  }
+  /** Read-only pending/partial checks for preflight and exact native refresh. */
+  assertSettled(sha: string): void { this.assertNoOtherPending(sha); }
+  branchEffect(sha: string, decisionId: string): { operationId: string; started: boolean; completed: boolean } {
+    const operationId = handoffBranchOperationId(sha, decisionId);
+    const exists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='handoff_branch_events'").get();
+    const events = exists ? new RegistryHandoffBranchJournal(this.db, false).events(operationId) : [];
+    return { operationId, started: events.length > 0, completed: events.at(-1)?.kind === "complete" };
+  }
+  private append(sha: string, revision: number, data: { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision } | { kind: "stale"; stale: HandoffStaleDisposition }): void {
     this.transaction(() => {
       const prior = this.events(sha); if (prior.length !== revision) documentReject("DOCUMENT_CONFLICT");
       const last = this.db.prepare("SELECT sha256 FROM handoff_review_events WHERE subject_sha=? ORDER BY revision DESC LIMIT 1").get(sha) as { sha256: string } | undefined;

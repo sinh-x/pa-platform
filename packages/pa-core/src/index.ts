@@ -63,6 +63,7 @@ export * from "./documents/handoff-planning.js";
 export * from "./documents/handoff-lifecycle.js";
 export * from "./documents/handoff-review.js";
 export * from "./documents/local-review.js";
+export * from "./documents/handoff-preflight.js";
 export * from "./documents/handoff-publication.js";
 export * from "./documents/handoff-branch.js";
 export * from "./documents/reader-opening.js";
