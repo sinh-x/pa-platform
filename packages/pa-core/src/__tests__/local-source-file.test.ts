@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { acquireLocalSourceFile } from "../local-source-file.js";
+import { acquireLocalSourceFile, assertImmutableStoreSource, type ImmutableSourceFacts } from "../local-source-file.js";
 import { MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError } from "../source-content-security.js";
 import { loadSensitivePatterns } from "../sensitive-patterns.js";
 
@@ -112,3 +112,23 @@ test("failed directory metadata observation closes even the just-opened descript
   assert.throws(() => acquireLocalSourceFile(path, patterns()), error => code("LOCAL_SOURCE_UNAVAILABLE")(error) && !(error as Error).message.includes("private observation"));
   assert.equal(fs.readdirSync("/proc/self/fd").length, before);
 }));
+
+/** The store route is decided from descriptor facts the caller owns, so its
+ * policy can be exercised without a writable Nix store. */
+test("ordinary multi-link ingress is limited to exact immutable /nix/store text ancestry", () => {
+  const store = "/nix/store/00000000000000000000000000000000-inert-pkg";
+  const facts = (path: string, overrides: Partial<ImmutableSourceFacts> = {}): ImmutableSourceFacts => ({ path, uid: 0n, nlink: 2n, mode: 0o444n, ...overrides });
+  const ancestors = [facts("/", { nlink: 2n, mode: 0o755n }), facts("/nix", { mode: 0o555n }), facts("/nix/store", { mode: 0o1775n }), facts(store, { nlink: 3n, mode: 0o555n })];
+  const document = facts(`${store}/README.md`, { nlink: 9n });
+  assert.doesNotThrow(() => assertImmutableStoreSource(`${store}/README.md`, `${store}/README.md`, ancestors, document));
+  const denies = (physical: string, logical: string, ancestry = ancestors, file = document) =>
+    assert.throws(() => assertImmutableStoreSource(physical, logical, ancestry, file), code("LOCAL_SOURCE_UNSUPPORTED_FILE"));
+  denies("/tmp/ordinary.txt", "/tmp/ordinary.txt");
+  denies(`${store}/README.md`, `${store}/alias.md`);
+  denies(`${store}/README.md`, `${store}/README.md`, [...ancestors.slice(0, 3), facts(store, { nlink: 3n, mode: 0o5775n })]);
+  denies(`${store}/README.md`, `${store}/README.md`, [...ancestors.slice(0, 2), facts("/nix/store", { mode: 0o0777n }), ancestors[3]!]);
+  denies(`${store}/README.md`, `${store}/README.md`, ancestors, facts(`${store}/README.md`, { uid: 1000n, nlink: 9n }));
+  denies(`${store}/README.md`, `${store}/README.md`, ancestors, facts(`${store}/README.md`, { mode: 0o644n, nlink: 9n }));
+  denies(`${store}/README.md`, `${store}/README.md`, ancestors, facts(`${store}/README.md`, { nlink: 0n }));
+  denies(`${store}/README.md`, `${store}/README.md`, [...ancestors.slice(0, 3), facts(store, { nlink: 3n, mode: 0o555n, uid: 1000n })]);
+});

@@ -31,9 +31,36 @@ function unavailable(error: unknown): never {
   return fail("LOCAL_SOURCE_UNAVAILABLE");
 }
 
-/** Linux descriptor-pinned, bounded, regular/single-link general source ingress.
- * Logical single-link aliases retain their path checks; no physical component
- * symlink is followed. No caller root, filesystem backend or trust override. */
+/** Facts for the ordinary immutable-store route. Decision input only; the
+ * descriptor-pinned caller supplies them from the descriptors it owns. */
+export interface ImmutableSourceFacts {
+  readonly path: string;
+  readonly uid: bigint;
+  readonly nlink: bigint;
+  readonly mode: bigint;
+}
+
+/** Ordinary multi-link ingress is limited to an exact `/nix/store` spelling whose
+ * whole ancestry is root-owned and not writable. This is a source-integrity
+ * route, not an origin or confidentiality grant: sensitive path/filename rules
+ * still run, matched content is still redacted, and the bytes must be text.
+ * Pure so the policy decision is testable without a writable Nix store. */
+export function assertImmutableStoreSource(physical: string, logical: string, ancestors: readonly ImmutableSourceFacts[], file: ImmutableSourceFacts): void {
+  if (physical !== logical || !physical.startsWith("/nix/store/")) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+  for (const entry of [...ancestors, file]) {
+    if (entry.uid !== 0n || entry.nlink === 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    if (entry.path === "/nix/store") {
+      if ((entry.mode & 0o022n) !== 0n && !((entry.mode & 0o1000n) !== 0n && (entry.mode & 0o002n) === 0n)) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    } else if (entry.path.startsWith("/nix/store/")) {
+      if ((entry.mode & 0o222n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    } else if ((entry.mode & 0o022n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+  }
+}
+
+/** Linux descriptor-pinned, bounded, regular-file source ingress. Ordinary links
+ * are accepted only as a single link or as an exact immutable `/nix/store` text
+ * file. Other aliases retain their path checks; no physical component symlink is
+ * followed. No caller root, filesystem backend or trust override. */
 export function acquireLocalSourceFile(path: string, patterns?: SensitivePatternSet, signal?: AbortSignal): LocalSourceFile {
   return acquirePinnedSource(path, patterns, signal);
 }
@@ -91,12 +118,18 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
     if (before.nlink !== 1n) {
-      if (!binding || physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
       // Decide the link route on the very descriptor whose bytes are acquired.
       // Single-link aliases/images retain ordinary behavior; only the multi-
-      // link route requires exact spelling, immutable ancestry and text bytes.
-      for (const directory of directories) immutableMetadata(directory.path, directory.stat);
-      immutableMetadata(physical, before);
+      // link routes require exact spelling, immutable ancestry and text bytes.
+      if (physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      if (binding) {
+        immutableMetadata(physical, before);
+        for (const directory of directories) immutableMetadata(directory.path, directory.stat);
+      } else {
+        assertImmutableStoreSource(physical, path,
+          directories.map(directory => ({ path: directory.path, uid: directory.stat.uid, nlink: directory.stat.nlink, mode: directory.stat.mode })),
+          { path: physical, uid: before.uid, nlink: before.nlink, mode: before.mode });
+      }
     }
     if (before.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
     const assertStable = () => {
@@ -130,7 +163,7 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     assertStable();
     if (length !== Number(before.size)) fail("LOCAL_SOURCE_UNAVAILABLE");
     const complete = bytes.subarray(0, length);
-    if (binding && before.nlink > 1n) assertImmutableDocumentText(complete);
+    if (before.nlink > 1n) assertImmutableDocumentText(complete);
     assertStable();
     return { bytes: complete, assertStable, close };
   } catch (error) {
