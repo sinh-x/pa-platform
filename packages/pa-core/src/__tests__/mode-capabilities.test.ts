@@ -16,7 +16,10 @@ const config = (value: unknown = policy(), profile = MODE_CAPABILITY_PROFILE) =>
 
 test("closed registry is exact replacement selection with immutable deterministic results", () => {
   assert.equal(new Set(MODE_CAPABILITIES.map(c => c.id)).size, MODE_CAPABILITIES.length);
-  assert.equal(new Set(MODE_CAPABILITIES.map(c => c.tool)).size, MODE_CAPABILITIES.length - 1);
+  assert.equal(new Set(MODE_CAPABILITIES.map(c => c.tool)).size, MODE_CAPABILITIES.length - 2);
+  for (const allow of [["document.local-review"], ["document.local-review", "document.package"], ["document.local-review", "document.handoff"]]) {
+    assert.throws(() => parseModeCapabilityPolicy(policy(allow)), /CAPABILITY_POLICY_INVALID/);
+  }
   assert.throws(() => parseModeCapabilityPolicy(policy(["context.read", "ordinary.read"])), /CAPABILITY_POLICY_INVALID/);
   assert.deepEqual(selectedCapabilityTools(parseModeCapabilityPolicy(policy())), []);
   const all = parseModeCapabilityPolicy(policy(MODE_CAPABILITIES.map(c => c.id).filter(id => id !== "context.read").reverse()));
@@ -25,8 +28,9 @@ test("closed registry is exact replacement selection with immutable deterministi
   assert.deepEqual(all.allow, [...all.allow].sort());
   for (const entry of MODE_CAPABILITIES) {
     assert.equal(entry.profile, MODE_CAPABILITY_PROFILE); assert.ok(entry.owner); assert.ok(entry.actions);
-    const selected = parseModeCapabilityPolicy(policy([entry.id]));
-    assert.deepEqual(selectedCapabilityTools(selected), [entry.tool]);
+    const dependencies = entry.id === "document.local-review" ? ["document.handoff", "document.package"] : [];
+    const selected = parseModeCapabilityPolicy(policy([entry.id, ...dependencies]));
+    assert.deepEqual(selectedCapabilityTools(selected), dependencies.length ? ["pa_handoff", "pa_document"] : [entry.tool]);
     assert.equal(capabilityToolSelected(selected, entry.tool), true);
     for (const alias of [`functions.${entry.tool}`, `mcp.${entry.tool}`, entry.tool.toUpperCase(), `${entry.tool}*`]) assert.equal(capabilityToolSelected(selected, alias), false);
   }

@@ -2,11 +2,8 @@ import { isAbsolute } from "node:path";
 import { digest, GIT_SHA, ID, integer, literal, object, oneOf, parseWorkflowRequest, SHA256, text, workflowTicket } from "../workflows/contracts.js";
 import { documentGuard, documentReject, DOCUMENT_LIMITS } from "./package-contract.js";
 
-/** P1 candidate contracts ONLY. No production dispatch, capability registration,
- * decision consumer, Git port or authority is exported. Parsing a record proves
- * structure, never native provenance, association, ownership or permission.
- * These versions must be independently reviewed before an adapter selects them.
- * pa-document-package/v1 and its existing scopes are deliberately unchanged. */
+/** Parsing proves structure, never native provenance or authority. v2 local
+ * confirmation is explicitly unauthenticated; retained v1 scopes are unchanged. */
 export const HANDOFF_REVIEW_VERSION = "pa-handoff-review/v1" as const;
 export const HANDOFF_INTENT_VERSION = "pa-handoff-branch-intent/v1" as const;
 export const HANDOFF_REQUEST_VERSION = "pa-handoff-request/v1" as const;
@@ -38,8 +35,12 @@ export interface HandoffBranchIntent {
   /** Existing native history, not a branch-name-based adoption token. */
   lineage: null | { operationSha256: string; originalBaseSha: string; observedHeadSha: string };
 }
-export interface HandoffReviewSubject {
-  schemaVersion: typeof HANDOFF_REVIEW_VERSION;
+export interface HandoffReviewOrigin {
+  deploymentId: string;
+  sessionId: string;
+  planIdentity: { scope: string; requestId: string };
+}
+interface HandoffReviewBindings {
   documentSubjectSha256: string;
   branchIntentSha256: string;
   deliverySha256: string;
@@ -47,6 +48,18 @@ export interface HandoffReviewSubject {
   callerIdentitySha256: string;
   effects: { publish: boolean; branchRef: boolean; queue: boolean };
 }
+export type HandoffReviewSubject = HandoffReviewBindings & (
+  { schemaVersion: typeof HANDOFF_REVIEW_VERSION }
+  | { schemaVersion: "pa-handoff-review/v2"; origin: HandoffReviewOrigin });
+export type LocalHandoffReviewSubject = Extract<HandoffReviewSubject, { schemaVersion: "pa-handoff-review/v2" }>;
+export const LOCAL_REVIEW_VERSION = "pa-local-review/v1" as const;
+export type LocalReviewOutcome = "approved" | "changes-requested" | "rejected" | "cancelled";
+export type LocalReviewRequest = { schemaVersion: typeof LOCAL_REVIEW_VERSION; subjectSha256: string } & (
+  { action: "show" }
+  | { action: "request"; expectedRevision: number }
+  | { action: "decide"; expectedRevision: number; requestKey: string; outcome: LocalReviewOutcome }
+  | { action: "revoke"; expectedRevision: number; decisionId: string });
+
 /** Desired caller input only. Owner observations and grants are not request fields.
  * All original coordinates must be retained after response loss. */
 export type HandoffRequest =
@@ -107,17 +120,40 @@ export function handoffBranchIntentSha(value: HandoffBranchIntent): string {
 }
 export function parseHandoffReviewSubject(value: unknown): HandoffReviewSubject {
   return documentGuard(() => {
-    const row = object(value, ["schemaVersion", "documentSubjectSha256", "branchIntentSha256", "deliverySha256", "selectionSha256", "callerIdentitySha256", "effects"]);
+    const version = object(value, ["schemaVersion"], ["documentSubjectSha256", "branchIntentSha256", "deliverySha256", "selectionSha256", "callerIdentitySha256", "effects", "origin"]).schemaVersion;
+    const row = object(value, ["schemaVersion", "documentSubjectSha256", "branchIntentSha256", "deliverySha256", "selectionSha256", "callerIdentitySha256", "effects", ...(version === "pa-handoff-review/v2" ? ["origin"] : [])]);
     const effects = object(row.effects, ["publish", "branchRef", "queue"]);
     if (typeof effects.publish !== "boolean" || typeof effects.branchRef !== "boolean" || typeof effects.queue !== "boolean"
       || effects.branchRef && !effects.publish || effects.queue && (!effects.publish || !effects.branchRef)) documentReject();
-    return bounded({ schemaVersion: literal(row.schemaVersion, HANDOFF_REVIEW_VERSION), documentSubjectSha256: text(row.documentSubjectSha256, SHA256),
+    const bindings = { documentSubjectSha256: text(row.documentSubjectSha256, SHA256),
       branchIntentSha256: text(row.branchIntentSha256, SHA256), deliverySha256: text(row.deliverySha256, SHA256), selectionSha256: text(row.selectionSha256, SHA256),
-      callerIdentitySha256: text(row.callerIdentitySha256, SHA256), effects: { publish: effects.publish, branchRef: effects.branchRef, queue: effects.queue } });
+      callerIdentitySha256: text(row.callerIdentitySha256, SHA256), effects: { publish: effects.publish, branchRef: effects.branchRef, queue: effects.queue } };
+    if (version === "pa-handoff-review/v2") {
+      const origin = object(row.origin, ["deploymentId", "sessionId", "planIdentity"]), plan = object(origin.planIdentity, ["scope", "requestId"]);
+      return bounded({ schemaVersion: "pa-handoff-review/v2", ...bindings, origin: {
+        deploymentId: text(origin.deploymentId, /^d-[a-f0-9]{6}$/), sessionId: text(origin.sessionId, undefined, 256),
+        planIdentity: { scope: text(plan.scope, SHA256), requestId: text(plan.requestId, ID) } } });
+    }
+    return bounded({ schemaVersion: literal(row.schemaVersion, HANDOFF_REVIEW_VERSION), ...bindings });
   });
 }
 export function handoffReviewSubjectSha(value: HandoffReviewSubject): string {
   return digest(JSON.stringify(parseHandoffReviewSubject(value)));
+}
+export function parseLocalReviewRequest(raw: string): LocalReviewRequest {
+  return documentGuard(() => {
+    const row = object(parseWorkflowRequest(raw), ["schemaVersion", "action", "subjectSha256"], ["expectedRevision", "requestKey", "outcome", "decisionId"]);
+    const schemaVersion = literal(row.schemaVersion, LOCAL_REVIEW_VERSION), subjectSha256 = text(row.subjectSha256, SHA256);
+    const action = oneOf(row.action, ["show", "request", "decide", "revoke"]);
+    const fields = { show: [], request: ["expectedRevision"], decide: ["expectedRevision", "requestKey", "outcome"], revoke: ["expectedRevision", "decisionId"] };
+    object(row, ["schemaVersion", "action", "subjectSha256", ...fields[action]]);
+    if (action === "show") return { schemaVersion, action, subjectSha256 };
+    const expectedRevision = integer(row.expectedRevision, 0, 1021);
+    if (action === "request") return { schemaVersion, action, subjectSha256, expectedRevision };
+    if (action === "revoke") return { schemaVersion, action, subjectSha256, expectedRevision, decisionId: text(row.decisionId, ID) };
+    return { schemaVersion, action, subjectSha256, expectedRevision, requestKey: text(row.requestKey, SHA256),
+      outcome: oneOf(row.outcome, ["approved", "changes-requested", "rejected", "cancelled"]) };
+  });
 }
 export function parseHandoffRequest(raw: string): HandoffRequest {
   return documentGuard(() => {

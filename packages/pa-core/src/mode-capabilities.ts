@@ -11,6 +11,7 @@ export const MODE_CAPABILITY_MAX_BYTES = 64 * 1024;
 export const MODE_CAPABILITIES = Object.freeze([
   { id: "document.package", tool: "pa_document", owner: "document-native", actions: "native document package grammar; v4-compatible confirmation owner" },
   { id: "document.handoff", tool: "pa_handoff", owner: "handoff-native", actions: "native intake, finite stage/plan, full-reader review, publication, ref/link, optional queue and bound opening grammar" },
+  { id: "document.local-review", tool: "pa_handoff", owner: "handoff-native", actions: "explicit v2 unauthenticated local confirmation; requires document.handoff and document.package; no default activation" },
   { id: "document.workspace", tool: "pa_workspace", owner: "document-workspace", actions: "native bounded workspace grammar" },
   { id: "ticket.read-comment", tool: "pa_ticket", owner: "ticket-tool", actions: "read,show,list,comment" },
   { id: "ticket.intake", tool: "pa_ticket_intake", owner: "ticket-intake-tool", actions: "capabilities,inspect,reuse,create,patch-planning; native ticket intent/CAS owners" },
@@ -65,6 +66,7 @@ export function parseModeCapabilityPolicy(value: unknown): ModeCapabilityPolicy 
   // Two read contracts must never depend on registration order or silently
   // widen a retained context.read selection. Choose exactly one explicitly.
   if (ids.includes("context.read") && ids.includes("ordinary.read")) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
+  if (ids.includes("document.local-review") && !["document.handoff", "document.package"].every(id => ids.includes(id))) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
   // Stable set semantics; never mutate the caller's array or inherit defaults.
   return Object.freeze({ version: MODE_CAPABILITY_POLICY_VERSION, allow: Object.freeze(ids.sort()) });
 }

@@ -10,7 +10,8 @@ import { PiAdapter } from "./adapter.js";
 import { probePiNativeRegistryAddon, runPiManagedToolSmoke } from "./native-host.js";
 import { runReviewPreflightCommand } from "./review-preflight.js";
 import { piWorkflowReadHost, piRetainedTemplateHost } from "./workflow-host.js";
-import { runDocumentDescription } from "./document-cli.js";
+import { runDocumentCommand } from "./document-cli.js";
+import { writeLocalReviewOutput } from "./local-review-cli.js";
 import { runTicketStatusCommand } from "./ticket-status.js";
 import { CHILD_RECONCILIATION_USAGE, runChildReconciliationCommand } from "./child-reconciliation.js";
 import { TICKET_RECOVERY_USAGE, runTicketRecoveryInspectionCommand } from "./ticket-recovery.js";
@@ -44,7 +45,7 @@ if (process.argv[2] === "auto") {
 } else if (process.argv[2] === "ticket-status") {
   process.exitCode = runTicketStatusCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
 } else if (process.argv[2] === "document") {
-  process.exitCode = runDocumentDescription(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
+  process.exitCode = await runDocumentCommand(process.argv.slice(3), { stdout: (s, timeoutMs) => writeLocalReviewOutput(process.stdout, s, timeoutMs), stderr: (s, timeoutMs) => writeLocalReviewOutput(process.stderr, s, timeoutMs) });
 } else if (process.argv[2] === "template") {
   // Template --version selects a resource revision, not the global PPA version.
   // This route uses only existing read-only workflow journals, never deployment
@@ -80,7 +81,7 @@ if (process.argv[2] === "auto") {
   ).then(() => 0).catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); return 1; });
 } else {
 process.exitCode = await runCoreCommand(process.argv.slice(2), { hooks: createDefaultPiHooks(), binaryName: "ppa" });
-if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write(`\n${AUTO_USAGE}\nPi-only: workflow list|show|validate|preflight|status|next; decision show|verify (read-only).\nPi-only: ticket-status --help (selected administrative status owner; no approval/effects).\nPi-only: document describe --format json (interface discovery only; no CLI approval/effects).\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n${CHILD_RECONCILIATION_USAGE}\n${TICKET_RECOVERY_USAGE}\n${TICKET_WORKTREE_RECOVERY_USAGE}\n`);
+if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write(`\n${AUTO_USAGE}\nPi-only: workflow list|show|validate|preflight|status|next; decision show|verify (read-only).\nPi-only: ticket-status --help (selected administrative status owner; no approval/effects).\nPi-only: document describe --format json; document review --help (unauthenticated local v2 decisions; no publication/ref/queue effects).\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n${CHILD_RECONCILIATION_USAGE}\n${TICKET_RECOVERY_USAGE}\n${TICKET_WORKTREE_RECOVERY_USAGE}\n`);
 }
 
 function runTeardownSmoke(args: string[]): void {

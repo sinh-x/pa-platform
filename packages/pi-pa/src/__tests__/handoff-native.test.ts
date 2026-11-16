@@ -16,6 +16,7 @@ import { createPiSessionLifecycle, registerPiSessionModules, type PiRuntime, typ
 
 function fixture(capabilities = ["document.handoff", "document.package"], supplied = false, outcome = "approved") {
   const env = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "pap312-native-"));
+  try {
   const repo = join(root, "repo"), usage = join(root, "usage"), config = join(root, "config"); closeDb();
   for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
   delete process.env.DISPLAY; delete process.env.WAYLAND_DISPLAY; // never open a real desktop during source tests
@@ -44,7 +45,9 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     custom: (factory: any) => new Promise<any>(resolve => {
       prompts++;
       const component = factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_c: string, value: string) => value }, {}, resolve);
-      assert.match(component.render(140).join("\n"), /one final decision/);
+      const rendered = component.render(140).join("\n");
+      assert.match(rendered, /one final decision/);
+      if (capabilities.includes("document.local-review")) assert.match(rendered, /Local unverified confirmation: no authentication is provided/);
       const up = outcome === "approved" ? 3 : outcome === "changes-requested" ? 2 : outcome === "rejected" ? 1 : 0;
       for (let i = 0; i < up; i++) component.handleInput("\u001b[A");
       component.handleInput("\r");
@@ -58,7 +61,7 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     const result = await tools.get(tool)!.execute("native-fixture", { request: JSON.stringify(request) }, undefined, undefined, ctx);
     return JSON.parse(result.content[0].text) as { ok: boolean; code?: string; result: Record<string, any> };
   };
-  const handoff = (input: Record<string, unknown>) => execute("pa_handoff", { schemaVersion: "pa-handoff-native/v1", ...input });
+  const handoff = (input: Record<string, unknown>) => execute("pa_handoff", { schemaVersion: capabilities.includes("document.local-review") ? "pa-handoff-native/v2" : "pa-handoff-native/v1", ...input });
   const checked = async (input: Record<string, unknown>) => { const result = await handoff(input); assert.equal(result.ok, true, JSON.stringify(result)); return result.result; };
   const freezeDocument = async (ticket: string) => {
     const subject: DocumentPackage = { schemaVersion: "pa-document-package/v1", packageId: "native-fixture", revision: 1, predecessor: null, repository: { key: "example", root: repo }, ticket,
@@ -72,6 +75,7 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
   };
   return { root, repo, usage, context, tools, execute, handoff, checked, git, freezeDocument, prompts: () => prompts,
     async close() { await lifecycle.shutdown(); closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); } };
+  } catch (error) { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
 for (const supplied of [false, true]) test(`registered native policy handoff completes ${supplied ? "supplied" : "ticketless"} intake, real plan/publication/ref/link with one synthetic UI and no checkout`, async () => {
@@ -180,6 +184,42 @@ test("strict handoff request rejects imported grants/paths, extra or duplicate f
     assert.equal((await f.handoff({ action: "status", subjectSha256: "a".repeat(64) })).ok, false);
     assert.deepEqual(getDb().prepare("SELECT name FROM sqlite_master ORDER BY name").all(), tablesBefore, "missing status cannot create handoff journals");
     assert.equal(new TicketStore().list().length, 0); assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+test("selected native v2 shares pending/decide/revoke owner and preserves the local-unverified trust label", async () => {
+  const f = fixture(["document.handoff", "document.local-review", "document.package"]);
+  try {
+    const intake = await f.checked({ action: "intake", title: "Local review", content: "Synthetic local-review fixture, not human acceptance" });
+    await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "local-plan", expectedTicketVersion: intake.ticketVersion, branch: `feature/${intake.ticket.id}-local` });
+    const doc = await f.freezeDocument(intake.ticket.id);
+    const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: doc.sha, planRequestId: "local-plan", effects: { publish: false, branchRef: false, queue: false } });
+    assert.equal(prepared.subject.schemaVersion, "pa-handoff-review/v2");
+    assert.equal(prepared.subject.origin.sessionId, f.context.sessionManager.getSessionId());
+    assert.equal(prepared.authentication, "not-provided");
+    const request = await f.checked({ action: "request", subjectSha256: prepared.subjectSha256, expectedRevision: 0 });
+    assert.equal(f.prompts(), 0);
+    const decisionRequest = { action: "decide", subjectSha256: prepared.subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" };
+    const d = await f.checked(decisionRequest); assert.equal(d.principal, "local-unverified"); assert.deepEqual(await f.checked(decisionRequest), d);
+    assert.equal((await f.handoff({ ...decisionRequest, outcome: "rejected" })).code, "DOCUMENT_CONFLICT");
+    const revoke = await f.checked({ action: "revoke", subjectSha256: prepared.subjectSha256, expectedRevision: 2, decisionId: d.decisionId });
+    assert.equal((await f.checked({ action: "status", subjectSha256: prepared.subjectSha256 })).pendingReview, true);
+    await f.checked({ action: "decide", subjectSha256: prepared.subjectSha256, expectedRevision: 2, requestKey: revoke.requestKey, outcome: "approved" });
+    assert.equal(f.prompts(), 0);
+    const foreground = await f.checked({ action: "review", subjectSha256: prepared.subjectSha256, expectedRevision: 4 });
+    assert.equal(foreground.principal, "local-unverified"); assert.equal(f.prompts(), 1);
+    assert.equal((await f.checked({ action: "show", subjectSha256: prepared.subjectSha256 })).documents.length, doc.subject.members.length);
+    assert.equal((await f.handoff({ action: "publish", subjectSha256: prepared.subjectSha256, decisionId: foreground.decisionId })).code, "DOCUMENT_UNAVAILABLE", "P3 effects remain closed");
+    const v1 = await f.execute("pa_handoff", { schemaVersion: "pa-handoff-native/v1", action: "status", subjectSha256: prepared.subjectSha256 });
+    assert.equal(v1.code, "DOCUMENT_AUTHORITY");
+  } finally { await f.close(); }
+});
+
+test("v2 invocation cannot upgrade an omitted local-review selection", async () => {
+  const f = fixture();
+  try {
+    const result = await f.execute("pa_handoff", { schemaVersion: "pa-handoff-native/v2", action: "intake", title: "Denied", content: "Must not create" });
+    assert.equal(result.code, "DOCUMENT_AUTHORITY"); assert.equal(new TicketStore().list().length, 0);
   } finally { await f.close(); }
 });
 

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { isDeepStrictEqual } from "node:util";
+import { randomUUID } from "node:crypto";
 import { digest, ID, integer, object, oneOf, SHA256, strictJson, text } from "../workflows/contracts.js";
 import { documentGuard, documentPackageSha, documentReject, type DocumentPackage } from "../documents/package-contract.js";
 import { handoffBranchIntentSha, handoffReviewSubjectSha, parseHandoffBranchIntent, parseHandoffReviewSubject, type HandoffBranchIntent, type HandoffReviewSubject } from "../documents/handoff-contract.js";
@@ -7,7 +8,7 @@ import { documentPending, RegistryDocumentJournal } from "./documents.js";
 import { RegistryHandoffBranchJournal, handoffBranchOperationId } from "../documents/handoff-branch.js";
 
 export interface HandoffReviewRequest {
-  schemaVersion: "pa-handoff-native-request/v1"; requestKey: string; decisionId: string;
+  schemaVersion: "pa-handoff-native-request/v1" | "pa-handoff-local-request/v2"; requestKey: string; decisionId: string;
   subjectSha256: string; expectedRevision: number; operation: "capture" | "revoke"; targetDecisionId: string | null;
   callerIdentitySha256: string; selectionSha256: string; deploymentId: string; sessionId: string; requestedAt: string;
 }
@@ -27,7 +28,7 @@ export function handoffReviewRequestKey(subjectSha256: string, expectedRevision:
 }
 function request(value: unknown): HandoffReviewRequest {
   const r = object(value, ["schemaVersion", "requestKey", "decisionId", "subjectSha256", "expectedRevision", "operation", "targetDecisionId", "callerIdentitySha256", "selectionSha256", "deploymentId", "sessionId", "requestedAt"]);
-  if (r.schemaVersion !== "pa-handoff-native-request/v1") documentReject("DOCUMENT_INPUT");
+  oneOf(r.schemaVersion, ["pa-handoff-native-request/v1", "pa-handoff-local-request/v2"]);
   text(r.requestKey, SHA256); text(r.subjectSha256, SHA256); text(r.decisionId, ID); integer(r.expectedRevision, 0, 1021);
   oneOf(r.operation, ["capture", "revoke"]); text(r.callerIdentitySha256, SHA256); text(r.selectionSha256, SHA256);
   text(r.deploymentId, /^d-[a-f0-9]{6}$/); text(r.sessionId, undefined, 256); time(r.requestedAt);
@@ -37,18 +38,19 @@ function request(value: unknown): HandoffReviewRequest {
   if (handoffReviewRequestKey(result.subjectSha256, result.expectedRevision, result.operation, result.targetDecisionId) !== result.requestKey) documentReject("DOCUMENT_INPUT");
   return structuredClone(result);
 }
-function issued(value: unknown): HandoffIssuedDecision {
+function issued(value: unknown, local = false): HandoffIssuedDecision {
   const d = object(value, ["requestKey", "outcome", "principal", "interactionId", "evidenceSha256", "recordedAt"]);
   text(d.requestKey, SHA256); oneOf(d.outcome, ["approved", "changes-requested", "rejected", "cancelled"]);
-  text(d.principal, /^local-uid:\d{1,20}$/); text(d.interactionId, ID); text(d.evidenceSha256, SHA256); time(d.recordedAt);
+  text(d.principal, local ? /^local-unverified$/ : /^local-uid:\d{1,20}$/); text(d.interactionId, ID); text(d.evidenceSha256, SHA256); time(d.recordedAt);
   return structuredClone(d) as unknown as HandoffIssuedDecision;
 }
-/** NEW native provenance, never an old document confirmation/receipt. No public
- * outcome/principal import. Only the trusted foreground service calls capture. */
+/** Shared handoff journal, never an old document confirmation/receipt. v1
+ * accepts only native capture evidence. v2 generates unverified local evidence
+ * atomically with issuance; its public input cannot set principal/provenance. */
 export class RegistryHandoffReviewJournal {
   readonly documents: RegistryDocumentJournal;
   constructor(private readonly db: Database.Database, initialize = true) {
-    if (db.pragma("synchronous", { simple: true }) !== 2) documentReject("DOCUMENT_UNAVAILABLE");
+    if (!db.readonly && db.pragma("synchronous", { simple: true }) !== 2) documentReject("DOCUMENT_UNAVAILABLE");
     this.documents = new RegistryDocumentJournal(db);
     if (!initialize) return; // Existing-only status must never allocate journal tables.
     db.exec(`CREATE TABLE IF NOT EXISTS handoff_review_subjects(sha256 TEXT PRIMARY KEY, body TEXT NOT NULL, intent TEXT NOT NULL);
@@ -91,7 +93,8 @@ export class RegistryHandoffReviewJournal {
   }
   saveCapture(subjectSha256: string, requestKey: string, raw: Uint8Array): void {
     this.transaction(() => {
-      if (!(raw instanceof Uint8Array) || raw.byteLength > 65536 || !this.events(subjectSha256).some(e => e.kind === "requested" && e.request.requestKey === requestKey)) documentReject("DOCUMENT_AUTHORITY");
+      if (this.subject(subjectSha256).subject.schemaVersion !== "pa-handoff-review/v1"
+        || !(raw instanceof Uint8Array) || raw.byteLength > 65536 || !this.events(subjectSha256).some(e => e.kind === "requested" && e.request.requestKey === requestKey)) documentReject("DOCUMENT_AUTHORITY");
       const before = this.capture(requestKey), bytes = Buffer.from(raw);
       if (before && !before.equals(bytes)) documentReject("DOCUMENT_CONFLICT");
       this.db.prepare("INSERT OR IGNORE INTO handoff_review_captures(request_key,sha256,raw) VALUES(?,?,?)").run(requestKey, digest(bytes), bytes);
@@ -101,15 +104,21 @@ export class RegistryHandoffReviewJournal {
   evidence(r: HandoffReviewRequest): Omit<HandoffIssuedDecision, "recordedAt"> {
     const raw = this.capture(r.requestKey); if (!raw) return documentReject("DOCUMENT_UNCERTAIN");
     return documentGuard(() => {
-      const e = object(strictJson(raw, 65536), ["schemaVersion", "method", "request", "outcome", "principal", "interactionId", "boundary"]);
-      if (e.schemaVersion !== "pa-handoff-native-evidence/v1" || e.method !== "pi-native-handoff-review"
-        || !isDeepStrictEqual(request(e.request), r) || e.boundary !== "native-foreground-not-hostile-same-uid-isolation") documentReject("DOCUMENT_AUTHORITY");
-      const d = issued({ requestKey: r.requestKey, outcome: e.outcome, principal: e.principal, interactionId: e.interactionId, evidenceSha256: digest(raw), recordedAt: r.requestedAt });
+      const local = this.subject(r.subjectSha256).subject.schemaVersion === "pa-handoff-review/v2";
+      const e = object(strictJson(raw, 65536), ["schemaVersion", "method", "request", "outcome", "principal", "interactionId", "boundary", ...(local ? ["acceptedAt"] : [])]);
+      if (local) {
+        if (r.schemaVersion !== "pa-handoff-local-request/v2" || e.schemaVersion !== "pa-handoff-local-evidence/v2"
+          || e.method !== "unauthenticated-local-confirmation" || e.boundary !== "local-unverified-not-authenticated-human-consent") documentReject("DOCUMENT_AUTHORITY");
+        time(e.acceptedAt);
+      } else if (r.schemaVersion !== "pa-handoff-native-request/v1" || e.schemaVersion !== "pa-handoff-native-evidence/v1" || e.method !== "pi-native-handoff-review"
+        || e.boundary !== "native-foreground-not-hostile-same-uid-isolation") documentReject("DOCUMENT_AUTHORITY");
+      if (!isDeepStrictEqual(request(e.request), r)) documentReject("DOCUMENT_AUTHORITY");
+      const d = issued({ requestKey: r.requestKey, outcome: e.outcome, principal: e.principal, interactionId: e.interactionId, evidenceSha256: digest(raw), recordedAt: local ? e.acceptedAt : r.requestedAt }, local);
       const { recordedAt: _at, ...rest } = d; return rest;
     });
   }
   events(subjectSha256: string): HandoffReviewEvent[] {
-    this.subject(subjectSha256);
+    const local = this.subject(subjectSha256).subject.schemaVersion === "pa-handoff-review/v2";
     const rows = this.db.prepare("SELECT revision,sha256,body FROM handoff_review_events WHERE subject_sha=? ORDER BY revision LIMIT 1025").all(subjectSha256) as { revision: number; sha256: string; body: string }[];
     if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
     let predecessor: string | null = null; const events: HandoffReviewEvent[] = [];
@@ -118,7 +127,7 @@ export class RegistryHandoffReviewJournal {
       const e = object(value, ["revision", "predecessor", "kind", k === "requested" ? "request" : "decision"]);
       if (row.revision !== events.length + 1 || e.revision !== row.revision || e.predecessor !== predecessor || digest(row.body) !== row.sha256) documentReject("DOCUMENT_UNCERTAIN");
       const event: HandoffReviewEvent = k === "requested" ? { revision: row.revision, predecessor, kind: "requested", request: request(e.request) }
-        : k === "issued" ? { revision: row.revision, predecessor, kind: "issued", decision: issued(e.decision) } : documentReject("DOCUMENT_UNCERTAIN");
+        : k === "issued" ? { revision: row.revision, predecessor, kind: "issued", decision: issued(e.decision, local) } : documentReject("DOCUMENT_UNCERTAIN");
       this.transition(subjectSha256, events, event); events.push(event); predecessor = row.sha256;
     } return events;
   }
@@ -126,6 +135,9 @@ export class RegistryHandoffReviewJournal {
     const last = prior.at(-1), { subject } = this.subject(sha);
     if (next.kind === "requested") {
       const r = next.request;
+      if (subject.schemaVersion === "pa-handoff-review/v2") {
+        if (r.schemaVersion !== "pa-handoff-local-request/v2" || r.deploymentId !== subject.origin.deploymentId || r.sessionId !== subject.origin.sessionId) documentReject("DOCUMENT_AUTHORITY");
+      } else if (r.schemaVersion !== "pa-handoff-native-request/v1") documentReject("DOCUMENT_AUTHORITY");
       if (last?.kind === "requested" || r.expectedRevision !== prior.length || r.subjectSha256 !== sha || r.callerIdentitySha256 !== subject.callerIdentitySha256
         || r.selectionSha256 !== subject.selectionSha256 || prior.some(e => e.kind === "requested" && (e.request.requestKey === r.requestKey || e.request.decisionId === r.decisionId))) documentReject("DOCUMENT_CONFLICT");
       if (r.operation === "revoke") this.approvedFrom(prior, r.targetDecisionId!);
@@ -133,6 +145,10 @@ export class RegistryHandoffReviewJournal {
       if (last?.kind !== "requested" || last.request.requestKey !== next.decision.requestKey) documentReject("DOCUMENT_CONFLICT");
       const { recordedAt: _at, ...d } = next.decision;
       if (!isDeepStrictEqual(d, this.evidence(last.request))) documentReject("DOCUMENT_AUTHORITY");
+      if (subject.schemaVersion === "pa-handoff-review/v2") {
+        const capture = object(strictJson(this.capture(last.request.requestKey)!, 65536), ["schemaVersion", "method", "request", "outcome", "principal", "interactionId", "boundary", "acceptedAt"]);
+        if (next.decision.recordedAt !== capture.acceptedAt) documentReject("DOCUMENT_UNCERTAIN");
+      }
     }
   }
   /** New bytes/subject cannot evade this owner's unresolved ticket history.
@@ -168,8 +184,33 @@ export class RegistryHandoffReviewJournal {
     });
   }
   issue(sha: string, r: HandoffReviewRequest, recordedAt: string): HandoffIssuedDecision {
+    if (this.subject(sha).subject.schemaVersion !== "pa-handoff-review/v1" || r.schemaVersion !== "pa-handoff-native-request/v1") documentReject("DOCUMENT_AUTHORITY");
     const decision = { ...this.evidence(r), recordedAt: time(recordedAt) };
     this.append(sha, this.events(sha).length, { kind: "issued", decision }); return decision;
+  }
+  /** Bind outcome, interaction and server time in the SAME durable transaction
+   * as issuance. There is no externally importable v2 capture or crash window. */
+  issueLocal(sha: string, rawRequest: HandoffReviewRequest, outcome: HandoffIssuedDecision["outcome"]): HandoffIssuedDecision {
+    const r = request(rawRequest);
+    oneOf(outcome, ["approved", "changes-requested", "rejected", "cancelled"]);
+    return this.transaction(() => {
+      if (this.subject(sha).subject.schemaVersion !== "pa-handoff-review/v2" || r.schemaVersion !== "pa-handoff-local-request/v2" || r.subjectSha256 !== sha) documentReject("DOCUMENT_AUTHORITY");
+      const events = this.events(sha), original = events.find(e => e.kind === "requested" && e.request.requestKey === r.requestKey);
+      if (original?.kind !== "requested" || !isDeepStrictEqual(original.request, r)) documentReject("DOCUMENT_AUTHORITY");
+      const previous = events.find(e => e.kind === "issued" && e.decision.requestKey === r.requestKey);
+      if (previous?.kind === "issued") {
+        if (previous.decision.outcome !== outcome) documentReject("DOCUMENT_CONFLICT");
+        return previous.decision;
+      }
+      if (events.at(-1)?.kind !== "requested" || this.capture(r.requestKey)) documentReject("DOCUMENT_UNCERTAIN");
+      const acceptedAt = new Date().toISOString();
+      const bytes = json({ schemaVersion: "pa-handoff-local-evidence/v2", method: "unauthenticated-local-confirmation", request: r, outcome,
+        principal: "local-unverified", interactionId: `interaction-${randomUUID()}`, boundary: "local-unverified-not-authenticated-human-consent", acceptedAt });
+      this.db.prepare("INSERT INTO handoff_review_captures(request_key,sha256,raw) VALUES(?,?,?)").run(r.requestKey, digest(bytes), bytes);
+      const decision = { ...this.evidence(r), recordedAt: acceptedAt };
+      this.append(sha, events.length, { kind: "issued", decision });
+      return decision;
+    });
   }
   private append(sha: string, revision: number, data: { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision }): void {
     this.transaction(() => {
