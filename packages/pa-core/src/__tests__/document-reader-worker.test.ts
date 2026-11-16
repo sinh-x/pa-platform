@@ -3,6 +3,7 @@ import { createHook } from "node:async_hooks";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { Worker } from "node:worker_threads";
 import { inspectFullDocumentReader, presentFullDocumentReader } from "../documents/reader-publication.js";
 import { DocumentPackageError } from "../documents/package-contract.js";
 import { DOCUMENT_READER_LIMITS } from "../documents/reader.js";
@@ -57,6 +58,29 @@ test("cancellation terminates a live worker before returning and does not advert
     assert.equal(spawned, 1); stopped();
     assert.equal(existsSync(join(f.root, "agent-teams/requirements/artifacts/presentation-results")), false);
   } finally { hook.disable(); f.close(); }
+});
+
+test("actual worker termination uncertainty fences new derivations until its real exit event", async () => {
+  const f = fixture(), controller = new AbortController(), original = Worker.prototype.terminate;
+  let retained: Worker | undefined;
+  try {
+    // Fault injection at the actual platform termination boundary, not a public
+    // worker factory/settlement override. The original worker remains real.
+    Worker.prototype.terminate = function () { retained = this; return Promise.reject(new Error("synthetic termination reply loss")); };
+    const running = presentFullDocumentReader(f.subject, f.root, f.snapshot, { signal: controller.signal });
+    assert.equal(documentReaderWorkerStatus().active, 1); controller.abort();
+    await assert.rejects(() => running, (error: unknown) => error instanceof DocumentPackageError && error.code === "DOCUMENT_UNCERTAIN");
+    assert.deepEqual(documentReaderWorkerStatus(), { active: 1, uncertain: 1 });
+    await assert.rejects(() => renderDocumentReaderInWorker(f.subject, f.snapshot), (error: unknown) => error instanceof DocumentPackageError && error.code === "DOCUMENT_UNCERTAIN");
+    assert.equal(existsSync(join(f.root, "agent-teams/requirements/artifacts/presentation-results")), false);
+    Worker.prototype.terminate = original;
+    await original.call(retained!); stopped();
+    assert.ok((await renderDocumentReaderInWorker(f.subject, f.snapshot)).files.has("index.html")); stopped();
+  } finally {
+    Worker.prototype.terminate = original;
+    if (retained && documentReaderWorkerStatus().active) await original.call(retained);
+    f.close();
+  }
 });
 
 test("trusted controls cannot increase finite ceilings; pre-abort launches no worker", async () => {

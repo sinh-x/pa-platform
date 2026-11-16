@@ -22,7 +22,7 @@ export function documentSessionVersion(profile: string | undefined): typeof DOCU
 }
 export function confirmationDocumentCaller(caller: PiDocumentCaller): boolean { return caller.profile === DOCUMENT_CONFIRMATION_SESSION_VERSION || caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION || caller.profile === MODE_CAPABILITY_SESSION; }
 export function workspaceDocumentCaller(caller: PiDocumentCaller): boolean { return caller.profile === DOCUMENT_WORKSPACE_SESSION_VERSION || confirmationDocumentCaller(caller); }
-export interface PiDocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; profile?: string; sessionId?: string; capabilities?: ModeCapabilityBinding }
+export interface PiDocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; profile?: string; sessionId?: string; capabilities?: ModeCapabilityBinding; handoffIdentitySha256?: string }
 export function selectsDocumentSession(input: { team: string; mode?: string; pinned: boolean; resume: boolean; inherited: boolean; rogue: boolean; background: boolean; ticketWorktree: boolean; supportedConfig: boolean }): boolean {
   return input.supportedConfig && input.team === "requirements" && input.mode === "analyze" && !input.pinned && !input.resume && !input.inherited && !input.rogue && !input.background && !input.ticketWorktree;
 }
@@ -77,7 +77,8 @@ function authenticateDocumentProcess(context: PiPreparationContext | { cwd: stri
     } catch { return deny(); }
   } else if (start.mode_capability_binding !== undefined || status.mode_capability_binding !== undefined) return deny();
   return { deploymentId, repoKey: repo.repoKey, repoRoot: root, ticket: status.ticket_id || null,
-    ...(capabilities ? { capabilities, profile: MODE_CAPABILITY_SESSION, sessionId } : {}),
+    ...(capabilities ? { capabilities, profile: MODE_CAPABILITY_SESSION, sessionId,
+      ...(capabilities.policy.allow.includes("document.handoff") ? { handoffIdentitySha256: workflowDigest(JSON.stringify({ deploymentId, owner, current, sessionId, root, startedAt: status.started_at })) } : {}) } : {}),
     ...(start.note === DOCUMENT_WORKSPACE_SESSION_VERSION ? { profile: DOCUMENT_WORKSPACE_SESSION_VERSION } : start.note === DOCUMENT_CONFIRMATION_SESSION_VERSION || start.note === DOCUMENT_INTERACTIONS_SESSION_VERSION ? { profile: start.note, sessionId } : {}),
     identitySha256: workflowDigest(JSON.stringify({ deploymentId, owner, current, sessionId, ...(cli ? { channel: "cli-process" } : {}), root, ticket: status.ticket_id || null, startedAt: status.started_at })) };
 }

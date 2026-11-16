@@ -47,9 +47,10 @@ function issued(value: unknown): HandoffIssuedDecision {
  * outcome/principal import. Only the trusted foreground service calls capture. */
 export class RegistryHandoffReviewJournal {
   readonly documents: RegistryDocumentJournal;
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: Database.Database, initialize = true) {
     if (db.pragma("synchronous", { simple: true }) !== 2) documentReject("DOCUMENT_UNAVAILABLE");
     this.documents = new RegistryDocumentJournal(db);
+    if (!initialize) return; // Existing-only status must never allocate journal tables.
     db.exec(`CREATE TABLE IF NOT EXISTS handoff_review_subjects(sha256 TEXT PRIMARY KEY, body TEXT NOT NULL, intent TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS handoff_review_events(subject_sha TEXT NOT NULL, revision INTEGER NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL,
         decision_claim TEXT UNIQUE, interaction_claim TEXT UNIQUE, PRIMARY KEY(subject_sha,revision));
@@ -195,6 +196,28 @@ export class RegistryHandoffReviewJournal {
     const events = this.events(sha), r = this.approvedFrom(events, text(decisionId, ID));
     if (events.at(-1)?.kind === "requested" || !this.subject(sha).subject.effects[effect]) documentReject("DOCUMENT_AUTHORITY");
     return r;
+  }
+  /** Native completed-publication provenance only, not a transferred grant.
+   * Deliberately does not invoke cross-subject pending admission: the successor
+   * may be recovering its own partial publication. Its current authorization is
+   * checked separately before every remaining write. */
+  completedPublication(documentSha256: string): { subjectSha256: string; decisionId: string } | undefined {
+    text(documentSha256, SHA256);
+    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects LIMIT 1025").all() as { sha256: string }[];
+    if (rows.length > 1024) return documentReject("DOCUMENT_UNCERTAIN");
+    const matches = rows.flatMap(row => {
+      if (this.subject(row.sha256).subject.documentSubjectSha256 !== documentSha256) return [];
+      const events = this.events(row.sha256);
+      return events.flatMap(event => {
+        if (event.kind !== "requested" || event.request.operation !== "capture"
+          || !this.effect(row.sha256, event.request.decisionId, "publish").completed) return [];
+        if (events.at(-1)?.kind === "requested" || !this.subject(row.sha256).subject.effects.publish) return documentReject("DOCUMENT_AUTHORITY");
+        this.approvedFrom(events, event.request.decisionId);
+        return [{ subjectSha256: row.sha256, decisionId: event.request.decisionId }];
+      });
+    });
+    if (matches.length > 1) return documentReject("DOCUMENT_CONFLICT");
+    return matches[0];
   }
   /** Durable original effect identity, separate from legacy document intents. */
   effect(sha: string, decisionId: string, operation: "publish" | "queue", start = false): { operationId: string; started: boolean; completed: boolean } {

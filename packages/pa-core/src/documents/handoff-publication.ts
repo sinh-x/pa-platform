@@ -3,11 +3,13 @@ import { join } from "node:path";
 import { readArtifactFile } from "../artifacts/manifest.js";
 import { TicketPackagePublication } from "../tickets/package-publication.js";
 import { digest } from "../workflows/contracts.js";
+import { documentCompletedOperation, documentDecisionRecords, documentPending, documentRetiredSubjects, documentRevokedDecisionIds } from "../registry/documents.js";
 import { RegistryHandoffBranchJournal, handoffBranchOperationId } from "./handoff-branch.js";
 import { completeNativeHandoffBranch } from "./handoff-native-branch.js";
 import { HandoffReviewService } from "./handoff-review.js";
 import { immutableFile } from "./confirmation-record.js";
-import { documentReject } from "./package-contract.js";
+import { documentDestination, documentReject, type DocumentPackage } from "./package-contract.js";
+import { validateDocumentBytes } from "./package-tools.js";
 import { DOCUMENT_READER_LIMITS } from "./reader.js";
 import { inspectFullDocumentReader } from "./reader-publication.js";
 
@@ -44,16 +46,44 @@ export class HandoffPublicationService {
       const refs = ticket.doc_refs.filter(r => r.path === path); return refs.length !== 1 || refs[0]!.type !== "attachment" || refs[0]!.primary;
     })) documentReject("DOCUMENT_CONFLICT");
   }
+  private predecessor(document: DocumentPackage): DocumentPackage | undefined {
+    if (document.predecessor === null) return undefined;
+    const previous = this.review.journal.documents.subject(document.predecessor);
+    if (previous.ticket !== document.ticket || previous.repository.key !== document.repository.key || previous.repository.root !== document.repository.root
+      || previous.packageId !== document.packageId || previous.revision >= document.revision) documentReject("DOCUMENT_AUTHORITY");
+    const events = this.review.journal.documents.events(document.repository.key, document.ticket);
+    if (documentPending(events).length || documentRetiredSubjects(events).has(document.predecessor)) documentReject("DOCUMENT_AUTHORITY");
+    const native = this.review.journal.completedPublication(document.predecessor);
+    if (native) this.assertTracking(native.subjectSha256, native.decisionId);
+    else {
+      // Explicitly verify the retained document owner's provenance, never project
+      // its old scope into this successor's publication/ref/queue authority.
+      const latest = documentDecisionRecords(events, document.predecessor).at(-1);
+      if (!documentCompletedOperation(events, document.predecessor, "publish") || !latest || latest.outcome !== "approved"
+        || documentRevokedDecisionIds(events).has(latest.decisionId)
+        || "scope" in latest && latest.scope === "content"
+        || "documentScope" in latest && latest.documentScope !== "publish-and-queue") documentReject("DOCUMENT_AUTHORITY");
+      this.review.journal.documents.snapshot(latest.evidenceSha256);
+    }
+    const ticket = this.review.host.tickets.get(document.ticket);
+    for (const member of previous.members) {
+      const raw = this.review.journal.documents.snapshot(member.sha256); validateDocumentBytes(member, raw);
+      const path = documentDestination(previous, member), refs = ticket?.doc_refs.filter(ref => ref.path === path);
+      if (!refs || refs.length !== 1 || refs[0]!.type !== (member.role === "requirements" ? "requirements" : member.role === "uat" ? "uat" : "attachment")
+        || member.role !== "requirements" && refs[0]!.primary
+        || !readArtifactFile(join(this.review.host.artifactRoot, path), 8 * 1024 * 1024, "ARTIFACT_STALE").equals(raw)) documentReject("DOCUMENT_CONFLICT");
+    }
+    return previous;
+  }
   private assertPublished(sha: string, decisionId: string): void {
     this.caller(sha); const { document } = this.review.journal.subject(sha);
-    if (!this.review.journal.effect(sha, decisionId, "publish").completed || this.publication.observe(document) !== "complete") documentReject("DOCUMENT_AUTHORITY");
+    if (!this.review.journal.effect(sha, decisionId, "publish").completed || this.publication.observe(document, this.predecessor(document)) !== "complete") documentReject("DOCUMENT_AUTHORITY");
     this.assertTracking(sha, decisionId);
   }
   async publish(sha: string, decisionId: string) {
     this.caller(sha); const { subject, document } = this.review.journal.subject(sha);
-    // Successor provenance needs a separately completed native predecessor
-    // consumer. Do not adopt arbitrary old physical destinations as that proof.
-    if (document.predecessor !== null) documentReject("DOCUMENT_UNAVAILABLE");
+    // Predecessor provenance is native-derived below, under TicketStore. No
+    // caller proof, copied receipt or physical destination alone is accepted.
     const delivery = await inspectFullDocumentReader(document, this.review.host.artifactRoot, hash => this.review.journal.documents.snapshot(hash), subject.deliverySha256);
     const folder = `agent-teams/requirements/artifacts/presentations/${subject.documentSubjectSha256}/${subject.deliverySha256}`;
     const verifyDelivery = () => {
@@ -67,8 +97,9 @@ export class HandoffPublicationService {
     };
     return this.review.host.tickets.withWorkflowTransaction(() => {
       this.caller(sha); verifyDelivery();
+      const predecessor = this.predecessor(document);
       let effect = this.review.journal.effect(sha, decisionId, "publish");
-      const state = this.publication.observe(document);
+      const state = this.publication.observe(document, predecessor);
       if (effect.started && state === "complete") {
         this.assertTracking(sha, decisionId); this.review.journal.completeEffect(sha, decisionId, "publish");
         return { publication: "verified", operationId: effect.operationId, branch: "not-performed", queue: "not-performed", productUat: "not-asserted" };
@@ -76,7 +107,7 @@ export class HandoffPublicationService {
       if (effect.completed || state === "unknown" || state === "conflict" || !effect.started && state !== "absent") documentReject("DOCUMENT_CONFLICT");
       const ticket = this.review.host.tickets.get(document.ticket);
       if (!ticket || ![["requirement-review", "requirements/team-manager"], ["pending-approval", "sinh"]].some(([status, assignee]) => ticket.status === status && ticket.assignee === assignee)) documentReject("DOCUMENT_CONFLICT");
-      const authorize = () => { this.review.authorize(sha, decisionId, "publish"); verifyDelivery(); };
+      const authorize = () => { this.review.authorize(sha, decisionId, "publish"); verifyDelivery(); this.predecessor(document); };
       authorize(); effect = this.review.journal.effect(sha, decisionId, "publish", true); this.afterPersist?.("intent");
       const t = this.tracking(sha, decisionId);
       authorize(); immutableFile(this.review.host.artifactRoot, t.folder, t.name, t.bytes);
@@ -86,9 +117,9 @@ export class HandoffPublicationService {
         if (!refs.length) { authorize(); this.review.host.tickets.update(document.ticket, { add_doc_ref: { type: "attachment", path, primary: false } }, "documents/handoff"); }
       }
       this.assertTracking(sha, decisionId); this.afterPersist?.("tracking");
-      this.publication.publish(document, hash => this.review.journal.documents.snapshot(hash), () => { authorize(); this.assertTracking(sha, decisionId); });
+      this.publication.publish(document, hash => this.review.journal.documents.snapshot(hash), () => { authorize(); this.assertTracking(sha, decisionId); }, predecessor);
       this.afterPersist?.("publication");
-      if (this.publication.observe(document) !== "complete") documentReject("DOCUMENT_UNCERTAIN");
+      if (this.publication.observe(document, predecessor) !== "complete") documentReject("DOCUMENT_UNCERTAIN");
       this.assertTracking(sha, decisionId); this.review.journal.completeEffect(sha, decisionId, "publish"); this.afterPersist?.("complete");
       return { publication: "verified", operationId: effect.operationId, branch: "not-performed", queue: "not-performed", productUat: "not-asserted" };
     });
@@ -116,8 +147,9 @@ export class HandoffPublicationService {
       const { document } = this.review.journal.subject(sha);
       const authorize = () => { this.review.authorize(sha, decisionId, "queue"); this.assertPublished(sha, decisionId); };
       authorize(); const effect = this.review.journal.effect(sha, decisionId, "queue", true);
-      this.publication.queue(document, authorize); this.afterPersist?.("queue");
-      if (!this.publication.queued(document)) documentReject("DOCUMENT_UNCERTAIN");
+      const predecessor = this.predecessor(document);
+      this.publication.queue(document, authorize, predecessor); this.afterPersist?.("queue");
+      if (!this.publication.queued(document, predecessor)) documentReject("DOCUMENT_UNCERTAIN");
       this.review.journal.completeEffect(sha, decisionId, "queue");
       result = { operationId: effect.operationId, queue: "verified", launchReady: false, productUat: "not-asserted" };
     });

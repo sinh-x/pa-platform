@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type Database from "better-sqlite3";
 import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -6,11 +7,14 @@ import { withRepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
 import { getBranchPattern, loadRepoEntry } from "../repos.js";
 import { creationDigest } from "../tickets/create-intent.js";
+import { getDb } from "../registry/db.js";
 import type { TicketStore } from "../tickets/store.js";
+import type { Ticket } from "../tickets/types.js";
 import { SHA256, text } from "../workflows/contracts.js";
 import { handoffBranchIntentSha, parseHandoffRequest, type HandoffBranchIntent } from "./handoff-contract.js";
 import { intakeNativeHandoffTicket, type HandoffIntakeCaller, type HandoffIntakeHost } from "./handoff-intake.js";
 import { DocumentPackageError, documentReject } from "./package-contract.js";
+import { RegistryHandoffGitOwner } from "./handoff-git.js";
 
 export interface NativeHandoffPlanningCaller extends HandoffIntakeCaller {
   identitySha256: string;
@@ -19,14 +23,19 @@ export interface NativeHandoffPlanningCaller extends HandoffIntakeCaller {
 export interface NativeHandoffPlanningHost extends HandoffIntakeHost {
   authenticate(): NativeHandoffPlanningCaller;
 }
+export function nativeHandoffTicketVersion(ticket: Ticket): string { return creationDigest(ticket); }
+export function nativeHandoffPlanIdentity(caller: NativeHandoffPlanningCaller, requestId: string) {
+  return { scope: creationDigest({ domain: "pa-handoff-plan/v1", deploymentId: caller.deploymentId, sessionId: caller.sessionId,
+    identitySha256: caller.identitySha256, selectionSha256: caller.selectionSha256, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket }), requestId };
+}
 
-/** Internal fresh-create composition, NOT selected tool grammar or authority.
+/** Internal fresh/advanced composition, NOT selected tool grammar or authority.
  * Actual process/session and immutable selection authentication still belong to
  * the future native host. Existing intake admission rejects rogue/retained runs.
  * No public root/SHA/provenance/lineage/actor input and no ref/resource mutation.
- * Advanced native reuse remains with its existing correlated Git owner; this
- * first-create adapter must never adopt legacy links by name. */
-export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffPlanningHost, rawRequest: string) {
+ * Reuse requires the original native creation, complete journal and live Git
+ * correlation. Legacy links are never adopted by name. */
+export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffPlanningHost, rawRequest: string, db: Database.Database = getDb()) {
   const request = parseHandoffRequest(rawRequest);
   if (request.action !== "plan") return documentReject("DOCUMENT_INPUT");
   const initial = structuredClone(host.authenticate());
@@ -41,10 +50,9 @@ export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffP
   registered();
   // Same native coordinates after response loss. No caller-chosen scope/root or
   // arbitrary recovery namespace; expectedVersion/branch are checked separately.
-  const identity = { scope: creationDigest({ domain: "pa-handoff-plan/v1", deploymentId: initial.deploymentId, sessionId: initial.sessionId,
-    identitySha256: initial.identitySha256, selectionSha256: initial.selectionSha256, repoKey: initial.repoKey, repoRoot: initial.repoRoot, ticket: initial.ticket }), requestId: request.requestId };
+  const identity = nativeHandoffPlanIdentity(initial, request.requestId);
   return withRepositoryRefTicketExclusion(initial.repoKey, initial.repoRoot, exclusion =>
-    withRepositoryRefAdmission(initial.repoRoot, exclusion, physicalIdentitySha256 => store.withWorkflowTransaction(() => {
+    withRepositoryRefAdmission(initial.repoRoot, exclusion, (physicalIdentitySha256, admission) => store.withWorkflowTransaction(() => {
       const current = () => {
         if (!isDeepStrictEqual(initial, host.authenticate())) documentReject("DOCUMENT_STALE");
         registered();
@@ -109,28 +117,49 @@ export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffP
       let durable = original !== undefined;
       try {
         if (git("rev-parse", "--show-ref-format") !== "files" || git("rev-parse", "--show-object-format") !== "sha1") documentReject("DOCUMENT_SOURCE");
-        absent();
         if (original) {
           if (original.record.change.kind !== "plan") return documentReject("DOCUMENT_CONFLICT");
           intent = original.record.change.intent;
-          if (intent.action !== "create" || intent.requestId !== request.requestId || intent.branch !== request.branch
+          if (intent.requestId !== request.requestId || intent.branch !== request.branch
             || intent.ticket !== request.ticket || intent.expectedTicketVersion !== request.expectedTicketVersion
             || intent.callerIdentitySha256 !== initial.identitySha256 || !isDeepStrictEqual(intent.repository, repository)) documentReject("DOCUMENT_CONFLICT");
           commit(intent.base.sha);
         } else {
           const ticket = current(), sha = develop();
           if (creationDigest(ticket) !== request.expectedTicketVersion) documentReject("DOCUMENT_STALE");
-          if (ticket.linkedBranches.length) documentReject("DOCUMENT_CONFLICT");
+          if (ticket.linkedBranches.length > 1) documentReject("DOCUMENT_CONFLICT");
+          const link = ticket.linkedBranches[0];
+          if (link && (link.repo !== initial.repoKey || link.branch !== request.branch || link.state !== "materialized"
+            || !link.baseSha || !link.headSha || link.sha !== link.headSha)) documentReject("DOCUMENT_CONFLICT");
+          const native = link ? new RegistryHandoffGitOwner(db).creationForPlan(repository, request.ticket, request.branch) : null;
+          if (native && native.intent.base.sha !== link!.baseSha) documentReject("DOCUMENT_CONFLICT");
+          // Head is owner-observed, not a request field. withRepository below
+          // checks native marker, completed creation and exact current ancestry.
+          const head = link ? commit(git("show-ref", "--verify", "--hash", ref)) : null;
           intent = { schemaVersion: "pa-handoff-branch-intent/v1", requestId: request.requestId, callerIdentitySha256: initial.identitySha256,
-            expectedTicketVersion: request.expectedTicketVersion, repository, ticket: request.ticket, branch: request.branch, action: "create",
-            base: { ref: "refs/heads/develop", sha, observedDevelopSha: sha, observedAt: new Date().toISOString(), provenance: "local-develop-ref", remoteFreshness: "not-established" },
-            plannedLinkSha256: creationDigest(null), lineage: null };
+            expectedTicketVersion: request.expectedTicketVersion, repository, ticket: request.ticket, branch: request.branch, action: link ? "reuse" : "create",
+            base: { ref: "refs/heads/develop", sha: native?.intent.base.sha ?? sha, observedDevelopSha: sha, observedAt: new Date().toISOString(),
+              provenance: link ? "native-original-base" : "local-develop-ref", remoteFreshness: "not-established" },
+            plannedLinkSha256: creationDigest(link ?? null), lineage: native ? { operationSha256: native.operationId, originalBaseSha: native.intent.base.sha, observedHeadSha: head! } : null };
         }
       } catch (error) {
         if (error instanceof DocumentPackageError) throw error;
         return documentReject("DOCUMENT_UNCERTAIN");
       }
       const pinned = intent!;
+      const verifyRef = () => {
+        if (pinned.action === "create") return absent();
+        const link = (original?.record.before ?? current()).linkedBranches[0];
+        if (!link || link.state !== "materialized" || link.baseSha !== pinned.base.sha || !link.headSha || link.sha !== link.headSha) documentReject("DOCUMENT_CONFLICT");
+        // Reuse the opaque live repository admission, without reacquisition
+        // under TicketStore or creating another capacity/lock owner.
+        new RegistryHandoffGitOwner(db).withRepository(pinned, pinned.lineage!.operationSha256, port => {
+          const observed = port.observe();
+          if (observed.state !== "present" || observed.owner.kind !== "lineage" || observed.owner.sha256 !== pinned.lineage!.operationSha256
+            || !port.isAncestor(link.headSha!, observed.headSha)) documentReject("DOCUMENT_UNCERTAIN");
+        }, undefined, admission);
+      };
+      verifyRef();
       const result = store.applyHandoffWithIntent(request.ticket, request.expectedTicketVersion, { kind: "plan", intent: pinned }, "requirements/analyze", identity, {
         assertCurrent() { current(); },
         assertSnapshot(before) {
@@ -138,8 +167,8 @@ export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffP
           if (creationDigest(before) !== pinned.expectedTicketVersion || before.project !== initial.repoKey) documentReject("DOCUMENT_CONFLICT");
           // New intent must pin the final pre-write observation. Once durable,
           // replay retains that exact pin/time even if develop has since moved.
-          absent();
-          if (!durable && develop() !== pinned.base.sha) documentReject("DOCUMENT_STALE");
+          verifyRef();
+          if (!durable && develop() !== pinned.base.observedDevelopSha) documentReject("DOCUMENT_STALE");
         },
         afterPersist(stage) {
           if (stage === "intent") durable = true;
@@ -151,8 +180,9 @@ export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffP
       const readback = store.inspectHandoffWithIntent(identity);
       if (!readback?.complete || readback.record.change.kind !== "plan" || !isDeepStrictEqual(readback.record.change.intent, pinned)
         || !isDeepStrictEqual(result.ticket.linkedBranches, readback.record.after.linkedBranches)) documentReject("DOCUMENT_UNCERTAIN");
+      verifyRef();
       return { schemaVersion: "pa-handoff-plan-result/v1" as const, identity, intent: pinned, intentSha256: handoffBranchIntentSha(pinned),
         ticket: result.ticket, reused: result.reused, currentDevelopSha: develop(),
-        approval: "not-issued", publication: "not-performed", branchRef: "not-created", queue: "not-performed", launchReady: false };
+        approval: "not-issued", publication: "not-performed", branchRef: pinned.action === "create" ? "not-created" : "existing-not-completed-by-this-operation", queue: "not-performed", launchReady: false };
     })));
 }

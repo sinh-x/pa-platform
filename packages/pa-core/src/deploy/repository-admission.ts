@@ -611,11 +611,24 @@ export function withVacantRepositorySetup<T>(canonicalRepoRoot: string, capacity
   });
 }
 
+/** Opaque live exclusion-only admission. Reuses already-held repository locks;
+ * never a grant to mutate refs or a way to reacquire locks under TicketStore. */
+export interface RepositoryRefAdmission { readonly identitySha256: string }
+const activeRefAdmissions = new WeakMap<RepositoryRefAdmission, { root: string; check(): void }>();
+export function withActiveRepositoryRefAdmission<T>(owner: RepositoryRefAdmission, root: string, run: (identitySha256: string) => T): T {
+  const active = activeRefAdmissions.get(owner);
+  if (!active || active.root !== root) throw new Error("repository ref admission is absent, expired or root-conflicting");
+  active.check();
+  const result = run(owner.identitySha256);
+  if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("ref owner callback must be synchronous");
+  active.check(); return result;
+}
+
 /** Exclusion-only branch-ref boundary: ticket-slot mutex -> primary mutation
  * mutex -> sorted linked mutation mutexes. NO capacity/reservation/lease writes.
  * Every retained custody marker blocks, even if a process appears dead. No
  * generic permission is conveyed by this internal synchronous composition. */
-export function withRepositoryRefAdmission<T>(canonicalRepoRoot: string, exclusion: RepositoryRefExclusion, operation: (identitySha256: string) => T): T {
+export function withRepositoryRefAdmission<T>(canonicalRepoRoot: string, exclusion: RepositoryRefExclusion, operation: (identitySha256: string, admission: RepositoryRefAdmission) => T): T {
   return withRepositoryRefExclusionOwner(exclusion, canonicalRepoRoot, () => {
     const root = assertCanonicalRoot(canonicalRepoRoot), primary = repositoryPhysicalGitDir(root);
     if (primary !== join(root, ".git") || repositoryPhysicalGitCommonDir(root) !== primary) throw new Error("ref owner requires the registered primary physical Git directory");
@@ -652,9 +665,10 @@ export function withRepositoryRefAdmission<T>(canonicalRepoRoot: string, exclusi
       const locked = (index: number): T => {
         if (index < initial.length) return withMutationMutex(join(initial[index]!.gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR), () => locked(index + 1));
         unchanged();
-        const result = operation(metadata[0]!);
-        if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("ref owner callback must be synchronous");
-        unchanged(); return result;
+        const admission: RepositoryRefAdmission = Object.freeze({ identitySha256: metadata[0]! });
+        activeRefAdmissions.set(admission, { root, check: unchanged });
+        try { return withActiveRepositoryRefAdmission(admission, root, identity => operation(identity, admission)); }
+        finally { activeRefAdmissions.delete(admission); }
       };
       return locked(1);
     });

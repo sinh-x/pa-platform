@@ -113,18 +113,22 @@ test("native-only owners are accounted for without inventing CLI commands or gra
   assert.ok(validateInteractionCatalogue(interactionCatalogue.map(row => row.operationId === "workspace.run" ? { ...row, channels: ["cli"] } : row)).includes("invalid-channel"));
 });
 
-test("PAP-299 composition does not advertise inactive handoff/reader cores as native interactions", () => {
-  for (const form of ["pa_handoff:plan", "pa_handoff:review", "pa_handoff:complete-branch", "pa_handoff:open"]) {
-    assert.equal(interactionCatalogue.some(row => row.nativeForms.includes(form)), false);
+test("new handoff source dispatch is explicit and does not widen retained document owners or claim installed admission", () => {
+  for (const action of ["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue", "open", "status"]) {
+    const row = operation(`handoff.${action}`);
+    assert.deepEqual(row.nativeForms, [`pa_handoff:${action}`]); assert.deepEqual(row.cliForms, []);
+    assert.equal(row.nativeBinding, null); assert.equal(row.sourceHandler, "packages/pi-pa/src/pi-extension/handoff-tool.ts");
+    assert.equal(row.effectClass, action === "status" ? "read" : action === "open" ? "resource" : "write");
   }
   for (const id of ["document.native.plan", "document.native.complete-branch", "document.native.open"]) {
     assert.equal(interactionCatalogue.some(row => row.operationId === id), false);
   }
-  // Actual new ticket/Git owners are still internal source seams. Compiling
-  // them must not silently select a tool/profile or retrofit legacy decisions.
-  for (const path of ["packages/pa-core/src/index.ts", "packages/pi-pa/src/pi-extension/document-tool.ts", "packages/pi-pa/src/document-session.ts"]) {
+  // The new tool is selected only by its explicit immutable capability. Retained
+  // document/session modules do not directly dispatch low-level finite owners.
+  assert.doesNotMatch(readFileSync(resolve(root, "packages/pa-core/src/index.ts"), "utf8"), /(?:handoff-git|handoff-native-branch)\.js/);
+  for (const path of ["packages/pi-pa/src/pi-extension/document-tool.ts", "packages/pi-pa/src/document-session.ts"]) {
     const source = readFileSync(resolve(root, path), "utf8");
-    assert.doesNotMatch(source, /(?:handoff-native-branch|handoff-git|handoff-contract|handoff-intake|handoff-planning|handoff-review|handoff-publication|reader-publication)\.js/);
+    assert.doesNotMatch(source, /(?:handoff-native-branch|handoff-git|handoff-contract|handoff-intake|handoff-planning|handoff-lifecycle|handoff-review|handoff-publication|reader-publication)\.js/);
   }
   // Primer resource composition is text projection, not another CLI dispatcher.
   assert.equal(operation("document.native.branch-inspect").effectClass, "read");

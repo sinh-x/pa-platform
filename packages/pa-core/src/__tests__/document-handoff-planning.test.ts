@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { planNativeHandoffTicket, type NativeHandoffPlanningHost } from "../documents/handoff-planning.js";
 import { HANDOFF_SESSION_VERSION } from "../documents/handoff-intake.js";
+import { stageNativeHandoffTicket } from "../documents/handoff-lifecycle.js";
+import { completeNativeHandoffBranch } from "../documents/handoff-native-branch.js";
+import { documentPackageSha, type DocumentPackage } from "../documents/package-contract.js";
+import { handoffBranchIntentSha } from "../documents/handoff-contract.js";
 import { appendRegistryEvent, closeDb, getDb } from "../registry/index.js";
 import { creationDigest } from "../tickets/create-intent.js";
 import { TicketStore } from "../tickets/store.js";
@@ -143,7 +147,7 @@ for (const kind of ["ref", "legacy-planned", "legacy-materialized", "leftover-lo
       f.request.expectedTicketVersion = creationDigest(f.store.get("EX-1"));
     }
     const ticket = readFileSync(join(f.dir, "EX-1.json")), refs = f.git("show-ref");
-    assert.throws(() => f.run(), /DOCUMENT_CONFLICT/);
+    assert.throws(() => f.run(), kind === "legacy-materialized" ? /DOCUMENT_UNCERTAIN/ : /DOCUMENT_CONFLICT/);
     assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), ticket); assert.equal(f.git("show-ref"), refs); assert.equal(f.plans().length, 0);
   } finally { f.close(); }
 });
@@ -181,6 +185,113 @@ test("actual current/historical association owners, session drift, async admissi
     appendRegistryEvent({ deployment_id: "d-123456", team: "requirements", event: "completed", timestamp: "2026-11-15T06:01:00.000Z", status: "success" });
     assert.throws(() => f.run(), /DOCUMENT_CONFLICT/); assert.equal(f.plans().length, 0);
   } finally { f.close(); }
+});
+
+function nativeBranch(f: ReturnType<typeof fixture>) {
+  getDb().pragma("synchronous = FULL");
+  const plan = f.run();
+  const document: DocumentPackage = { schemaVersion: "pa-document-package/v1", repository: { key: "example", root: f.repo }, ticket: "EX-1", packageId: "fixture", revision: 1, predecessor: null,
+    members: (["brief", "requirements", "uat"] as const).map(role => ({ id: role, role, mediaType: "text/markdown", description: role,
+      source: `agent-teams/requirements/artifacts/drafts/fixture/${role}.md`, bytes: 1, sha256: "e".repeat(64) })), references: [], effects: { publish: true, queue: false, route: { team: "builder", mode: "orchestrator" } } };
+  const subject = { schemaVersion: "pa-handoff-review/v1" as const, documentSubjectSha256: documentPackageSha(document), branchIntentSha256: handoffBranchIntentSha(plan.intent),
+    deliverySha256: "e".repeat(64), selectionSha256: f.caller.selectionSha256, callerIdentitySha256: f.caller.identitySha256, effects: { publish: true, branchRef: true, queue: false } };
+  // Only simulated authority, not genuine publication/review/installed evidence.
+  const result = completeNativeHandoffBranch(getDb(), f.store, { authenticate: () => f.caller, assertAvailable() {}, assertDecision() {}, assertPublished() {} }, subject, plan.intent, document, "decision-fixture", plan.identity);
+  const link = f.store.get("EX-1")!.linkedBranches[0]!;
+  const advance = (parent = f.base) => {
+    const sha = f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", f.git("rev-parse", `${parent}^{tree}`), "-p", parent, "-m", "advanced");
+    f.git("update-ref", `refs/heads/${f.request.branch}`, sha); return sha;
+  };
+  return { result, link, advance };
+}
+
+for (const point of ["none", "intent", "ticket", "audit"] as const) test(`advanced planner derives native lineage and retains original base/history across ${point} recovery`, () => {
+  const f = fixture();
+  try {
+    const native = nativeBranch(f), advanced = native.advance();
+    f.advance(); const develop = f.git("rev-parse", "HEAD");
+    const before = f.store.get("EX-1")!, logPath = join(f.repo, ".git", "logs", "refs", "heads", f.request.branch), log = readFileSync(logPath);
+    const request = { ...f.request, requestId: "reuse", expectedTicketVersion: creationDigest(before) };
+    if (point !== "none") {
+      f.host.afterPersist = stage => { if (stage === point) { f.advance(); throw Error("advanced plan reply lost"); } };
+      if (point === "ticket") f.run(request); // Reuse plan deliberately has identical before/after: no ticket write/hook.
+      else assert.throws(() => f.run(request), /advanced plan reply lost/);
+      delete f.host.afterPersist;
+    }
+    const result = f.run(request);
+    assert.equal(result.intent.action, "reuse"); assert.equal(result.intent.base.sha, f.base);
+    assert.equal(result.intent.base.observedDevelopSha, develop); assert.equal(result.intent.base.provenance, "native-original-base");
+    assert.deepEqual(result.intent.lineage, { operationSha256: native.result.operationId, originalBaseSha: f.base, observedHeadSha: advanced });
+    assert.deepEqual(result.ticket.linkedBranches, [native.link], "planning must not refresh or rewrite materialized attribution/head");
+    assert.deepEqual(readFileSync(logPath), log); assert.equal(f.git("rev-parse", `refs/heads/${f.request.branch}`), advanced);
+    assert.equal(result.branchRef, "existing-not-completed-by-this-operation"); assert.equal(result.launchReady, false);
+    assert.deepEqual(f.run(request), { ...result, reused: true });
+    assert.equal(f.plans().length, 3); // create plan, materialization, advanced plan
+  } finally { f.close(); }
+});
+
+for (const fault of ["missing-source", "incomplete-origin", "foreign-marker", "rewound-head", "changed-tip-after-intent"] as const) test(`advanced planner refuses ${fault} without backfill, resetting or relinking`, () => {
+  const f = fixture();
+  try {
+    const native = nativeBranch(f); const advanced = native.advance();
+    const request = { ...f.request, requestId: "reuse", expectedTicketVersion: creationDigest(f.store.get("EX-1")) };
+    if (fault === "missing-source") getDb().exec("DELETE FROM handoff_git_creation_sources");
+    if (fault === "incomplete-origin") getDb().exec("DELETE FROM handoff_branch_events WHERE sequence = (SELECT MAX(sequence) FROM handoff_branch_events)");
+    if (fault === "foreign-marker") writeFileSync(join(f.repo, ".git", "logs", "refs", "heads", f.request.branch), "foreign retained history\n");
+    if (fault === "rewound-head") {
+      writeFileSync(join(f.dir, "EX-1.json"), JSON.stringify({ ...f.store.get("EX-1"), linkedBranches: [{ ...native.link, headSha: advanced, sha: advanced }] }));
+      f.git("update-ref", `refs/heads/${f.request.branch}`, f.base); request.expectedTicketVersion = creationDigest(f.store.get("EX-1"));
+    }
+    if (fault === "changed-tip-after-intent") {
+      f.host.afterPersist = stage => { if (stage === "intent") throw Error("lost reply"); };
+      assert.throws(() => f.run(request), /lost reply/); delete f.host.afterPersist;
+      native.advance(advanced);
+    }
+    const before = readFileSync(join(f.dir, "EX-1.json")), refs = f.git("show-ref"), count = f.plans().length;
+    assert.throws(() => f.run(request), /DOCUMENT_UNCERTAIN/);
+    assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), before); assert.equal(f.git("show-ref"), refs); assert.equal(f.plans().length, count);
+  } finally { f.close(); }
+});
+
+for (const point of ["none", "intent", "ticket", "audit"] as const) test(`finite native stage composition and original ${point} recovery preserve refs and branch history`, () => {
+  const f = fixture();
+  try {
+    const plan = f.run(), branches = plan.ticket.linkedBranches;
+    const request = { ticket: "EX-1", requestId: "analysis", expectedTicketVersion: creationDigest(f.store.get("EX-1")), stage: "analysis" };
+    if (point !== "none") {
+      f.host.afterPersist = stage => { if (stage === point) throw Error("stage reply lost"); };
+      assert.throws(() => stageNativeHandoffTicket(f.store, f.host, request), /stage reply lost/); delete f.host.afterPersist;
+    }
+    const result = stageNativeHandoffTicket(f.store, f.host, request);
+    assert.equal(result.ticket.status, "requirement-review"); assert.equal(result.ticket.assignee, "requirements/team-manager");
+    assert.deepEqual(result.ticket.linkedBranches, branches); assert.equal(result.queue, "not-performed");
+    assert.deepEqual(stageNativeHandoffTicket(f.store, f.host, request), { ...result, reused: true });
+    assert.throws(() => stageNativeHandoffTicket(f.store, f.host, { ...request, stage: "review" }), /TICKET_HANDOFF_CONFLICT/);
+    for (const stage of ["review", "changes-requested"] as const) {
+      const next = stageNativeHandoffTicket(f.store, f.host, { ...request, requestId: stage, stage, expectedTicketVersion: creationDigest(f.store.get("EX-1")) });
+      assert.equal(next.ticket.status, stage === "review" ? "pending-approval" : "requirement-review");
+      assert.equal(next.ticket.assignee, stage === "review" ? "sinh" : "requirements/team-manager");
+      assert.deepEqual(next.ticket.linkedBranches, branches);
+    }
+  } finally { f.close(); }
+});
+
+test("stage admission preserves advanced assignment/primary and denies imported effects or stale native caller", () => {
+  for (const fault of ["advanced", "primary", "caller", "foreign-owner", "async", "import"] as const) {
+    const f = fixture();
+    try {
+      // Inert starting-state fixtures, not lifecycle authority or live repair.
+      if (fault === "advanced" || fault === "primary") writeFileSync(join(f.dir, "EX-1.json"), JSON.stringify({ ...f.store.get("EX-1"),
+        ...(fault === "advanced" ? { status: "implementing", assignee: "builder/team-manager" } : { doc_refs: [{ type: "attachment", path: "history.md", primary: true }] }) }));
+      if (fault === "caller") f.host.assertAvailable = () => { f.caller.sessionId = "changed"; };
+      if (fault === "foreign-owner") appendRegistryEvent({ ...f.start, deployment_id: "d-123456" });
+      if (fault === "async") f.host.assertAvailable = async () => {};
+      const request = { ticket: "EX-1", requestId: "analysis", expectedTicketVersion: creationDigest(f.store.get("EX-1")), stage: "analysis", ...(fault === "import" ? { assignee: "sinh" } : {}) };
+      const before = readFileSync(join(f.dir, "EX-1.json"));
+      assert.throws(() => stageNativeHandoffTicket(f.store, f.host, request));
+      assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), before); assert.equal(f.plans().length, 0);
+    } finally { f.close(); }
+  }
 });
 
 test("caller desired input cannot import observations, grants, identities, duplicate keys or foreign repository policy", () => {

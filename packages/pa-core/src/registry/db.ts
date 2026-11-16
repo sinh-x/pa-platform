@@ -27,6 +27,19 @@ export function getDb(dbPath = getRegistryDbPath()): Database.Database {
   return db;
 }
 
+/** A caller-owned connection for finite journals requiring FULL synchronous
+ * durability. Opens only the already initialized registry; never migrates it or
+ * changes the historical singleton's settings. The caller must close it. */
+export function openDurableRegistryDatabase(): Database.Database {
+  const nativeBinding = process.env[REGISTRY_NATIVE_BINDING_ENV]?.trim();
+  const db = new Database(getRegistryDbPath(), { fileMustExist: true, ...(nativeBinding ? { nativeBinding } : {}) });
+  try {
+    db.pragma("busy_timeout = 5000"); db.pragma("foreign_keys = ON"); db.pragma("synchronous = FULL");
+    if (db.pragma("journal_mode", { simple: true }) !== "wal" || db.pragma("synchronous", { simple: true }) !== 2) throw new Error("durable registry connection unavailable");
+    return db;
+  } catch (error) { db.close(); throw error; }
+}
+
 export type RegistryReadCause = "registry-missing" | "registry-unreadable" | "registry-unsafe" | "registry-over-limit" | "registry-unstable";
 /** Finite infrastructure facts only; never retain paths, SQLite text or OS errors. */
 export class RegistryReadError extends Error {

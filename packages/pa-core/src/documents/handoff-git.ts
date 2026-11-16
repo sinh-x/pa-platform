@@ -3,13 +3,13 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, openSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { withRepositoryRefAdmission } from "../deploy/repository-admission.js";
+import { withActiveRepositoryRefAdmission, withRepositoryRefAdmission, type RepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { getBranchPattern, loadRepoEntry } from "../repos.js";
 import { digest, parseWorkflowRequest, SHA256, text } from "../workflows/contracts.js";
 import { documentReject } from "./package-contract.js";
-import { handoffBranchIntentSha, parseHandoffBranchIntent, type HandoffBranchIntent } from "./handoff-contract.js";
+import { handoffBranchIntentSha, parseHandoffBranchIntent, type HandoffBranchIntent, type HandoffRepository } from "./handoff-contract.js";
 import { RegistryHandoffBranchJournal, type HandoffRefObservation } from "./handoff-branch.js";
 
 /** Internal native Git adapter. Not a tool/profile or permission grant. Reuse
@@ -34,8 +34,27 @@ export class RegistryHandoffGitOwner {
     // bytes. Both rows are committed atomically before a NEW ref creation.
     db.exec("CREATE TABLE IF NOT EXISTS handoff_git_creation_sources (operation_id TEXT PRIMARY KEY, payload TEXT NOT NULL)");
   }
+  /** Discovery only: native saved creation plus completed original journal.
+   * The caller MUST separately verify live ref/reflog/ancestry withRepository
+   * under the same repository exclusion. Matching metadata is never proof. */
+  creationForPlan(repository: HandoffRepository, ticket: string, branch: string) {
+    const rows = this.db.prepare("SELECT operation_id, payload FROM handoff_git_creation_sources LIMIT 1025").all() as { operation_id: string; payload: string }[];
+    if (rows.length > 1024) return documentReject("DOCUMENT_UNCERTAIN");
+    const matches = rows.flatMap(row => {
+      let original: HandoffBranchIntent;
+      try { original = parseHandoffBranchIntent(parseWorkflowRequest(row.payload)); }
+      catch { return documentReject("DOCUMENT_UNCERTAIN"); }
+      if (original.ticket !== ticket || original.branch !== branch || original.repository.key !== repository.key) return [];
+      text(row.operation_id, SHA256);
+      if (original.action !== "create" || JSON.stringify(original.repository) !== JSON.stringify(repository)
+        || new RegistryHandoffBranchJournal(this.db).events(row.operation_id).at(-1)?.kind !== "complete") return documentReject("DOCUMENT_UNCERTAIN");
+      return [{ operationId: row.operation_id, intent: original }];
+    });
+    if (matches.length !== 1) return documentReject("DOCUMENT_UNCERTAIN");
+    return matches[0]!;
+  }
   withRepository<T>(rawIntent: HandoffBranchIntent, rawOperationId: string, run: (git: NativeHandoffGit) => T,
-    boundary?: (point: HandoffGitBoundary) => void): T {
+    boundary?: (point: HandoffGitBoundary) => void, admission?: RepositoryRefAdmission): T {
     const intent = parseHandoffBranchIntent(rawIntent), operationId = text(rawOperationId, SHA256);
     const binding = handoffBranchIntentSha(intent), ref = `refs/heads/${intent.branch}`;
     const originId = intent.action === "reuse" ? intent.lineage!.operationSha256 : operationId;
@@ -57,8 +76,7 @@ export class RegistryHandoffGitOwner {
       } else if (intent.action === "reuse") documentReject("DOCUMENT_UNCERTAIN");
       return row;
     };
-    return withRepositoryRefTicketExclusion(intent.repository.key, intent.repository.root, exclusion =>
-      withRepositoryRefAdmission(intent.repository.root, exclusion, physicalIdentity => {
+    const admitted = (physicalIdentity: string): T => {
         if (physicalIdentity !== intent.repository.physicalIdentitySha256) documentReject("DOCUMENT_STALE");
         let active = true;
         const check = () => {
@@ -162,6 +180,11 @@ export class RegistryHandoffGitOwner {
         });
         try { const result = run(port); if (result && (typeof result === "object" || typeof result === "function") && "then" in result) documentReject("DOCUMENT_INPUT"); return result; }
         finally { active = false; }
-      }));
+      };
+    // An opaque live owner permits composition inside TicketStore without
+    // acquiring repository locks in reverse order. Forged/expired owners reject.
+    return admission ? withActiveRepositoryRefAdmission(admission, intent.repository.root, admitted)
+      : withRepositoryRefTicketExclusion(intent.repository.key, intent.repository.root, exclusion =>
+        withRepositoryRefAdmission(intent.repository.root, exclusion, admitted));
   }
 }
