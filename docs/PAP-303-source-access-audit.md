@@ -1,5 +1,11 @@
 # PAP-303 — P1 source-access checkpoint
 
+> Historical checkpoint (2026-11-16). The cause recorded below was superseded by
+> [the source-denial root cause](PAP-303-source-denial-root-cause.md): the denial
+> came from the ordinary single-link rule and the selected-Pi route was not the
+> missing piece. Current implementation status is in
+> [the Herdr lifecycle note](PAP-303-herdr-lifecycle.md).
+
 Date: 2026-11-16. Deployment: `d-4b9ba1`, Pi / `rogue-one`.
 Status: **P1 incomplete; no Herdr implementation or qualification claimed.**
 
