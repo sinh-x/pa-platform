@@ -92,3 +92,13 @@ test("policy failures and fixed diagnostics disclose no source, pattern or raw c
     for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(text.split(`${label}:`).length, 2);
   }
 });
+
+test("unsupported-source guidance distinguishes routes and does not suggest an alternate-spelling bypass", () => {
+  const text = new SourceContentSecurityError("LOCAL_SOURCE_UNSUPPORTED_FILE").message;
+  assert.match(text, /Ordinary reads require a regular file with exactly one link/);
+  assert.match(text, /Multi-link text is limited to finite selected-Pi documentation/);
+  assert.doesNotMatch(text, /exact immutable \/nix\/store text file/);
+  assert.match(text, /Ask the security\/runtime owner to inspect/);
+  assert.doesNotMatch(text, /retry with an admitted source spelling/);
+  assert.ok(text.length <= 2000);
+});

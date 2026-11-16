@@ -7,7 +7,7 @@ import type { PiToolDefinition, PiToolResult } from "./index.js";
 
 /** Native implementation composition, never a root/grant accepted in tool JSON,
  * environment or configuration. The ordinary public constructor fixes its own
- * single-link acquirer. A selected host must construct its private acquirer only
+ * ordinary-policy acquirer. A selected host must construct its private acquirer only
  * after establishing build/execution custody; this factory is not that proof. */
 export function bindLocalReadTool(
   createDefinition: typeof import("@earendil-works/pi-coding-agent").createReadToolDefinition,

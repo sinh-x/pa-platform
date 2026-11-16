@@ -6,7 +6,7 @@ import type { SensitivePatternSet } from "./sensitive-patterns.js";
 
 /** Owned acquisition, not artifact adoption or permission to publish raw bytes.
  * Call assertStable immediately before delivery and close in finally. Ordinary
- * ingress is single-link; selected-host provenance is a separate consumer gate. */
+ * ingress mechanics do not themselves establish selected-host provenance. */
 export interface LocalSourceFile {
   readonly bytes: Buffer;
   assertStable(): void;
@@ -31,36 +31,10 @@ function unavailable(error: unknown): never {
   return fail("LOCAL_SOURCE_UNAVAILABLE");
 }
 
-/** Facts for the ordinary immutable-store route. Decision input only; the
- * descriptor-pinned caller supplies them from the descriptors it owns. */
-export interface ImmutableSourceFacts {
-  readonly path: string;
-  readonly uid: bigint;
-  readonly nlink: bigint;
-  readonly mode: bigint;
-}
-
-/** Ordinary multi-link ingress is limited to an exact `/nix/store` spelling whose
- * whole ancestry is root-owned and not writable. This is a source-integrity
- * route, not an origin or confidentiality grant: sensitive path/filename rules
- * still run, matched content is still redacted, and the bytes must be text.
- * Pure so the policy decision is testable without a writable Nix store. */
-export function assertImmutableStoreSource(physical: string, logical: string, ancestors: readonly ImmutableSourceFacts[], file: ImmutableSourceFacts): void {
-  if (physical !== logical || !physical.startsWith("/nix/store/")) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-  for (const entry of [...ancestors, file]) {
-    if (entry.uid !== 0n || entry.nlink === 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-    if (entry.path === "/nix/store") {
-      if ((entry.mode & 0o022n) !== 0n && !((entry.mode & 0o1000n) !== 0n && (entry.mode & 0o002n) === 0n)) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-    } else if (entry.path.startsWith("/nix/store/")) {
-      if ((entry.mode & 0o222n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-    } else if ((entry.mode & 0o022n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-  }
-}
-
-/** Linux descriptor-pinned, bounded, regular-file source ingress. Ordinary links
- * are accepted only as a single link or as an exact immutable `/nix/store` text
- * file. Other aliases retain their path checks; no physical component symlink is
- * followed. No caller root, filesystem backend or trust override. */
+/** Linux descriptor-pinned, bounded, regular/single-link ordinary ingress.
+ * A store spelling, root owner or read-only mode grants no multi-link exception.
+ * Logical single-link aliases retain path checks; no physical component symlink
+ * is followed. No caller root, filesystem backend or trust override. */
 export function acquireLocalSourceFile(path: string, patterns?: SensitivePatternSet, signal?: AbortSignal): LocalSourceFile {
   return acquirePinnedSource(path, patterns, signal);
 }
@@ -118,18 +92,12 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
     if (before.nlink !== 1n) {
-      // Decide the link route on the very descriptor whose bytes are acquired.
-      // Single-link aliases/images retain ordinary behavior; only the multi-
-      // link routes require exact spelling, immutable ancestry and text bytes.
-      if (physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-      if (binding) {
-        immutableMetadata(physical, before);
-        for (const directory of directories) immutableMetadata(directory.path, directory.stat);
-      } else {
-        assertImmutableStoreSource(physical, path,
-          directories.map(directory => ({ path: directory.path, uid: directory.stat.uid, nlink: directory.stat.nlink, mode: directory.stat.mode })),
-          { path: physical, uid: before.uid, nlink: before.nlink, mode: before.mode });
-      }
+      // Only the private selected-Pi route may consider multi-link text. Its
+      // finite scope/lifetime was checked above; ordinary ingress never retries
+      // through that route merely because this file lives in the Nix store.
+      if (!binding || physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      for (const directory of directories) immutableMetadata(directory.path, directory.stat);
+      immutableMetadata(physical, before);
     }
     if (before.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
     const assertStable = () => {

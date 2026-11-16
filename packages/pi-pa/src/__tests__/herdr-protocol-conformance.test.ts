@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  admitPeerTarget, HERDR_PEER_TARGET, type HerdrPeerAgent,
+  observePeerTarget, HERDR_PEER_TARGET, type HerdrPeerAgent,
 } from "../pi-extension/herdr-peer-admission.js";
 import { herdrSessionParams, herdrStateParams, type HerdrBinding } from "../pi-extension/herdr-lifecycle.js";
 
@@ -96,41 +96,74 @@ const agent = (overrides: Partial<HerdrPeerAgent> = {}): HerdrPeerAgent => ({
   interactive_ready: true, launch_pending: false, cwd: "/home/inert/peer-worktree",
   agent_session: { kind: "path", value: "/home/inert/sessions/peer.jsonl" }, ...overrides,
 });
-const decide = (overrides: Partial<Parameters<typeof admitPeerTarget>[0]> = {}) => admitPeerTarget({
+const decide = (overrides: Partial<Parameters<typeof observePeerTarget>[0]> = {}) => observePeerTarget({
   ownPaneId: "w1:p2Z", requestedPaneId: "w1:p3A", agents: [agent()], ...overrides,
 });
+const reason = (overrides: Partial<Parameters<typeof observePeerTarget>[0]> = {}) => {
+  const decision = decide(overrides);
+  return decision.ok ? "observed" : decision.reason;
+};
 
-test("peer admission accepts only one idle, ready, expected-checkout pane and captures its baseline", () => {
+test("a complete preliminary observation still leaves send admission unavailable", () => {
   assert.equal(HERDR_PEER_TARGET.test("w1:p3A"), true);
   assert.equal(HERDR_PEER_TARGET.test("w1/p3A"), false);
-  const decision = decide({ expectedCwd: "/home/inert/peer-worktree" });
-  assert.equal(decision.ok, true);
-  if (!decision.ok) return;
-  assert.deepEqual(decision.admission, {
-    target: "w1:p3A", baseline: { completionSeq: 4, stateChangeSeq: 12 }, sessionRef: "/home/inert/sessions/peer.jsonl",
-  });
-  assert.equal(decide({ agents: [agent({ agent_status: "done", completion_seq: null })] }).ok, true, "a settled agent is accepted with an unknown completion baseline");
-  assert.equal(decide({ agents: [agent({ completion_seq: null })], expectedCwd: "/home/inert/peer-worktree" }).ok, true);
+  assert.equal(HERDR_PEER_TARGET.test("w1:p3A\n"), false);
+  for (const agent_status of ["idle", "done"]) {
+    const decision = decide({ expectedCwd: "/home/inert/peer-worktree", agents: [agent({ agent_status })] });
+    assert.equal(decision.ok, true);
+    if (!decision.ok) continue;
+    assert.deepEqual(decision.observation, {
+      target: "w1:p3A", sendAdmission: "unavailable", baseline: { completionSeq: 4, stateChangeSeq: 12 },
+      sessionRef: "/home/inert/sessions/peer.jsonl",
+    });
+    assert.equal("admission" in decision, false, "paths and readiness are not authenticated deployment/read-only authority");
+  }
 });
 
-test("peer admission rejects self, unknown, ambiguous, not-ready, busy, blocked and identity changes", () => {
-  const reason = (overrides: Partial<Parameters<typeof admitPeerTarget>[0]> = {}) => {
-    const decision = decide(overrides);
-    return decision.ok ? "accepted" : decision.reason;
-  };
+test("preliminary observation rejects self, malformed, absent, ambiguous and unsettled targets", () => {
   assert.equal(reason({ requestedPaneId: "w1:p2Z" }), "self");
-  assert.equal(reason({ requestedPaneId: "../p3A" }), "invalid-target");
+  for (const requestedPaneId of ["../p3A", "w1:p3A\n"]) assert.equal(reason({ requestedPaneId }), "invalid-target");
+  assert.equal(reason({ ownPaneId: "unknown" }), "invalid-self");
   assert.equal(reason({ requestedPaneId: "w1:p9Z" }), "unknown");
   assert.equal(reason({ agents: [agent(), agent({ completion_seq: 5 })] }), "ambiguous");
-  assert.equal(reason({ agents: [agent({ launch_pending: true })] }), "not-ready");
-  assert.equal(reason({ agents: [agent({ interactive_ready: false })] }), "not-ready");
-  assert.equal(reason({ agents: [agent({ agent_status: "working" })] }), "busy");
-  assert.equal(reason({ agents: [agent({ agent_status: "blocked" })] }), "blocked");
-  assert.equal(reason({ agents: [agent({ agent_status: "unknown" })] }), "unknown-state");
-  assert.equal(reason({ expectedCwd: "/home/inert/other-worktree" }), "identity-mismatch");
-  assert.equal(reason({ expectedCwd: "relative/checkout" }), "identity-mismatch");
+  for (const [agent_status, expected] of [["working", "busy"], ["blocked", "blocked"], ["unknown", "unknown-state"], ["garbage", "unknown-state"]]) {
+    assert.equal(reason({ agents: [agent({ agent_status })] }), expected);
+  }
+});
+
+test("missing or malformed readiness never passes the preliminary filter", () => {
+  assert.equal(reason({ agents: [{ pane_id: "w1:p3A", agent_status: "idle" }] }), "not-ready");
+  for (const interactive_ready of [false, undefined, null, 1, "true"]) {
+    assert.equal(reason({ agents: [agent({ interactive_ready: interactive_ready as boolean })] }), "not-ready");
+  }
+  for (const launch_pending of [true, undefined, null, 0, "false"]) {
+    assert.equal(reason({ agents: [agent({ launch_pending: launch_pending as boolean })] }), "not-ready");
+  }
+});
+
+test("unknown or invalid ordering baselines are refused instead of defaulting to zero", () => {
+  for (const value of [null, undefined, NaN, Infinity, -Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "5", true]) {
+    for (const key of ["completion_seq", "state_change_seq"] as const) {
+      assert.equal(reason({ agents: [agent({ [key]: value as number })] }), "unknown-baseline", `${key}: ${String(value)}`);
+    }
+  }
+  const zero = decide({ agents: [agent({ completion_seq: 0, state_change_seq: 0 })] });
+  assert.equal(zero.ok, true, "explicit zero is different from an absent counter");
+  if (zero.ok) assert.deepEqual(zero.observation.baseline, { completionSeq: 0, stateChangeSeq: 0 });
+  assert.equal(reason({ agents: [agent({ agent_status: "done", completion_seq: null })] }), "unknown-baseline");
+});
+
+test("unknown session references and checkout mismatches remain unsupported", () => {
+  for (const agent_session of [
+    null, undefined, { kind: "id", value: "s-inert" }, { kind: "path", value: "relative.jsonl" },
+    { kind: "path", value: "/tmp/bad\nsession" }, { kind: "path", value: `/${"x".repeat(1024)}` },
+    { kind: "path", value: null },
+  ]) {
+    assert.equal(reason({ agents: [agent({ agent_session })] }), "unknown-session");
+  }
+  for (const expectedCwd of ["/home/inert/other-worktree", "relative/checkout", "/tmp/bad\ncheckout"]) {
+    assert.equal(reason({ expectedCwd }), "identity-mismatch");
+  }
   assert.equal(reason({ agents: [agent({ cwd: null, foreground_cwd: null })], expectedCwd: "/home/inert/peer-worktree" }), "identity-mismatch");
-  assert.equal(reason({ agents: [agent({ agent_session: { kind: "id", value: "s-inert" } })] }), "accepted");
-  const noSession = decide({ agents: [agent({ agent_session: null })] });
-  assert.equal(noSession.ok && noSession.admission.sessionRef, undefined);
+  assert.equal(reason({ agents: [agent({ cwd: null, foreground_cwd: "/home/inert/peer-worktree" })], expectedCwd: "/home/inert/peer-worktree" }), "observed");
 });

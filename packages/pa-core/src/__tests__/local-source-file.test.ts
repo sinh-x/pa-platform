@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { acquireLocalSourceFile, assertImmutableStoreSource, type ImmutableSourceFacts } from "../local-source-file.js";
+import { acquireLocalSourceFile } from "../local-source-file.js";
 import { MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError } from "../source-content-security.js";
 import { loadSensitivePatterns } from "../sensitive-patterns.js";
 
@@ -113,22 +113,19 @@ test("failed directory metadata observation closes even the just-opened descript
   assert.equal(fs.readdirSync("/proc/self/fd").length, before);
 }));
 
-/** The store route is decided from descriptor facts the caller owns, so its
- * policy can be exercised without a writable Nix store. */
-test("ordinary multi-link ingress is limited to exact immutable /nix/store text ancestry", () => {
-  const store = "/nix/store/00000000000000000000000000000000-inert-pkg";
-  const facts = (path: string, overrides: Partial<ImmutableSourceFacts> = {}): ImmutableSourceFacts => ({ path, uid: 0n, nlink: 2n, mode: 0o444n, ...overrides });
-  const ancestors = [facts("/", { nlink: 2n, mode: 0o755n }), facts("/nix", { mode: 0o555n }), facts("/nix/store", { mode: 0o1775n }), facts(store, { nlink: 3n, mode: 0o555n })];
-  const document = facts(`${store}/README.md`, { nlink: 9n });
-  assert.doesNotThrow(() => assertImmutableStoreSource(`${store}/README.md`, `${store}/README.md`, ancestors, document));
-  const denies = (physical: string, logical: string, ancestry = ancestors, file = document) =>
-    assert.throws(() => assertImmutableStoreSource(physical, logical, ancestry, file), code("LOCAL_SOURCE_UNSUPPORTED_FILE"));
-  denies("/tmp/ordinary.txt", "/tmp/ordinary.txt");
-  denies(`${store}/README.md`, `${store}/alias.md`);
-  denies(`${store}/README.md`, `${store}/README.md`, [...ancestors.slice(0, 3), facts(store, { nlink: 3n, mode: 0o5775n })]);
-  denies(`${store}/README.md`, `${store}/README.md`, [...ancestors.slice(0, 2), facts("/nix/store", { mode: 0o0777n }), ancestors[3]!]);
-  denies(`${store}/README.md`, `${store}/README.md`, ancestors, facts(`${store}/README.md`, { uid: 1000n, nlink: 9n }));
-  denies(`${store}/README.md`, `${store}/README.md`, ancestors, facts(`${store}/README.md`, { mode: 0o644n, nlink: 9n }));
-  denies(`${store}/README.md`, `${store}/README.md`, ancestors, facts(`${store}/README.md`, { nlink: 0n }));
-  denies(`${store}/README.md`, `${store}/README.md`, [...ancestors.slice(0, 3), facts(store, { nlink: 3n, mode: 0o555n, uid: 1000n })]);
-});
+test("ordinary read-only hard links and their aliases deny before payload access", t => fixture((root, path) => {
+  fs.linkSync(path, join(root, "second.txt"));
+  fs.chmodSync(path, 0o444);
+  const alias = join(root, "alias.txt"); fs.symlinkSync(path, alias);
+  const target = fs.statSync(path), originalRead = fs.readSync;
+  let payloadReads = 0;
+  t.mock.method(fs, "readSync", ((...args: Parameters<typeof fs.readSync>) => {
+    const stat = fs.fstatSync(args[0]);
+    if (stat.ino === target.ino && stat.dev === target.dev) payloadReads++;
+    return originalRead(...args);
+  }) as typeof fs.readSync);
+  for (const input of [path, alias]) {
+    assert.throws(() => acquireLocalSourceFile(input, patterns()), code("LOCAL_SOURCE_UNSUPPORTED_FILE"));
+  }
+  assert.equal(payloadReads, 0, "read-only mode and aliases are not selected-source authority");
+}));

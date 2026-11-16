@@ -9,7 +9,8 @@ import type { PiExtensionModule, PiRuntime, PiSessionLifecycle } from "./index.j
  * one newline-delimited JSON request per unix-socket connection, methods
  * `pane.report_agent_session` and `pane.report_agent`. It never submits prompts,
  * never reads socket replies into model context and never retries. Peer
- * messaging stays unavailable because no turn-correlated submission API exists. */
+ * messaging stays unavailable: no protected, request-correlated submission path
+ * has been proven. */
 export const HERDR_SOURCE = "herdr:pi";
 export const HERDR_SELECTION_ENV = "PA_HERDR_LIFECYCLE";
 export const HERDR_REQUEST_LIMIT_BYTES = 4096;

@@ -483,7 +483,7 @@ test("invalid policy fails closed before file/shell delivery, hostile getters ar
   assert.equal(result.isError, true); assert.equal(spawns, 0);
 }));
 
-test("PA guarded reads carry implementation custody; a foreign reader is reported as unverified coverage", async () => fixture(async f => {
+test("PA readers label results; unlabelled results produce an observational coverage warning", async () => fixture(async f => {
   const tool = createSecureLocalReadTool();
   const allowed = await invoke(tool, { path: f.file }, f.context);
   assert.notEqual(allowed.isError, true);
@@ -497,7 +497,7 @@ test("PA guarded reads carry implementation custody; a foreign reader is reporte
   const foreign = { role: "toolResult", toolName: "read", details: {} };
   assert.deepEqual(sourceGuardCoverage([guarded] as PiAgentMessage[]), { guarded: 1, unguarded: 0 });
   assert.equal(recordSourceGuardCoverage([guarded] as PiAgentMessage[], env)?.unguarded, 0);
-  assert.equal(existsSync(log), false, "fully guarded sessions write no attestation event");
+  assert.equal(existsSync(log), false, "all-labelled results write no observation event; silence is not proof");
   recordSourceGuardCoverage([guarded, foreign, { role: "toolResult", toolName: "bash", details: {} }] as PiAgentMessage[], env);
   const events = readActivityEvents(log);
   assert.equal(events.length, 1);
