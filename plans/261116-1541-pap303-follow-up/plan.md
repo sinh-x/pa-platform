@@ -1,5 +1,12 @@
 # PAP-303 follow-up plan
 
+> **Continuation update — 2026-11-16:** Read the
+> [reconciled handoff for d-b59414](d-b59414-handoff.md) before continuing.
+> It records the unfinished source edit and current failing tests, incorporates
+> monitor findings F1–F4, and replaces the install-first sequence below with
+> effect-free hardening plus P1/composition investigation before activation.
+> This earlier proposal and its check results are retained as historical context.
+
 Date: 2026-11-16 15:41 (+07). Branch `feature/PAP-303-herdr-trusted-bridge`
 (develop `9489913` v0.1.170 merged at `9650da5`; head `ad001b7`). Deployment
 `d-4b9ba1` still runs the installed 0.1.170 build, not this branch.

@@ -1,5 +1,13 @@
 # PAP-303 — source-denial root cause and repair
 
+> **Historical checkpoint; admission proposal superseded.** After W2 review,
+> Sinh selected finite selected-source scope. The broad ordinary `/nix/store`
+> multi-link route described below has been removed without installation.
+> Link-policy and standalone-hook observations remain historical evidence; the
+> public result marker is observability, not enforcement. See
+> [current W2 disposition](PAP-303-W2-source-composition.md) and the
+> [unapproved P1 contract proposal](PAP-303-P1-contract-draft.md).
+
 Date: 2026-11-16. Deployment: `d-4b9ba1` (rogue-one, PAP-303). Branch:
 `feature/PAP-303-herdr-trusted-bridge`, now merged with `develop` v0.1.170.
 

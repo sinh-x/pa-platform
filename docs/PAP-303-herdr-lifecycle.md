@@ -1,11 +1,20 @@
 # PAP-303 — trusted Herdr lifecycle bridge (P1 audit, P2 implementation)
 
 Date: 2026-11-16. Branch: `feature/PAP-303-herdr-trusted-bridge` (develop v0.1.170
-merged). Deployment `d-4b9ba1` runs the installed 0.1.170 build, not this source.
+merged). The original audit was attributed to `d-4b9ba1`; W1 hardening continues
+in `d-b59414` at Sinh's explicit direction, without installing this source.
 
-Status: **P1 lifecycle/API audit complete for the installed integration; P2
-implemented default-off with source tests; P3 peer messaging deliberately
-unavailable; P4 qualification not run.**
+Status: **historical lifecycle audit and default-off P2 implementation; W1
+helper hardening source-tested; full six-item P1 contract still incomplete;
+P3 peer messaging deliberately unavailable; P4 qualification not run.**
+
+Current source checkpoints: [W1 helper hardening](PAP-303-W1-helper-hardening.md),
+[W2 source/composition reconciliation](PAP-303-W2-source-composition.md), and the
+[feasibility-blocked W3/P1 contract proposal](PAP-303-P1-contract-draft.md).
+Earlier observations below are not an installed/current full-P1 acceptance claim.
+Sinh subsequently selected finite source scope: ordinary reads require one link;
+the former general-store route is withdrawn. The Herdr source audit below is
+historical and does not establish a current admitted Herdr-source route.
 
 ## P1 — exact integration audit
 
@@ -29,8 +38,8 @@ Observed contract:
   `agent_session_path`/`agent_session_id` and `state`/`message`.
 - States published: `working`, `blocked`, `idle`; TUI-only (`ctx.mode === "tui"`);
   `herdr:blocked` events increment/decrement a blocked counter.
-- Privileges: write-only datagrams to the operator's own Herdr socket plus
-  session id/path reporting. No prompt submission, no pane creation, no terminal
+- Privileges: advisory newline-delimited JSON requests over the operator's local
+  Herdr stream socket plus session id/path reporting. No prompt submission, no pane creation, no terminal
   input, no file or process authority, no model-input surface.
 
 What the audit cannot establish: the Herdr server's own authentication and
@@ -91,14 +100,17 @@ guard contract, not an API: turn correlation is not request-specific
 human consent bound to a live pair, and no PA-owned mapping from a Herdr pane to a
 target PA deployment.
 
-Implemented as a pure, effect-free predicate:
+Implemented as a pure preliminary observation filter, `observePeerTarget` in
 `packages/pi-pa/src/pi-extension/herdr-peer-admission.ts`. It rejects self,
-malformed, unknown or ambiguous targets before reading state, and rejects
-`launch_pending`, `interactive_ready === false`, `working`, `blocked` and
-`unknown` states, plus a checkout mismatch when an expected PA cwd is supplied.
-It returns the identity baseline (`completion_seq`, `state_change_seq`) and the
-peer session reference. It registers no tool, submits nothing, reads nothing and
-grants nothing.
+malformed, unknown or ambiguous targets; requires explicit readiness and no pending
+launch, supported settled state, known nonnegative safe-integer ordering counters
+and a supported session-path observation. It never fabricates absent counters.
+An optional checkout comparison is observation only, not authentication.
+
+Even a positive observation reports `sendAdmission: "unavailable"`: no deployment,
+incarnation or read-only authority is established by a cwd/session path. The old
+`admitPeerTarget`/`admission` surface has been replaced to avoid implying otherwise.
+The filter registers no tool, submits nothing, reads nothing and grants nothing.
 
 Messaging remains unavailable because a request/reply effect without consent,
 request-specific correlation and a target-deployment binding would violate the
@@ -107,13 +119,20 @@ ticket's own contract. `herdr prompt --wait` is not turn-correlated and
 input, send-keys or raw socket write was added.
 
 Also implemented as pure helpers (`herdr-peer-exchange.ts`), still unwired:
-request planning fixes a `[[pa-peer:<uuid>]]` nonce, a 4,096-byte request text and
-a 60-second maximum budget; reply classification strips common ANSI sequences,
-keeps a 16 KiB / 80-line tail, and reports `correlated` only when the nonce is in
-that tail, the settle is neither blocked nor unknown, and the completion counter
-advanced. Every other case returns a typed `uncertain` reason and is never
-retried automatically. Byte truncation keeps the tail, so a nonce outside it is
-reported as unattributed rather than guessed.
+request planning preserves the body intact, adds a `[[pa-peer:<uuid>]]` nonce,
+and caps the complete planned JSON parameters (target, text and wait) at 4,096
+UTF-8 bytes. JSON escaping and nonce/envelope overhead count. Any future transport
+owner must also budget its RPC framing; no wire submission exists here. The
+60-second value is only a planned wait ceiling, not an implemented total deadline.
+
+The classifier privately measures a code-point-safe 16 KiB / 80-line observation
+and returns **metadata only**, never terminal text on any outcome. Supported
+settled states and explicit safe-integer counter advancement are required. Even
+with a nonce and a new completion, the result is `unverified/unframed-channel`,
+never `correlated`: echoed input and unrelated turns cannot prove an explicit
+response. Other invalid observations return truthful typed `uncertain` reasons.
+CSI removal is not a complete terminal sanitizer or a response channel. Nothing
+is automatically resent, registered as a request tool or wired to an effect.
 
 Read-only peer inventory belongs to PAP-281/PAP-286, not this ticket.
 
@@ -125,7 +144,11 @@ pairing, no independent review, no hosted CI and no human UAT. The module is
 selected only by explicit environment, so enabling it in a deployment is a
 separate operator decision after those gates.
 
-## Checks actually run
+## Historical pre-W1 checks
+
+These results describe the earlier committed checkpoint, not the current dirty
+W1 source. The adopted unfinished rewrite initially reproduced 12 pass / 2 fail;
+see the linked W1 checkpoint for current results.
 
 ```sh
 corepack pnpm typecheck
