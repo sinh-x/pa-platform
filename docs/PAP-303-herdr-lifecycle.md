@@ -106,6 +106,15 @@ ticket's own contract. `herdr prompt --wait` is not turn-correlated and
 `--wait` without a timeout is indefinite, so it is not a substitute. No terminal
 input, send-keys or raw socket write was added.
 
+Also implemented as pure helpers (`herdr-peer-exchange.ts`), still unwired:
+request planning fixes a `[[pa-peer:<uuid>]]` nonce, a 4,096-byte request text and
+a 60-second maximum budget; reply classification strips common ANSI sequences,
+keeps a 16 KiB / 80-line tail, and reports `correlated` only when the nonce is in
+that tail, the settle is neither blocked nor unknown, and the completion counter
+advanced. Every other case returns a typed `uncertain` reason and is never
+retried automatically. Byte truncation keeps the tail, so a nonce outside it is
+reported as unattributed rather than guessed.
+
 Read-only peer inventory belongs to PAP-281/PAP-286, not this ticket.
 
 ## P4 — not run
@@ -124,11 +133,12 @@ corepack pnpm --filter @pa-platform/pi-pa build
 NO_COLOR=1 node --import=tsx --test --test-concurrency=1 \
   packages/pi-pa/src/__tests__/herdr-lifecycle.test.ts \
   packages/pi-pa/src/__tests__/herdr-protocol-conformance.test.ts \
+  packages/pi-pa/src/__tests__/herdr-peer-exchange.test.ts \
   packages/pi-pa/src/__tests__/pi-extension-composition.test.ts
 ```
 
 Results: workspace typecheck passed; pi-pa build passed (extension-source
-validation included); 11/11 focused cases passed. Protocol conformance validates
+validation included); 14/14 focused cases passed. Protocol conformance validates
 our lifecycle params against a vendored subset of the installed Herdr 0.9.5
 schema (`protocol: 22`, extracted 2026-11-16) and rejects deliberately broken
 payloads. A separate inert probe read the store source through
