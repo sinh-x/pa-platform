@@ -294,7 +294,9 @@ export class PiAdapter implements RuntimeAdapter {
     if (normalized.provider) args.push("--provider", normalized.provider);
     const cwd = plan?.repositoryCwd ?? this.cwd;
     if (plan) {
-      args.push("--no-skills", "--no-extensions");
+      // Ordinary PPA sessions retain Pi's user/project resource discovery.
+      // Protected review keeps its explicit-only resource boundary.
+      if (plan.reviewCheckout || protectedValidationLaunch) args.push("--no-skills", "--no-extensions");
       for (const skill of plan.skills) args.push("--skill", skill.path);
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
     }
@@ -944,8 +946,8 @@ export function buildPiBackgroundArgs(config: PiBackgroundConfig, reviewerContex
   const args = ["--print", "--mode", "json", "--session-id", config.sessionId];
   if (config.model) args.push("--model", config.model);
   if (config.provider) args.push("--provider", config.provider);
+  if (config.validationHandoffPath || reviewerContext) args.push("--no-skills", "--no-extensions");
   if (config.managed) {
-    args.push("--no-skills", "--no-extensions");
     for (const skill of config.skills) args.push("--skill", skill);
     if (config.trustedExtension) args.push("--extension", config.trustedExtension);
   }

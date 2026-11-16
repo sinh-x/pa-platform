@@ -12,9 +12,9 @@ import sys
 def patch(root: Path, relative: str, replacements: list[tuple[str, str]]) -> None:
     path = root / relative
     text = path.read_text()
-    for old, new in replacements:
+    for index, (old, new) in enumerate(replacements, 1):
         if text.count(old) != 1:
-            raise SystemExit(f"PAP-298 pinned Pi patch no longer matches {relative}")
+            raise SystemExit(f"PAP-298 pinned Pi patch no longer matches {relative} (replacement {index})")
         text = text.replace(old, new, 1)
     path.write_text(text)
 
@@ -22,6 +22,7 @@ def patch(root: Path, relative: str, replacements: list[tuple[str, str]]) -> Non
 def main(root: Path) -> None:
     coding = "packages/coding-agent/src/"
     declaration = "\t/** Trusted native host only; synchronous guard at the actual session output sink. */\n\tpaReadPublication?: (event: unknown) => void;\n"
+    path_filter = "\t/** Native host resource composition; applied before extension factories execute. */\n\tpaExtensionPathFilter?: (path: string) => boolean;\n"
     patch(root, coding + "core/sdk.ts", [
         ("export interface CreateAgentSessionOptions {\n", "export interface CreateAgentSessionOptions {\n" + declaration),
         ("\t\tsessionStartEvent: options.sessionStartEvent,\n", "\t\tsessionStartEvent: options.sessionStartEvent,\n\t\tpaReadPublication: options.paReadPublication,\n"),
@@ -31,7 +32,8 @@ def main(root: Path) -> None:
         ("\t\tsessionStartEvent: options.sessionStartEvent,\n", "\t\tsessionStartEvent: options.sessionStartEvent,\n\t\tpaReadPublication: options.paReadPublication,\n"),
     ])
     patch(root, coding + "main.ts", [
-        ("export interface MainOptions {\n", "export interface MainOptions {\n" + declaration),
+        ("export interface MainOptions {\n", "export interface MainOptions {\n" + declaration + path_filter),
+        ("\t\t\t\textensionFactories,\n", "\t\t\t\textensionFactories,\n\t\t\t\tpaExtensionPathFilter: options?.paExtensionPathFilter,\n"),
         ("\t\t\tcustomTools: sessionOptions.customTools,\n", "\t\t\tcustomTools: sessionOptions.customTools,\n\t\t\tpaReadPublication: options?.paReadPublication,\n"),
         ('\tconst hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");\n', '''\tconst hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
 \tif (hasRuntimeErrors && options?.paReadPublication) {
@@ -40,6 +42,14 @@ def main(root: Path) -> None:
 \t\tthrow new Error("Selected Pi startup checks failed.", { cause: runtime.diagnostics });
 \t}
 '''),
+    ])
+    patch(root, coding + "core/resource-loader.ts", [
+        ("export interface DefaultResourceLoaderOptions {\n", "export interface DefaultResourceLoaderOptions {\n" + path_filter),
+        ("export class DefaultResourceLoader implements ResourceLoader {\n", "export class DefaultResourceLoader implements ResourceLoader {\n\tprivate readonly paExtensionPathFilter?: (path: string) => boolean;\n"),
+        ("\tconstructor(options: DefaultResourceLoaderOptions) {\n", "\tconstructor(options: DefaultResourceLoaderOptions) {\n\t\tthis.paExtensionPathFilter = options.paExtensionPathFilter;\n"),
+        ("\n\t\tconst extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);", "\n\t\tconst extensionsResult = await loadExtensionsCached(this.filterPaExtensionPaths(extensionPaths), this.cwd, this.eventBus);"),
+        ("this.loadFinalExtensionSet(extensionPaths, preTrustExtensions)", "this.loadFinalExtensionSet(this.filterPaExtensionPaths(extensionPaths), preTrustExtensions)"),
+        ("\tprivate resolveExtensionLoadPath(path: string): string {", "\tprivate filterPaExtensionPaths(paths: string[]): string[] {\n\t\treturn this.paExtensionPathFilter ? paths.filter(path => this.paExtensionPathFilter!(this.resolveExtensionLoadPath(path))) : paths;\n\t}\n\n\tprivate resolveExtensionLoadPath(path: string): string {"),
     ])
     patch(root, coding + "core/agent-session.ts", [
         ("export interface AgentSessionConfig {\n", "export interface AgentSessionConfig {\n" + declaration),
@@ -85,7 +95,7 @@ async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: A
 """),
     ])
     patch(root, coding + "index.ts", [
-        ("// Core session management\n", '// Core session management\nexport const PA_READ_PUBLICATION_VERSION = "pa-read-publication/v1";\n'),
+        ("// Core session management\n", '// Core session management\nexport const PA_READ_PUBLICATION_VERSION = "pa-read-publication/v1";\nexport const PA_EXTENSION_PATH_FILTER_VERSION = "pa-extension-path-filter/v1";\n'),
     ])
 
 

@@ -155,6 +155,27 @@ test("PAP-298 selected host changes existing launch/resume mechanics, not public
     assert.ok(Object.hasOwn(manifest.sources, path), `untracked selected-host authority/contract source: ${path}`);
 });
 
+test("normal Pi resource discovery retains launch effects without new selectors or native grants", () => {
+  for (const id of ["deploy.launch", "deploy.resume", "deploy.rogue-one"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "launch");
+    assert.deepEqual(row.channels, ["cli"]);
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.delegationBinding, null);
+  }
+  assert.ok(operation("deploy.launch").cliForms.includes("deploy --background"));
+  for (const row of interactionCatalogue) {
+    assert.equal(row.cliForms.some(form => /--pi-agent-dir|--allow-extensions|--discovery/.test(form)), false);
+    assert.equal(row.nativeForms.some(form => /pa_extension|pa_skill|pa_discovery/.test(form)), false);
+  }
+  const host = readFileSync(resolve(root, "packages/pi-pa/runtime/selected-pi-host.mjs"), "utf8");
+  assert.match(host, /args\[\+\+index\] === selection\.extensionModule && \+\+extensionCount === 1/);
+  assert.match(host, /fs\.realpathSync\(path\) !== selection\.extensionModule/);
+  const adapter = readFileSync(resolve(root, "packages/pi-pa/src/adapter.ts"), "utf8");
+  assert.match(adapter, /if \(plan\.reviewCheckout \|\| protectedValidationLaunch\) args\.push\("--no-skills", "--no-extensions"\)/);
+  assert.match(adapter, /if \(config\.validationHandoffPath \|\| reviewerContext\) args\.push\("--no-skills", "--no-extensions"\)/);
+});
+
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   const commandDir = "packages/pa-core/src/cli/commands";

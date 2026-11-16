@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -19,6 +19,43 @@ const { ReadPublicationOwner, withholdUnownedReadEvent } = await import(selected
 // This lane uses real Pi registration/transformation/emission with ordinary
 // disposable sources. Immutable selected-host authority is a separate lane.
 const selectedPi = process.env.PA_TEST_SELECTED_PI;
+test("selected Pi filters only duplicate native entrypoints before discovery, trust preload and reload", { skip: !selectedPi }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-resource-discovery-")), agentDir = join(root, "agent");
+  const packageDir = join(root, "native-package"), excluded = join(packageDir, "index.mjs");
+  const oldOffline = process.env.PI_OFFLINE;
+  process.env.PI_OFFLINE = "1";
+  try {
+    mkdirSync(packageDir);
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    mkdirSync(join(agentDir, "skills", "inert-user-skill"), { recursive: true });
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "inert-native-package", pi: { extensions: ["./index.mjs"] } }));
+    writeFileSync(excluded, 'throw new Error("INERT_DUPLICATE_FACTORY_MUST_NOT_EXECUTE");\n');
+    symlinkSync(excluded, join(agentDir, "extensions", "native-alias.js"));
+    writeFileSync(join(agentDir, "extensions", "user.ts"), 'export default pi => pi.registerCommand("inert-user-command", { description: "Disposable user extension", handler: async () => {} });\n');
+    writeFileSync(join(agentDir, "skills", "inert-user-skill", "SKILL.md"), "---\nname: inert-user-skill\ndescription: Disposable user skill.\n---\nInert skill.\n");
+    const host = await import(pathToFileURL(join(selectedPi, "lib", "node_modules", "pi-monorepo", "dist", "bundle", "index.js")).href);
+    assert.equal(host.PA_EXTENSION_PATH_FILTER_VERSION, "pa-extension-path-filter/v1");
+    const settingsManager = host.SettingsManager.inMemory({ packages: [packageDir] });
+    let registrations = 0;
+    const loader = new host.DefaultResourceLoader({ cwd: root, agentDir, settingsManager,
+      paExtensionPathFilter: path => realpathSync(path) !== excluded,
+      extensionFactories: [pi => { registrations++; pi.registerCommand("inert-native-command", { description: "Disposable native owner", handler: async () => {} }); }],
+    });
+    for (const resolveProjectTrust of [undefined, async () => true, undefined]) {
+      await loader.reload({ resolveProjectTrust });
+      const extensions = loader.getExtensions();
+      assert.deepEqual(extensions.errors, []);
+      assert.equal(extensions.extensions.filter(extension => extension.commands.has("inert-user-command")).length, 1);
+      assert.equal(extensions.extensions.filter(extension => extension.commands.has("inert-native-command")).length, 1);
+      assert.equal(loader.getSkills().skills.some(skill => skill.name === "inert-user-skill"), true);
+    }
+    assert.equal(registrations, 3, "one native registration per load, including trust preload and reload");
+  } finally {
+    if (oldOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = oldOffline;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("actual Pi runtime withholds a read revoked after tool completion but before its public sink", { skip: !selectedPi }, async () => {
   const surrounding = process.env;
   const root = mkdtempSync(join(tmpdir(), "pi-read-native-"));
