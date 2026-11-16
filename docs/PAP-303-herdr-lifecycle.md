@@ -61,16 +61,52 @@ surface is registered.
 Source tests: `packages/pi-pa/src/__tests__/herdr-lifecycle.test.ts` (4/4), plus
 the existing extension-composition suite (3/3) with the new module installed.
 
-## P3 — peer messaging remains unavailable
+## P3 — peer messaging still unavailable, but the substrate is now audited
 
-The installed integration exposes no prompt or message submission method:
-its only writes are the two lifecycle reports. The ticket's required contract
-(source/target deployment and pane binding, self/stale/ambiguous/busy/blocked
-rejection, native-dialog exclusion, request/reply correlation, one-in-flight
-budget, no automatic resend) therefore has no proven submission path. `herdr
-prompt --wait` is not turn-correlated and `--wait` without a timeout is
-indefinite, so it is not a substitute. Per the ticket, messaging stays
-unavailable rather than falling back to terminal input or raw send-keys.
+The installed *extension* exposes no prompt or message submission method: its
+only writes are the two lifecycle reports. The Herdr **server API** does expose
+one, and the bundled protocol-22 schema makes its contract exact:
+
+- `agent.prompt` (`AgentPromptParams`: `target`, `text`, optional
+  `wait: { until?: AgentStatus[], timeout_ms?: uint64 }`). Documented CLI
+  behaviour: an already-blocked agent is rejected with `agent_blocked` before any
+  input; a submission accepted from a non-working state must observe working or
+  blocked within 5,000 ms or return `agent_prompt_stalled`; a caller timeout
+  returns `timeout`; and **it does not track turns** — if the agent is already
+  working, that turn's completion may match.
+- `agent.wait` (`until`, `timeout_ms`; no timeout means indefinite) and
+  `agent.read` (`source: visible|recent|recent_unwrapped|detection`, bounded
+  `lines`, ANSI-stripped text) provide the settle and reply channels.
+- `agent.get`/`agent.list` return `AgentInfo` with `pane_id`, `agent_status`,
+  `completion_seq` ("the current idle transition completed work, independently of
+  who has viewed it"), `state_change_seq`, `interactive_ready`, `launch_pending`,
+  `cwd`/`foreground_cwd` and `agent_session`.
+- Transport is the same-user unix socket with private protocol 22 (`herdr status`
+  reports it). There is no additional token; OS file ownership is the boundary.
+
+That is a supported submission API, so the earlier "no submission method"
+conclusion was true only of the extension. What is still missing is the ticket's
+guard contract, not an API: turn correlation is not request-specific
+(`completion_seq` only proves *a* turn completed), there is no revocation-capable
+human consent bound to a live pair, and no PA-owned mapping from a Herdr pane to a
+target PA deployment.
+
+Implemented as a pure, effect-free predicate:
+`packages/pi-pa/src/pi-extension/herdr-peer-admission.ts`. It rejects self,
+malformed, unknown or ambiguous targets before reading state, and rejects
+`launch_pending`, `interactive_ready === false`, `working`, `blocked` and
+`unknown` states, plus a checkout mismatch when an expected PA cwd is supplied.
+It returns the identity baseline (`completion_seq`, `state_change_seq`) and the
+peer session reference. It registers no tool, submits nothing, reads nothing and
+grants nothing.
+
+Messaging remains unavailable because a request/reply effect without consent,
+request-specific correlation and a target-deployment binding would violate the
+ticket's own contract. `herdr prompt --wait` is not turn-correlated and
+`--wait` without a timeout is indefinite, so it is not a substitute. No terminal
+input, send-keys or raw socket write was added.
+
+Read-only peer inventory belongs to PAP-281/PAP-286, not this ticket.
 
 ## P4 — not run
 
@@ -87,11 +123,15 @@ corepack pnpm typecheck
 corepack pnpm --filter @pa-platform/pi-pa build
 NO_COLOR=1 node --import=tsx --test --test-concurrency=1 \
   packages/pi-pa/src/__tests__/herdr-lifecycle.test.ts \
+  packages/pi-pa/src/__tests__/herdr-protocol-conformance.test.ts \
   packages/pi-pa/src/__tests__/pi-extension-composition.test.ts
 ```
 
 Results: workspace typecheck passed; pi-pa build passed (extension-source
-validation included); 7/7 focused cases passed. A separate inert probe read the
-store source through `acquireLocalSourceFile` (6,694 bytes, SHA-256 above) and
-confirmed the symlink spelling is still denied. No live socket, deployment,
-installation or messaging effect occurred.
+validation included); 11/11 focused cases passed. Protocol conformance validates
+our lifecycle params against a vendored subset of the installed Herdr 0.9.5
+schema (`protocol: 22`, extracted 2026-11-16) and rejects deliberately broken
+payloads. A separate inert probe read the store source through
+`acquireLocalSourceFile` (6,694 bytes, SHA-256 above) and confirmed the symlink
+spelling is still denied. No live socket, deployment, installation or messaging
+effect occurred.
