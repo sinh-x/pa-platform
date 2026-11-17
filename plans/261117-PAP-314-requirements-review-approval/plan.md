@@ -16,7 +16,7 @@ Sinh changed two requirements during this implementation session:
 - [x] P2: summary-first entry with complete member pages, raw sources, full offline view and bound opening. All 34 reader/worker/opening tests passed; actual browser/human accessibility remains unverified.
 - [x] P3 source implementation and R1–R4 repairs: custody admission, pre-ref preconditions, exact native link attribution and revoked original queue settlement have passing registered/core source checks. See phase-03-finite-handoff.md and plans/reports/repair-261117-0434-pap-314-p3-r1-r4.md. Independent re-review passed with all seven original counterexamples and combined suites green; this is not installed/default-entry or human acceptance.
 - [x] P4 bounded runtime handoff/discovery: source coverage/client contract, catalogue, scoped PPA completions and inert default CLI/API fixture verified. See [phase-04-runtime-integration.md](phase-04-runtime-integration.md) and [P4 results](../reports/implementation-261117-0544-pap-314-p4-runtime-integration.md). No PAPC source/default change, install, activation, staging or commit; broader aggregate Pi testing timed out and is not claimed as a pass.
-- [ ] P5: source verification, independent review and honest installed/CI/browser/human qualification accounting.
+- [ ] P5 overall qualification is incomplete. Available source checks, independent reviews, paired-gate checks and installed preflight were executed and recorded in phase-05-qualification.md. Full broad Pi completion, exact installed/default-entry, hosted CI and genuine browser/human UAT remain blocked or unperformed; the evidence report does not mark them passed.
 
 ## Validation
 

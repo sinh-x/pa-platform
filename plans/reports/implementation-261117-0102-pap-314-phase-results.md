@@ -33,3 +33,25 @@ Implemented eligibility preflight, serialized local-develop observations, append
 Independent review reproduced four defects in custody, pre-ref validation, replaced link attribution and revoked queue settlement. All were repaired; seven permanent regressions and the unchanged independent probes pass. Independent re-review reports no remaining source blocker in scope. Latest independent checks passed 70 registered/transport tests, 213 core/reader tests and workspace typecheck. Workspace build passed in repair verification. The simplifier ran clean with no edits. Detailed original failures and exact commands remain in P3 review/repair reports.
 
 This source completion does not establish installed/default-entry, hosted CI, browser/accessibility or human acceptance.
+
+## P4
+
+Committed `766af44`: runtime coverage matrix, actual local client contract/fixture, source catalogue and path-scoped completions. Independent review found no blocker. PAPC-090 received the exact runtime handoff; no PAPC source, pin or active default changed.
+
+## P5
+
+Workspace build/typecheck passed. Final native suite passed 42/42, local/client/browser-fallback fixtures passed 36/36, paired source gate passed 45/45. Root test completed core with 2,335 passes/14 skips and OPA with 109 passes/one skip, no failures, then timed out in broad Pi; it is incomplete. Runtime-host passed separately. Counts overlap across focused/broad runs and must not be added.
+
+Existing installed document preflight rejected candidate 766af44 at `WORKFLOW_INSTALLED_CANDIDATE_MISMATCH` (exit 1); all cases not-run. No installed/default-selection/hosted-CI/browser/human acceptance is claimed. Original authenticated-human criteria are deferred by explicit scope change, not passed. Full evidence and remaining checkboxes: [P5 qualification](../261117-PAP-314-requirements-review-approval/phase-05-qualification.md).
+
+Automatic journal CLI was unavailable (`ak: command not found`); no skill repair or journal persistence was performed. AgentWiki publication was skipped.
+
+## Phase commits
+
+- P0: `93c8126`.
+- P1: `147b83e`.
+- P2: `f5b47f5`.
+- P1/P2 independent-review repairs: `bca7929`.
+- P3 including independently verified repairs: `b537789`.
+- P4: `766af44`.
+- P5: final qualification report commit, following the exact runtime candidate above. It records unresolved gates rather than claiming all product phases accepted.
