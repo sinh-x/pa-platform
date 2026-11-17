@@ -674,6 +674,63 @@ test("PAP-314 P3 stopped foreground UI leaves the original v2 request decidable 
   } finally { await f.close(); }
 });
 
+for (const medium of ["cli", "api"] as const) test(`PAP-316 original ${medium} decision automatically settles an open Pi review without another input`, async () => {
+  const f = fixture(localCapabilities);
+  let release: (() => void) | undefined;
+  let server: Awaited<ReturnType<typeof startLocalReviewServer>> | undefined;
+  let pending: ReturnType<typeof f.handoff> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const p = await prepareLocal(f);
+    let opened!: () => void;
+    const ready = new Promise<void>(resolve => { opened = resolve; });
+    let prompts = 0;
+    f.context.ui.custom = factory => new Promise(resolve => {
+      prompts++;
+      const component = factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_c: string, value: string) => value }, {}, resolve);
+      component.render(140);
+      release = () => component.handleInput("\u001b");
+      opened();
+    });
+    pending = f.handoff({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    await ready;
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    const request = { schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256,
+      expectedRevision: 0, requestKey: status.latestRequest.requestKey, outcome: "approved" };
+    let canonical: Record<string, unknown>;
+    if (medium === "cli") {
+      const output: string[] = [];
+      const exit = await runDocumentCommand(["review", "--request-stdin"], { stdout: text => { output.push(text); }, stderr: () => {} },
+        { stdin: Readable.from([Buffer.from(JSON.stringify(request))]) });
+      assert.equal(exit, 0); canonical = JSON.parse(output.join(""));
+    } else {
+      server = await startLocalReviewServer({ port: 0 });
+      const address = server.address(); assert.ok(address && typeof address !== "string");
+      canonical = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port: address.port, method: "POST", path: "/v1/review", headers: { "Content-Type": "application/json" } }, res => {
+          let body = ""; res.on("data", chunk => { body += chunk; }); res.once("error", reject);
+          res.once("end", () => { try { assert.equal(res.statusCode, 200); resolve(JSON.parse(body)); } catch (error) { reject(error); } });
+        });
+        req.once("error", reject); req.end(JSON.stringify(request));
+      });
+    }
+    const result = await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Pi remained waiting after canonical external issuance; no second input is allowed")), 1500);
+    })]);
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.deepEqual(result.result, canonical);
+    assert.equal(prompts, 1);
+    const after = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.equal(after.reviewRevision, 2); assert.equal(after.latestDecision.outcome, "approved");
+    assert.deepEqual(await f.checked({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 }), canonical);
+    assert.equal(prompts, 1); assert.equal(after.effects[0].publish.state, "not-started", "decision is not an effect runner");
+  } finally {
+    if (timer) clearTimeout(timer);
+    release?.(); await pending?.catch(() => {});
+    if (server) { server.closeAllConnections(); await new Promise<void>(resolve => { server!.close(() => resolve()); }); }
+    await f.close();
+  }
+});
+
 // Permanent counterparts of the seven independent P3 review probes. These use
 // the registered tool and real disposable owners, not substituted admissions.
 function retainUncertain(f: ReturnType<typeof fixture>, ticket: string) {
