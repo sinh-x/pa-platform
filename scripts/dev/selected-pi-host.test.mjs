@@ -228,9 +228,12 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
     const env = fixtureModule.selectedPiEnvironment(launch, { HOME: directory, TMPDIR: directory, PATH: process.env.PATH,
       PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", NO_COLOR: "1", OPENAI_API_KEY: providerCredential, PA_TEAM: "fixture", PA_MODE: "fixture",
       PA_PLATFORM_CONFIG: config, PA_AI_USAGE_HOME: directory, PA_REGISTRY_DB: join(directory, "registry.db") });
+    const selectedSkill = join(directory, "selected-skill", "SKILL.md");
+    mkdirSync(join(directory, "selected-skill"));
+    writeFileSync(selectedSkill, "---\nname: inert-selected-skill\ndescription: Explicit managed skill fixture.\n---\nInert selected skill.\n");
     const args = ["--pa-managed-child", "--print", "--mode", "json", "--session-id", "pap298-inert-runtime",
       "--no-extensions", "--extension", join(fixturePrefix, "packages", "pi-pa", "dist", "pi-extension", "index.js"),
-      "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--offline",
+      "--no-skills", "--skill", selectedSkill, "--no-prompt-templates", "--no-themes", "--no-context-files", "--offline",
       "--provider", "openai", "--model", "pap298-fixture", "--thinking", "off", "Run the inert fixture reads."];
     const result = await execute(launch.entryFile, args, env, async child => {
       const gate = await fixtureModule.awaitSelectedPiChild(launch, child.pid); gate.release();
@@ -240,6 +243,7 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
     assert.equal(requests.length, 2, "only the owned loopback simulator receives model requests");
     assert.deepEqual(credentialChecks, [true, true], "finite production environment preserves the required provider credential without publishing it");
     assert.doesNotMatch(JSON.stringify(requests[0]), /inert_user_discovery|inert-user-skill/);
+    assert.match(JSON.stringify(requests[0]), /inert-selected-skill/);
     const events = result.stdout.split("\n").filter(Boolean).map(line => JSON.parse(line));
     const finished = events.filter(event => event.type === "tool_execution_end");
     assert.equal(finished.length, 6);
@@ -333,7 +337,7 @@ test("production bootstrap and full PPA reader deliver qualified hard links thro
       assert.equal(cli.code, 0, cli.stdout.slice(-2000)); assert.equal(requests.length, 2, phase);
       assert.deepEqual(credentialChecks, [true, true], phase);
       assert.match(JSON.stringify(requests[0]), /inert_user_discovery/);
-      assert.match(JSON.stringify(requests[0]), /inert-user-skill/);
+      assert.doesNotMatch(JSON.stringify(requests[0]), /inert-user-skill/);
       assert.match(JSON.stringify(requests[1]), /INERT_USER_EXTENSION_LOADED/);
       const paTicketTools = requests[0].tools.filter(tool => tool.function?.name === "pa_ticket");
       assert.equal(paTicketTools.length, 1, "settings package and symlink discovery do not duplicate native PA registration");
