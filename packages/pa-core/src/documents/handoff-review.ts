@@ -25,7 +25,7 @@ export interface NativeHandoffReviewHost {
     presentation: Record<string, unknown>; documents: { id: string; mediaType: string; sha256: string; content: string | null }[] }): Promise<Uint8Array>;
   afterPersist?(stage: "requested" | "captured" | "issued"): void;
   localReview?: LocalHandoffReviewHooks & {
-    capture(request: HandoffReviewRequest, view: HandoffReviewView): Promise<LocalReviewOutcome>;
+    capture(request: HandoffReviewRequest, view: HandoffReviewView, signal?: AbortSignal): Promise<LocalReviewOutcome | "detached">;
   };
 }
 export interface HandoffReviewView {
@@ -144,10 +144,41 @@ export class HandoffReviewService {
       if (issued?.kind === "issued") return local.decide(subjectSha256, expectedRevision, original.request.requestKey, issued.decision.outcome);
       const stale = events.find(e => e.kind === "stale");
       if (stale?.kind === "stale") return local.staleResult(subjectSha256, stale.stale);
-      const view = await local.view(subjectSha256);
-      const outcome = await hooks.capture(original.request, view);
-      if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
-      return local.decide(subjectSha256, expectedRevision, original.request.requestKey, outcome);
+      const view = await local.view(subjectSha256), controller = new AbortController();
+      // Other media can issue this ORIGINAL request while the foreground reads.
+      // Observe the shared journal without holding a ticket/repository lock.
+      const recorded = () => {
+        const history = this.journal.events(subjectSha256);
+        const decision = history.find(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey);
+        if (decision?.kind === "issued") return local.decide(subjectSha256, expectedRevision, original.request.requestKey, decision.decision.outcome);
+        const stale = history.find(e => e.kind === "stale");
+        return stale?.kind === "stale" ? Promise.resolve(local.staleResult(subjectSha256, stale.stale)) : null;
+      };
+      let timer: ReturnType<typeof setInterval> | undefined;
+      try {
+        const external = new Promise<{ kind: "recorded" }>((resolve, reject) => {
+          timer = setInterval(() => {
+            try {
+              const history = this.journal.events(subjectSha256);
+              if (history.some(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey || e.kind === "stale")) resolve({ kind: "recorded" });
+            } catch (error) { reject(error); }
+          }, 100);
+        });
+        const capture = hooks.capture(original.request, view, controller.signal).then(
+          outcome => ({ kind: "capture" as const, outcome }), error => ({ kind: "error" as const, error }));
+        const result = await Promise.race([capture, external]);
+        const saved = recorded();
+        if (saved) return await saved;
+        if (result.kind === "error") throw result.error;
+        if (result.kind !== "capture" || result.outcome === "detached") return documentReject("DOCUMENT_UNAVAILABLE");
+        if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
+        try { return await local.decide(subjectSha256, expectedRevision, original.request.requestKey, result.outcome); }
+        catch (error) {
+          // First issuance wins, including a local input racing another client.
+          // Return that canonical result; never submit a compensating Cancel.
+          const saved = recorded(); if (saved) return await saved; throw error;
+        }
+      } finally { if (timer) clearInterval(timer); controller.abort(); }
     }
     const requestKey = handoffReviewRequestKey(subjectSha256, expectedRevision, operation, targetDecisionId);
     let events = this.journal.events(subjectSha256);

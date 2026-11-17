@@ -127,11 +127,12 @@ function reviewHost(context: PiHandoffContext, tickets: TicketStore, db: ReturnT
           assertNativeRestartProcessDead(original);
         }
       },
-      async capture(request, view) {
+      async capture(request, view, settled) {
         const before = authenticate();
         if (context.mode !== "tui" || !context.ui?.custom || signal?.aborted) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
-        const outcome = await showHandoffReview(context.ui, request, view, signal);
-        if (!isDeepStrictEqual(before, authenticate())) throw new DocumentPackageError("DOCUMENT_STALE");
+        const detached = signal && settled ? AbortSignal.any([signal, settled]) : signal ?? settled;
+        const outcome = await showHandoffReview(context.ui, request, view, detached, "detached");
+        if (outcome !== "detached" && !isDeepStrictEqual(before, authenticate())) throw new DocumentPackageError("DOCUMENT_STALE");
         return outcome;
       },
     },

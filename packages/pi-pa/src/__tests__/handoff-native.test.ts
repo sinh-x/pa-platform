@@ -674,7 +674,7 @@ test("PAP-314 P3 stopped foreground UI leaves the original v2 request decidable 
   } finally { await f.close(); }
 });
 
-for (const medium of ["cli", "api"] as const) test(`PAP-316 original ${medium} decision automatically settles an open Pi review without another input`, async () => {
+for (const medium of ["cli", "api"] as const) for (const outcome of ["approved", "rejected", "changes-requested", "cancelled"] as const) test(`PAP-316 original ${medium} ${outcome} automatically settles an open Pi review without another input`, async () => {
   const f = fixture(localCapabilities);
   let release: (() => void) | undefined;
   let server: Awaited<ReturnType<typeof startLocalReviewServer>> | undefined;
@@ -696,7 +696,7 @@ for (const medium of ["cli", "api"] as const) test(`PAP-316 original ${medium} d
     await ready;
     const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
     const request = { schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256,
-      expectedRevision: 0, requestKey: status.latestRequest.requestKey, outcome: "approved" };
+      expectedRevision: 0, requestKey: status.latestRequest.requestKey, outcome };
     let canonical: Record<string, unknown>;
     if (medium === "cli") {
       const output: string[] = [];
@@ -720,7 +720,7 @@ for (const medium of ["cli", "api"] as const) test(`PAP-316 original ${medium} d
     assert.equal(result.ok, true, JSON.stringify(result)); assert.deepEqual(result.result, canonical);
     assert.equal(prompts, 1);
     const after = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
-    assert.equal(after.reviewRevision, 2); assert.equal(after.latestDecision.outcome, "approved");
+    assert.equal(after.reviewRevision, 2); assert.equal(after.latestDecision.outcome, outcome);
     assert.deepEqual(await f.checked({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 }), canonical);
     assert.equal(prompts, 1); assert.equal(after.effects[0].publish.state, "not-started", "decision is not an effect runner");
   } finally {
@@ -729,6 +729,46 @@ for (const medium of ["cli", "api"] as const) test(`PAP-316 original ${medium} d
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => { server!.close(() => resolve()); }); }
     await f.close();
   }
+});
+
+test("PAP-316 first external issuance wins a conflicting foreground input without false failure", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f);
+    let canonical: Record<string, unknown> | undefined;
+    f.context.ui.custom = factory => new Promise(resolve => {
+      const component = factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_c: string, value: string) => value }, {}, resolve);
+      void (async () => {
+        const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+        canonical = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256,
+          expectedRevision: 0, requestKey: status.latestRequest.requestKey, outcome: "approved" }));
+        component.handleInput("\u001b[A"); component.handleInput("\r"); // Reject loses to saved approval.
+      })();
+    });
+    const result = await f.checked({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    assert.deepEqual(result, canonical);
+    assert.equal((await f.checked({ action: "status", subjectSha256: p.subjectSha256 })).reviewRevision, 2);
+  } finally { await f.close(); }
+});
+
+test("PAP-316 client abort detaches without recording shared Cancel and original request remains decidable", async () => {
+  const f = fixture(localCapabilities), controller = new AbortController();
+  try {
+    const p = await prepareLocal(f);
+    let opened!: () => void;
+    const ready = new Promise<void>(resolve => { opened = resolve; });
+    f.context.ui.custom = factory => new Promise(resolve => {
+      factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_c: string, value: string) => value }, {}, resolve);
+      opened();
+    });
+    const pending = f.tools.get("pa_handoff")!.execute("detach", { request: JSON.stringify({ schemaVersion: "pa-handoff-native/v2", action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 }) }, controller.signal, undefined, f.context);
+    await ready; controller.abort(); await pending;
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.equal(status.pendingReview, true); assert.equal(status.reviewRevision, 1); assert.equal(status.latestDecision, null);
+    const canonical = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256,
+      expectedRevision: 0, requestKey: status.latestRequest.requestKey, outcome: "approved" }));
+    assert.equal(canonical.outcome, "approved");
+  } finally { await f.close(); }
 });
 
 // Permanent counterparts of the seven independent P3 review probes. These use
