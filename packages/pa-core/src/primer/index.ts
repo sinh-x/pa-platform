@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
+import { parseTeamYamlContent } from "../yaml-parser.js";
 import { digest } from "../workflows/contracts.js";
 import { resolve } from "node:path";
 import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
-import { MODE_CAPABILITY_PROFILE, parseModeCapabilityPolicy, selectedCapabilityTools } from "../mode-capabilities.js";
+import { MODE_CAPABILITY_PROFILE, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityPolicy, selectedCapabilityTools, type ModeResourceSnapshot } from "../mode-capabilities.js";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
@@ -43,18 +45,31 @@ export interface GeneratePrimerOptions {
   requirementsDocument?: boolean;
   /** Native verified projection of the original journal resources, not a selector. */
   configResourceRoot?: string;
+  /** V2 native owner capture; never a resolver into current or retained filesystem content. */
+  modeResources?: ModeResourceSnapshot;
 }
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
   assertSupportedRuntime(options.runtime);
   if (options.rogueOne === true && isRogueOneTeam(options.teamConfig.name)) return generateRogueOnePrimer(options);
   const mode = selectMode(options.teamConfig, options.mode);
+  // Source/report composition grants no native authority. Require V2 capture
+  // only for explicit native Analyst composition; production launch admission
+  // remains independently fail-closed in the launcher/execution-plan owners.
+  if (options.modeResources || (options.teamConfig.name === "analyst" && options.requirementsDocument)) {
+    const resources = options.modeResources, binding = resources?.binding;
+    if (!resources || !binding || options.runtime !== "pi" || !options.requirementsDocument || options.workflow
+      || !modeCapabilityRouteMatches(binding, options.teamConfig.name, mode?.id) || binding.repoKey !== options.repository?.repoKey
+      || !isDeepStrictEqual(parseTeamYamlContent(resources.read(binding.resourcePath)), options.teamConfig)
+      || !isDeepStrictEqual(mode?.capability_policy, binding.policy)) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  }
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
+  const skillsDir = options.modeResources ? resolve(options.modeResources.binding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime));
   const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
   const setup = options.runtime === "pi" && options.teamConfig.name === "repo-setup" && mode?.id === "setup";
-  const document = options.runtime === "pi" && options.requirementsDocument === true && !options.workflow && options.teamConfig.name === "requirements" && mode?.id === "analyze";
+  const document = options.runtime === "pi" && options.requirementsDocument === true && !options.workflow && (options.teamConfig.name === "requirements" || !!options.modeResources) && mode?.id === "analyze";
   const toolReference = setup ? REPO_SETUP_TOOL_REFERENCE : demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime));
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
@@ -81,6 +96,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ] : []),
     ...(document ? [
       "## Requirements supporting capabilities",
+      ...(options.modeResources ? ["Public identity: analyst/analyze. Effective native identity and audit actor: requirements/analyze (explicit pa-mode-capability-binding/v2 mapping). Environment and registry remain analyst/analyze; this is not impersonation, a retained-session upgrade or human authentication."] : []),
       ...(mode?.document_profile === MODE_CAPABILITY_PROFILE ? [
         "Native profile: pa-document-policy/v1. PAPC selects exact capabilities; the native launch binds this selection immutably. This is not a retained v1/v2/v3/v4 session upgrade.",
         `Selected capability IDs: ${JSON.stringify(parseModeCapabilityPolicy(mode.capability_policy).allow)}. Selected tools: ${JSON.stringify(selectedCapabilityTools(parseModeCapabilityPolicy(mode.capability_policy)))}. An empty set grants no model tools. Omitted tools cannot be invoked by aliases, delegation or reload.`,
@@ -116,14 +132,15 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `## Agents`,
     renderAgents(agents, options, options.runtime),
     ``,
-    renderAvailableProcedures(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
+    renderAvailableProcedures(skills, skillsDir, options.runtime, options.modeResources),
     ``,
-    renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
+    renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime, options.modeResources, options.templateVars),
     ``,
     renderDeploymentInstructions(options.teamConfig, mode, options.runtime, document, options),
     ``,
     `## Skills`,
-    renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
+    renderSkills(skills, skillsDir, options.runtime, options.modeResources),
+    renderCapturedReferences(options, mode),
   ].filter((part) => part !== "").join("\n");
   if (countAuthoritativeAdditionalInstructionsHeadings(body) !== 1) {
     throw new Error("Primer generation requires exactly one authoritative Additional Instructions heading.");
@@ -344,6 +361,7 @@ function countAuthoritativeAdditionalInstructionsHeadings(content: string): numb
 
 function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
   const rawObjective = mode?.objective ?? options.teamConfig.objective;
+  if (options.modeResources) return applyTemplateVars(options.modeResources.read(rawObjective), options.templateVars ?? {});
   if (!mode?.objective) return applyTemplateVars(rawObjective, options.templateVars ?? {});
 
   const resolved = options.resolveFile?.(mode.objective) ?? resolve(getPlatformHomeDir(), mode.objective);
@@ -399,19 +417,32 @@ function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptio
 }
 
 function resolveInstruction(options: GeneratePrimerOptions, instruction: string): string {
+  if (options.modeResources) return applyTemplateVars(options.modeResources.read(instruction), options.templateVars ?? {});
   const resolved = options.resolveFile?.(instruction) ?? resolve(getPlatformHomeDir(), instruction);
   if (!existsSync(resolved)) return `(missing instruction: ${instruction})`;
   return applyTemplateVars(readFileSync(resolved, "utf-8"), options.templateVars ?? {});
 }
 
-function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {
+function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName, resources?: ModeResourceSnapshot): string {
   const inlined = skills.filter((skill) => skill["inject-as"] !== "reference");
   if (inlined.length === 0) return "(none)";
   return inlined.map((skill) => {
-    const path = resolve(skillsDir, skill.name, "SKILL.md");
-    const body = demoteHeadings(adaptContentForRuntime(existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime));
+    const resource = `skills/global/${skill.name}/SKILL.md`, path = resources ? resolve(resources.binding.configRoot, resource) : resolve(skillsDir, skill.name, "SKILL.md");
+    const body = demoteHeadings(adaptContentForRuntime(resources ? resources.read(resource) : existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime));
     return `<${skill["inject-as"]} name="${skill.name}" path="${path}">\n${body}\n</${skill["inject-as"]}>`;
   }).join("\n\n");
+}
+
+function renderCapturedReferences(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
+  const resources = options.modeResources;
+  if (!resources) return "";
+  const active = new Set([resources.binding.resourcePath, mode?.objective,
+    ...selectAgents(options.teamConfig, mode).map(agent => agent.instruction),
+    ...collectGlobalDocs(options.teamConfig, mode, resources.binding.repoKey),
+    ...collectSkills(options.teamConfig, mode).filter(skill => skill["inject-as"] !== "reference").map(skill => `skills/global/${skill.name}/SKILL.md`)]);
+  return resources.binding.resources.filter(resource => !active.has(resource.path)).map(resource =>
+    `### Captured reference-only resource: ${resource.path}\nSHA-256: ${resource.sha256}\n${demoteHeadings(adaptContentForRuntime(resources.read(resource.path), options.runtime))}`
+  ).join("\n\n");
 }
 
 function renderActiveBulletins(runtime: RuntimeName, document = false): string {
@@ -449,7 +480,7 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
   ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
 ];
 
-function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {
+function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName, resources?: ModeResourceSnapshot): string {
   assertSupportedRuntime(runtime);
   const intro = "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external skill folders.";
   const lines = ["## Available Procedures", intro];
@@ -466,9 +497,9 @@ function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runt
     const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
       ? " Start by reading pa-cli for CLI reference."
       : "";
-    lines.push(`Reference skills (use the Read tool to load any skill below when you need it)${paCliHint}:`);
+    lines.push(resources ? "Reference-only methods are captured below with their transitive resources; they are not active instructions or new capabilities:" : `Reference skills (use the Read tool to load any skill below when you need it)${paCliHint}:`);
     for (const skill of referenceSkills) {
-      const path = resolve(skillsDir, skill.name, "SKILL.md");
+      const path = resolve(resources?.binding.configRoot ?? skillsDir, ...(resources ? ["skills/global"] : []), skill.name, "SKILL.md");
       const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
       lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
     }
@@ -479,17 +510,17 @@ function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runt
   return lines.join("\n");
 }
 
-function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativePath: string) => string | undefined) | undefined, runtime: RuntimeName): string {
+function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativePath: string) => string | undefined) | undefined, runtime: RuntimeName, resources?: ModeResourceSnapshot, vars?: Record<string, string>): string {
   assertSupportedRuntime(runtime);
   if (globalDocs.length === 0) return "";
   const lines = ["## Project Agent Guides"];
   for (const doc of globalDocs) {
-    const resolved = resolveFile?.(doc) ?? resolve(getPlatformHomeDir(), doc);
-    if (!existsSync(resolved)) {
+    const resolved = resources ? undefined : resolveFile?.(doc) ?? resolve(getPlatformHomeDir(), doc);
+    if (!resources && (!resolved || !existsSync(resolved))) {
       lines.push(`- ${doc} (missing: ${resolved})`);
       continue;
     }
-    const raw = readFileSync(resolved, "utf-8");
+    const raw = resources ? applyTemplateVars(resources.read(doc), { ...vars, RUNTIME_ADAPTER: "ppa" }) : readFileSync(resolved!, "utf-8");
     if (isPlaceholderTemplate(raw)) {
       lines.push(`- ${doc} (skipped: placeholder-only template)`);
       continue;
@@ -569,7 +600,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     "Record meaningful feedback and exact returned package/effect locators with pa_ticket comments and authorized pa_document artifacts. Administrative status is not approval; protected publication/queue must use their native owners.",
     "Session/registry terminal publication belongs to the runtime. Exit with Pi's existing /quit, Ctrl-C, EOF or terminal-close controls when finished; do not issue manual registry commands or write logs outside the authorized artifact roots.",
     "Failed checks or missing optional helpers constrain their dependent operations only. Preserve actual failures, diagnose/repair authorized drafts and report specific limitations; independent safe reads, discussion and drafting remain available. Protected denials and conflicting/uncertain effects remain enforced.",
-    ...(selectedPolicy && options ? [renderSelectedRequirementsCompletion(options)] : []),
+    ...(selectedPolicy && options && !options.modeResources ? [renderSelectedRequirementsCompletion(options)] : []),
   ].join("\n");
   if (runtime === "pi" && teamConfig.name === "repo-setup" && mode?.id === "setup") return [
     "## Deployment Instructions",

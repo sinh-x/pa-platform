@@ -361,6 +361,16 @@ function __pa_core_deploy_completing
     __pa_core_deploy_is_context
 end
 
+# Only the actual general-server start/restart paths accept this opt-in.
+# Do not offer it for stop/status or the Pi-only document review listener.
+function __pa_core_serve_can_start
+    set -l words (commandline -opc)
+    if test "$words[2]" = restart
+        return 0
+    end
+    test "$words[2]" = serve; and not contains -- "$words[3]" stop status
+end
+
 complete -c pa-core -f
 
 complete -c pa-core -n __fish_use_subcommand -a artifact -d 'Render companions; owned review requires selected managed runtime'
@@ -385,6 +395,7 @@ complete -c pa-core -n __fish_use_subcommand -a stop -d 'Stop API server through
 complete -c pa-core -n __fish_use_subcommand -a restart -d 'Restart API server through adapter hook'
 complete -c pa-core -n __fish_use_subcommand -a serve-status -d 'Show API server status through adapter hook'
 complete -c pa-core -n '__fish_seen_subcommand_from serve; and not __fish_seen_subcommand_from stop restart status' -a 'stop restart status' -d 'Serve action'
+complete -c pa-core -n __pa_core_serve_can_start -l local-review -d 'Opt in to loopback local-unverified review; no authentication or runner grant'
 complete -c pa-core -n __fish_use_subcommand -a schedule -d 'Schedule a systemd timer'
 complete -c pa-core -n __fish_use_subcommand -a timers -d 'List PA systemd timers'
 complete -c pa-core -n __fish_use_subcommand -a remove-timer -d 'Remove a systemd timer'

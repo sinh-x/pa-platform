@@ -42,8 +42,8 @@ function family(name: string, owner: string, rows: readonly (readonly [string, r
   return rows.map(([id, forms, effect, route, options]) => entry(`${name}.${id}`, forms, effect, route, `${core}${name}.ts`, owner, options));
 }
 
-function nativeEntry(id: string, tool: string, action: string, effect: InteractionEffect, source: string, owner: string): CatalogueEntry {
-  return Object.freeze({ ...entry(id, [], effect, "owner", source, owner),
+function nativeEntry(id: string, tool: string, action: string, effect: InteractionEffect, source: string, owner: string, reason?: string): CatalogueEntry {
+  return Object.freeze({ ...entry(id, [], effect, "owner", source, owner, reason ? { reason } : {}),
     nativeForms: Object.freeze([`${tool}:${action}`]), channels: Object.freeze(["native"] as const),
   });
 }
@@ -63,7 +63,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
     ["modes", ["deploy --list-modes"], "read", "native"],
     ["validate", ["deploy --validate"], "read", "native"],
     ["preview", ["deploy --dry-run"], "write", "owner", { reason: "Dry-run may produce private launch artifacts; it is not a pure read or a launch grant." }],
-    ["launch", ["deploy <team>", "deploy --background"], "launch", "owner", { reason: "Existing deployment admission remains authoritative. An explicitly build-selected Pi host admits the actual native runtime child; it adds no caller-controlled host selector, reader root or read grant. Source integration is not installed availability." }],
+    ["launch", ["deploy <team>", "deploy --background"], "launch", "owner", { reason: "Existing deployment admission remains authoritative. An explicitly build-selected Pi host admits the actual native runtime child; it adds no caller-controlled host selector, reader root or read grant. Public analyst/analyze requires an explicit native v2 committed-resource/identity binding before allocation and at runtime admission; no generic ticket privilege or retained-session upgrade follows. Source integration is not installed availability." }],
     ["resume", ["deploy --resume"], "launch", "owner", { reason: "Resume retains its existing launch effect and original intent. Selected-host compatibility is checked before allocation; missing or mismatched private session/build evidence cannot silently upgrade or downgrade retained sessions. This is not an artifact permission or recovery grant." }],
     ["ticket-worktree", ["deploy --ticket-worktree"], "resource", "owner"],
     ["force", ["deploy --force"], "resource", "operator"],
@@ -83,11 +83,15 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
     ["agent-model", ["evaluate --agent-model"], "launch", "unsupported"],
   ]),
   ...family("serve", "Agent API server", [
-    ["status", ["serve status"], "write", "owner", { aliases: ["serve-status"], reason: "The existing CLI status wrapper removes stale PID state. A future native observational reader must use a separate safe read port, never this lifecycle wrapper." }],
-    ["start", ["serve", "serve --background", "serve --force", "serve --dev", "serve --host", "serve --cors"], "resource", "operator"],
-    ["stop", ["serve stop"], "resource", "operator", { aliases: ["stop"] }],
-    ["restart", ["serve restart", "serve restart --dev", "serve restart --force", "serve restart --cors"], "resource", "operator", { aliases: ["restart"] }],
-  ]),
+    ["status", ["serve status", "serve status --host", "serve status --port"], "write", "owner", { aliases: ["serve-status"], reason: "The existing CLI status wrapper removes stale PID state and rejects --local-review. A future native observational reader must use a separate safe read port, never this lifecycle wrapper." }],
+    ["start", ["serve", "serve --background", "serve --force", "serve --dev", "serve --host", "serve --port", "serve --cors", "serve --local-review"], "resource", "operator"],
+    ["stop", ["serve stop", "serve stop --host", "serve stop --port"], "resource", "operator", { aliases: ["stop"] }],
+    ["restart", ["serve restart", "serve restart --background", "serve restart --dev", "serve restart --force", "serve restart --host", "serve restart --port", "serve restart --cors", "serve restart --local-review"], "resource", "operator", { aliases: ["restart", "restart --local-review"] }],
+  ]).map(row => row.operationId === "serve.start" || row.operationId === "serve.restart" ? Object.freeze({ ...row,
+    reason: "Starting or restarting allocates a server resource. Explicit --local-review opts in to POST /api/documents/local-review only on numeric 127.0.0.1 or ::1; background propagation retains that opt-in. The shared v2 journal offers show/request/revoke/decide; decisions are local-unverified, not authenticated human consent. Any admitted local process can read eligible reviews and decide. Native socket ingress rejects browser Origin, forwarding and credentials even with --cors. No CLI/API effect parity; no publication, ref/link, queue or runner authority is added by the listener.",
+    supportedNextStep: "Inspect the supported adapter's serve --help before explicit server-owner opt-in. Preserve original review coordinates; listener allocation does not admit a decision or dependent effect.",
+    requiredContext: Object.freeze(["explicit server-owner invocation; no caller authentication at the review endpoint", "numeric loopback bind and direct peer; strict local-review input", "review actions require a persisted v2 subject and verified original immutable selection; no authority from discovery"]),
+  }) : row),
   ...family("schedule", "scheduler", [
     ["create", ["schedule <spec>", "schedule daily:<mode>", "schedule signal:collect", "schedule --command"], "resource", "operator"],
     ["preview", ["schedule --dry-run"], "read", "operator"],
@@ -139,7 +143,7 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ]),
   ...(["inspect", "set"] as const).map(action => Object.freeze({
     ...entry(`ticket.status.${action}`, [`ticket-status --request {action:${action}}`, ...(action === "inspect" ? ["ticket-status --help"] : [])], action === "inspect" ? "read" : "write", "owner", `${pi}ticket-status.ts`, "ticket status intent/CAS owner", {
-      reason: "Additive selected Pi requirements status-only port; native and CLI share process authentication, lifecycle/owner checks and original intent. This source description is not installed availability, publication, queue or acceptance authority.",
+      reason: "Additive selected Pi policy status-only port: requirements/analyze or natively bound analyst/analyze. Native and CLI share process authentication, finite effective-identity admission, lifecycle/owner checks and original intent; public Analyst identity grants no generic CLI/API ticket privilege. This source description is not installed availability, publication, queue or acceptance authority.",
     }),
     nativeForms: Object.freeze([`pa_ticket_status:${action}`]), channels: Object.freeze(["cli", "native"] as const),
   })),
@@ -238,8 +242,10 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   // journal semantics remain with these source handlers; no binding is inferred.
   ...["admit", "revise", "request-step", "reconcile"].map(action => nativeEntry(`workflow.native.${action}`, "pa_workflow", action, "write", `${pi}pi-extension/workflow.ts`, "selected workflow journal")),
   ...["capture", "recover", "adopt", "revoke"].map(action => nativeEntry(`decision.native.${action}`, "pa_decision", action, "write", `${pi}pi-extension/workflow.ts`, "native foreground decision")),
-  ...["capabilities", "status", "discover", "context", "show", "read", "compare", "branch-inspect", "check"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "read", `${pi}pi-extension/document-tool.ts`, "versioned document session")),
-  ...["ticket-create", "draft", "freeze", "present", "capture", "revoke", "confirm", "confirm-revoke", "publish", "queue"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "write", `${pi}pi-extension/document-tool.ts`, "versioned document package and decision")),
+  ...["capabilities", "status", "discover", "context", "show", "read", "compare", "branch-inspect", "check"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "read", `${pi}pi-extension/document-tool.ts`, "versioned document session",
+    action === "check" ? "Structural source validation only; no snapshot or approval is persisted. New own-deployment artifact intake requires the selected policy document.package owner and exact authenticated deployment; all members are checked before reading. Retained frozen-source continuation is separate; no repository write or publication grant follows." : undefined)),
+  ...["ticket-create", "draft", "freeze", "present", "capture", "revoke", "confirm", "confirm-revoke", "publish", "queue"].map(action => nativeEntry(`document.native.${action}`, "pa_document", action, "write", `${pi}pi-extension/document-tool.ts`, "versioned document package and decision",
+    action === "draft" || action === "freeze" ? `${action === "draft" ? "Writes an unsigned text draft with exact content CAS" : "Persists an unapproved immutable package snapshot"}. New own-deployment artifact authoring/intake requires the selected policy document.package owner and exact authenticated deployment, not a path-shaped grant. Retained profiles are not upgraded; no repository write, approval, publication, ref/link, queue or runner authority follows.` : undefined)),
   nativeEntry("document.native.publication-diagnose", "pa_document", "publication-diagnose", "read", `${pi}pi-extension/document-tool.ts`, "qualified policy-profile document.package; exact retained publication intent; read-only"),
   nativeEntry("document.native.publication-retire", "pa_document", "publication-retire", "write", `${pi}pi-extension/document-tool.ts`, "qualified policy-profile document.package; eligible fresh unpublished intent and exact native retirement consent; no publication or queue"),
   nativeEntry("handoff.status", "pa_handoff", "status", "read", `${pi}pi-extension/handoff-tool.ts`, "selected document.handoff; v1 original caller only, v2 shared local show with immutable origin and separate effect states"),
@@ -249,7 +255,8 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
         : "v2-only immutable document.local-review + document.handoff + document.package; local-unverified decision owner, not authenticated human consent")),
   ...["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue"].map(action => nativeEntry(`handoff.${action}`, "pa_handoff", action, "write", `${pi}pi-extension/handoff-tool.ts`,
     action === "revoke" ? "v1 native foreground revocation; v2 request-only revocation finalized by decide using original pre-request revision/key; no rollback"
-      : "explicit native finite handoff owner; v2 fresh selected continuation rechecks current caller and exact ended origin/custody; no retained grant upgrade, checkout or launch")),
+      : "explicit native finite handoff owner; v2 fresh selected continuation rechecks current caller and exact ended origin/custody; no retained grant upgrade, checkout or launch",
+    action === "review" ? "The v2 foreground review observes the original request and returns its canonical shared decision across request/view/capture boundaries; detachment is not a shared Cancel or a new approval. Local-unverified outcomes are not authenticated human consent. The v1 genuine foreground evidence owner is unchanged; publication, ref/link, queue and runner effects remain separately admitted." : undefined)),
   nativeEntry("handoff.open", "pa_handoff", "open", "resource", `${pi}pi-extension/handoff-tool.ts`, "verified native delivery; operator-approved system-default-browser fallback only, no isolation/viewing qualification"),
   ...["capabilities", "read"].map(action => nativeEntry(`workspace.${action}`, "pa_workspace", action, "read", `${pi}pi-extension/workspace-tool.ts`, "versioned document workspace")),
   ...["write", "import", "run"].map(action => nativeEntry(`workspace.${action}`, "pa_workspace", action, "write", `${pi}pi-extension/workspace-tool.ts`, "confined document workspace")),
@@ -262,8 +269,9 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
-const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "auto.scan", "auto.foreground", "auto.tick", "auto.shortlist.foreground", "auto.policy.review", "document.review.stdin", "document.review.serve", "handoff.request", "handoff.decide", "handoff.refresh"]);
+const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "serve.start", "serve.restart", "auto.scan", "auto.foreground", "auto.tick", "auto.shortlist.foreground", "auto.policy.review", "document.review.stdin", "document.review.serve", "handoff.request", "handoff.decide", "handoff.refresh"]);
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
+const operatorOperations = new Set(["serve.start", "serve.restart"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();
   const ids = new Set<string>();
@@ -282,7 +290,7 @@ export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): s
     if (!row.owner || !row.reason || !row.supportedNextStep || row.requiredContext.length === 0) issues.add("missing-owner-guidance");
     if (row.nativeBinding && (!row.requestSchemaRef || !row.resultSchemaRef)) issues.add("unbound-schema");
     if (mustNotRead.has(row.operationId) && row.effectClass === "read") issues.add("effect-regression");
-    if (operatorFamilies.has(row.family) && row.targetDisposition !== "operator-only") issues.add("operator-boundary");
+    if ((operatorFamilies.has(row.family) || operatorOperations.has(row.operationId)) && row.targetDisposition !== "operator-only") issues.add("operator-boundary");
     if (row.targetDisposition === "deprecated" && !row.replacementId) issues.add("missing-replacement");
   }
   for (const id of mustNotRead) if (!ids.has(id)) issues.add("missing-effect-variant");

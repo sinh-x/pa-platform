@@ -298,7 +298,12 @@ export class PiAdapter implements RuntimeAdapter {
       // Protected review keeps its explicit-only extension boundary.
       args.push("--no-skills");
       if (plan.reviewCheckout || protectedValidationLaunch) args.push("--no-extensions");
-      for (const skill of plan.skills) args.push("--skill", skill.path);
+      // V2's complete skill closure is already hash-bound in the primer,
+      // including reference-only bodies. Never reopen mutable config paths or
+      // promote those references through Pi's independent native skill loader.
+      if (plan.modeCapabilityBinding?.schemaVersion !== "pa-mode-capability-binding/v2") {
+        for (const skill of plan.skills) args.push("--skill", skill.path);
+      }
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
     }
     args.push(readFileSync(opts.primerPath, "utf8"));

@@ -127,7 +127,7 @@ export interface ResolveExecutionPlanOptions {
   reviewCheckout?: ReviewCheckoutEvidence;
 }
 
-import { parseModeCapabilityBinding } from "../mode-capabilities.js";
+import { ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityBinding } from "../mode-capabilities.js";
 
 export function withAuthoritativeRepositoryAdmission(
   plan: ExecutionPlan,
@@ -153,6 +153,10 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   assertDeployResumeMode(options.teamConfig, options.request.resume);
   const modeName = rogueOne ? ROGUE_ONE_MODE : mode?.id ?? "default";
   const invocationChannel: DeploymentInvocationChannel = options.request.invocationChannel ?? "cli";
+  const capabilityBinding = options.modeCapabilityBinding ? parseModeCapabilityBinding(options.modeCapabilityBinding) : undefined;
+  if ((options.request.team === "analyst" || options.teamConfig.name === "analyst")
+    && (!capabilityBinding || capabilityBinding.schemaVersion !== "pa-mode-capability-binding/v2" || options.request.team !== "analyst"
+      || options.runtime !== "pi" || !modeCapabilityRouteMatches(capabilityBinding, options.teamConfig.name, modeName))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
   const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd(), {
     allowLinkedWorktreeCwd: options.runtime === "pi" && options.request.repo === undefined,
   });
@@ -166,10 +170,11 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout)) {
     throw new Error("repo-setup requires the Pi/PPA CLI setup mode, registered primary root and canonical objective; ticket, builder/review custody, override, background, resume and force are unsupported");
   }
-  const skillsDir = options.skillsDir ?? getSkillsDir();
+  const skillsDir = capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? resolve(capabilityBinding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
   const skills = (rogueOne ? [] : mode?.skills ?? []).map((skill) => {
-    const path = resolve(skillsDir, skill.name, "SKILL.md");
-    if (!existsSync(path)) {
+    const resource = `skills/global/${skill.name}/SKILL.md`;
+    const path = capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? resolve(capabilityBinding.configRoot, resource) : resolve(skillsDir, skill.name, "SKILL.md");
+    if (capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? !capabilityBinding.resources.some(file => file.path === resource) : !existsSync(path)) {
       throw new Error(`Missing selected PA skill: team '${options.teamConfig.name}', mode '${modeName}', skill '${skill.name}', attempted path '${path}'.`);
     }
     return Object.freeze({ name: skill.name, injectAs: skill["inject-as"], path });
@@ -251,7 +256,9 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     registryDbPath: options.registryDbPath ?? getRegistryDbPath(),
     terminalMarker: resolve(options.deploymentDir, "terminal.json"),
   });
-  if (options.modeCapabilityBinding && (options.runtime !== "pi" || options.teamConfig.name !== "requirements" || modeName !== "analyze" || options.request.resume || options.request.background || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout || options.mode?.document_profile !== "pa-document-policy/v1" || JSON.stringify(options.mode.capability_policy) !== JSON.stringify(options.modeCapabilityBinding.policy))) throw new Error("capability selection requires its authenticated fresh Pi document route");
+  if (options.modeCapabilityBinding && (options.runtime !== "pi" || !modeCapabilityRouteMatches(options.modeCapabilityBinding, options.teamConfig.name, modeName) || options.request.team !== options.teamConfig.name || options.request.resume || options.request.background || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout || options.mode?.document_profile !== "pa-document-policy/v1" || JSON.stringify(options.mode.capability_policy) !== JSON.stringify(options.modeCapabilityBinding.policy))) throw new Error("capability selection requires its authenticated fresh Pi document route");
+  if (capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" && (capabilityBinding.repoKey !== repository.repoKey || repository.worktreeKind !== "primary"
+    || options.environment.PA_TEAM !== "analyst" || options.environment.PA_MODE !== "analyze")) throw new ModeCapabilityError("CAPABILITY_BINDING");
   return Object.freeze({
     runtime: options.runtime,
     team: options.teamConfig.name,

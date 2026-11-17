@@ -8,7 +8,7 @@ import { readProcessFingerprint, withActiveRepositoryRefAdmission, withRepositor
 import { MAX_REPOSITORY_TICKET_SLOT_BYTES, preparedRepositoryTicketReservationPath, withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
 import { assertReservationInventory } from "../deploy/execution-custody.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { parseModeCapabilityBinding, MODE_CAPABILITY_SESSION } from "../mode-capabilities.js";
+import { parseModeCapabilityBinding, modeCapabilityRouteMatches, MODE_CAPABILITY_SESSION } from "../mode-capabilities.js";
 import { loadRepoEntry, getBranchPattern } from "../repos.js";
 import { readTicketWorkflow } from "../workflows/public.js";
 import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
@@ -139,11 +139,18 @@ function assertReviewOwners(db: Database.Database, subject: LocalHandoffReviewSu
   const rows = db.prepare(`SELECT ${fields.join(",")} FROM registry_events WHERE deployment_id=? AND event IN ('started','ticket-associated') LIMIT 3`).all(others[0]);
   if (rows.length !== 1) documentReject("DOCUMENT_CONFLICT");
   const start = object(rows[0], fields), current = deploymentState(db, others[0]!);
-  if (start.event !== "started" || start.note !== MODE_CAPABILITY_SESSION || start.team !== "requirements" || start.mode !== "analyze" || start.runtime !== "pi" || start.binary !== "ppa"
+  if (start.event !== "started" || start.note !== MODE_CAPABILITY_SESSION || !["requirements", "analyst"].includes(String(start.team)) || start.mode !== "analyze" || start.runtime !== "pi" || start.binary !== "ppa"
     || start.repo !== intent.repository.root || start.repo_root !== intent.repository.root || start.worktree_root !== intent.repository.root || start.ticket_id !== intent.ticket
     || fields.slice(11).some(field => start[field]) || current?.status !== "running" || typeof start.mode_capability_binding !== "string" || start.mode_capability_binding !== current.binding) documentReject("DOCUMENT_CONFLICT");
   const selected = parseModeCapabilityBinding(strictJson(Buffer.from(start.mode_capability_binding), 65536));
-  if (JSON.stringify(selected) !== start.mode_capability_binding || !["document.handoff", "document.package", "document.local-review"].every(id => selected.policy.allow.includes(id))) documentReject("DOCUMENT_AUTHORITY");
+  if (JSON.stringify(selected) !== start.mode_capability_binding || !modeCapabilityRouteMatches(selected, start.team, start.mode)
+    || selected.schemaVersion === "pa-mode-capability-binding/v2" && selected.repoKey !== intent.repository.key
+    || !["document.handoff", "document.package", "document.local-review"].every(id => selected.policy.allow.includes(id))) documentReject("DOCUMENT_AUTHORITY");
+  const originalRow = db.prepare("SELECT mode_capability_binding FROM registry_events WHERE deployment_id=? AND event='started'").get(subject.origin.deploymentId);
+  const originalRaw = text(object(originalRow, ["mode_capability_binding"]).mode_capability_binding, undefined, 65536);
+  const original = parseModeCapabilityBinding(strictJson(Buffer.from(originalRaw), 65536));
+  // A fresh continuation does not silently migrate a historical/public route.
+  if (selected.schemaVersion !== original.schemaVersion) documentReject("DOCUMENT_AUTHORITY");
 }
 
 /** Exact exception for ONE saved origin, not a relaxation of intake/v1 guards.
@@ -160,10 +167,8 @@ export function assertLocalHandoffCaller(db: Database.Database, subject: LocalHa
     assertOriginEnded(db, subject);
     const current = deploymentState(db, caller.deploymentId);
     if (current?.status !== "running" || !current.binding || digest(current.binding) !== caller.selectionSha256) documentReject("DOCUMENT_AUTHORITY");
-    const binding = object(strictJson(Buffer.from(current.binding), 65536), ["schemaVersion", "configRevision", "resourcePath", "resourceSha256", "profile", "policy"]);
-    const policy = object(binding.policy, ["version", "allow"]);
-    const allow = policy.allow;
-    if (!Array.isArray(allow) || !["document.handoff", "document.package", "document.local-review"].every(id => allow.includes(id))) documentReject("DOCUMENT_AUTHORITY");
+    const binding = parseModeCapabilityBinding(strictJson(Buffer.from(current.binding), 65536));
+    if (JSON.stringify(binding) !== current.binding || !["document.handoff", "document.package", "document.local-review"].every(id => binding.policy.allow.includes(id))) documentReject("DOCUMENT_AUTHORITY");
   }
   if (readTicketWorkflow(intent.ticket)) documentReject("DOCUMENT_CONFLICT");
 }

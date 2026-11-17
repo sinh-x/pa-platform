@@ -448,7 +448,7 @@ export type RepositoryLeaseQuarantineResult =
 
 export function classifyRepositoryAccess(team: string, _mode?: string): RepositoryAccess {
   const normalizedTeam = team.trim().split("/", 1)[0]?.toLowerCase();
-  if (normalizedTeam === "requirements") return "read-only";
+  if (normalizedTeam === "requirements" || normalizedTeam === "analyst") return "read-only";
   if (normalizedTeam === "builder") return "exclusive-builder";
   return "non-locking";
 }

@@ -137,47 +137,44 @@ export class HandoffReviewService {
       if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256);
       else this.current(subject, intent);
       const local = new LocalHandoffReviewService(this.journal, { ...hooks, artifactRoot: this.host.artifactRoot, tickets: this.host.tickets });
-      const pending = operation === "revoke" ? await local.revoke(subjectSha256, expectedRevision, targetDecisionId!) : await local.request(subjectSha256, expectedRevision);
-      const events = this.journal.events(subjectSha256), original = events.find(e => e.kind === "requested" && e.request.requestKey === pending.requestKey);
-      if (original?.kind !== "requested") return pending;
-      const issued = events.find(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey);
-      if (issued?.kind === "issued") return local.decide(subjectSha256, expectedRevision, original.request.requestKey, issued.decision.outcome);
-      const stale = events.find(e => e.kind === "stale");
-      if (stale?.kind === "stale") return local.staleResult(subjectSha256, stale.stale);
-      const view = await local.view(subjectSha256), controller = new AbortController();
-      // Other media can issue this ORIGINAL request while the foreground reads.
-      // Observe the shared journal without holding a ticket/repository lock.
+      const requestKey = handoffReviewRequestKey(subjectSha256, expectedRevision, operation, targetDecisionId), controller = new AbortController();
+      // Observe ORIGINAL coordinates across every async boundary, including
+      // request/view loading. Delivery failure cannot erase a saved decision.
       const recorded = () => {
         const history = this.journal.events(subjectSha256);
-        const decision = history.find(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey);
-        if (decision?.kind === "issued") return local.decide(subjectSha256, expectedRevision, original.request.requestKey, decision.decision.outcome);
+        const decision = history.find(e => e.kind === "issued" && e.decision.requestKey === requestKey);
+        if (decision?.kind === "issued") return local.decide(subjectSha256, expectedRevision, requestKey, decision.decision.outcome);
         const stale = history.find(e => e.kind === "stale");
         return stale?.kind === "stale" ? Promise.resolve(local.staleResult(subjectSha256, stale.stale)) : null;
       };
       let timer: ReturnType<typeof setInterval> | undefined;
       try {
-        const external = new Promise<{ kind: "recorded" }>((resolve, reject) => {
+        const external = new Promise<Record<string, unknown>>((resolve, reject) => {
           timer = setInterval(() => {
-            try {
-              const history = this.journal.events(subjectSha256);
-              if (history.some(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey || e.kind === "stale")) resolve({ kind: "recorded" });
-            } catch (error) { reject(error); }
+            try { const saved = recorded(); if (saved) { clearInterval(timer); saved.then(resolve, reject); } }
+            catch (error) { reject(error); }
           }, 100);
         });
-        const capture = hooks.capture(original.request, view, controller.signal).then(
-          outcome => ({ kind: "capture" as const, outcome }), error => ({ kind: "error" as const, error }));
-        const result = await Promise.race([capture, external]);
-        const saved = recorded();
-        if (saved) return await saved;
-        if (result.kind === "error") throw result.error;
-        if (result.kind !== "capture" || result.outcome === "detached") return documentReject("DOCUMENT_UNAVAILABLE");
-        if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
-        try { return await local.decide(subjectSha256, expectedRevision, original.request.requestKey, result.outcome); }
-        catch (error) {
-          // First issuance wins, including a local input racing another client.
-          // Return that canonical result; never submit a compensating Cancel.
-          const saved = recorded(); if (saved) return await saved; throw error;
-        }
+        const foreground = async () => {
+          const pending = operation === "revoke" ? await local.revoke(subjectSha256, expectedRevision, targetDecisionId!) : await local.request(subjectSha256, expectedRevision);
+          const original = this.journal.events(subjectSha256).find(e => e.kind === "requested" && e.request.requestKey === requestKey);
+          if (original?.kind !== "requested") return pending;
+          const saved = recorded(); if (saved) return await saved;
+          if (controller.signal.aborted) return documentReject("DOCUMENT_UNAVAILABLE");
+          const view = await local.view(subjectSha256);
+          const loaded = recorded(); if (loaded) return await loaded;
+          if (controller.signal.aborted) return documentReject("DOCUMENT_UNAVAILABLE");
+          const outcome = await hooks.capture(original.request, view, controller.signal);
+          const captured = recorded(); if (captured) return await captured;
+          if (outcome === "detached" || controller.signal.aborted) return documentReject("DOCUMENT_UNAVAILABLE");
+          if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
+          return local.decide(subjectSha256, expectedRevision, requestKey, outcome);
+        };
+        return await Promise.race([foreground(), external]);
+      } catch (error) {
+        // First canonical issuance wins over view/capture failure or a conflicting
+        // local input. Detachment never submits a compensating shared Cancel.
+        const saved = recorded(); if (saved) return await saved; throw error;
       } finally { if (timer) clearInterval(timer); controller.abort(); }
     }
     const requestKey = handoffReviewRequestKey(subjectSha256, expectedRevision, operation, targetDecisionId);

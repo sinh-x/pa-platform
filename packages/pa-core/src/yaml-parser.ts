@@ -17,6 +17,9 @@ export function parseTeamYamlContent(content: string): TeamConfig {
   const policyPresent = Array.isArray(initial["deploy_modes"]) && initial["deploy_modes"].some(mode => mode && typeof mode === "object" && Object.hasOwn(mode, "capability_policy"));
   if (policyPresent) {
     if (Buffer.byteLength(content, "utf8") > MODE_CAPABILITY_MAX_BYTES || content.includes("\uFFFD")) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
+    // Public v2 is a bounded tree, not a YAML object-identity/merge alias graph.
+    // Check before either JSON serialization can expand repeated aliases.
+    if (initial["name"] === "analyst") assertPublicPolicyTree(initial);
     loaded = yaml.load(content, { schema: yaml.JSON_SCHEMA });
     // Reject merge-key policy injection rather than silently reverting to absence.
     if (JSON.stringify(loaded) !== JSON.stringify(initial)) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
@@ -36,11 +39,12 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     const modeRecord = asRecord(mode, `deploy_modes[${index}]`);
     rejectRemovedRuntimeConfig(modeRecord, `deploy_modes[${index}].runtimes`);
     validateFlatModePair(modeRecord, index);
-    if (modeRecord["document_profile"] !== undefined && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", "pa-document-interactions/v4", MODE_CAPABILITY_PROFILE].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
+    const publicPolicy = raw["name"] === "analyst" && modeRecord["id"] === "analyze" && modeRecord["document_profile"] === MODE_CAPABILITY_PROFILE;
+    if (modeRecord["document_profile"] !== undefined && !publicPolicy && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", "pa-document-interactions/v4", MODE_CAPABILITY_PROFILE].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
       throw new Error("document_profile requires requirements/analyze and an exact supported document profile");
     }
     const hasPolicy = Object.hasOwn(modeRecord, "capability_policy");
-    if (hasPolicy && (raw["name"] !== "requirements" || modeRecord["id"] !== "analyze" || modeRecord["document_profile"] !== MODE_CAPABILITY_PROFILE)) throw new ModeCapabilityError("CAPABILITY_PROFILE");
+    if (hasPolicy && !publicPolicy && (raw["name"] !== "requirements" || modeRecord["id"] !== "analyze" || modeRecord["document_profile"] !== MODE_CAPABILITY_PROFILE)) throw new ModeCapabilityError("CAPABILITY_PROFILE");
     if (modeRecord["document_profile"] === MODE_CAPABILITY_PROFILE && !hasPolicy) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
     const policy = hasPolicy ? parseModeCapabilityPolicy(modeRecord["capability_policy"]) : undefined;
     const provider = optionalString(modeRecord["provider"]);
@@ -86,6 +90,20 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     global_docs: raw["global_docs"] as string[] | undefined,
     terse_mode: raw["terse_mode"] as boolean | undefined,
   };
+}
+
+function assertPublicPolicyTree(root: unknown): void {
+  const pending = [{ value: root, depth: 0 }], seen = new WeakSet<object>();
+  let count = 0;
+  while (pending.length) {
+    const { value, depth } = pending.pop()!;
+    if (++count > 4096 || depth > 32) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
+    if (value && typeof value === "object") {
+      if (seen.has(value)) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
+      seen.add(value);
+      for (const child of Object.values(value)) pending.push({ value: child, depth: depth + 1 });
+    }
+  }
 }
 
 function rejectRemovedRuntimeConfig(raw: Record<string, unknown>, path: string): void {

@@ -225,6 +225,78 @@ test("native v2 foreground shares the local owner, never manufactures native-hum
   } finally { f.close(); }
 });
 
+for (const loading of ["delayed", "rejected"] as const) for (const outcome of ["approved", "rejected", "changes-requested", "cancelled"] as const) test(`PAP-316 ${outcome} during ${loading} view loading returns canonical result without capture`, async () => {
+  const f = await fixture(), originalView = LocalHandoffReviewService.prototype.view;
+  let pending: Promise<Record<string, unknown>> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  let release!: () => void;
+  try {
+    const request = await f.local.request(f.sha, 0);
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const reading = new Promise<void>(resolve => { release = resolve; });
+    LocalHandoffReviewService.prototype.view = async function (...args) {
+      if (this !== f.local) {
+        entered(); await reading;
+        if (loading === "rejected") throw Error("DOCUMENT_SOURCE");
+      }
+      return originalView.apply(this, args);
+    };
+    let prompts = 0;
+    const native = new HandoffReviewService(f.journal, { artifactRoot: f.root, tickets: f.store, authenticate: () => f.caller, assertAvailable() {},
+      async capture() { throw Error("v1 forbidden"); }, localReview: { ...f.host, async capture() { prompts++; return "cancelled"; } } });
+    pending = native.review(f.sha, 0);
+    await ready;
+    const canonical = await f.local.decide(f.sha, 0, request.requestKey, outcome);
+    if (loading === "rejected") release();
+    const result = await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(Error("Canonical decision did not settle while view loading was pending")), 1000);
+    })]);
+    assert.deepEqual(result, canonical); assert.equal(prompts, 0);
+    assert.deepEqual(f.journal.events(f.sha).map(event => event.kind), ["requested", "issued"]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    release?.(); await pending?.catch(() => {});
+    LocalHandoffReviewService.prototype.view = originalView; f.close();
+  }
+});
+
+for (const disposition of ["stale", "revocation"] as const) test(`PAP-316 ${disposition} settles during delayed view without a second capture`, async () => {
+  const f = await fixture(), originalView = LocalHandoffReviewService.prototype.view;
+  let pending: Promise<Record<string, unknown>> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  let release!: () => void;
+  try {
+    const first = await f.local.request(f.sha, 0);
+    let target: string | null = null, expectedRevision = 0;
+    if (disposition === "revocation") {
+      const approved = await f.local.decide(f.sha, 0, first.requestKey, "approved");
+      target = String(approved.decisionId); expectedRevision = 2;
+    }
+    const request = target ? await f.local.revoke(f.sha, expectedRevision, target) : first;
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const reading = new Promise<void>(resolve => { release = resolve; });
+    LocalHandoffReviewService.prototype.view = async function (...args) {
+      if (this !== f.local) { entered(); await reading; }
+      return originalView.apply(this, args);
+    };
+    let prompts = 0;
+    const native = new HandoffReviewService(f.journal, { artifactRoot: f.root, tickets: f.store, authenticate: () => f.caller, assertAvailable() {},
+      async capture() { throw Error("v1 forbidden"); }, localReview: { ...f.host, async capture() { prompts++; return "cancelled"; } } });
+    pending = native.review(f.sha, expectedRevision, target ? "revoke" : "capture", target);
+    await ready;
+    const canonical = target ? await f.local.decide(f.sha, expectedRevision, request.requestKey, "approved")
+      : f.local.staleResult(f.sha, f.journal.markStale(f.sha, "f".repeat(40)));
+    assert.deepEqual(await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(Error("Canonical disposition did not settle during view loading")), 1000);
+    })]), canonical);
+    assert.equal(prompts, 0); assert.equal(f.journal.events(f.sha).length, target ? 4 : 2);
+  } finally {
+    if (timer) clearTimeout(timer);
+    release?.(); await pending?.catch(() => {});
+    LocalHandoffReviewService.prototype.view = originalView; f.close();
+  }
+});
+
 test("all four production local operations deny a valid persisted v1 subject", async () => {
   const f = await fixture();
   try {

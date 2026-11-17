@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
-  closeDb, createModeCapabilityBinding, documentPackageSha, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir,
+  closeDb, createAgentApiApp, createModeCapabilityBinding, documentPackageSha, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir,
   executeLocalReview, openDurableRegistryDatabase, RegistryHandoffReviewJournal, nativeHandoffTicketVersion, withLocalHandoffRepository,
   withPreparedTicketCapacity, preparedRepositoryTicketReservationPath, RegistryHandoffBranchJournal, handoffBranchOperationId,
   getDb, getDeploymentEvents, MODE_CAPABILITY_SESSION, parseModeCapabilityPolicy, RegistryDocumentJournal, TicketStore, workflowDigest, type DocumentPackage,
@@ -71,15 +71,25 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
   };
   const handoff = (input: Record<string, unknown>) => execute("pa_handoff", { schemaVersion: capabilities.includes("document.local-review") ? "pa-handoff-native/v2" : "pa-handoff-native/v1", ...input });
   const checked = async (input: Record<string, unknown>) => { const result = await handoff(input); assert.equal(result.ok, true, JSON.stringify(result)); return result.result; };
-  const freezeDocument = async (ticket: string, predecessor: string | null = null, revision = 1) => {
+  const freezeDocument = async (ticket: string, predecessor: string | null = null, revision = 1, quality = false) => {
     const subject: DocumentPackage = { schemaVersion: "pa-document-package/v1", packageId: "native-fixture", revision, predecessor, repository: { key: "example", root: repo }, ticket,
       members: (["brief", "requirements", "uat"] as const).map(role => {
-        const bytes = Buffer.from(role === "brief" ? "A synthetic decision brief." : `# Full ${role}\nComplete synthetic text, not human acceptance.\n`), source = `agent-teams/requirements/artifacts/drafts/${deploymentId}/r${revision}/${role}.md`;
+        const content = quality ? role === "brief" ? "Quality judgment: not-ready. Export scope contradicts UAT; request changes. Semantic review is authored, not a runtime grant."
+          : role === "requirements" ? "# FR-1\nExport all filtered rows.\n# AC-1\nEvery filtered row must be exported; test TS-1.\n"
+          : "# TS-1\nInput: 100 filtered rows, current page 10. Action: export. Expected: only the current page, 10 rows. Covers FR-1 and AC-1.\n"
+          : role === "brief" ? "A synthetic decision brief." : `# Full ${role}\nComplete synthetic text, not human acceptance.\n`;
+        const bytes = Buffer.from(content), source = quality ? `deployments/${deploymentId}/artifacts/requirements/r${revision}/${role}.md` : `agent-teams/requirements/artifacts/drafts/${deploymentId}/r${revision}/${role}.md`;
         mkdirSync(dirname(join(usage, source)), { recursive: true }); writeFileSync(join(usage, source), bytes);
         return { id: role, role, mediaType: "text/markdown", source, description: role, bytes: bytes.length, sha256: workflowDigest(bytes) };
       }), references: [], effects: { publish: true, queue: true, route: { team: "builder", mode: "orchestrator" } } };
+    if (quality) {
+      const findings = `# Quality judgment\nReadiness: not-ready\nFinding Q-07: requirements FR-1 / AC-1 require all filtered rows; UAT TS-1 expects only the current page.\nEvidence: requirements SHA-256 ${subject.members[1]!.sha256}; UAT SHA-256 ${subject.members[2]!.sha256}.\nConsequence: a ten-row export would silently omit ninety required rows.\nNext action: Analyst must reconcile scope and expected result before final approval.\nReviewer coverage: synthetic author review of brief, requirements and UAT; not independent, not installed or human UAT.\nUnknown: actual product behavior is untested.\n`;
+      const source = `deployments/${deploymentId}/artifacts/requirements/r${revision}/quality.md`;
+      writeFileSync(join(usage, source), findings);
+      subject.members.push({ id: "quality", role: "specification", mediaType: "text/markdown", source, description: "PAPC-authored semantic findings; not native eligibility or approval", bytes: Buffer.byteLength(findings), sha256: workflowDigest(findings) });
+    }
     const result = await execute("pa_document", { action: "freeze", package: subject, expectedRevision: new RegistryDocumentJournal(getDb()).events("example", ticket).length }); assert.equal(result.ok, true, JSON.stringify(result));
-    return { subject, sha: documentPackageSha(subject) };
+    return { subject, sha: documentPackageSha(subject), checks: result.result.checks };
   };
   return { root, repo, usage, context, tools, execute, handoff, checked, git, freezeDocument, prompts: () => prompts,
     async continueInFreshSession(ticketId: string, options: { liveOrigin?: boolean; contender?: boolean } = {}) {
@@ -283,6 +293,65 @@ async function approveLocal(f: ReturnType<typeof fixture>, subjectSha256: string
   assert.equal(decision.outcome, "approved");
   return { request, decision, coordinates: { subjectSha256, decisionId: decision.decisionId } };
 }
+
+test("PAP-316 bound quality contradiction and own-deployment sources agree across Pi, CLI and both real APIs", async () => {
+  const f = fixture(localCapabilities);
+  const api = createAgentApiApp({ enableLocalReview: true, enableLiveUpdates: false });
+  assert.ok(api.createServer);
+  const general = api.createServer((_request, response) => { response.writeHead(404); response.end(); });
+  let dedicated: Awaited<ReturnType<typeof startLocalReviewServer>> | undefined;
+  try {
+    const intake = await f.checked({ action: "intake", title: "Quality transport", content: "Synthetic shape-valid contradiction, not acceptance" });
+    await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "quality-plan", branch: `feature/${intake.ticket.id}-quality`, expectedTicketVersion: intake.ticketVersion });
+    const document = await f.freezeDocument(intake.ticket.id, null, 1, true);
+    assert.equal(document.checks.structuralPass, true); assert.equal(document.checks.semanticCompleteness, "not-assessed");
+    const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: document.sha, planRequestId: "quality-plan", effects: { publish: false, branchRef: false, queue: false } });
+    const subjectSha256 = prepared.subjectSha256;
+    const request = { schemaVersion: "pa-local-review/v1", action: "show", subjectSha256 };
+    const native = await f.checked({ action: "show", subjectSha256 });
+    const output: string[] = [];
+    assert.equal(await runDocumentCommand(["review", "--request-stdin"], { stdout: text => { output.push(text); }, stderr: () => {} }, { stdin: Readable.from([Buffer.from(JSON.stringify(request))]) }), 0);
+    assert.deepEqual(JSON.parse(output.join("")), native);
+    const post = (port: number, path: string) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers: { "Content-Type": "application/json" } }, response => {
+        let text = ""; response.on("data", chunk => { text += chunk; }); response.once("error", reject);
+        response.once("end", () => { try { assert.equal(response.statusCode, 200); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
+      });
+      req.once("error", reject); req.end(JSON.stringify(request));
+    });
+    dedicated = await startLocalReviewServer({ port: 0 });
+    await new Promise<void>(resolve => { general.listen(0, "127.0.0.1", resolve); });
+    const d = dedicated.address(), g = general.address(); assert.ok(d && typeof d !== "string" && g && typeof g !== "string");
+    assert.deepEqual(await post(d.port, "/v1/review"), native);
+    assert.deepEqual(await post(g.port, "/api/documents/local-review"), native);
+    const quality = native.documents.find((member: { id: string }) => member.id === "quality");
+    assert.match(quality.content, /Readiness: not-ready/); assert.match(quality.content, /not independent/);
+    assert.equal(workflowDigest(quality.content), quality.sha256);
+    assert.equal(quality.sha256, document.subject.members.at(-1)!.sha256);
+    assert.match(readFileSync(join(f.usage, "agent-teams/requirements/artifacts/presentations", document.sha, prepared.subject.deliverySha256, "members/member-4.html"), "utf8"), /Readiness: not-ready/);
+    const changed = structuredClone(document.subject); changed.members.at(-1)!.sha256 = workflowDigest(`${quality.content}Changed judgment`);
+    assert.notEqual(documentPackageSha(changed), document.sha, "changed findings are a different review subject");
+    let shown = false;
+    f.context.ui.custom = factory => new Promise(resolve => {
+      const component = factory({ requestRender() {}, terminal: { rows: 50 } }, { fg: (_c: string, value: string) => value }, {}, resolve);
+      for (let i = 0; i < native.documents.length + 2; i++) {
+        const text = component.render(220).join("\n");
+        if (text.includes("Readiness: not-ready")) { shown = true; assert.match(text, /Next action: Analyst/); }
+        component.handleInput("\t");
+      }
+      component.handleInput("\u001b[A"); component.handleInput("\u001b[A"); component.handleInput("\r");
+    });
+    const decision = await f.checked({ action: "review", subjectSha256, expectedRevision: 0 });
+    assert.equal(shown, true); assert.equal(decision.outcome, "changes-requested");
+    assert.deepEqual(decision.effects, { publish: false, branchRef: false, queue: false });
+    assert.equal(new TicketStore().get(intake.ticket.id)!.doc_refs.length, 0);
+    assert.equal(f.git("for-each-ref", "refs/heads/feature"), "");
+  } finally {
+    general.closeAllConnections(); await new Promise<void>(resolve => { general.close(() => resolve()); }); api.cleanup();
+    if (dedicated) { dedicated.closeAllConnections(); await new Promise<void>(resolve => { dedicated!.close(() => resolve()); }); }
+    await f.close();
+  }
+});
 
 test("PAP-314 P4 inert client uses default CLI/API shared state, stale native refresh and original revocation coordinates", async () => {
   const f = fixture(localCapabilities);

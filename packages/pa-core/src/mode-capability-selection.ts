@@ -1,10 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
+import { selectAnalystResources } from "./analyst-resource-selection.js";
+import type { TeamConfig } from "./types.js";
 import { CommittedConfigSource } from "./selected-config-source.js";
 import { parseTeamYamlContent } from "./yaml-parser.js";
-import { createModeCapabilityBinding, ModeCapabilityError, MODE_CAPABILITY_MAX_BYTES, MODE_CAPABILITY_PROFILE, type ModeCapabilityBinding, type ModeCapabilityPolicy } from "./mode-capabilities.js";
+import { createModeCapabilityBinding, ModeCapabilityError, MODE_CAPABILITY_MAX_BYTES, MODE_CAPABILITY_PROFILE, type ModeCapabilityBinding, type ModeCapabilityPolicy, type ModeResourceSnapshot } from "./mode-capabilities.js";
 
 /** Native launch owner only. No caller path, revision, environment or permission override. */
-export function selectModeCapabilities(expected: ModeCapabilityPolicy, source = CommittedConfigSource.selected()): { binding: ModeCapabilityBinding; assertCurrent(): void } {
+export function selectModeCapabilities(expected: ModeCapabilityPolicy, source = CommittedConfigSource.selected(), publicSelection?: { team: TeamConfig; repoKey: string }): { binding: ModeCapabilityBinding; resources?: ModeResourceSnapshot; assertCurrent(): void } {
+  if (publicSelection) return selectAnalystResources(expected, source, publicSelection);
   const raw = source.read("teams/requirements.yaml");
   if (!raw || raw.byteLength > MODE_CAPABILITY_MAX_BYTES) throw new ModeCapabilityError("CAPABILITY_BINDING");
   const team = parseTeamYamlContent(new TextDecoder("utf-8", { fatal: true }).decode(raw));

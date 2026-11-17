@@ -149,7 +149,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
       catch (error) { return { block: true, reason: error instanceof ModeCapabilityError ? error.message : new ModeCapabilityError("CAPABILITY_BINDING").message }; }
     }
     const id = process.env.PA_DEPLOYMENT_ID;
-    if (!id || process.env.PA_TEAM !== "requirements" || process.env.PA_MODE !== "analyze") return;
+    if (!id || !["requirements", "analyst"].includes(process.env.PA_TEAM ?? "") || process.env.PA_MODE !== "analyze") return;
     const starts = getDeploymentEvents(id).filter(e => e.event === "started");
     if (!starts.some(e => DOCUMENT_SESSION_VERSIONS.some(version => version === e.note))) return; // retained route, never silently upgraded
     let caller;

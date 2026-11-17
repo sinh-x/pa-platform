@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import type { CoreExecutionHooks } from "./deploy/index.js";
 import { createAgentApiApp } from "./agent-api/index.js";
+import { isLocalReviewBind, localReviewBridgeFailure } from "./agent-api/routes/local-review.js";
 import { getDataDir, getLogsDir } from "./paths.js";
 
 export const DEFAULT_SERVE_HOST = "127.0.0.1";
@@ -25,6 +26,8 @@ export interface ServeLifecycleOptions {
   background: boolean;
   cors: boolean;
   force: boolean;
+  /** Server-owner opt-in only; never inferred from deployment/config state. */
+  localReview?: boolean;
   /**
    * When true, dev mode is active for the serve process. Propagated through
    * `createAgentApiApp` to the `SessionManager` so binary resolution consults
@@ -52,6 +55,11 @@ export function getServeLogFilePath(): string {
 }
 
 export async function runServeLifecycle(opts: ServeLifecycleOptions): Promise<number> {
+  // Validate before PID I/O, --force, restart/stop, background spawn or binding.
+  if (opts.localReview && (opts.action === "stop" || opts.action === "status" || !isLocalReviewBind(opts.host))) {
+    opts.io.stderr(localReviewBridgeFailure(opts.action === "stop" || opts.action === "status" ? "OPTIONS" : "BIND").message);
+    return 1;
+  }
   if (opts.action === "stop") return serveStopCommand(opts.io);
   if (opts.action === "status") return serveStatusCommand(opts.io);
   if (opts.action === "restart") return serveRestartCommand(opts);
@@ -133,9 +141,9 @@ async function serveStartCommand(opts: ServeLifecycleOptions): Promise<number> {
   });
   process.once("exit", cleanupPid);
 
-  const api = createAgentApiApp({ enableCors: opts.cors, hooks: opts.hooks, enableLiveUpdates: true, devMode: opts.devMode === true });
+  const api = createAgentApiApp({ enableCors: opts.cors, hooks: opts.hooks, enableLiveUpdates: true, devMode: opts.devMode === true, enableLocalReview: opts.localReview === true });
   opts.io.stdout(`[pa-core serve] Starting agent API on http://${opts.host}:${opts.port}`);
-  const server = serve({ fetch: api.app.fetch, port: opts.port, hostname: opts.host }, (info) => {
+  const server = serve({ fetch: api.app.fetch, createServer: api.createServer, port: opts.port, hostname: opts.host }, (info) => {
     opts.io.stdout(`[pa-core serve] Listening on http://${info.address}:${info.port}`);
   });
   api.injectWebSocket(server);
@@ -156,6 +164,7 @@ async function startBackgroundProcess(opts: ServeLifecycleOptions): Promise<numb
   if (opts.cors) args.push("--cors");
   if (opts.force) args.push("--force");
   if (opts.devMode) args.push("--dev");
+  if (opts.localReview) args.push("--local-review");
   const child = spawn(opts.executable ?? process.execPath, [script, ...args], {
     detached: true,
     stdio: ["ignore", out, out],

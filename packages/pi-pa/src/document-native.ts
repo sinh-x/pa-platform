@@ -5,11 +5,11 @@ import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
   MODE_CAPABILITY_SESSION, capabilityToolSelected, DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
-  observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, resolveTrustedTicketMutationContext, workflowDigest,
+  observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, workflowDigest,
   type DocumentPackageHost, parseDocumentRequest, DOCUMENT_ACTION_FIELDS, workflowObject,
 } from "@pa-platform/pa-core";
 import { createPiDocumentRetirement, createPiDocumentConfirmation, type PiDocumentConfirmationContext } from "./document-confirmation-native.js";
-import { authenticatePiDocumentCaller, assertSameDocumentCaller, confirmationDocumentCaller, workspaceDocumentCaller } from "./document-session.js";
+import { authenticatePiDocumentCaller, documentTicketMutationContext, assertSameDocumentCaller, confirmationDocumentCaller, workspaceDocumentCaller } from "./document-session.js";
 import { nativeReviewPages, type PiWorkflowContext } from "./workflow-native.js";
 
 /** Native foreground consent. Model JSON has no outcome, actor or permission field. */
@@ -70,7 +70,7 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   if (realpathSync(artifactRoot) !== artifactRoot || inside(caller.repoRoot, artifactRoot) || inside(artifactBase, caller.repoRoot)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   try { if (realpathSync(getTicketsDir()) !== getTicketsDir()) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
+  const tickets = new TicketStore(undefined, documentTicketMutationContext(caller, "pa_document"));
   const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
     confirmationProfile: confirmationDocumentCaller(caller),
     recoveryProfile: caller.profile === MODE_CAPABILITY_SESSION && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"),
