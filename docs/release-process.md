@@ -12,6 +12,18 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-316 worktree trial label is **`0.1.173-pap316.1`** across the four shared
+manifests, set at the operator's request for installation identification. A
+separately rebuilt/selected CLI must display `ppa 0.1.173-pap316.1`; verify
+`packageVersion` and the exact clean label commit's `sourceSha` in
+`share/pa-platform/review-runtime-provenance.json` as well. `runtime-host` stays
+independently versioned. This label does not install or activate the requirements
+workflow, change the PAPC pin/dependencies/Nix dependency hash, create a release
+or tag, or close the remaining installed/CI/browser/human qualification in the
+[PAP-316 report](../plans/reports/implementation-261118-pap316-requirements-handoff.md).
+Builder changes remain deferred. Restore the current plain develop version
+before normal integration; existing installations are unchanged by this edit.
+
 The PAP-302 **source integration candidate** restores plain **`0.1.166`** across
 the four shared manifests for develop's normal auto-patch flow. It pins merged
 PAPC-087 config `504a8dcc333fec6169b4b0242718bcbc3773ccff` after strict source
