@@ -458,8 +458,9 @@ export class TicketStore {
         if (!before) return handoffFail("TICKET_HANDOFF_SCOPE");
         if (creationDigest(before) !== expectedVersion) return handoffFail("TICKET_HANDOFF_STALE");
         snapshot(before);
-        const plan = change.kind === "materialize" ? readHandoffIntent(this.dir, change.planKey, true) : undefined;
-        if (change.kind === "materialize" && (!plan || !handoffAuditComplete(plan, audits().entries))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        const predecessorKey = change.kind === "materialize" ? change.planKey : change.kind === "plan" ? change.predecessorPlanKey : undefined;
+        const plan = predecessorKey ? readHandoffIntent(this.dir, predecessorKey, true) : undefined;
+        if (predecessorKey && (!plan || !handoffAuditComplete(plan, audits().entries))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
         const after = handoffCandidate(before, change, actor, nowUtc(), plan);
         record = { schemaVersion: "pa-ticket-handoff-intent/v1", key, ...boundIdentity, payloadSha256, actor, expectedVersion, change, before, after };
         check(); snapshot(before);
@@ -485,6 +486,31 @@ export class TicketStore {
       const ticket = this.get(id);
       if (!ticket || ticket.project !== record.after.project || !handoffAuditComplete(record, audits().entries)) return handoffFail("TICKET_HANDOFF_UNCERTAIN");
       return { ticket, key, appliedVersion: creationDigest(record.after), reused };
+    });
+  }
+
+  /** Read-only final-review gate. Incomplete native ticket/audit operations are
+   * not repaired or hidden by a new approval. Same-operation writers keep their
+   * existing recovery path instead of calling this new-review check. */
+  assertHandoffSettled(id: string): void { this.assertHandoffSettledExcept(id); }
+
+  /** Native materialization continuation only, not a relaxed new-review gate.
+   * Exempt solely its derived original link identity; all other intents fence it.
+   * The adapter must separately prove the original plan, snapshot and actual ref. */
+  assertHandoffMaterializationSettled(id: string, subjectSha256: string, operationId: string): void {
+    if (!validPlanningDigest(subjectSha256) || !validPlanningDigest(operationId)) handoffFail("TICKET_HANDOFF_INPUT");
+    this.withTransaction(() => {
+      const key = handoffKey({ scope: subjectSha256, requestId: `branch-link-${operationId}` }), original = readHandoffIntent(this.dir, key);
+      if (original && (original.before.id !== id || original.change.kind !== "materialize" || original.change.operationId !== operationId)) handoffFail("TICKET_HANDOFF_CONFLICT");
+      this.assertHandoffSettledExcept(id, original?.key);
+    });
+  }
+  private assertHandoffSettledExcept(id: string, originalKey?: string): void {
+    this.withTransaction(() => {
+      const audits = this.readCreationAudits().entries;
+      if (handoffIntents(this.dir).some(record => record.before.id === id && record.key !== originalKey && !handoffAuditComplete(record, audits))
+        || planningIntents(this.dir).some(record => record.before.id === id && !planningAuditComplete(record, audits))
+        || statusIntents(this.dir).some(record => record.before.id === id && !statusAuditComplete(record, audits))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
     });
   }
 

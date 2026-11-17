@@ -16,6 +16,9 @@ export interface HandoffBranchHost {
   serialize<T>(run: () => T): T;
   authenticate(): { identitySha256: string; selectionSha256: string };
   assertAvailable(intent: HandoffBranchIntent): void;
+  /** Versioned continuation admission validates the actual current caller. It
+   * never returns the historical origin from authenticate(). v1 ignores it. */
+  assertLocalCaller?(subject: Extract<HandoffReviewSubject, { schemaVersion: "pa-handoff-review/v2" }>, intent: HandoffBranchIntent): void;
   assertDecision(subjectSha256: string, decisionId: string): void;
   assertPublished(documentSubjectSha256: string): void;
   observeRef(intent: HandoffBranchIntent, operationId: string): HandoffRefObservation;
@@ -44,8 +47,8 @@ function parseEvent(input: unknown): BranchEvent {
 /** Actual durable SQLite owner for the inactive core, separate from old document
  * events. Call only while the embedding owner holds all required mutexes. */
 export class RegistryHandoffBranchJournal {
-  constructor(private readonly db: Database.Database) {
-    db.exec("CREATE TABLE IF NOT EXISTS handoff_branch_events (operation_id TEXT NOT NULL, sequence INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(operation_id, sequence))");
+  constructor(private readonly db: Database.Database, initialize = true) {
+    if (initialize) db.exec("CREATE TABLE IF NOT EXISTS handoff_branch_events (operation_id TEXT NOT NULL, sequence INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(operation_id, sequence))");
   }
   events(operationId: string): BranchEvent[] {
     text(operationId, SHA256);
@@ -85,7 +88,10 @@ export function completeHandoffBranch(journal: RegistryHandoffBranchJournal, hos
   return host.serialize(() => {
     const caller = () => {
       const current = host.authenticate();
-      if (current.identitySha256 !== subject.callerIdentitySha256 || current.selectionSha256 !== subject.selectionSha256) documentReject("DOCUMENT_AUTHORITY");
+      if (subject.schemaVersion === "pa-handoff-review/v2") {
+        if (!host.assertLocalCaller) documentReject("DOCUMENT_AUTHORITY");
+        host.assertLocalCaller(subject, intent);
+      } else if (current.identitySha256 !== subject.callerIdentitySha256 || current.selectionSha256 !== subject.selectionSha256) documentReject("DOCUMENT_AUTHORITY");
     };
     const authorize = () => { caller(); host.assertAvailable(intent); host.assertDecision(subjectSha256, decisionId); host.assertPublished(subject.documentSubjectSha256); };
     caller();

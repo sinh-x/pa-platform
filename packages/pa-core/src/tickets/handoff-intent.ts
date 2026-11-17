@@ -10,7 +10,7 @@ import type { AuditEntry, LinkedBranch, Ticket } from "./types.js";
  * Selected native adapters must authenticate observations and historical owners
  * under the shared ticket mutex. Retained document/intake owners do not use it. */
 export type TicketHandoffChange =
-  | { kind: "plan"; intent: HandoffBranchIntent }
+  | { kind: "plan"; intent: HandoffBranchIntent; predecessorPlanKey?: string }
   | { kind: "materialize"; planKey: string; operationId: string; headSha: string }
   | { kind: "stage"; stage: "analysis" | "review" | "changes-requested" };
 export interface TicketHandoffHooks {
@@ -53,6 +53,8 @@ export function handoffKey(identity: TicketCreateIntentIdentity): string {
 export function parseTicketHandoffChange(value: unknown): TicketHandoffChange {
   try {
     if (keys(value, ["kind", "intent"]) && value.kind === "plan") return { kind: "plan", intent: parseHandoffBranchIntent(value.intent) };
+    if (keys(value, ["kind", "intent", "predecessorPlanKey"]) && value.kind === "plan" && sha(value.predecessorPlanKey))
+      return { kind: "plan", intent: parseHandoffBranchIntent(value.intent), predecessorPlanKey: value.predecessorPlanKey };
     if (keys(value, ["kind", "planKey", "operationId", "headSha"]) && value.kind === "materialize" && sha(value.planKey) && sha(value.operationId)
       && typeof value.headSha === "string" && /^[a-f0-9]{40}(?![\s\S])/.test(value.headSha))
       return { kind: "materialize", planKey: value.planKey, operationId: value.operationId, headSha: value.headSha };
@@ -64,6 +66,15 @@ export function parseTicketHandoffChange(value: unknown): TicketHandoffChange {
 function scope(ticket: Ticket): void {
   if (![["idea", "sinh"], ["requirement-review", "requirements/team-manager"], ["pending-approval", "sinh"]]
     .some(([status, assignee]) => ticket.status === status && ticket.assignee === assignee)) handoffFail("TICKET_HANDOFF_SCOPE");
+}
+/** Exact native projection shared by materialization admission and status.
+ * Preserve ALL original attribution, not merely the branch name and SHAs. */
+export function handoffMaterializedLink(plan: TicketHandoffRecord, intent: HandoffBranchIntent, headSha: string): LinkedBranch & { state: "materialized"; baseSha: string; headSha: string; sha: string } {
+  const prior = plan.after.linkedBranches[0];
+  if (plan.change.kind !== "plan" || handoffBranchIntentSha(plan.change.intent) !== handoffBranchIntentSha(intent)
+    || plan.after.linkedBranches.length !== 1 || !prior || prior.repo !== intent.repository.key || prior.branch !== intent.branch
+    || headSha !== (intent.action === "reuse" ? intent.lineage!.observedHeadSha : intent.base.sha)) return handoffFail("TICKET_HANDOFF_CONFLICT");
+  return { ...prior, state: "materialized", baseSha: intent.base.sha, headSha, sha: headSha };
 }
 /** Pure finite projection. No generic status/assignee/ref dictionaries. The
  * materialized head must ALSO be proved by the native adapter inside the lock. */
@@ -81,6 +92,18 @@ export function handoffCandidate(before: Ticket, change: TicketHandoffChange, ac
   if (existing && (existing.repo !== intent.repository.key || existing.branch !== intent.branch)) handoffFail("TICKET_HANDOFF_CONFLICT");
   if (change.kind === "plan") {
     if (intent.expectedTicketVersion !== creationDigest(before) || intent.plannedLinkSha256 !== creationDigest(existing ?? null)) handoffFail("TICKET_HANDOFF_CONFLICT");
+    if (change.predecessorPlanKey) {
+      const prior = plan?.change.kind === "plan" ? plan.change.intent : undefined;
+      if (!plan || plan.key !== change.predecessorPlanKey || !prior || !existing
+        || creationDigest(before.linkedBranches) !== creationDigest(plan.after.linkedBranches)
+        || prior.ticket !== intent.ticket || prior.branch !== intent.branch || prior.action !== intent.action
+        || prior.callerIdentitySha256 !== intent.callerIdentitySha256 || creationDigest(prior.repository) !== creationDigest(intent.repository)
+        || creationDigest(prior.lineage) !== creationDigest(intent.lineage)
+        || (intent.action === "create" ? existing.state !== "planned" : prior.base.sha !== intent.base.sha)) handoffFail("TICKET_HANDOFF_CONFLICT");
+      // Refresh changes only the immutable plan. Preserve exact linkedAt/linkedBy
+      // and every historical intent/audit; never remove a planned link.
+      return before;
+    }
     if (intent.action === "create" && existing) handoffFail("TICKET_HANDOFF_CONFLICT"); // No adoption of legacy planned names.
     if (intent.action === "reuse" && (!existing || existing.state !== "materialized" || existing.baseSha !== intent.base.sha
       || !existing.headSha || !/^[a-f0-9]{40}(?![\s\S])/.test(existing.headSha) || existing.sha !== existing.headSha)) handoffFail("TICKET_HANDOFF_CONFLICT");
@@ -92,10 +115,11 @@ export function handoffCandidate(before: Ticket, change: TicketHandoffChange, ac
   if (!plan || plan.before.id !== before.id || !existing || creationDigest(existing) !== creationDigest(plan.after.linkedBranches[0])
     || change.headSha !== (intent.action === "reuse" ? intent.lineage!.observedHeadSha : intent.base.sha)) return handoffFail("TICKET_HANDOFF_CONFLICT");
   // Never infer original base from today's tip. Keep original link attribution.
-  const link: LinkedBranch = { ...existing, state: "materialized", baseSha: intent.base.sha, headSha: change.headSha, sha: change.headSha };
+  const link = handoffMaterializedLink(plan, intent, change.headSha);
   return { ...before, updatedAt: stamp, linkedBranches: [link] };
 }
-export function readHandoffIntent(dir: string, key: string, planOnly = false): TicketHandoffRecord | undefined {
+export function readHandoffIntent(dir: string, key: string, planOnly = false, depth = 0): TicketHandoffRecord | undefined {
+  if (depth > 64) return handoffFail("TICKET_HANDOFF_UNCERTAIN");
   if (!sha(key)) return handoffFail("TICKET_HANDOFF_INPUT");
   let bytes: Buffer;
   try { bytes = new AdvisoryFiles(dir).file(`.ticket-handoff-${key}.json`) as Buffer; }
@@ -110,7 +134,8 @@ export function readHandoffIntent(dir: string, key: string, planOnly = false): T
     const change = parseTicketHandoffChange(record.change);
     if (record.payloadSha256 !== creationDigest({ id: record.before.id, expectedVersion: record.expectedVersion, change, actor: record.actor })) throw Error();
     if (planOnly && change.kind !== "plan") throw Error();
-    const plan = change.kind === "materialize" ? readHandoffIntent(dir, change.planKey, true) : undefined;
+    const predecessor = change.kind === "materialize" ? change.planKey : change.kind === "plan" ? change.predecessorPlanKey : undefined;
+    const plan = predecessor ? readHandoffIntent(dir, predecessor, true, depth + 1) : undefined;
     // Materialize must refer directly to a plan, never recursively to a result.
     if (change.kind === "materialize" && plan?.change.kind !== "plan") throw Error();
     if (!isDeepStrictEqual(handoffCandidate(record.before, change, record.actor, record.after.updatedAt, plan), record.after)) throw Error();

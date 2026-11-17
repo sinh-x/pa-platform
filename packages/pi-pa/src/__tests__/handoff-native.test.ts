@@ -1,21 +1,29 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { request as httpRequest } from "node:http";
+import { Readable } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
-  closeDb, createModeCapabilityBinding, documentPackageSha, emitPidEvent, emitStartedEvent, ensureDeployDir,
+  closeDb, createModeCapabilityBinding, documentPackageSha, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir,
+  executeLocalReview, openDurableRegistryDatabase, RegistryHandoffReviewJournal, nativeHandoffTicketVersion, withLocalHandoffRepository,
+  withPreparedTicketCapacity, preparedRepositoryTicketReservationPath, RegistryHandoffBranchJournal, handoffBranchOperationId,
   getDb, getDeploymentEvents, MODE_CAPABILITY_SESSION, parseModeCapabilityPolicy, RegistryDocumentJournal, TicketStore, workflowDigest, type DocumentPackage,
 } from "@pa-platform/pa-core";
-import { authenticatePiHandoffCaller, handoffFailure } from "../handoff-native.js";
+import { authenticatePiHandoffCaller, handoffFailure, type PiHandoffContext } from "../handoff-native.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
 import { createHandoffTool } from "../pi-extension/handoff-tool.js";
 import { createPiSessionLifecycle, registerPiSessionModules, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
+import { runDocumentCommand } from "../document-cli.js";
+import { startLocalReviewServer } from "../local-review-server.js";
 
 function fixture(capabilities = ["document.handoff", "document.package"], supplied = false, outcome = "approved") {
   const env = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "pap312-native-"));
+  try {
   const repo = join(root, "repo"), usage = join(root, "usage"), config = join(root, "config"); closeDb();
   for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
   delete process.env.DISPLAY; delete process.env.WAYLAND_DISPLAY; // never open a real desktop during source tests
@@ -44,7 +52,9 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     custom: (factory: any) => new Promise<any>(resolve => {
       prompts++;
       const component = factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_c: string, value: string) => value }, {}, resolve);
-      assert.match(component.render(140).join("\n"), /one final decision/);
+      const rendered = component.render(140).join("\n");
+      assert.match(rendered, /one final decision/);
+      if (capabilities.includes("document.local-review")) assert.match(rendered, /Local unverified confirmation: no authentication is provided/);
       const up = outcome === "approved" ? 3 : outcome === "changes-requested" ? 2 : outcome === "rejected" ? 1 : 0;
       for (let i = 0; i < up; i++) component.handleInput("\u001b[A");
       component.handleInput("\r");
@@ -52,26 +62,66 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
   } };
   const tools = new Map<string, PiToolDefinition>(), handlers = new Map<string, Array<(...args: any[]) => any>>();
   const runtime: PiRuntime = { registerTool: tool => tools.set(tool.name, tool), setActiveTools() {}, on: ((name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler])) as any };
-  const lifecycle = createPiSessionLifecycle(() => {}); registerPiSessionModules(runtime, lifecycle, [registerDocumentModule]);
+  const lifecycle = createPiSessionLifecycle(() => {}), continuations: ReturnType<typeof createPiSessionLifecycle>[] = [];
+  registerPiSessionModules(runtime, lifecycle, [registerDocumentModule]);
   for (const handler of handlers.get("session_start") ?? []) handler({}, context);
-  const execute = async (tool: string, request: unknown, ctx = context) => {
+  const execute = async (tool: string, request: unknown, ctx: PiHandoffContext = context) => {
     const result = await tools.get(tool)!.execute("native-fixture", { request: JSON.stringify(request) }, undefined, undefined, ctx);
     return JSON.parse(result.content[0].text) as { ok: boolean; code?: string; result: Record<string, any> };
   };
-  const handoff = (input: Record<string, unknown>) => execute("pa_handoff", { schemaVersion: "pa-handoff-native/v1", ...input });
+  const handoff = (input: Record<string, unknown>) => execute("pa_handoff", { schemaVersion: capabilities.includes("document.local-review") ? "pa-handoff-native/v2" : "pa-handoff-native/v1", ...input });
   const checked = async (input: Record<string, unknown>) => { const result = await handoff(input); assert.equal(result.ok, true, JSON.stringify(result)); return result.result; };
-  const freezeDocument = async (ticket: string) => {
-    const subject: DocumentPackage = { schemaVersion: "pa-document-package/v1", packageId: "native-fixture", revision: 1, predecessor: null, repository: { key: "example", root: repo }, ticket,
+  const freezeDocument = async (ticket: string, predecessor: string | null = null, revision = 1) => {
+    const subject: DocumentPackage = { schemaVersion: "pa-document-package/v1", packageId: "native-fixture", revision, predecessor, repository: { key: "example", root: repo }, ticket,
       members: (["brief", "requirements", "uat"] as const).map(role => {
-        const bytes = Buffer.from(role === "brief" ? "A synthetic decision brief." : `# Full ${role}\nComplete synthetic text, not human acceptance.\n`), source = `agent-teams/requirements/artifacts/drafts/${deploymentId}/${role}.md`;
+        const bytes = Buffer.from(role === "brief" ? "A synthetic decision brief." : `# Full ${role}\nComplete synthetic text, not human acceptance.\n`), source = `agent-teams/requirements/artifacts/drafts/${deploymentId}/r${revision}/${role}.md`;
         mkdirSync(dirname(join(usage, source)), { recursive: true }); writeFileSync(join(usage, source), bytes);
         return { id: role, role, mediaType: "text/markdown", source, description: role, bytes: bytes.length, sha256: workflowDigest(bytes) };
       }), references: [], effects: { publish: true, queue: true, route: { team: "builder", mode: "orchestrator" } } };
-    const result = await execute("pa_document", { action: "freeze", package: subject, expectedRevision: 0 }); assert.equal(result.ok, true, JSON.stringify(result));
+    const result = await execute("pa_document", { action: "freeze", package: subject, expectedRevision: new RegistryDocumentJournal(getDb()).events("example", ticket).length }); assert.equal(result.ok, true, JSON.stringify(result));
     return { subject, sha: documentPackageSha(subject) };
   };
   return { root, repo, usage, context, tools, execute, handoff, checked, git, freezeDocument, prompts: () => prompts,
-    async close() { await lifecycle.shutdown(); closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); } };
+    async continueInFreshSession(ticketId: string, options: { liveOrigin?: boolean; contender?: boolean } = {}) {
+      if (!options.liveOrigin) {
+        // Synthetic process-boundary fixture: use a real child incarnation and
+        // its observed exit, not a fabricated PID/death result.
+        const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
+        await once(child, "spawn");
+        if (!child.pid) throw Error("fixture child missing PID");
+        emitPidEvent({ deploymentId, team: "requirements", pid: child.pid });
+        assert.equal(recordPiProcessIdentity(deploymentId, directory, child.pid), true);
+        child.kill("SIGTERM"); await once(child, "exit");
+        emitCompletedEvent({ deploymentId, team: "requirements", status: "success" });
+      }
+      const fresh = "d-314002", freshDirectory = ensureDeployDir(fresh);
+      emitStartedEvent({ deploymentId: fresh, team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo,
+        ticketId, note: MODE_CAPABILITY_SESSION, modeCapabilityBinding: JSON.stringify(binding) });
+      emitPidEvent({ deploymentId: fresh, team: "requirements", pid: process.pid });
+      assert.equal(recordPiProcessIdentity(fresh, freshDirectory, process.pid), true);
+      if (options.contender) emitStartedEvent({ deploymentId: "d-314003", team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo,
+        ticketId, note: MODE_CAPABILITY_SESSION, modeCapabilityBinding: JSON.stringify(binding) });
+      Object.assign(process.env, { PA_DEPLOYMENT_ID: fresh, PA_DEPLOYMENT_DIR: freshDirectory, PA_TICKET_ID: ticketId });
+      const freshContext = { ...context, sessionManager: { getSessionId: () => "fresh-selected-continuation" } };
+      // A new runtime registration, not an environment edit widening the old
+      // runtime's captured deployment or tool identity.
+      const freshTools = new Map<string, PiToolDefinition>();
+      const freshHandlers: ((event: unknown, context: unknown) => unknown)[] = [];
+      const freshRuntime: PiRuntime = { registerTool: tool => freshTools.set(tool.name, tool), setActiveTools() {},
+        on: (name, handler) => { if (name === "session_start") freshHandlers.push(handler); } };
+      const freshLifecycle = createPiSessionLifecycle(() => {}); continuations.push(freshLifecycle);
+      registerPiSessionModules(freshRuntime, freshLifecycle, [registerDocumentModule]);
+      for (const handler of freshHandlers) handler({}, freshContext);
+      const handoff = async (input: Record<string, unknown>) => {
+        const result = await freshTools.get("pa_handoff")!.execute("fresh-native-fixture", { request: JSON.stringify({ schemaVersion: "pa-handoff-native/v2", ...input }) }, undefined, undefined, freshContext);
+        return JSON.parse(result.content[0].text) as Awaited<ReturnType<typeof execute>>;
+      };
+      return { context: freshContext, checked: async (input: Record<string, unknown>) => {
+        const result = await handoff(input); assert.equal(result.ok, true, JSON.stringify(result)); return result.result;
+      }, handoff };
+    },
+    async close() { for (const continuation of continuations) await continuation.shutdown(); await lifecycle.shutdown(); closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); } };
+  } catch (error) { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
 for (const supplied of [false, true]) test(`registered native policy handoff completes ${supplied ? "supplied" : "ticketless"} intake, real plan/publication/ref/link with one synthetic UI and no checkout`, async () => {
@@ -132,7 +182,7 @@ test("missing foreground custom UI retains the original pending review and never
     await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "native-plan", branch: `feature/${intake.ticket.id}-native`, expectedTicketVersion: intake.ticketVersion });
     const doc = await f.freezeDocument(intake.ticket.id), prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: doc.sha, planRequestId: "native-plan", effects: { publish: true, branchRef: true, queue: false } });
     const request = { schemaVersion: "pa-handoff-native/v1", action: "review", subjectSha256: prepared.subjectSha256, expectedRevision: 0 };
-    const result = await f.execute("pa_handoff", request, { ...f.context, ui: undefined } as typeof f.context);
+    const result = await f.execute("pa_handoff", request, { ...f.context, ui: undefined });
     assert.equal(result.code, "DOCUMENT_UNAVAILABLE");
     assert.equal((await f.handoff(request)).code, "DOCUMENT_UNCERTAIN");
     const status = await f.checked({ action: "status", subjectSha256: prepared.subjectSha256 });
@@ -180,6 +230,666 @@ test("strict handoff request rejects imported grants/paths, extra or duplicate f
     assert.equal((await f.handoff({ action: "status", subjectSha256: "a".repeat(64) })).ok, false);
     assert.deepEqual(getDb().prepare("SELECT name FROM sqlite_master ORDER BY name").all(), tablesBefore, "missing status cannot create handoff journals");
     assert.equal(new TicketStore().list().length, 0); assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+test("selected native v2 shares pending/decide/revoke owner and preserves the local-unverified trust label", async () => {
+  const f = fixture(["document.handoff", "document.local-review", "document.package"]);
+  try {
+    const intake = await f.checked({ action: "intake", title: "Local review", content: "Synthetic local-review fixture, not human acceptance" });
+    await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "local-plan", expectedTicketVersion: intake.ticketVersion, branch: `feature/${intake.ticket.id}-local` });
+    const doc = await f.freezeDocument(intake.ticket.id);
+    const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: doc.sha, planRequestId: "local-plan", effects: { publish: false, branchRef: false, queue: false } });
+    assert.equal(prepared.subject.schemaVersion, "pa-handoff-review/v2");
+    assert.equal(prepared.subject.origin.sessionId, f.context.sessionManager.getSessionId());
+    assert.equal(prepared.authentication, "not-provided");
+    const request = await f.checked({ action: "request", subjectSha256: prepared.subjectSha256, expectedRevision: 0 });
+    assert.equal(f.prompts(), 0);
+    const decisionRequest = { action: "decide", subjectSha256: prepared.subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" };
+    const d = await f.checked(decisionRequest); assert.equal(d.principal, "local-unverified"); assert.deepEqual(await f.checked(decisionRequest), d);
+    assert.equal((await f.handoff({ ...decisionRequest, outcome: "rejected" })).code, "DOCUMENT_CONFLICT");
+    const revoke = await f.checked({ action: "revoke", subjectSha256: prepared.subjectSha256, expectedRevision: 2, decisionId: d.decisionId });
+    assert.equal((await f.checked({ action: "status", subjectSha256: prepared.subjectSha256 })).pendingReview, true);
+    await f.checked({ action: "decide", subjectSha256: prepared.subjectSha256, expectedRevision: 2, requestKey: revoke.requestKey, outcome: "approved" });
+    assert.equal(f.prompts(), 0);
+    const foreground = await f.checked({ action: "review", subjectSha256: prepared.subjectSha256, expectedRevision: 4 });
+    assert.equal(foreground.principal, "local-unverified"); assert.equal(f.prompts(), 1);
+    assert.equal((await f.checked({ action: "show", subjectSha256: prepared.subjectSha256 })).documents.length, doc.subject.members.length);
+    assert.equal((await f.handoff({ action: "publish", subjectSha256: prepared.subjectSha256, decisionId: foreground.decisionId })).code, "DOCUMENT_AUTHORITY", "content-only v2 grants no publication");
+    const v1 = await f.execute("pa_handoff", { schemaVersion: "pa-handoff-native/v1", action: "status", subjectSha256: prepared.subjectSha256 });
+    assert.equal(v1.code, "DOCUMENT_AUTHORITY");
+  } finally { await f.close(); }
+});
+
+test("v2 invocation cannot upgrade an omitted local-review selection", async () => {
+  const f = fixture();
+  try {
+    const result = await f.execute("pa_handoff", { schemaVersion: "pa-handoff-native/v2", action: "intake", title: "Denied", content: "Must not create" });
+    assert.equal(result.code, "DOCUMENT_AUTHORITY"); assert.equal(new TicketStore().list().length, 0);
+  } finally { await f.close(); }
+});
+
+const localCapabilities = ["document.handoff", "document.local-review", "document.package"];
+async function prepareLocal(f: ReturnType<typeof fixture>, effects = { publish: true, branchRef: true, queue: true }) {
+  const intake = await f.checked({ action: "intake", title: "PAP-314 finite fixture", content: "Complete synthetic local handoff; not human UAT" });
+  const plan = await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "p3-plan", expectedTicketVersion: intake.ticketVersion, branch: `feature/${intake.ticket.id}-local` });
+  const document = await f.freezeDocument(intake.ticket.id);
+  const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: document.sha, planRequestId: "p3-plan", effects });
+  return { intake, plan, document, prepared, subjectSha256: prepared.subjectSha256 };
+}
+async function approveLocal(f: ReturnType<typeof fixture>, subjectSha256: string) {
+  const request = await f.checked({ action: "request", subjectSha256, expectedRevision: 0 });
+  const decision = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" }));
+  assert.equal(decision.outcome, "approved");
+  return { request, decision, coordinates: { subjectSha256, decisionId: decision.decisionId } };
+}
+
+test("PAP-314 P4 inert client uses default CLI/API shared state, stale native refresh and original revocation coordinates", async () => {
+  const f = fixture(localCapabilities);
+  const record = (value: unknown): Record<string, unknown> => {
+    assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+    return Object.fromEntries(Object.entries(value));
+  };
+  try {
+    const client = record(JSON.parse(readFileSync(new URL("./fixtures/local-review-client.json", import.meta.url), "utf8")));
+    const local = record(client.localRequests), native = record(client.nativeRequests);
+    const wire = (name: string, subjectSha256: string, fields: Record<string, unknown> = {}) => ({ ...record(local[name]), subjectSha256, ...fields });
+    const cli = async (value: Record<string, unknown>, exit = 0) => {
+      const stdout: string[] = [], stderr: string[] = [];
+      assert.equal(await runDocumentCommand(["review", "--request-stdin"], {
+        stdout: text => { stdout.push(text); }, stderr: text => { stderr.push(text); },
+      }, { stdin: Readable.from([Buffer.from(JSON.stringify(value))]) }), exit);
+      assert.equal(stdout.length, 1); assert.deepEqual(stderr, []);
+      return record(JSON.parse(stdout[0]!));
+    };
+    const p = await prepareLocal(f);
+    assert.equal((await f.execute("pa_handoff", { ...record(native.preflight), subjectSha256: p.subjectSha256 })).result.status, "eligible");
+    for (const action of ["preflight", "refresh"]) {
+      const invalid = await f.execute("pa_handoff", { ...record(native[action]), subjectSha256: p.subjectSha256, baseSha: "a".repeat(40) });
+      assert.equal(invalid.code, "DOCUMENT_INPUT", "native examples cannot accept supplied base pins");
+    }
+    // No injected handler: both transports lazily call executeLocalReview against
+    // the disposable registry, tickets and real native plan/delivery above.
+    const server = await startLocalReviewServer({ port: 0 });
+    try {
+      const address = server.address(); assert.ok(address && typeof address !== "string");
+      const api = async (value: Record<string, unknown>, status = 200) => new Promise<Record<string, unknown>>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port: address.port, method: "POST", path: "/v1/review", headers: { "Content-Type": "application/json" } }, res => {
+          let body = "";
+          res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+          res.once("error", reject);
+          res.once("end", () => {
+            try { assert.equal(res.statusCode, status); resolve(record(JSON.parse(body))); }
+            catch (error) { reject(error); }
+          });
+        });
+        req.once("error", reject); req.setTimeout(10_000, () => req.destroy(new Error("Disposable local review request timed out")));
+        req.end(JSON.stringify(value));
+      });
+      const original = await cli(wire("request", p.subjectSha256));
+      assert.equal(original.expectedRevision, 0);
+      const pending = await api(wire("show", p.subjectSha256));
+      assert.equal(pending.reviewRevision, 1); assert.equal(pending.pendingReview, true);
+      assert.equal(record(pending.latestRequest).requestKey, original.requestKey);
+      assert.ok(Array.isArray(pending.documents)); assert.equal(pending.documents.length, p.document.subject.members.length);
+      const ticketBefore = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+      f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "client stale boundary");
+      const approveOld = wire("decide", p.subjectSha256, { requestKey: original.requestKey });
+      const stale = await api(approveOld);
+      assert.deepEqual(Object.keys(stale).sort(), Object.keys(record(client.staleResponse)).sort());
+      assert.equal(stale.requestKey, original.requestKey);
+      assert.equal(typeof stale.observedAt, "string");
+      assert.equal(new Date(stale.observedAt).toISOString(), stale.observedAt);
+      for (const field of ["schemaVersion", "status", "approval", "effects", "nextOwner", "trust", "authentication"]) {
+        assert.equal(stale[field], record(client.staleResponse)[field]);
+      }
+      assert.equal(stale.oldDevelopSha, p.plan.intent.base.observedDevelopSha); assert.equal(stale.newDevelopSha, f.git("rev-parse", "develop"));
+      assert.deepEqual(await cli(approveOld), stale, "reply-loss stale replay does not mint another outcome");
+      assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), ticketBefore);
+      assert.equal(f.git("for-each-ref", "refs/heads/feature"), "");
+      const old = await api(wire("show", p.subjectSha256));
+      assert.equal(old.approval, "stale"); assert.equal(old.reviewRevision, 2);
+      assert.equal((await api({ ...approveOld, action: "refresh" }, 400)).code, "DOCUMENT_INPUT", "API cannot plan");
+      const refresh = { ...record(native.refresh), subjectSha256: p.subjectSha256, expectedRevision: old.reviewRevision, expectedTicketVersion: old.ticketVersion };
+      const nextResult = await f.execute("pa_handoff", refresh); assert.equal(nextResult.ok, true);
+      const next = record(nextResult.result); assert.equal(typeof next.subjectSha256, "string");
+      const nextSha = next.subjectSha256; assert.notEqual(nextSha, p.subjectSha256);
+      assert.equal((await cli(wire("show", nextSha))).approval, "not-requested");
+      const request = await cli(wire("request", nextSha));
+      assert.deepEqual(await api(wire("request", nextSha)), request);
+      const approve = wire("decide", nextSha, { requestKey: request.requestKey });
+      const decision = await api(approve); assert.equal(decision.principal, "local-unverified");
+      assert.equal(decision.authentication, "not-provided"); assert.equal(decision.method, "unauthenticated-local-confirmation");
+      assert.deepEqual(await cli(approve), decision);
+      assert.equal((await cli({ ...approve, outcome: "rejected" }, 1)).code, "DOCUMENT_CONFLICT");
+      const approved = await f.checked({ action: "show", subjectSha256: nextSha });
+      assert.equal(approved.approval, "approved");
+      for (const effect of ["publish", "branchRef", "queue"]) assert.equal(approved.effects[0][effect].state, "not-started");
+      const revokeInput = wire("revoke", nextSha, { decisionId: decision.decisionId });
+      const revoke = await cli(revokeInput); assert.equal(revoke.expectedRevision, 2);
+      assert.notEqual(revoke.requestKey, request.requestKey);
+      const revocationPending = await api(wire("show", nextSha));
+      assert.equal(revocationPending.reviewRevision, 3); assert.equal(revocationPending.revoked, false);
+      const revokeDecision = wire("decideRevocation", nextSha, { requestKey: revoke.requestKey });
+      assert.equal((await api({ ...revokeDecision, expectedRevision: 3 }, 409)).code, "DOCUMENT_CONFLICT");
+      const revoked = await api(revokeDecision); assert.equal(revoked.operation, "revoke");
+      assert.equal(revoked.targetDecisionId, decision.decisionId);
+      assert.deepEqual(await cli(revokeDecision), revoked);
+      assert.deepEqual(await api(revokeInput), revoke, "revoke replay retains the original pre-request revision");
+      const status = await cli(wire("show", nextSha));
+      assert.equal(status.revoked, true); assert.equal(status.approval, "revoked");
+      assert.equal(status.reviewRevision, 4); assert.equal(status.launchReady, false); assert.equal(status.productUat, "not-asserted");
+      assert.equal((await f.handoff({ action: "publish", subjectSha256: nextSha, decisionId: decision.decisionId })).code, "DOCUMENT_AUTHORITY");
+      assert.equal(new TicketStore().get(p.intake.ticket.id)!.doc_refs.length, 0);
+      assert.equal(f.git("for-each-ref", "refs/heads/feature"), ""); assert.equal(f.prompts(), 0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 registered v2 completes actual publication, every attachment, correlated ref/link and queue while preserving canonical dirt", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f); assert.equal(p.prepared.preflight.status, "eligible");
+    writeFileSync(join(f.repo, "staged.txt"), "staged original"); f.git("add", "staged.txt"); writeFileSync(join(f.repo, "staged.txt"), "unstaged original"); writeFileSync(join(f.repo, "untracked.txt"), "untracked original");
+    const dirt = f.git("status", "--porcelain=v2", "-z"), index = f.git("write-tree");
+    const a = await approveLocal(f, p.subjectSha256);
+    const update = TicketStore.prototype.update;
+    let promoted = 0;
+    TicketStore.prototype.update = function (...args) {
+      if (args[1].doc_refs?.some(ref => ref.primary)) {
+        const ticket = this.get(p.intake.ticket.id)!;
+        assert.equal(ticket.doc_refs.filter(ref => /presentations/.test(ref.path)).length, p.document.subject.members.length * 2 + 2);
+        assert.equal(ticket.doc_refs.filter(ref => /handoff-approvals/.test(ref.path)).length, 1);
+        assert.equal(p.document.subject.members.every(member => ticket.doc_refs.some(ref => ref.path.endsWith(`/${member.id}.md`))), true);
+        promoted++;
+      }
+      return update.apply(this, args);
+    };
+    try { assert.equal((await f.checked({ action: "publish", ...a.coordinates })).publication, "verified"); }
+    finally { TicketStore.prototype.update = update; }
+    assert.equal(promoted, 1);
+    assert.equal((await f.checked({ action: "publish", ...a.coordinates })).publication, "verified", "lost-reply replay observes original publication");
+    assert.equal((await f.handoff({ action: "queue", ...a.coordinates })).ok, false, "queue cannot bypass physical completion");
+    assert.equal((await f.checked({ action: "complete-branch", ...a.coordinates })).completion, "verified");
+    assert.equal((await f.checked({ action: "queue", ...a.coordinates })).queue, "verified");
+    assert.equal((await f.checked({ action: "queue", ...a.coordinates })).queue, "verified");
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.equal(status.nextOwner, "none");
+    for (const effect of ["publish", "branchRef", "queue"]) assert.equal(status.effects[0][effect].state, "verified");
+    assert.equal(f.git("rev-parse", p.plan.intent.branch), p.plan.intent.base.sha);
+    assert.equal(f.git("status", "--porcelain=v2", "-z"), dirt); assert.equal(f.git("write-tree"), index);
+    assert.equal(f.git("branch", "--show-current"), "develop"); assert.equal(f.git("worktree", "list", "--porcelain").split("worktree ").length - 1, 1);
+    const ticket = new TicketStore().get(p.intake.ticket.id)!; assert.equal(ticket.status, "pending-implementation"); assert.equal(ticket.assignee, "builder/team-manager");
+    assert.equal(ticket.linkedBranches[0]!.linkedAt, p.plan.ticket.linkedBranches[0].linkedAt); assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 independent MVM-shaped preflight blocks final review without erasing primary or changing lifecycle", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true });
+    store.update(p.intake.ticket.id, { status: "idea", assignee: "sinh", add_doc_ref: { type: "attachment", path: "agent-teams/requirements/artifacts/intake.md", primary: true } });
+    const before = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+    const preflight = await f.checked({ action: "preflight", subjectSha256: p.subjectSha256 });
+    assert.equal(preflight.status, "blocked"); assert.ok(preflight.eligibility.causes.includes("lifecycle-assignment")); assert.ok(preflight.eligibility.causes.includes("primary-predecessor"));
+    const final = await f.checked({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    assert.equal(final.status, "blocked"); assert.equal(f.prompts(), 0);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), before);
+    const db = openDurableRegistryDatabase(); try { assert.equal(new RegistryHandoffReviewJournal(db, false).events(p.subjectSha256).length, 0); } finally { db.close(); }
+    for (const raw of [
+      { schemaVersion: "pa-handoff-native/v1", action: "preflight", subjectSha256: p.subjectSha256 },
+      { schemaVersion: "pa-handoff-native/v2", action: "refresh", subjectSha256: p.subjectSha256, expectedRevision: 0, expectedTicketVersion: p.intake.ticketVersion, baseSha: "a".repeat(40) },
+    ]) assert.equal((await f.execute("pa_handoff", raw)).code, "DOCUMENT_INPUT");
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 approval drift, stale reply loss, exact refresh replay, repeated drift and postissuance pin", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), oldLink = new TicketStore().get(p.intake.ticket.id)!.linkedBranches;
+    const original = await f.checked({ action: "request", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    const decide = { schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 0, requestKey: original.requestKey, outcome: "approved" };
+    f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "develop B"); const b = f.git("rev-parse", "HEAD");
+    const stale = await executeLocalReview(JSON.stringify(decide)); assert.equal(stale.status, "stale"); assert.equal(stale.oldDevelopSha, p.plan.intent.base.sha); assert.equal(stale.newDevelopSha, b);
+    assert.deepEqual(await executeLocalReview(JSON.stringify(decide)), stale);
+    let history = (await f.checked({ action: "show", subjectSha256: p.subjectSha256 })).history;
+    assert.deepEqual(history.map((event: { kind: string }) => event.kind), ["requested", "stale"]);
+    const refresh = { action: "refresh", subjectSha256: p.subjectSha256, expectedRevision: history.length, expectedTicketVersion: nativeHandoffTicketVersion(new TicketStore().get(p.intake.ticket.id)!) };
+    const apply = TicketStore.prototype.applyHandoffWithIntent;
+    TicketStore.prototype.applyHandoffWithIntent = function (...args) {
+      if (args[2].kind !== "plan" || !args[2].predecessorPlanKey) return apply.apply(this, args);
+      const original = args[5];
+      return apply.call(this, args[0], args[1], args[2], args[3], args[4], { ...original, afterPersist(stage) { original.afterPersist?.(stage); if (stage === "intent") throw Error("refresh intent persisted, reply lost"); } });
+    };
+    try { assert.equal((await f.handoff(refresh)).ok, false); } finally { TicketStore.prototype.applyHandoffWithIntent = apply; }
+    const next = await f.checked(refresh), replay = await f.checked(refresh); assert.equal(next.subjectSha256, replay.subjectSha256); assert.deepEqual(next.intent, replay.intent);
+    assert.deepEqual(new TicketStore().get(p.intake.ticket.id)!.linkedBranches, oldLink);
+    assert.notEqual(next.subjectSha256, p.subjectSha256); assert.equal(next.intent.base.sha, b);
+    const r = await f.checked({ action: "request", subjectSha256: next.subjectSha256, expectedRevision: 0 });
+    f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "develop C"); const c = f.git("rev-parse", "HEAD");
+    const driftAgain = await f.checked({ action: "decide", subjectSha256: next.subjectSha256, expectedRevision: 0, requestKey: r.requestKey, outcome: "approved" }); assert.equal(driftAgain.newDevelopSha, c);
+    const latestRefresh = { action: "refresh", subjectSha256: next.subjectSha256, expectedRevision: 2, expectedTicketVersion: nativeHandoffTicketVersion(new TicketStore().get(p.intake.ticket.id)!) };
+    const latest = await f.checked(latestRefresh);
+    const a = await approveLocal(f, latest.subjectSha256);
+    f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "develop D after issuance");
+    const saved = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: latest.subjectSha256, expectedRevision: 0, requestKey: a.request.requestKey, outcome: "approved" })); assert.deepEqual(saved, a.decision);
+    await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates }); await f.checked({ action: "queue", ...a.coordinates });
+    assert.equal(f.git("rev-parse", p.plan.intent.branch), c); assert.equal(f.prompts(), 0);
+    const audit = readFileSync(join(f.usage, "tickets/audit.jsonl"));
+    const completedRefreshReplay = await f.checked(latestRefresh);
+    assert.equal(completedRefreshReplay.subjectSha256, latest.subjectSha256); assert.equal(completedRefreshReplay.intent.base.sha, c);
+    assert.equal(completedRefreshReplay.nextOwner, "same-operation-status");
+    assert.equal((await f.checked(refresh)).intent.base.sha, b, "historical refresh does not repin even after later successors finish");
+    assert.deepEqual(readFileSync(join(f.usage, "tickets/audit.jsonl")), audit);
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 prepare observes local develop again and read-only preflight does not append history", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const intake = await f.checked({ action: "intake", title: "Preparation drift", content: "Observe canonical local branch" });
+    const plan = await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "p3-plan", expectedTicketVersion: intake.ticketVersion, branch: `feature/${intake.ticket.id}-local` });
+    const document = await f.freezeDocument(intake.ticket.id);
+    f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "before preparation");
+    const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: document.sha, planRequestId: "p3-plan", effects: { publish: true, branchRef: true, queue: true } });
+    assert.equal(prepared.preflight.status, "stale"); assert.equal(prepared.preflight.oldDevelopSha, plan.intent.base.sha);
+    const db = openDurableRegistryDatabase(); try {
+      const journal = new RegistryHandoffReviewJournal(db, false), before = journal.events(prepared.subjectSha256);
+      const result = await f.checked({ action: "preflight", subjectSha256: prepared.subjectSha256 }); assert.equal(result.status, "stale");
+      assert.deepEqual(journal.events(prepared.subjectSha256), before);
+    } finally { db.close(); }
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 ended-origin external decision and fresh selected continuation retain actual caller and original operation", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), request = await f.checked({ action: "request", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    const next = await f.continueInFreshSession(p.intake.ticket.id);
+    const caller = authenticatePiHandoffCaller(next.context); assert.equal(caller.deploymentId, "d-314002"); assert.notEqual(caller.identitySha256, p.prepared.subject.callerIdentitySha256);
+    const d = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" }));
+    assert.equal(d.principal, "local-unverified"); const coordinates = { subjectSha256: p.subjectSha256, decisionId: d.decisionId };
+    await next.checked({ action: "publish", ...coordinates }); await next.checked({ action: "complete-branch", ...coordinates }); await next.checked({ action: "queue", ...coordinates });
+    const status = await next.checked({ action: "status", subjectSha256: p.subjectSha256 }); assert.equal(status.nextOwner, "none");
+    assert.equal(status.subject.origin.deploymentId, "d-312001"); assert.equal(status.latestRequest.deploymentId, "d-312001");
+    assert.equal(authenticatePiHandoffCaller(next.context).deploymentId, "d-314002"); assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 fresh selected caller recovers an origin partial publication using its original effect identity", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256), update = TicketStore.prototype.update;
+    TicketStore.prototype.update = function (...args) { if (args[1].doc_refs?.some(ref => ref.primary)) throw Error("origin interrupted before primary"); return update.apply(this, args); };
+    try { assert.equal((await f.handoff({ action: "publish", ...a.coordinates })).ok, false); } finally { TicketStore.prototype.update = update; }
+    const before = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "show", subjectSha256: p.subjectSha256 }));
+    const next = await f.continueInFreshSession(p.intake.ticket.id);
+    const publication = await next.checked({ action: "publish", ...a.coordinates });
+    const after = await next.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.ok(Array.isArray(before.effects)); assert.equal(publication.operationId, before.effects[0].publish.operationId);
+    assert.equal(after.effects[0].publish.state, "verified");
+    await next.checked({ action: "complete-branch", ...a.coordinates }); await next.checked({ action: "queue", ...a.coordinates });
+    assert.equal((await next.checked({ action: "status", subjectSha256: p.subjectSha256 })).nextOwner, "none"); assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+for (const denial of ["live-origin", "uncertain-resource", "unrelated-history", "contender"] as const) test(`PAP-314 P3 continuation rejects ${denial}`, async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    const next = await f.continueInFreshSession(p.intake.ticket.id, { liveOrigin: denial === "live-origin", contender: denial === "contender" });
+    if (denial === "uncertain-resource") writeFileSync(join(f.repo, ".git", "pa-repository-mutation.lease.json"), "uncertain retained custody");
+    if (denial === "unrelated-history") {
+      emitStartedEvent({ deploymentId: "d-314099", team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", repo: f.repo, repoRoot: f.repo, worktreeRoot: f.repo, ticketId: p.intake.ticket.id });
+      emitCompletedEvent({ deploymentId: "d-314099", team: "requirements", status: "success" });
+    }
+    assert.equal((await next.handoff({ action: "publish", ...a.coordinates })).ok, false);
+    assert.equal(f.git("for-each-ref", "refs/heads/feature"), "");
+    assert.equal(new TicketStore().get(p.intake.ticket.id)!.doc_refs.length, 0);
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 partial publication revocation fences missing writes and preserves completed attachments", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256), update = TicketStore.prototype.update;
+    TicketStore.prototype.update = function (...args) { if (args[1].doc_refs?.some(ref => ref.primary)) throw Error("injected interruption before primary"); return update.apply(this, args); };
+    try { assert.equal((await f.handoff({ action: "publish", ...a.coordinates })).ok, false); } finally { TicketStore.prototype.update = update; }
+    const before = new TicketStore().get(p.intake.ticket.id)!; assert.ok(before.doc_refs.length > 0); assert.equal(before.doc_refs.some(ref => ref.primary), false);
+    const rev = await f.checked({ action: "revoke", subjectSha256: p.subjectSha256, expectedRevision: 2, decisionId: a.decision.decisionId });
+    await f.checked({ action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 2, requestKey: rev.requestKey, outcome: "approved" });
+    assert.equal((await f.handoff({ action: "publish", ...a.coordinates })).ok, false); assert.equal((await f.handoff({ action: "complete-branch", ...a.coordinates })).ok, false);
+    assert.deepEqual(new TicketStore().get(p.intake.ticket.id)!.doc_refs, before.doc_refs);
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 }); assert.equal(status.effects[0].publish.state, "partial"); assert.equal(status.nextOwner, "finite-effect-owner-reconciliation");
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 created ref and missing audit resume the same link operation after reply loss", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256); await f.checked({ action: "publish", ...a.coordinates });
+    const apply = TicketStore.prototype.applyHandoffWithIntent;
+    TicketStore.prototype.applyHandoffWithIntent = function (...args) {
+      if (args[2].kind !== "materialize") return apply.apply(this, args);
+      const original = args[5];
+      return apply.call(this, args[0], args[1], args[2], args[3], args[4], { ...original, afterPersist(stage) { original.afterPersist?.(stage); if (stage === "ticket") throw Error("injected lost reply"); } });
+    };
+    try { assert.equal((await f.handoff({ action: "complete-branch", ...a.coordinates })).ok, false); } finally { TicketStore.prototype.applyHandoffWithIntent = apply; }
+    const ref = f.git("rev-parse", p.plan.intent.branch), log = f.git("reflog", "show", p.plan.intent.branch);
+    assert.equal((await f.checked({ action: "complete-branch", ...a.coordinates })).completion, "verified");
+    assert.equal((await f.checked({ action: "complete-branch", ...a.coordinates })).completion, "verified");
+    assert.equal(f.git("rev-parse", p.plan.intent.branch), ref); assert.equal(f.git("reflog", "show", p.plan.intent.branch), log);
+    await f.checked({ action: "queue", ...a.coordinates });
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 advanced native reuse refreshes observed develop without changing the original base or descendant head", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates }); await f.checked({ action: "queue", ...a.coordinates });
+    const base = p.plan.intent.base.sha, link = new TicketStore().get(p.intake.ticket.id)!.linkedBranches[0]!;
+    const head = f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", f.git("write-tree"), "-p", base, "-m", "advanced native descendant");
+    f.git("update-ref", `refs/heads/${p.plan.intent.branch}`, head, base);
+    f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "develop B");
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true }); store.update(p.intake.ticket.id, { status: "requirement-review", assignee: "requirements/team-manager" });
+    const reuse = await f.checked({ action: "plan", ticket: p.intake.ticket.id, requestId: "advanced-plan", expectedTicketVersion: nativeHandoffTicketVersion(store.get(p.intake.ticket.id)!), branch: p.plan.intent.branch });
+    assert.equal(reuse.intent.action, "reuse"); assert.equal(reuse.intent.base.sha, base); assert.notEqual(reuse.intent.base.observedDevelopSha, base); assert.equal(reuse.intent.lineage.observedHeadSha, head);
+    const document = await f.freezeDocument(p.intake.ticket.id, p.document.sha, 2);
+    const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: document.sha, planRequestId: "advanced-plan", effects: { publish: true, branchRef: true, queue: true } }); assert.equal(prepared.preflight.status, "eligible");
+    const request = await f.checked({ action: "request", subjectSha256: prepared.subjectSha256, expectedRevision: 0 });
+    f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "develop C");
+    const stale = await f.checked({ action: "decide", subjectSha256: prepared.subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" }); assert.equal(stale.oldDevelopSha, reuse.intent.base.observedDevelopSha);
+    const refresh = await f.checked({ action: "refresh", subjectSha256: prepared.subjectSha256, expectedRevision: 2, expectedTicketVersion: nativeHandoffTicketVersion(store.get(p.intake.ticket.id)!) });
+    assert.equal(refresh.intent.base.sha, base); assert.equal(refresh.intent.lineage.observedHeadSha, head);
+    const approved = await approveLocal(f, refresh.subjectSha256);
+    await f.checked({ action: "publish", ...approved.coordinates }); await f.checked({ action: "complete-branch", ...approved.coordinates }); await f.checked({ action: "queue", ...approved.coordinates });
+    const completed = store.get(p.intake.ticket.id)!; assert.equal(completed.linkedBranches[0]!.baseSha, base); assert.equal(completed.linkedBranches[0]!.headSha, head);
+    assert.equal(completed.linkedBranches[0]!.linkedAt, link.linkedAt); assert.equal(completed.linkedBranches[0]!.linkedBy, link.linkedBy); assert.equal(f.git("rev-parse", p.plan.intent.branch), head);
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 preflight retains independent source, target and pending causes and approval rechecks mutable lifecycle", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), request = await f.checked({ action: "request", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true }); store.update(p.intake.ticket.id, { status: "idea", assignee: "sinh" });
+    const blocked = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" }));
+    assert.equal(blocked.status, "blocked"); assert.equal(blocked.approval, "not-issued");
+    const delivery = join(f.usage, "agent-teams/requirements/artifacts/presentations", p.document.sha, p.prepared.subject.deliverySha256, "members/member-2.html"); writeFileSync(delivery, "tampered output");
+    f.git("update-ref", `refs/heads/${p.plan.intent.branch}`, p.plan.intent.base.sha);
+    const target = join(f.usage, "agent-teams/requirements/artifacts/packages", p.intake.ticket.id, "native-fixture/r001/requirements.md");
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, "conflicting publication target");
+    const db = openDurableRegistryDatabase(); try {
+      const journal = new RegistryHandoffReviewJournal(db, false), event = journal.events(p.subjectSha256)[0]; if (event.kind !== "requested") throw Error("invalid fixture request");
+      // An unrelated retained native intent blocks the new grant, without any
+      // effect execution or invented completion record.
+      db.prepare("INSERT INTO handoff_review_effects(operation_id,body) VALUES(?,?)").run(journal.effect(p.subjectSha256, event.request.decisionId, "publish").operationId, JSON.stringify({ subjectSha256: p.subjectSha256, decisionId: event.request.decisionId, operation: "publish" }));
+      const preflight = await f.checked({ action: "preflight", subjectSha256: p.subjectSha256 });
+      for (const cause of ["lifecycle-assignment", "source-delivery-integrity", "publication-target", "branch-target", "pending-native-effects"]) {
+        assert.ok(preflight.eligibility.causes.includes(cause), cause);
+      }
+      assert.equal(journal.events(p.subjectSha256).some(event => event.kind === "issued"), false);
+      const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+      assert.equal(status.presentation.status, "unverified"); assert.equal(status.effects[0].publish.state, "partial"); assert.equal(status.approval, "pending");
+      const guidance = preflight.guidance; assert.ok(typeof guidance === "string"); assert.ok(guidance.length <= 2000);
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(guidance.split(label).length, 2);
+    } finally { db.close(); }
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 registered foreground review has no repository lock across UI and catches UI-time drift", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), custom = f.context.ui.custom;
+    f.context.ui.custom = factory => {
+      withLocalHandoffRepository(p.plan.intent, () => {});
+      f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "moved during human reading");
+      return custom(factory);
+    };
+    const stale = await f.checked({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    assert.equal(stale.status, "stale"); assert.equal(stale.approval, "not-issued"); assert.equal(f.prompts(), 1);
+    f.context.ui.custom = custom;
+    const refreshed = await f.checked({ action: "refresh", subjectSha256: p.subjectSha256, expectedRevision: 2, expectedTicketVersion: nativeHandoffTicketVersion(new TicketStore().get(p.intake.ticket.id)!) });
+    const review = { action: "review", subjectSha256: refreshed.subjectSha256, expectedRevision: 0 };
+    const approved = await f.checked(review); assert.equal(approved.principal, "local-unverified");
+    assert.deepEqual(await f.checked(review), approved); assert.equal(f.prompts(), 2);
+    const before = f.prompts(), history = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.deepEqual(history.history.map((event: { kind: string }) => event.kind), ["requested", "stale"]); assert.equal(f.prompts(), before);
+  } finally { await f.close(); }
+});
+
+test("PAP-314 P3 stopped foreground UI leaves the original v2 request decidable externally without reopening", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), review = { schemaVersion: "pa-handoff-native/v2", action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 };
+    const missing = await f.execute("pa_handoff", review, { ...f.context, ui: undefined }); assert.equal(missing.code, "DOCUMENT_UNAVAILABLE");
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 }); assert.equal(status.pendingReview, true);
+    const decision = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 0, requestKey: status.latestRequest.requestKey, outcome: "approved" }));
+    assert.deepEqual(await f.checked(review), decision); assert.equal(f.prompts(), 0);
+    await f.checked({ action: "publish", subjectSha256: p.subjectSha256, decisionId: decision.decisionId });
+  } finally { await f.close(); }
+});
+
+// Permanent counterparts of the seven independent P3 review probes. These use
+// the registered tool and real disposable owners, not substituted admissions.
+function retainUncertain(f: ReturnType<typeof fixture>, ticket: string) {
+  withPreparedTicketCapacity({ canonicalRepoKey: "example", canonicalRepoRoot: f.repo }, tx => {
+    const result = tx.reserve({ ticket, operationId: "1".repeat(64), reservationId: "2".repeat(64), retainedAt: new Date().toISOString() });
+    if (result.status !== "reserved") throw Error("fixture has no capacity");
+    tx.update(result.reservation, { ...result.reservation, occupancy: "uncertain-retained", custody: { state: "uncertain-blocked", holder: null, inFlightOperation: null } });
+  });
+  const path = preparedRepositoryTicketReservationPath(f.repo, ticket);
+  return { path, bytes: readFileSync(path) };
+}
+function branchEvidence(f: ReturnType<typeof fixture>, subjectSha256: string, decisionId: string) {
+  const db = openDurableRegistryDatabase();
+  try {
+    const exists = (table: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+    return { refs: f.git("for-each-ref", "refs/heads/feature"),
+      events: exists("handoff_branch_events") ? new RegistryHandoffBranchJournal(db, false).events(handoffBranchOperationId(subjectSha256, decisionId)) : [],
+      gitIntents: exists("handoff_git_intents") ? db.prepare("SELECT * FROM handoff_git_intents ORDER BY operation_id").all() : [],
+      gitSources: exists("handoff_git_creation_sources") ? db.prepare("SELECT * FROM handoff_git_creation_sources ORDER BY operation_id").all() : [] };
+  } finally { db.close(); }
+}
+
+test("P3 R2 probe: lifecycle drift rejects before ref, reflog or native effect history", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates });
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true });
+    store.update(p.intake.ticket.id, { status: "implementing", assignee: "builder/team-manager" });
+    const before = branchEvidence(f, p.subjectSha256, a.decision.decisionId);
+    assert.equal((await f.handoff({ action: "complete-branch", ...a.coordinates })).ok, false);
+    assert.deepEqual(branchEvidence(f, p.subjectSha256, a.decision.decisionId), before, "reject before any native branch effect");
+    assert.throws(() => readFileSync(join(f.repo, ".git/logs/refs/heads", p.plan.intent.branch)), { code: "ENOENT" });
+  } finally { await f.close(); }
+});
+
+test("P3 R2 probe: replaced planned attribution rejects before ref, reflog or native effect history", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates });
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true });
+    store.update(p.intake.ticket.id, { remove_linked_branch: `example:${p.plan.intent.branch}` }, "foreign-owner");
+    store.update(p.intake.ticket.id, { add_linked_branch: { repo: "example", branch: p.plan.intent.branch } }, "foreign-owner");
+    const before = branchEvidence(f, p.subjectSha256, a.decision.decisionId);
+    assert.equal((await f.handoff({ action: "complete-branch", ...a.coordinates })).ok, false);
+    assert.deepEqual(branchEvidence(f, p.subjectSha256, a.decision.decisionId), before, "reject foreign original plan before any native branch effect");
+    assert.throws(() => readFileSync(join(f.repo, ".git/logs/refs/heads", p.plan.intent.branch)), { code: "ENOENT" });
+  } finally { await f.close(); }
+});
+
+test("P3 R4 probe: queue write, reply loss, revocation then original observational settlement", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates });
+    const complete = RegistryHandoffReviewJournal.prototype.completeEffect;
+    RegistryHandoffReviewJournal.prototype.completeEffect = function (...args) {
+      if (args[2] === "queue") throw Error("interrupted after real queue write");
+      return complete.apply(this, args);
+    };
+    try { assert.equal((await f.handoff({ action: "queue", ...a.coordinates })).ok, false); }
+    finally { RegistryHandoffReviewJournal.prototype.completeEffect = complete; }
+    assert.equal(new TicketStore().get(p.intake.ticket.id)!.status, "pending-implementation");
+    const rev = await f.checked({ action: "revoke", subjectSha256: p.subjectSha256, expectedRevision: 2, decisionId: a.decision.decisionId });
+    await f.checked({ action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 2, requestKey: rev.requestKey, outcome: "approved" });
+    const ticket = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), audit = readFileSync(join(f.usage, "tickets/audit.jsonl"));
+    const before = branchEvidence(f, p.subjectSha256, a.decision.decisionId), reflog = f.git("reflog", "show", p.plan.intent.branch);
+    assert.equal((await f.handoff({ action: "queue", ...a.coordinates })).ok, true, "settle only the already-applied original operation");
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.equal(status.effects[0].queue.state, "verified"); assert.equal(status.revoked, true);
+    assert.equal((await f.checked({ action: "queue", ...a.coordinates })).queue, "verified");
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), ticket);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets/audit.jsonl")), audit);
+    assert.deepEqual(branchEvidence(f, p.subjectSha256, a.decision.decisionId), before); assert.equal(f.git("reflog", "show", p.plan.intent.branch), reflog);
+  } finally { await f.close(); }
+});
+
+for (const fresh of [false, true]) test(`P3 R1 probe: ${fresh ? "fresh" : "origin"} caller cannot cross same-ticket retained uncertain custody`, async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates });
+    const caller = fresh ? await f.continueInFreshSession(p.intake.ticket.id) : f;
+    const retained = retainUncertain(f, p.intake.ticket.id), ticket = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+    assert.throws(() => withLocalHandoffRepository(p.plan.intent, () => {}));
+    const branch = await caller.handoff({ action: "complete-branch", ...a.coordinates });
+    const queue = await caller.handoff({ action: "queue", ...a.coordinates });
+    assert.equal(branch.ok, false, "uncertain custody must fence ref/link"); assert.equal(queue.ok, false, "uncertain custody must fence queue");
+    assert.equal(f.git("for-each-ref", "refs/heads/feature"), "");
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), ticket);
+    assert.deepEqual(readFileSync(retained.path), retained.bytes);
+  } finally { await f.close(); }
+});
+
+test("P3 R3 probe: queue rejects replaced materialized link attribution", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates });
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true });
+    store.update(p.intake.ticket.id, { remove_linked_branch: `example:${p.plan.intent.branch}` }, "foreign-owner");
+    store.update(p.intake.ticket.id, { add_linked_branch: { repo: "example", branch: p.plan.intent.branch } }, "foreign-owner");
+    assert.equal(store.get(p.intake.ticket.id)!.linkedBranches[0]!.linkedBy, "foreign-owner");
+    const before = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+    assert.equal((await f.handoff({ action: "queue", ...a.coordinates })).ok, false, "do not adopt matching SHAs with foreign attribution");
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.equal(status.effects[0].branchRef.state, "conflict-or-unknown");
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), before);
+  } finally { await f.close(); }
+});
+
+test("P3 R1 probe: foreign uncertain reservation fences approval and publication", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), request = await f.checked({ action: "request", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    const retained = retainUncertain(f, "EX-999");
+    const decision = await executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 0, requestKey: request.requestKey, outcome: "approved" }));
+    const publication = decision.decisionId ? await f.handoff({ action: "publish", subjectSha256: p.subjectSha256, decisionId: decision.decisionId }) : null;
+    assert.notEqual(decision.outcome, "approved", "foreign uncertain repository custody must block the grant");
+    assert.equal(publication?.ok ?? false, false); assert.equal(new TicketStore().get(p.intake.ticket.id)!.doc_refs.length, 0);
+    assert.deepEqual(readFileSync(retained.path), retained.bytes);
+  } finally { await f.close(); }
+});
+
+for (const fresh of [false, true]) test(`P3 R1 foreign custody fences remaining publication and queue writes for ${fresh ? "fresh" : "origin"} caller`, async () => {
+  for (const action of ["publish", "queue"]) {
+    const f = fixture(localCapabilities);
+    try {
+      const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+      if (action === "queue") { await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates }); }
+      const caller = fresh ? await f.continueInFreshSession(p.intake.ticket.id) : f;
+      const retained = retainUncertain(f, "EX-999"), before = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+      assert.equal((await caller.handoff({ action, ...a.coordinates })).ok, false);
+      assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), before);
+      assert.deepEqual(readFileSync(retained.path), retained.bytes);
+    } finally { await f.close(); }
+  }
+});
+
+test("P3 R2 unsettled unrelated ticket intent fences ref and native effect history", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates });
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true }), ticket = store.get(p.intake.ticket.id)!;
+    assert.throws(() => store.setStatusWithIntent(ticket.id, nativeHandoffTicketVersion(ticket), ticket.status, "fixture-owner", { scope: p.subjectSha256, requestId: "unsettled-status" }, {
+      assertCurrent() {}, afterPersist(stage) { if (stage === "intent") throw Error("unsettled supported status intent"); },
+    }), /unsettled supported status intent/);
+    assert.throws(() => store.assertHandoffSettled(ticket.id), /TICKET_HANDOFF_UNCERTAIN/, "prove the negative fixture actually persisted an unsettled intent");
+    const before = branchEvidence(f, p.subjectSha256, a.decision.decisionId);
+    assert.equal((await f.handoff({ action: "complete-branch", ...a.coordinates })).ok, false);
+    assert.deepEqual(branchEvidence(f, p.subjectSha256, a.decision.decisionId), before);
+  } finally { await f.close(); }
+});
+
+test("P3 R3 replacement after native link but before branch completion cannot be adopted", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates });
+    const append = RegistryHandoffBranchJournal.prototype.append;
+    RegistryHandoffBranchJournal.prototype.append = function (...args) {
+      if (args[3] === "linked") throw Error("reply lost after native link/audit");
+      return append.apply(this, args);
+    };
+    try { assert.equal((await f.handoff({ action: "complete-branch", ...a.coordinates })).ok, false); }
+    finally { RegistryHandoffBranchJournal.prototype.append = append; }
+    const store = new TicketStore(undefined, { team: "requirements", mode: "analyze", privileged: true });
+    assert.equal(store.get(p.intake.ticket.id)!.linkedBranches[0]!.state, "materialized");
+    store.update(p.intake.ticket.id, { remove_linked_branch: `example:${p.plan.intent.branch}` }, "foreign-owner");
+    store.update(p.intake.ticket.id, { add_linked_branch: { repo: "example", branch: p.plan.intent.branch } }, "foreign-owner");
+    const before = branchEvidence(f, p.subjectSha256, a.decision.decisionId), ticket = store.get(p.intake.ticket.id), log = f.git("reflog", "show", p.plan.intent.branch);
+    for (const action of ["complete-branch", "queue"]) assert.equal((await f.handoff({ action, ...a.coordinates })).ok, false);
+    assert.deepEqual(branchEvidence(f, p.subjectSha256, a.decision.decisionId), before);
+    assert.deepEqual(store.get(p.intake.ticket.id), ticket); assert.equal(f.git("reflog", "show", p.plan.intent.branch), log);
+  } finally { await f.close(); }
+});
+
+test("P3 R4 revoked started queue with missing external write stays fenced", async () => {
+  const f = fixture(localCapabilities);
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates });
+    const update = TicketStore.prototype.update;
+    TicketStore.prototype.update = function (...args) {
+      if (args[1].status === "pending-implementation") throw Error("interrupted before queue write");
+      return update.apply(this, args);
+    };
+    try { assert.equal((await f.handoff({ action: "queue", ...a.coordinates })).ok, false); }
+    finally { TicketStore.prototype.update = update; }
+    const rev = await f.checked({ action: "revoke", subjectSha256: p.subjectSha256, expectedRevision: 2, decisionId: a.decision.decisionId });
+    await f.checked({ action: "decide", subjectSha256: p.subjectSha256, expectedRevision: 2, requestKey: rev.requestKey, outcome: "approved" });
+    const before = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+    assert.equal((await f.handoff({ action: "queue", ...a.coordinates })).ok, false);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), before);
+    const status = await f.checked({ action: "status", subjectSha256: p.subjectSha256 }); assert.equal(status.effects[0].queue.state, "partial");
+  } finally { await f.close(); }
+});
+
+test("P3 R4 retained v1 queue reply-loss recovery still requires live approval", async () => {
+  const f = fixture();
+  try {
+    const p = await prepareLocal(f), decision = await f.checked({ action: "review", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+    const coordinates = { subjectSha256: p.subjectSha256, decisionId: decision.decisionId };
+    await f.checked({ action: "publish", ...coordinates }); await f.checked({ action: "complete-branch", ...coordinates });
+    const complete = RegistryHandoffReviewJournal.prototype.completeEffect;
+    RegistryHandoffReviewJournal.prototype.completeEffect = function (...args) {
+      if (args[2] === "queue") throw Error("v1 reply lost after queue write");
+      return complete.apply(this, args);
+    };
+    try { assert.equal((await f.handoff({ action: "queue", ...coordinates })).ok, false); }
+    finally { RegistryHandoffReviewJournal.prototype.completeEffect = complete; }
+    assert.equal(new TicketStore().get(p.intake.ticket.id)!.status, "pending-implementation");
+    await f.checked({ action: "revoke", subjectSha256: p.subjectSha256, expectedRevision: 2, decisionId: decision.decisionId });
+    assert.equal((await f.handoff({ action: "queue", ...coordinates })).code, "DOCUMENT_AUTHORITY");
   } finally { await f.close(); }
 });
 

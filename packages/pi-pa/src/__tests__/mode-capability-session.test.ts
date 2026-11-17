@@ -73,8 +73,11 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     const empty = register(); assert.deepEqual(empty.active(), []); assert.equal(empty.tools.has("pa_document"), false); assert.equal(empty.tools.has("pa_workspace"), false);
     assert.equal(session.emit("tool_call", { toolName: "pa_ticket", input: {} })[0]?.block, true, "old closure rejects another deployment");
     await assert.rejects(() => empty.tools.get("pa_ticket")!.execute("fixture", {}, undefined, undefined, context));
-    launch("d-289003", MODE_CAPABILITIES.map(c => c.id).filter(id => !["document.handoff", "web.public-read", "ticket.status", "workflow.request", "decision.request"].includes(id) && !id.startsWith("ordinary.")));
+    const baselineCapabilities = MODE_CAPABILITIES.map(c => c.id).filter(id => !["document.handoff", "document.local-review", "web.public-read", "ticket.status", "workflow.request", "decision.request"].includes(id) && !id.startsWith("ordinary."));
+    assert.throws(() => parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: [...baselineCapabilities, "document.local-review"] }), /CAPABILITY_POLICY_INVALID/);
+    launch("d-289003", baselineCapabilities);
     const baseline = register(); assert.equal(baseline.active().length, 12);
+    assert.equal(baseline.active().includes("pa_handoff"), false);
     assert.ok(baseline.tools.has("pa_ticket_intake")); assert.ok(baseline.tools.has("pa_capabilities"));
     const intake = baseline.tools.get("pa_ticket_intake")!;
     const framing = { request: JSON.stringify({ schemaVersion: "pa-ticket-intake/v1", action: "capabilities" }) };

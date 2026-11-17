@@ -1,8 +1,12 @@
 import type Database from "better-sqlite3";
+import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
+import type { TicketStore } from "../tickets/store.js";
+import type { RepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { join } from "node:path";
 import { readArtifactFile } from "../artifacts/manifest.js";
 import { TicketPackagePublication } from "../tickets/package-publication.js";
-import { digest } from "../workflows/contracts.js";
+import { digest, object, strictJson } from "../workflows/contracts.js";
+import { assertLocalHandoffPlan, assertLocalHandoffRepository } from "./handoff-preflight.js";
 import { documentCompletedOperation, documentDecisionRecords, documentPending, documentRetiredSubjects, documentRevokedDecisionIds } from "../registry/documents.js";
 import { RegistryHandoffBranchJournal, handoffBranchOperationId } from "./handoff-branch.js";
 import { completeNativeHandoffBranch } from "./handoff-native-branch.js";
@@ -13,6 +17,37 @@ import { validateDocumentBytes } from "./package-tools.js";
 import { DOCUMENT_READER_LIMITS } from "./reader.js";
 import { inspectFullDocumentReader } from "./reader-publication.js";
 
+export function handoffApprovalTracking(journal: RegistryHandoffReviewJournal, root: string, sha: string, decisionId: string) {
+  const { subject, intent, document } = journal.subject(sha), events = journal.events(sha);
+  const request = events.find(e => e.kind === "requested" && e.request.decisionId === decisionId);
+  const decision = request?.kind === "requested" ? events.find(e => e.kind === "issued" && e.decision.requestKey === request.request.requestKey) : undefined;
+  if (request?.kind !== "requested" || request.request.operation !== "capture" || decision?.kind !== "issued" || decision.decision.outcome !== "approved") documentReject("DOCUMENT_AUTHORITY");
+  const folder = `agent-teams/requirements/artifacts/handoff-approvals/${document.ticket}`, name = `${decisionId}.json`;
+  const bytes = Buffer.from(JSON.stringify({ schemaVersion: "pa-handoff-approval/v1", subjectSha256: sha, subject, intent, request: request.request,
+    decision: decision.decision, authority: "derived-tracking-only-native-handoff-registry-required", productAcceptance: false }, null, 2) + "\n");
+  const deliveryFolder = `agent-teams/requirements/artifacts/presentations/${subject.documentSubjectSha256}/${subject.deliverySha256}`;
+  const paths = [`${folder}/${name}`, `${deliveryFolder}/manifest.json`, `${deliveryFolder}/index.html`];
+  if (subject.schemaVersion === "pa-handoff-review/v2") {
+    const manifest = strictJson(readArtifactFile(join(root, deliveryFolder, "manifest.json"), DOCUMENT_READER_LIMITS.outputBytes, "ARTIFACT_STALE"), DOCUMENT_READER_LIMITS.outputBytes);
+    const outputs = object(manifest, ["schemaVersion", "deliverySha256", "subjectSha256", "revision", "effects", "renderer", "members", "outputs", "generationState", "observation"]).outputs;
+    if (!Array.isArray(outputs) || outputs.length !== document.members.length * 2 + 1) documentReject("DOCUMENT_SOURCE");
+    for (const output of outputs) {
+      const out = object(output, ["path", "sha256", "bytes"]);
+      if (typeof out.path !== "string" || !/^(?:index\.html|raw\/member-[1-9][0-9]*\.(?:md|txt|png|jpg)|members\/member-[1-9][0-9]*\.html)$/.test(out.path)) documentReject("DOCUMENT_SOURCE");
+      const path = `${deliveryFolder}/${out.path}`; if (!paths.includes(path)) paths.push(path);
+    }
+  }
+  return { folder, name, bytes, paths };
+}
+export function assertHandoffTracking(journal: RegistryHandoffReviewJournal, tickets: TicketStore, root: string, sha: string, decisionId: string): void {
+  const { document } = journal.subject(sha), tracking = handoffApprovalTracking(journal, root, sha, decisionId);
+  if (!readArtifactFile(join(root, tracking.paths[0]!), 65536, "ARTIFACT_STALE").equals(tracking.bytes)) documentReject("DOCUMENT_CONFLICT");
+  const ticket = tickets.get(document.ticket);
+  if (!ticket || ticket.project !== document.repository.key || tracking.paths.some(path => {
+    const refs = ticket.doc_refs.filter(ref => ref.path === path); return refs.length !== 1 || refs[0]!.type !== "attachment" || refs[0]!.primary;
+  })) documentReject("DOCUMENT_CONFLICT");
+}
+
 /** Explicit NEW-provenance consumer. Old document receipts/scopes/intents stay
  * untouched. Internal source integration, not a selected production capability.
  * No private legacy approved() bypass or forged confirmation event is used. */
@@ -22,30 +57,17 @@ export class HandoffPublicationService {
     private readonly planIdentity: { scope: string; requestId: string }, private readonly afterPersist?: (stage: "intent" | "tracking" | "publication" | "complete" | "queue") => void) {
     this.publication = new TicketPackagePublication(review.host.tickets, review.host.artifactRoot);
   }
-  private caller(sha: string): void {
+  private caller(sha: string, admission?: RepositoryRefAdmission): void {
     const { subject, intent } = this.review.journal.subject(sha), caller = this.review.host.authenticate();
+    if (subject.schemaVersion === "pa-handoff-review/v2") {
+      if (admission) assertLocalHandoffRepository(intent, admission);
+      this.review.assertEffectCaller(sha); return;
+    }
     if (caller.identitySha256 !== subject.callerIdentitySha256 || caller.selectionSha256 !== subject.selectionSha256 || caller.ticket !== intent.ticket
       || caller.repoKey !== intent.repository.key || caller.repoRoot !== intent.repository.root) documentReject("DOCUMENT_AUTHORITY");
   }
-  private tracking(sha: string, decisionId: string) {
-    const { subject, intent, document } = this.review.journal.subject(sha), events = this.review.journal.events(sha);
-    const request = events.find(e => e.kind === "requested" && e.request.decisionId === decisionId);
-    const decision = request?.kind === "requested" ? events.find(e => e.kind === "issued" && e.decision.requestKey === request.request.requestKey) : undefined;
-    if (request?.kind !== "requested" || request.request.operation !== "capture" || decision?.kind !== "issued" || decision.decision.outcome !== "approved") documentReject("DOCUMENT_AUTHORITY");
-    const folder = `agent-teams/requirements/artifacts/handoff-approvals/${document.ticket}`, name = `${decisionId}.json`;
-    const bytes = Buffer.from(JSON.stringify({ schemaVersion: "pa-handoff-approval/v1", subjectSha256: sha, subject, intent, request: request.request,
-      decision: decision.decision, authority: "derived-tracking-only-native-handoff-registry-required", productAcceptance: false }, null, 2) + "\n");
-    const deliveryFolder = `agent-teams/requirements/artifacts/presentations/${subject.documentSubjectSha256}/${subject.deliverySha256}`;
-    return { folder, name, bytes, paths: [`${folder}/${name}`, `${deliveryFolder}/manifest.json`, `${deliveryFolder}/index.html`] };
-  }
-  private assertTracking(sha: string, decisionId: string): void {
-    const { document } = this.review.journal.subject(sha), t = this.tracking(sha, decisionId);
-    if (!readArtifactFile(join(this.review.host.artifactRoot, t.paths[0]!), 65536, "ARTIFACT_STALE").equals(t.bytes)) documentReject("DOCUMENT_CONFLICT");
-    const ticket = this.review.host.tickets.get(document.ticket);
-    if (!ticket || ticket.project !== document.repository.key || t.paths.some(path => {
-      const refs = ticket.doc_refs.filter(r => r.path === path); return refs.length !== 1 || refs[0]!.type !== "attachment" || refs[0]!.primary;
-    })) documentReject("DOCUMENT_CONFLICT");
-  }
+  private tracking(sha: string, decisionId: string) { return handoffApprovalTracking(this.review.journal, this.review.host.artifactRoot, sha, decisionId); }
+  private assertTracking(sha: string, decisionId: string): void { assertHandoffTracking(this.review.journal, this.review.host.tickets, this.review.host.artifactRoot, sha, decisionId); }
   private predecessor(document: DocumentPackage): DocumentPackage | undefined {
     if (document.predecessor === null) return undefined;
     const previous = this.review.journal.documents.subject(document.predecessor);
@@ -95,8 +117,8 @@ export class HandoffPublicationService {
         if (digest(raw) !== out.sha256 || out.path !== "manifest.json" && raw.length !== out.bytes) documentReject("DOCUMENT_STALE");
       }
     };
-    return this.review.host.tickets.withWorkflowTransaction(() => {
-      this.caller(sha); verifyDelivery();
+    return this.review.withEffectBoundary(sha, admission => this.review.host.tickets.withWorkflowTransaction(() => {
+      this.caller(sha, admission); verifyDelivery();
       const predecessor = this.predecessor(document);
       let effect = this.review.journal.effect(sha, decisionId, "publish");
       const state = this.publication.observe(document, predecessor);
@@ -107,7 +129,14 @@ export class HandoffPublicationService {
       if (effect.completed || state === "unknown" || state === "conflict" || !effect.started && state !== "absent") documentReject("DOCUMENT_CONFLICT");
       const ticket = this.review.host.tickets.get(document.ticket);
       if (!ticket || ![["requirement-review", "requirements/team-manager"], ["pending-approval", "sinh"]].some(([status, assignee]) => ticket.status === status && ticket.assignee === assignee)) documentReject("DOCUMENT_CONFLICT");
-      const authorize = () => { this.review.authorize(sha, decisionId, "publish"); verifyDelivery(); this.predecessor(document); };
+      const authorize = () => {
+        this.caller(sha, admission); this.review.authorize(sha, decisionId, "publish"); verifyDelivery(); this.predecessor(document);
+        if (subject.schemaVersion === "pa-handoff-review/v2") {
+          assertLocalHandoffPlan(this.review.host.tickets, subject, this.review.journal.subject(sha).intent);
+          const current = this.review.host.tickets.get(document.ticket);
+          if (!current || ![["requirement-review", "requirements/team-manager"], ["pending-approval", "sinh"]].some(([status, assignee]) => current.status === status && current.assignee === assignee)) documentReject("DOCUMENT_CONFLICT");
+        }
+      };
       authorize(); effect = this.review.journal.effect(sha, decisionId, "publish", true); this.afterPersist?.("intent");
       const t = this.tracking(sha, decisionId);
       authorize(); immutableFile(this.review.host.artifactRoot, t.folder, t.name, t.bytes);
@@ -122,20 +151,25 @@ export class HandoffPublicationService {
       if (this.publication.observe(document, predecessor) !== "complete") documentReject("DOCUMENT_UNCERTAIN");
       this.assertTracking(sha, decisionId); this.review.journal.completeEffect(sha, decisionId, "publish"); this.afterPersist?.("complete");
       return { publication: "verified", operationId: effect.operationId, branch: "not-performed", queue: "not-performed", productUat: "not-asserted" };
-    });
+    }));
   }
   completeBranch(sha: string, decisionId: string) { return this.withBranchVerified(sha, decisionId); }
-  private withBranchVerified(sha: string, decisionId: string, successor?: () => void) {
+  private withBranchVerified(sha: string, decisionId: string, successor?: (admission?: RepositoryRefAdmission) => void) {
     this.assertPublished(sha, decisionId);
     const { subject, intent, document } = this.review.journal.subject(sha);
-    return completeNativeHandoffBranch(this.db, this.review.host.tickets, {
-      authenticate: () => this.review.host.authenticate(), assertAvailable: value => this.review.host.assertAvailable(value),
+    return this.review.withEffectBoundary(sha, admission => completeNativeHandoffBranch(this.db, this.review.host.tickets, {
+      authenticate: () => this.review.host.authenticate(),
+      assertLocalCaller: () => this.caller(sha, admission),
+      assertAvailable: value => { if (subject.schemaVersion === "pa-handoff-review/v2") this.caller(sha, admission); else this.review.host.assertAvailable(value); },
       assertDecision: (subjectSha, id) => this.review.authorize(subjectSha, id, "branchRef"),
       assertPublished: documentSha => { if (documentSha !== subject.documentSubjectSha256) documentReject("DOCUMENT_AUTHORITY"); this.assertPublished(sha, decisionId); },
-    }, subject, intent, document, decisionId, this.planIdentity, undefined, successor);
+    }, subject, intent, document, decisionId, this.planIdentity, undefined, () => { this.caller(sha, admission); successor?.(admission); }, admission));
   }
   queue(sha: string, decisionId: string) {
-    this.review.authorize(sha, decisionId, "queue"); this.assertPublished(sha, decisionId);
+    const { subject } = this.review.journal.subject(sha);
+    // Retained v1 still requires a live grant even for completed queue replay.
+    if (subject.schemaVersion === "pa-handoff-review/v1") this.review.authorize(sha, decisionId, "queue");
+    this.assertPublished(sha, decisionId);
     // No caller result/passed flag. Require the actual completed branch journal,
     // then reverify physical Git/ref and complete structured link via its owner.
     if (new RegistryHandoffBranchJournal(this.db).events(handoffBranchOperationId(sha, decisionId)).at(-1)?.kind !== "complete") documentReject("DOCUMENT_AUTHORITY");
@@ -143,13 +177,22 @@ export class HandoffPublicationService {
     // Keep shared repository/ref -> TicketStore exclusion through the queue
     // write. Releasing branch verification first would leave a drift/race gap;
     // taking repository locks from inside TicketStore would reverse lock order.
-    this.withBranchVerified(sha, decisionId, () => {
+    this.withBranchVerified(sha, decisionId, admission => {
       const { document } = this.review.journal.subject(sha);
-      const authorize = () => { this.review.authorize(sha, decisionId, "queue"); this.assertPublished(sha, decisionId); };
-      authorize(); const effect = this.review.journal.effect(sha, decisionId, "queue", true);
+      const authorize = () => {
+        this.caller(sha, admission); this.review.host.tickets.assertHandoffSettled(document.ticket);
+        this.review.authorize(sha, decisionId, "queue"); this.assertPublished(sha, decisionId);
+      };
+      let effect = this.review.journal.effect(sha, decisionId, "queue");
       const predecessor = this.predecessor(document);
-      this.publication.queue(document, authorize, predecessor); this.afterPersist?.("queue");
-      if (!this.publication.queued(document, predecessor)) documentReject("DOCUMENT_UNCERTAIN");
+      if (!(subject.schemaVersion === "pa-handoff-review/v2" && subject.effects.queue && effect.started && this.publication.queued(document, predecessor))) {
+        authorize(); effect = this.review.journal.effect(sha, decisionId, "queue", true);
+        this.publication.queue(document, authorize, predecessor); this.afterPersist?.("queue");
+        if (!this.publication.queued(document, predecessor)) documentReject("DOCUMENT_UNCERTAIN");
+      }
+      // v2 settlement observes the original started effect, exact publication,
+      // completed correlated branch/link and already-applied queue. Revocation
+      // cannot authorize any missing external write; only this record is settled.
       this.review.journal.completeEffect(sha, decisionId, "queue");
       result = { operationId: effect.operationId, queue: "verified", launchReady: false, productUat: "not-asserted" };
     });
