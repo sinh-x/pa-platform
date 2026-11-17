@@ -2,7 +2,18 @@ import { basename, join } from "node:path";
 import { readArtifactFile } from "../artifacts/manifest.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import { digest } from "../workflows/contracts.js";
-import { documentReject, DOCUMENT_LIMITS, parseDocumentPackage, type DocumentMember, type DocumentPackage } from "./package-contract.js";
+import { documentDeploymentSourceOwner, documentReject, DOCUMENT_LIMITS, parseDocumentPackage, type DocumentMember, type DocumentPackage } from "./package-contract.js";
+
+/** Author/intake only: check the complete source set before reading any member.
+ * Existing snapshot, confirmation, publication and delivery owners are not intake. */
+export function assertDocumentSourceIntake(sources: readonly string[], deploymentId: string, qualifiedProfile: boolean): void {
+  for (const source of sources) {
+    const owner = documentDeploymentSourceOwner(source);
+    if (owner === null) continue;
+    if (!qualifiedProfile) documentReject("DOCUMENT_UNAVAILABLE");
+    if (owner !== deploymentId) documentReject("DOCUMENT_AUTHORITY");
+  }
+}
 
 export function documentText(raw: Uint8Array): string {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(raw); } catch { return documentReject("DOCUMENT_SOURCE"); }
