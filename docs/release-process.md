@@ -12,6 +12,14 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-316 source integration candidate restores plain **`0.1.173`** across the
+four shared manifests to match current develop and retain its normal auto-patch
+flow. The separately installed `0.1.173-pap316.1` trial and its provenance remain
+unchanged. PAPC-092 is the companion for the remaining Analyst configuration,
+resource closure, installed-pair qualification and separately authorized
+future-start adoption; PAPC-090 retains workflow ownership. Source integration
+is not full AC acceptance, configuration activation or a Builder change.
+
 The PAP-316 worktree trial label is **`0.1.173-pap316.1`** across the four shared
 manifests, set at the operator's request for installation identification. A
 separately rebuilt/selected CLI must display `ppa 0.1.173-pap316.1`; verify
