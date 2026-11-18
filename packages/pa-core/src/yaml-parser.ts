@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
-import { MODE_CAPABILITY_MAX_BYTES, MODE_CAPABILITY_PROFILE, ModeCapabilityError, parseModeCapabilityPolicy } from "./mode-capabilities.js";
+import { validateReadonlyDocumentConfig } from "./readonly-document-config.js";
+import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_MAX_BYTES, MODE_CAPABILITY_PROFILE, ModeCapabilityError, parseModeCapabilityPolicy } from "./mode-capabilities.js";
 import type { Agent, DeployMode, Hierarchy, HierarchyMember, SkillEntry, TeamConfig } from "./types.js";
 
 // Ported from PA yaml-parser.ts at frozen PA source on 2026-04-26; pa-platform owns future changes.
@@ -14,17 +15,19 @@ export function parseTeamYamlContent(content: string): TeamConfig {
   // Keep retained YAML semantics unchanged. New policies use JSON-schema YAML:
   // no merge-key inheritance, tags constructing executable values or implicit dates.
   const initial = loaded === undefined ? {} : asRecord(loaded, "team config");
+  const readonlyProfile = Array.isArray(initial["deploy_modes"]) && initial["deploy_modes"].some(mode => mode && typeof mode === "object" && "document_profile" in mode && mode.document_profile === READONLY_DOCUMENT_PROFILE);
   const policyPresent = Array.isArray(initial["deploy_modes"]) && initial["deploy_modes"].some(mode => mode && typeof mode === "object" && Object.hasOwn(mode, "capability_policy"));
-  if (policyPresent) {
+  if (policyPresent || readonlyProfile) {
     if (Buffer.byteLength(content, "utf8") > MODE_CAPABILITY_MAX_BYTES || content.includes("\uFFFD")) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
     // Public v2 is a bounded tree, not a YAML object-identity/merge alias graph.
     // Check before either JSON serialization can expand repeated aliases.
-    if (initial["name"] === "analyst") assertPublicPolicyTree(initial);
+    if (initial["name"] === "analyst" || readonlyProfile) assertPublicPolicyTree(initial);
     loaded = yaml.load(content, { schema: yaml.JSON_SCHEMA });
     // Reject merge-key policy injection rather than silently reverting to absence.
     if (JSON.stringify(loaded) !== JSON.stringify(initial)) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
   }
   const raw = loaded === undefined ? {} : asRecord(loaded, "team config");
+  if (readonlyProfile) validateReadonlyDocumentConfig(raw);
   rejectRemovedRuntimeConfig(raw, "runtimes");
   const agents = ((raw["agents"] as Array<Record<string, unknown>> | undefined) ?? []).map<Agent>((agent) => ({
     name: String(agent["name"] ?? ""),
@@ -39,13 +42,14 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     const modeRecord = asRecord(mode, `deploy_modes[${index}]`);
     rejectRemovedRuntimeConfig(modeRecord, `deploy_modes[${index}].runtimes`);
     validateFlatModePair(modeRecord, index);
-    const publicPolicy = raw["name"] === "analyst" && modeRecord["id"] === "analyze" && modeRecord["document_profile"] === MODE_CAPABILITY_PROFILE;
+    const publicPolicy = modeRecord["document_profile"] === READONLY_DOCUMENT_PROFILE || raw["name"] === "analyst" && modeRecord["id"] === "analyze" && modeRecord["document_profile"] === MODE_CAPABILITY_PROFILE;
     if (modeRecord["document_profile"] !== undefined && !publicPolicy && (!["pa-document-package/v1", "pa-document-workspace/v2", "pa-document-confirmation/v3", "pa-document-interactions/v4", MODE_CAPABILITY_PROFILE].includes(String(modeRecord["document_profile"])) || raw["name"] !== "requirements" || modeRecord["id"] !== "analyze")) {
+      if (policyPresent) throw new ModeCapabilityError("CAPABILITY_PROFILE");
       throw new Error("document_profile requires requirements/analyze and an exact supported document profile");
     }
     const hasPolicy = Object.hasOwn(modeRecord, "capability_policy");
     if (hasPolicy && !publicPolicy && (raw["name"] !== "requirements" || modeRecord["id"] !== "analyze" || modeRecord["document_profile"] !== MODE_CAPABILITY_PROFILE)) throw new ModeCapabilityError("CAPABILITY_PROFILE");
-    if (modeRecord["document_profile"] === MODE_CAPABILITY_PROFILE && !hasPolicy) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
+    if ((modeRecord["document_profile"] === MODE_CAPABILITY_PROFILE || modeRecord["document_profile"] === READONLY_DOCUMENT_PROFILE) && !hasPolicy) throw new ModeCapabilityError("CAPABILITY_POLICY_INVALID");
     const policy = hasPolicy ? parseModeCapabilityPolicy(modeRecord["capability_policy"]) : undefined;
     const provider = optionalString(modeRecord["provider"]);
     const model = optionalString(modeRecord["model"]);

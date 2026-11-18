@@ -1,6 +1,6 @@
 import { ADVISORY_RUNTIME_VERSION, resolveAdvisoryTaskBaseline, preparedRepositoryTicketReservationPath } from "@pa-platform/pa-core";
 import { documentSessionVersion, selectsDocumentSession } from "./document-session.js";
-import { MODE_CAPABILITY_PROFILE, ModeCapabilityError, selectModeCapabilities } from "@pa-platform/pa-core";
+import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_PROFILE, ModeCapabilityError, selectModeCapabilities } from "@pa-platform/pa-core";
 import { execFileSync } from "node:child_process";
 import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type RepositoryChildSettlementResult } from "@pa-platform/pa-core";
 import { createHash } from "node:crypto";
@@ -784,8 +784,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     team = pinnedConfig?.team ?? loadTeamConfig(request.team);
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
     mode = resolveDeployMode(team, request.mode);
+    // A profile-only team has no generic base route. Missing mode/default must
+    // not discard its immutable binding or restore name-based writer privileges.
+    if (team.deploy_modes?.some(entry => entry.document_profile === READONLY_DOCUMENT_PROFILE)
+      && mode?.document_profile !== READONLY_DOCUMENT_PROFILE) throw new ModeCapabilityError("CAPABILITY_PROFILE");
     assertDeployResumeMode(team, request.resume);
   } catch (error) {
+    if (error instanceof ModeCapabilityError) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: error.message };
     if (request.team === "analyst") return { status: "failed", team: request.team, mode: request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
     if (error instanceof DeployModeSelectionError) return { status: "failed", team: request.team, mode: null, reason: error.message };
     if (!request.ticketWorktree) throw error;
@@ -793,20 +798,21 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   }
   // Only genuinely fresh, unpinned independent builder launches select the
   // advisory contract. Neither model prose nor an environment flag selects it.
-  let advisoryLaunch = !dependencies.autoLaunch && dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
-  const documentLaunch = selectsDocumentSession({ team: team.name, mode: mode?.id, pinned: Boolean(pinnedConfig), resume: Boolean(request.resume), inherited: Boolean(inheritedAttempt), rogue: team.name === "rogue-one", background: Boolean(request.background), ticketWorktree: Boolean(request.ticketWorktree), supportedConfig: documentSessionVersion(mode?.document_profile) !== undefined });
+  let advisoryLaunch = mode?.document_profile !== READONLY_DOCUMENT_PROFILE && !dependencies.autoLaunch && dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
+  const readonlyProfile = mode?.document_profile === READONLY_DOCUMENT_PROFILE;
+  const documentLaunch = selectsDocumentSession({ team: team.name, mode: mode?.id, profile: mode?.document_profile, pinned: Boolean(pinnedConfig), resume: Boolean(request.resume), inherited: Boolean(inheritedAttempt), rogue: team.name === "rogue-one", background: Boolean(request.background), ticketWorktree: Boolean(request.ticketWorktree), supportedConfig: documentSessionVersion(mode?.document_profile) !== undefined });
   const publicAnalyst = request.team === "analyst" || team.name === "analyst";
   // The staged omitted route and report modes must never fall through to a
   // generic launcher. No deployment ID, registry row or workspace exists yet.
-  if (publicAnalyst && (request.team !== "analyst" || team.name !== "analyst" || !documentLaunch || mode?.document_profile !== MODE_CAPABILITY_PROFILE
-    || !mode.capability_policy || request.force || process.env.PA_DEPLOYMENT_ID)) return { status: "failed", team: request.team, mode: mode?.id ?? request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
+  if ((publicAnalyst || readonlyProfile) && (request.team !== team.name || !documentLaunch || (!readonlyProfile && mode?.document_profile !== MODE_CAPABILITY_PROFILE)
+    || !mode?.capability_policy || request.force || process.env.PA_DEPLOYMENT_ID)) return { status: "failed", team: request.team, mode: mode?.id ?? request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
   let modeCapabilities: ReturnType<typeof selectModeCapabilities> | undefined;
   if (mode?.capability_policy !== undefined) {
-    if (!documentLaunch || mode.document_profile !== MODE_CAPABILITY_PROFILE) return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
+    if (!documentLaunch || (mode.document_profile !== MODE_CAPABILITY_PROFILE && !readonlyProfile)) return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
     // All closed-registry capabilities, including the supplied-public-page reader,
     // use the same committed selection. Tool registration and each invocation still
     // authenticate this immutable native binding; selection never bypasses owners.
-    try { modeCapabilities = selectModeCapabilities(mode.capability_policy, undefined, publicAnalyst ? { team, repoKey: resolveRepoExecutionPath(request.repo, process.cwd()).repoKey } : undefined); }
+    try { modeCapabilities = selectModeCapabilities(mode.capability_policy, undefined, publicAnalyst || readonlyProfile ? { team, repoKey: resolveRepoExecutionPath(request.repo, process.cwd()).repoKey, ...(readonlyProfile ? { mode: mode.id } : {}) } : undefined); }
     catch { return { status: "failed", team: request.team, mode: mode.id, reason: new ModeCapabilityError("CAPABILITY_BINDING").message }; }
   }
   // Strict mode rejection precedes resume-file inspection; unsupported historical
@@ -933,7 +939,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       planningRequest = selection.planningRequest;
       activeReviewReservation = reservePiReviewCandidate({ checkout: reviewCheckout, deploymentId, authorizationId: authorized.authorizationId }, reviewSelectionDependencies);
     }
-    const builderMode = !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
+    const builderMode = !readonlyProfile && !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
       ? mode.id
       : undefined;
     if (builderMode === "orchestrator" || builderMode === "implement") {
@@ -1311,7 +1317,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: reason, exitCode: 1 });
     return { status: "failed", team: team.name, mode: plan.mode, deploymentId, reason };
   }
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, modeCapabilityBinding: plan.modeCapabilityBinding ? JSON.stringify(plan.modeCapabilityBinding) : undefined, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: documentLaunch ? documentSessionVersion(mode?.document_profile) : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, modeCapabilityBinding: plan.modeCapabilityBinding ? JSON.stringify(plan.modeCapabilityBinding) : undefined, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : readonlyProfile ? mode?.agents ?? team.agents.map(agent => agent.name) : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: documentLaunch ? documentSessionVersion(mode?.document_profile) : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
     : plan.treehouse?.authority === "orchestrator" && !team.deploy_modes?.some((entry) => entry.id === "implement") ? structuredBaseline ? structuredLaunchNote(ORDINARY_NATIVE_EXECUTION_START, structuredBaseline.authority) : ORDINARY_NATIVE_EXECUTION_START : undefined });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     // The service authenticates durable terminal evidence, never a success-only

@@ -127,7 +127,7 @@ export interface ResolveExecutionPlanOptions {
   reviewCheckout?: ReviewCheckoutEvidence;
 }
 
-import { ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityBinding } from "../mode-capabilities.js";
+import { READONLY_DOCUMENT_PROFILE, hasModeResources, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityBinding } from "../mode-capabilities.js";
 
 export function withAuthoritativeRepositoryAdmission(
   plan: ExecutionPlan,
@@ -154,7 +154,11 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   const modeName = rogueOne ? ROGUE_ONE_MODE : mode?.id ?? "default";
   const invocationChannel: DeploymentInvocationChannel = options.request.invocationChannel ?? "cli";
   const capabilityBinding = options.modeCapabilityBinding ? parseModeCapabilityBinding(options.modeCapabilityBinding) : undefined;
-  if ((options.request.team === "analyst" || options.teamConfig.name === "analyst")
+  const readonlyProfile = mode?.document_profile === READONLY_DOCUMENT_PROFILE;
+  if (options.teamConfig.deploy_modes?.some(entry => entry.document_profile === READONLY_DOCUMENT_PROFILE) && !readonlyProfile) throw new ModeCapabilityError("CAPABILITY_PROFILE");
+  if (readonlyProfile && (rogueOne || capabilityBinding?.schemaVersion !== "pa-mode-capability-binding/v3" || options.request.force || options.allowDirtyInheritedBorrow
+    || options.runtime !== "pi" || !modeCapabilityRouteMatches(capabilityBinding, options.teamConfig.name, modeName))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
+  if (!readonlyProfile && (options.request.team === "analyst" || options.teamConfig.name === "analyst")
     && (!capabilityBinding || capabilityBinding.schemaVersion !== "pa-mode-capability-binding/v2" || options.request.team !== "analyst"
       || options.runtime !== "pi" || !modeCapabilityRouteMatches(capabilityBinding, options.teamConfig.name, modeName))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
   const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd(), {
@@ -170,8 +174,10 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout)) {
     throw new Error("repo-setup requires the Pi/PPA CLI setup mode, registered primary root and canonical objective; ticket, builder/review custody, override, background, resume and force are unsupported");
   }
-  const skillsDir = capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? resolve(capabilityBinding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
-  const skills = (rogueOne ? [] : mode?.skills ?? []).map((skill) => {
+  const skillsDir = hasModeResources(capabilityBinding) ? resolve(capabilityBinding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
+  // V3 skill bodies (including references) are captured in the primer. Do not
+  // hand mutable paths to Pi's independent skill loader; the adapter is unchanged.
+  const skills = (rogueOne || readonlyProfile ? [] : mode?.skills ?? []).map((skill) => {
     const resource = `skills/global/${skill.name}/SKILL.md`;
     const path = capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? resolve(capabilityBinding.configRoot, resource) : resolve(skillsDir, skill.name, "SKILL.md");
     if (capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? !capabilityBinding.resources.some(file => file.path === resource) : !existsSync(path)) {
@@ -187,8 +193,8 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ? resolveBranchTransitionPolicy(repository.repo, options.request.ticket)
     : undefined;
   const repositoryAdmission = resolveRepositoryAdmissionEvidence({
-    team: options.teamConfig.name,
-    mode: modeName,
+    team: readonlyProfile ? "requirements" : options.teamConfig.name,
+    mode: readonlyProfile ? "analyze" : modeName,
     canonicalRepoKey: repository.repoKey,
     canonicalRepoRoot: repository.repoRoot,
     worktreeRoot: repository.worktreeRoot,
@@ -256,9 +262,9 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     registryDbPath: options.registryDbPath ?? getRegistryDbPath(),
     terminalMarker: resolve(options.deploymentDir, "terminal.json"),
   });
-  if (options.modeCapabilityBinding && (options.runtime !== "pi" || !modeCapabilityRouteMatches(options.modeCapabilityBinding, options.teamConfig.name, modeName) || options.request.team !== options.teamConfig.name || options.request.resume || options.request.background || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout || options.mode?.document_profile !== "pa-document-policy/v1" || JSON.stringify(options.mode.capability_policy) !== JSON.stringify(options.modeCapabilityBinding.policy))) throw new Error("capability selection requires its authenticated fresh Pi document route");
-  if (capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" && (capabilityBinding.repoKey !== repository.repoKey || repository.worktreeKind !== "primary"
-    || options.environment.PA_TEAM !== "analyst" || options.environment.PA_MODE !== "analyze")) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  if (options.modeCapabilityBinding && (options.runtime !== "pi" || !modeCapabilityRouteMatches(options.modeCapabilityBinding, options.teamConfig.name, modeName) || options.request.team !== options.teamConfig.name || options.request.resume || options.request.background || options.treehouse || options.ticketWorktreeSelection || options.reviewCheckout || options.mode?.document_profile !== options.modeCapabilityBinding.profile || JSON.stringify(options.mode.capability_policy) !== JSON.stringify(options.modeCapabilityBinding.policy))) throw new Error("capability selection requires its authenticated fresh Pi document route");
+  if (hasModeResources(capabilityBinding) && (capabilityBinding.repoKey !== repository.repoKey || repository.worktreeKind !== "primary"
+    || !modeCapabilityRouteMatches(capabilityBinding, options.environment.PA_TEAM, options.environment.PA_MODE))) throw new ModeCapabilityError("CAPABILITY_BINDING");
   return Object.freeze({
     runtime: options.runtime,
     team: options.teamConfig.name,

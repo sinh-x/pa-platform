@@ -12,7 +12,7 @@ import { createHandoffTool } from "./handoff-tool.js";
 import { confirmationDocumentCaller, DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller } from "../document-session.js";
 import { createPaTicketIntakeTool, ticketIntakeFailure } from "./ticket-intake-tool.js";
 import { createPaCapabilitiesTool } from "./capability-tool.js";
-import { MODE_CAPABILITY_SESSION, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
+import { isModeCapabilitySession, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
 
@@ -82,7 +82,7 @@ export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall,
 }
 export function policyDocumentDeployment(): string | undefined {
   const id = process.env.PA_DEPLOYMENT_ID;
-  return id && getDeploymentEvents(id).some(event => event.event === "started" && event.note === MODE_CAPABILITY_SESSION) ? id : undefined;
+  return id && getDeploymentEvents(id).some(event => event.event === "started" && isModeCapabilitySession(event.note)) ? id : undefined;
 }
 export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
   const caller = authenticatePiDocumentCaller(context);
@@ -109,7 +109,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { if (policyDeploymentId) pi.setActiveTools?.([]); return; }
     const confirmationProfile = confirmationDocumentCaller(caller);
     const interactionsProfile = caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION;
-    const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile, caller.profile === MODE_CAPABILITY_SESSION && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"));
+    const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile, isModeCapabilitySession(caller.profile) && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"));
     if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
     if (caller.capabilities) document.description = "Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
     const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
@@ -122,7 +122,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
       tools.push(createPaCapabilitiesTool(context => {
         const current = authenticatePiDocumentCaller(context as PiWorkflowContext);
         return current.identitySha256 === identity && (current.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION
-          || (current.profile === MODE_CAPABILITY_SESSION && !!current.capabilities && capabilityToolSelected(current.capabilities.policy, "pa_capabilities")));
+          || (isModeCapabilitySession(current.profile) && !!current.capabilities && capabilityToolSelected(current.capabilities.policy, "pa_capabilities")));
       }));
     }
     if (confirmationProfile) pi.registerCommand?.("pa-approve", { description: "Request/reconcile one native package decision. Arguments: strict confirm or confirm-revoke JSON (same pa_document grammar).", handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext)) : runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext) });

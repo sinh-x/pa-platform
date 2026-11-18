@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { MODE_CAPABILITY_SESSION, modeCapabilityRouteMatches, modeCapabilityActor, parseModeCapabilityBinding } from "../mode-capabilities.js";
+import { isModeCapabilitySession, hasModeResources, modeCapabilitySessionMatches, modeCapabilityRouteMatches, modeCapabilityActor, parseModeCapabilityBinding } from "../mode-capabilities.js";
 import { getAiUsageDir, getTicketsDir } from "../paths.js";
 import { openDurableRegistryDatabase, openReadonlyRegistryDatabase } from "../registry/db.js";
 import { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
@@ -24,8 +24,8 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
   if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
   const events = rows.map(value => object(value, fields));
   const starts = events.filter(e => e.event === "started"), start = starts[0];
-  if (starts.length !== 1 || !start || start.note !== MODE_CAPABILITY_SESSION || start.runtime !== "pi" || start.binary !== "ppa"
-    || !["requirements", "analyst"].includes(String(start.team)) || start.mode !== "analyze" || start.repo !== intent.repository.root
+  if (starts.length !== 1 || !start || !isModeCapabilitySession(start.note) || start.runtime !== "pi" || start.binary !== "ppa"
+    || start.repo !== intent.repository.root
     || start.repo_root !== intent.repository.root || start.worktree_root !== intent.repository.root
     || start.rogue_one || start.builder_authority || start.treehouse_path || start.ticket_slot_id || start.repository_permit
     || start.parent_deployment_id || start.resumed_from_deployment_id || start.fallback || start.review_checkout || start.ticket_worktree_selection) documentReject("DOCUMENT_AUTHORITY");
@@ -34,8 +34,8 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
     raw = text(start.mode_capability_binding, undefined, 65536);
     binding = parseModeCapabilityBinding(strictJson(Buffer.from(raw), 65536));
   } catch { return documentReject("DOCUMENT_AUTHORITY"); }
-  if (JSON.stringify(binding) !== raw || !modeCapabilityRouteMatches(binding, start.team, start.mode)
-    || binding.schemaVersion === "pa-mode-capability-binding/v2" && binding.repoKey !== intent.repository.key || digest(raw) !== subject.selectionSha256
+  if (JSON.stringify(binding) !== raw || !modeCapabilitySessionMatches(binding, start.note) || !modeCapabilityRouteMatches(binding, start.team, start.mode)
+    || hasModeResources(binding) && binding.repoKey !== intent.repository.key || digest(raw) !== subject.selectionSha256
     || !["document.local-review", "document.handoff", "document.package"].every(id => binding.policy.allow.includes(id))) documentReject("DOCUMENT_AUTHORITY");
   // Original association may be retained after completion. Subsequent current
   // custody is deliberately NOT inferred from this historical proof.

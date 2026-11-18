@@ -6,7 +6,7 @@ import { parseTeamYamlContent } from "./yaml-parser.js";
 import { createModeCapabilityBinding, ModeCapabilityError, MODE_CAPABILITY_MAX_BYTES, MODE_CAPABILITY_PROFILE, type ModeCapabilityBinding, type ModeCapabilityPolicy, type ModeResourceSnapshot } from "./mode-capabilities.js";
 
 /** Native launch owner only. No caller path, revision, environment or permission override. */
-export function selectModeCapabilities(expected: ModeCapabilityPolicy, source = CommittedConfigSource.selected(), publicSelection?: { team: TeamConfig; repoKey: string }): { binding: ModeCapabilityBinding; resources?: ModeResourceSnapshot; assertCurrent(): void } {
+export function selectModeCapabilities(expected: ModeCapabilityPolicy, source = CommittedConfigSource.selected(), publicSelection?: { team: TeamConfig; repoKey: string; mode?: string }): { binding: ModeCapabilityBinding; resources?: ModeResourceSnapshot; assertCurrent(): void } {
   if (publicSelection) return selectAnalystResources(expected, source, publicSelection);
   const raw = source.read("teams/requirements.yaml");
   if (!raw || raw.byteLength > MODE_CAPABILITY_MAX_BYTES) throw new ModeCapabilityError("CAPABILITY_BINDING");

@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { lstatSync } from "node:fs";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
-import { MODE_CAPABILITY_SESSION, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
+import { modeCapabilitySessionMatches, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
 import { getDeploymentsByTicketId } from "../registry/index.js";
 import { assertWorkflowMarkerAvailable } from "../workflows/catalog.js";
 import { readTicketWorkflow } from "../workflows/public.js";
@@ -47,7 +47,7 @@ export function ticketStatusService(raw: string, owner: { store: TicketStore; au
   const check = () => {
     const current = owner.authenticate();
     try {
-      if (!isDeepStrictEqual(current, caller) || current.profile !== MODE_CAPABILITY_SESSION || !current.capabilities
+      if (!isDeepStrictEqual(current, caller) || !current.capabilities || !modeCapabilitySessionMatches(parseModeCapabilityBinding(current.capabilities), current.profile)
         || !/^d-[a-f0-9]{6}$/.test(current.deploymentId) || !capabilityToolSelected(parseModeCapabilityBinding(current.capabilities).policy, "pa_ticket_status")) return statusFail("TICKET_STATUS_SESSION");
     } catch { return statusFail("TICKET_STATUS_SESSION"); }
     const repos = loadReposYaml(), ticket = owner.store.get(request.ticket);

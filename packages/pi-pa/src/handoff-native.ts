@@ -4,7 +4,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
-  DocumentPackageError, HandoffPublicationService, HandoffReviewService, LocalHandoffReviewService, MODE_CAPABILITY_SESSION, RegistryHandoffReviewJournal,
+  DocumentPackageError, HandoffPublicationService, HandoffReviewService, LocalHandoffReviewService, isModeCapabilitySession, RegistryHandoffReviewJournal,
   RegistryReaderOpeningJournal, TicketStore, capabilityToolSelected, documentReject, getAiUsageDir, getDb, getTicketsDir,
   handoffBranchIntentSha, inspectFullDocumentReader, intakeNativeHandoffTicket, nativeHandoffPlanIdentity, nativeHandoffTicketVersion, openBoundDocumentReader, openDurableRegistryDatabase, parseWorkflowRequest,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow,
@@ -99,7 +99,7 @@ export interface PiHandoffContext extends PiWorkflowContext { readonly ui?: PiWo
 export function authenticatePiHandoffCaller(context: PiHandoffContext, signal?: AbortSignal) {
   if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   const caller = authenticatePiDocumentCaller(context);
-  if (caller.profile !== MODE_CAPABILITY_SESSION || !caller.capabilities || !caller.sessionId || !caller.handoffIdentitySha256 || !capabilityToolSelected(caller.capabilities.policy, "pa_handoff")) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+  if (!isModeCapabilitySession(caller.profile) || !caller.capabilities || !caller.sessionId || !caller.handoffIdentitySha256 || !capabilityToolSelected(caller.capabilities.policy, "pa_handoff")) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   return Object.freeze({ deploymentId: caller.deploymentId, sessionId: caller.sessionId, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket,
     identitySha256: caller.handoffIdentitySha256, selectionSha256: workflowDigest(JSON.stringify(caller.capabilities)) });
 }

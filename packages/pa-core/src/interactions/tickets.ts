@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { MODE_CAPABILITY_SESSION, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
+import { isModeCapabilitySession, modeCapabilitySessionMatches, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
 import { loadReposYaml } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import { sanitizeTextInput } from "../deploy/control.js";
@@ -22,8 +22,8 @@ export interface TicketInteractionCaller {
  * The policy route keeps its own identity; it is not impersonated as retained v4. */
 export function ticketInteractionProfileSelected(caller: { profile?: string; capabilities?: ModeCapabilityBinding }): boolean {
   if (caller.profile === TICKET_INTERACTIONS_PROFILE) return caller.capabilities === undefined;
-  if (caller.profile !== MODE_CAPABILITY_SESSION || !caller.capabilities) return false;
-  try { return capabilityToolSelected(parseModeCapabilityBinding(caller.capabilities).policy, "pa_ticket_intake"); }
+  if (!isModeCapabilitySession(caller.profile) || !caller.capabilities) return false;
+  try { const binding = parseModeCapabilityBinding(caller.capabilities); return modeCapabilitySessionMatches(binding, caller.profile) && capabilityToolSelected(binding.policy, "pa_ticket_intake"); }
   catch { return false; }
 }
 export type TicketInteractionCode = "TICKET_INTERACTION_INPUT" | "TICKET_INTERACTION_SESSION" | "TICKET_INTERACTION_PROJECT" | "TICKET_INTERACTION_SENSITIVE" | "TICKET_INTERACTION_UNCERTAIN" | "TICKET_INTERACTION_SELECTION" | "TICKET_INTERACTION_STALE" | "TICKET_INTERACTION_OWNER";
@@ -164,8 +164,8 @@ export function ticketIntakeInterface(profile: string = TICKET_INTERACTIONS_PROF
   return Object.freeze({
     schemaVersion: "pa-ticket-intake-capabilities/v1", scope: "intake-interface-only",
     supportedActions: Object.freeze(["capabilities", "inspect", "reuse", "create", "patch-planning"] as const),
-    requiredNativeProfile: profile === MODE_CAPABILITY_SESSION ? MODE_CAPABILITY_SESSION : TICKET_INTERACTIONS_PROFILE,
-    ...(profile === MODE_CAPABILITY_SESSION ? { requiredCapability: "ticket.intake" } : {}),
+    requiredNativeProfile: isModeCapabilitySession(profile) ? profile : TICKET_INTERACTIONS_PROFILE,
+    ...(isModeCapabilitySession(profile) ? { requiredCapability: "ticket.intake" } : {}),
     schemas: Object.freeze({ capabilities: ticketIntakeCapabilitiesRequestSchema, inspect: ticketIntakeInspectSchema, reuse: ticketIntakeReuseSchema, create: ticketIntakeRequestSchema, "patch-planning": ticketPlanningRequestSchema }),
     selection: Object.freeze({ effect: "read-only", version: "complete ticket snapshot bound to current native caller; not permission",
       reuse: "Exact selected ID/project plus inspected expectedVersion/title/type; no fuzzy matching, mutation, claim or primary reassociation.",

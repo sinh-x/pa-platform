@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
-import { appendRegistryEvent } from "../registry/index.js";
-import { MODE_CAPABILITY_SESSION, createModeCapabilityBinding, parseModeCapabilityBinding, parseModeCapabilityPolicy } from "../mode-capabilities.js";
+import { appendRegistryEvent, closeDb } from "../registry/index.js";
+import { MODE_CAPABILITY_SESSION, READONLY_DOCUMENT_SESSION, createModeCapabilityBinding, parseModeCapabilityBinding, parseModeCapabilityPolicy } from "../mode-capabilities.js";
 import { planNativeHandoffTicket, nativeHandoffTicketVersion, type NativeHandoffPlanningHost } from "../documents/handoff-planning.js";
 import { verifyLocalReviewOrigin } from "../documents/local-review.js";
 import { assertLocalHandoffCaller } from "../documents/handoff-preflight.js";
 import { handoffBranchIntentSha, type LocalHandoffReviewSubject } from "../documents/handoff-contract.js";
 import { digest } from "../workflows/contracts.js";
 
-test("PAP-316 public origin, effective plan attribution and same-version continuation remain separate authenticated facts", () => {
+for (const generic of [false, true]) test(`${generic ? "PAP-318 v3" : "PAP-316 v2"}: public origin, effective plan attribution and same-version continuation remain separate authenticated facts`, () => {
+  const publicTeam = generic ? "evidence-lab" : "analyst", publicMode = generic ? "report" : "analyze";
+  closeDb();
   const f = documentRuntimeFixture();
   try {
     process.env.PA_REGISTRY_DB = f.db.name;
@@ -18,11 +20,11 @@ test("PAP-316 public origin, effective plan attribution and same-version continu
     execFileSync("git", ["init", "-b", "develop"], { cwd: f.repo, stdio: "pipe" });
     execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Disposable local develop"], { cwd: f.repo, stdio: "pipe" });
     const policy = parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: ["document.handoff", "document.local-review", "document.package"] });
-    const binding = parseModeCapabilityBinding({ schemaVersion: "pa-mode-capability-binding/v2", configRoot: f.config, configRevision: "a".repeat(40), resourcePath: "teams/analyst.yaml", resourceSha256: "b".repeat(64),
-      profile: "pa-document-policy/v1", policy, repoKey: "example", identity: { publicTeam: "analyst", publicMode: "analyze", effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" },
-      resources: [{ path: "teams/analyst.yaml", sha256: "b".repeat(64) }] });
-    const raw = JSON.stringify(binding), started = { deployment_id: "d-316201", event: "started" as const, team: "analyst", mode: "analyze", runtime: "pi" as const, binary: "ppa" as const,
-      timestamp: "2026-11-17T00:00:00Z", repo_root: f.repo, repo: f.repo, worktree_root: f.repo, ticket_id: "EX-1", note: MODE_CAPABILITY_SESSION, mode_capability_binding: raw };
+    const binding = parseModeCapabilityBinding({ schemaVersion: generic ? "pa-mode-capability-binding/v3" : "pa-mode-capability-binding/v2", configRoot: f.config, configRevision: "a".repeat(40), resourcePath: `teams/${publicTeam}.yaml`, resourceSha256: "b".repeat(64),
+      profile: generic ? "pa-readonly-document/v1" : "pa-document-policy/v1", policy, repoKey: "example", identity: { publicTeam, publicMode, effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" },
+      resources: [{ path: `teams/${publicTeam}.yaml`, sha256: "b".repeat(64) }] });
+    const raw = JSON.stringify(binding), started = { deployment_id: "d-316201", event: "started" as const, team: publicTeam, mode: publicMode, runtime: "pi" as const, binary: "ppa" as const,
+      timestamp: "2026-11-17T00:00:00Z", repo_root: f.repo, repo: f.repo, worktree_root: f.repo, ticket_id: "EX-1", note: generic ? READONLY_DOCUMENT_SESSION : MODE_CAPABILITY_SESSION, mode_capability_binding: raw };
     appendRegistryEvent(started);
     f.store.update("EX-1", { title: "Stable disposable identity fixture" });
     const caller = { deploymentId: started.deployment_id, sessionId: "disposable-origin", repoKey: "example", repoRoot: f.repo, ticket: "EX-1", selectionSha256: digest(raw), identitySha256: "a".repeat(64) };
@@ -36,12 +38,12 @@ test("PAP-316 public origin, effective plan attribution and same-version continu
     // Only disposable fixture rows are corrupted to prove crossed identities fail.
     f.db.prepare("UPDATE registry_events SET team='requirements' WHERE deployment_id=? AND event='started'").run(caller.deploymentId);
     assert.throws(() => verifyLocalReviewOrigin(f.db, f.store, subject, planned.intent), /DOCUMENT_AUTHORITY/);
-    f.db.prepare("UPDATE registry_events SET team='analyst' WHERE deployment_id=? AND event='started'").run(caller.deploymentId);
+    f.db.prepare("UPDATE registry_events SET team=? WHERE deployment_id=? AND event='started'").run(publicTeam, caller.deploymentId);
     assert.throws(() => assertLocalHandoffCaller(f.db, subject, planned.intent, { ...caller, deploymentId: "d-316202", sessionId: "continuation" }), /DOCUMENT_/);
     // Linux PIDs are bounded well below this value. The owner independently
     // verifies ESRCH; completion prose alone is not proof of process death.
-    appendRegistryEvent({ deployment_id: caller.deploymentId, event: "pid", timestamp: "2026-11-17T00:01:00Z", team: "analyst", pid: 2147483000 });
-    appendRegistryEvent({ deployment_id: caller.deploymentId, event: "completed", timestamp: "2026-11-17T00:02:00Z", team: "analyst", status: "success", summary: "Disposable source origin ended" });
+    appendRegistryEvent({ deployment_id: caller.deploymentId, event: "pid", timestamp: "2026-11-17T00:01:00Z", team: publicTeam, pid: 2147483000 });
+    appendRegistryEvent({ deployment_id: caller.deploymentId, event: "completed", timestamp: "2026-11-17T00:02:00Z", team: publicTeam, status: "success", summary: "Disposable source origin ended" });
     appendRegistryEvent({ ...started, deployment_id: "d-316202" });
     const continuation = { ...caller, deploymentId: "d-316202", sessionId: "continuation", identitySha256: "d".repeat(64) };
     assert.doesNotThrow(() => assertLocalHandoffCaller(f.db, subject, planned.intent, continuation));
@@ -50,5 +52,5 @@ test("PAP-316 public origin, effective plan attribution and same-version continu
     f.db.prepare("UPDATE deployments SET team='requirements',mode_capability_binding=? WHERE deployment_id=?").run(historical, continuation.deploymentId);
     assert.throws(() => assertLocalHandoffCaller(f.db, subject, planned.intent, { ...continuation, selectionSha256: digest(historical) }), /DOCUMENT_AUTHORITY/);
     verifyLocalReviewOrigin(f.db, f.store, subject, planned.intent);
-  } finally { f.close(); }
+  } finally { closeDb(); f.close(); }
 });
