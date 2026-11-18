@@ -62,7 +62,7 @@ async function run() {
       }
     };
     for (const path of [selection.bootstrapFile, selection.selectionFile, selection.entryFile, selection.hostModule,
-      selection.extensionModule, selection.sourceModule, selection.publicationModule, selection.addonFile, node]) pin(path);
+      selection.extensionModule, selection.sourceModule, selection.publicationModule, selection.promptModule, selection.addonFile, node]) pin(path);
     pin(selection.packageRoot, true);
     const assertStable = () => {
       const now = incarnation("self");
@@ -133,7 +133,15 @@ async function run() {
       try { return fs.realpathSync(path) !== selection.extensionModule; }
       catch { return true; } // Preserve Pi's own missing-resource diagnostics.
     };
-    try { await host.main(launchArgs, { extensionFactories: [factory], paReadPublication: publish, paExtensionPathFilter }); }
+    // Expand only after native caller/incarnation/source/argv agreement. The raw
+    // kernel arguments stay bounded, and the unchanged Pi parser receives the
+    // original positional prompt in memory, without @file wrapping or trimming.
+    const prompt = await import(pathToFileURL(selection.promptModule).href);
+    binding.assertStable();
+    let initialArgs;
+    try { initialArgs = prompt.consumePiPromptArgs(launchArgs, process.env.PA_DEPLOYMENT_DIR); }
+    catch { requireFact(false, "PROMPT_INPUT"); }
+    try { await host.main(initialArgs, { extensionFactories: [factory], paReadPublication: publish, paExtensionPathFilter }); }
     catch (error) { throw factoryFailure ?? error; }
   } finally {
     active = false;
@@ -149,6 +157,6 @@ async function run() {
 try { await run(); }
 catch (error) {
   const cause = bindingCauses.get(error) ?? "RUNTIME_SETUP";
-  process.stderr.write(`Pi runtime unavailable through the selected host.\nCondition: The selected runtime could not complete startup or execution.\nSource: Fixed native Pi host binding (SELECTED_HOST_BINDING).\nReason: Current process, immutable build, host API, reader registration or lifetime evidence was unavailable or inconsistent (${cause}).\nCorrection: Ask the runtime owner to inspect this existing launch and selected build. Impact: none. Actor: agent or operator. New approval: not required to ask. Prerequisite: preserve the original deployment and process evidence; do not copy denied content.\nResume Action: Retry only after the owner corrects the actual binding. Reconcile any existing operation before requesting another launch.\n`);
+  process.stderr.write(`Pi runtime unavailable through the selected host.\nCondition: The selected runtime could not complete startup or execution.\nSource: Fixed native Pi host binding (SELECTED_HOST_BINDING).\nReason: Current process, immutable build, prompt input, host API, reader registration or lifetime evidence was unavailable or inconsistent (${cause}).\nCorrection: Ask the runtime owner to inspect this existing launch and selected build. Impact: none. Actor: agent or operator. New approval: not required to ask. Prerequisite: preserve the original deployment and process evidence; do not copy denied content.\nResume Action: Retry only after the owner corrects the actual binding. Reconcile any existing operation before requesting another launch.\n`);
   process.exitCode = 1;
 }

@@ -33,7 +33,7 @@ try {
   assert.equal(direct.ok, true); assert.notEqual(registered.isError, true);
   const anchor = JSON.parse(readFileSync(process.env.PA_DEPLOYMENT_DIR + '/pi-process-identity.json', 'utf8'));
   assert.equal(anchor.processFingerprint.pid, process.pid);
-  writeFileSync(process.env.IDENTITY_RESULT, JSON.stringify({ok:true, pid:process.pid, team:process.env.PA_TEAM, caller, active, direct, registered}));
+  writeFileSync(process.env.IDENTITY_RESULT, JSON.stringify({ok:true, pid:process.pid, team:process.env.PA_TEAM, primer:process.argv.at(-1), caller, active, direct, registered}));
 } catch (error) {
   writeFileSync(process.env.IDENTITY_RESULT, JSON.stringify({ok:false, message:error.message, stack:error.stack})); process.exitCode=1;
 }
@@ -104,7 +104,8 @@ test("PAP-316 actual adapter command loads V2 skills only from captured primer, 
   let command: string[] | undefined;
   await deployWithPi({ team: "analyst", repo: "example" }, adapter(f, { command: args => { command = args; } }));
   assert.ok(command); assert.ok(command.includes("--no-skills")); assert.ok(!command.includes("--skill"), "mutable selected checkout must not be another skill loader");
-  const primer = command.at(-1)!;
+  assert.ok(command.at(-1)!.startsWith("pa-prompt-v1:"), "the kernel receives a bounded reference, not the resource bodies");
+  const primer = JSON.parse(readFileSync(f.result, "utf8")).primer;
   assert.match(primer, /Captured selected method/); assert.match(primer, /Captured reference method/);
   assert.match(primer, /Captured reference-only resource: skills\/global\/reference\/SKILL.md/);
   assert.doesNotMatch(primer, /<global-skill name="reference"/);

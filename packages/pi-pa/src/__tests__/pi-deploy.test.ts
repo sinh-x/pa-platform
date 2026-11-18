@@ -28,6 +28,14 @@ import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { collectContext, initialContextSnapshot } from "../pi-extension/context-state.js";
+
+function consumePromptInChild(args: readonly string[], root: string): string {
+  const preload = new URL("../../dist/prompt-preload.js", import.meta.url);
+  return JSON.parse(execFileSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.argv.at(-1)))", "--", ...args], {
+    encoding: "utf8", maxBuffer: 20 * 1024 * 1024,
+    env: { PA_DEPLOYMENT_DIR: root, NODE_OPTIONS: `--import=${preload.href}` },
+  }));
+}
 import { collectGitContext, gitContextStatePath } from "../pi-extension/git-context-state.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
 import { assertBuilderExclusiveRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
@@ -3226,7 +3234,7 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
     validationEvidenceRoot: join(root, "validation-evidence"),
   };
   try {
-    const ordinary = `ordinary primer\nReview Authorization ID: ${authorizationId}\n`;
+    const ordinary = `${"x".repeat(635831)}\nordinary primer\nReview Authorization ID: ${authorizationId}\n`;
     writeFileSync(primerPath, ordinary);
     assert.throws(
       () => buildPiBackgroundArgs(config, reviewerContext),
@@ -3238,7 +3246,7 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
     const reviewerArgs = buildPiBackgroundArgs(config, reviewerContext);
     assert.equal(reviewerArgs.filter(arg => arg === "--no-extensions").length, 1);
     assert.equal(reviewerArgs.filter(arg => arg === "--no-skills").length, 1);
-    const reviewerInput = reviewerArgs.at(-1)!;
+    const reviewerInput = consumePromptInChild(reviewerArgs, root);
     assert.equal(redacted.includes(authorizationId), false);
     assert.equal(reviewerInput.split(authorizationId).length - 1, 1);
     const protectedStart = reviewerInput.indexOf("<protected-review-metadata>");
@@ -3509,7 +3517,7 @@ test("historical Pi downstream seam constructs validation before reviewer and re
           process.env["PA_WORKTREE_ROOT"] = repo;
           runnerCompletion = runPiBackgroundRunner(config, { supervision: {
             spawnProcess: ((_command: string, args: readonly string[]) => {
-              reviewerInput = args.at(-1) ?? "";
+              reviewerInput = consumePromptInChild(args, getDeployPaths(config.deploymentId).deployDir);
               return reviewer as never;
             }) as never,
             onSpawn: () => {

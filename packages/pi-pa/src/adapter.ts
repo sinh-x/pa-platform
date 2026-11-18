@@ -15,6 +15,7 @@ import { browserLifecycleEnvironment, cleanupManagedBrowser } from "./axi-browse
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
 import { createRuntimeStartGate } from "./runtime-start-gate.js";
+import { cleanupPiPromptArgs, piPromptCleanupDiagnostic, piPromptDiagnostic, preparePiPrompt, readPiPrimer } from "./prompt-transport.js";
 import { awaitSelectedPiChild, resolveSelectedPiLaunch, selectedPiEnvironment } from "./selected-pi-launch.js";
 import { assertSelectedPiResumeHost, recordSelectedPiLaunch, selectedPiResumeDiagnostic } from "./selected-pi-resume.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
@@ -306,7 +307,6 @@ export class PiAdapter implements RuntimeAdapter {
       }
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
     }
-    args.push(readFileSync(opts.primerPath, "utf8"));
     const piEnv = piRegistryEnvironment(env);
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
     if (protectedValidationLaunch && (interactive || opts.mode !== "background" || this.runCommand)) {
@@ -315,8 +315,13 @@ export class PiAdapter implements RuntimeAdapter {
       return failure(message);
     }
     if (opts.beforeRuntimeStart && (this.runCommand || !interactive)) return failure("native runtime-start gate requires the foreground production adapter");
+    // Background owns its snapshot in the persistent runner, not this launcher.
+    if (opts.mode !== "background" || this.runCommand) {
+      try { args.push(preparePiPrompt(opts.primerPath)); }
+      catch { return failure(piPromptDiagnostic()); }
+    }
     const result = this.runCommand
-      ? await this.runCommand(args, { cwd, env: piEnv })
+      ? await finishPiPromptLifecycle(Promise.resolve().then(() => this.runCommand!(args, { cwd, env: piEnv })), args, dirname(opts.primerPath))
       : interactive
         ? await runPiForeground(args, cwd, piEnv, opts, id, secrets, this.supervision, startup)
         : opts.mode === "background"
@@ -677,9 +682,14 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const writeLog = supervision.writeLog ?? writeFileSync;
   // Deployment lifetime is unbounded. Readiness, shutdown and cleanup retain
   // their own finite safety deadlines; legacy opts.timeoutMs is not a kill timer.
-  const selected = resolveSelectedPiLaunch();
-  const child = spawnProcess(selected?.entryFile ?? "pi", selected ? ["--pa-managed-child", ...args] : args,
-    { cwd, env: selected ? selectedPiEnvironment(selected, env) : env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let selected: ReturnType<typeof resolveSelectedPiLaunch>;
+  let child: ChildProcess;
+  try {
+    selected = resolveSelectedPiLaunch();
+    env = piPromptEnvironment(env, Boolean(selected));
+    child = spawnProcess(selected?.entryFile ?? "pi", selected ? ["--pa-managed-child", ...args] : args,
+      { cwd, env: selected ? selectedPiEnvironment(selected, env) : env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  } catch { return Promise.resolve(piPromptStartFailure(args, dirname(opts.primerPath), false)); }
   let runtimePid = child.pid;
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
@@ -775,7 +785,35 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       requestCleanup(1, error instanceof Error ? error : new Error(String(error)));
     }
   });
-  return finishBrowserLifecycle(completion, env);
+  return finishPiPromptLifecycle(finishBrowserLifecycle(completion, env), args, dirname(opts.primerPath));
+}
+
+function piPromptEnvironment(env: NodeJS.ProcessEnv, selected: boolean): NodeJS.ProcessEnv {
+  if (selected) return env; // The immutable selected host owns its in-process expansion.
+  const preload = new URL("../dist/prompt-preload.js", import.meta.url);
+  if (!existsSync(fileURLToPath(preload))) throw new Error(piPromptDiagnostic());
+  return { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${preload.href}` };
+}
+
+function piPromptStartFailure(args: readonly string[], root: string, uncertain: boolean): PiCommandResult {
+  if (!uncertain) {
+    try { cleanupPiPromptArgs(args, root); }
+    catch { uncertain = true; }
+  }
+  return { status: 1, stdout: "", stderr: uncertain ? piPromptCleanupDiagnostic() :
+    "Pi runtime did not start.\nCondition: Runtime launch failed before a child was established.\nSource: Launcher setup and OS process creation (PI_PROCESS_START).\nReason: The selected executable, preload or native start gate could not be prepared or spawned; the unconsumed prompt was removed.\nCorrection: Ask the runtime owner to inspect this original launch. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve original launch evidence.\nResume Action: Correct the original launch prerequisite before requesting another start; admission runs again.",
+    metadata: { cleanupVerified: !uncertain } };
+}
+
+async function finishPiPromptLifecycle(completion: Promise<PiCommandResult>, args: readonly string[], root: string): Promise<PiCommandResult> {
+  let result: PiCommandResult;
+  try { result = await completion; }
+  catch { return piPromptStartFailure(args, root, true); }
+  // Unknown process termination retains the input; it must not become a successful cleanup.
+  if (result.metadata?.["cleanupVerified"] === false) return result;
+  try { cleanupPiPromptArgs(args, root); }
+  catch { return { ...result, status: 1, stderr: piPromptCleanupDiagnostic(), metadata: { ...result.metadata, cleanupVerified: false } }; }
+  return result;
 }
 
 /** Both the foreground PTY and persistent background runner await owned browser
@@ -958,9 +996,9 @@ export function buildPiBackgroundArgs(config: PiBackgroundConfig, reviewerContex
     for (const skill of config.skills) args.push("--skill", skill);
     if (config.trustedExtension) args.push("--extension", config.trustedExtension);
   }
-  const primer = readFileSync(config.primerPath, "utf8");
+  const primer = readPiPrimer(config.primerPath);
   if (!reviewerContext) {
-    args.push(primer);
+    args.push(preparePiPrompt(config.primerPath));
     return args;
   }
 
@@ -983,7 +1021,7 @@ export function buildPiBackgroundArgs(config: PiBackgroundConfig, reviewerContex
   if (occurrences(reviewerInput, authorizationId) !== 1) {
     throw new Error("protected reviewer input must contain the one-use authorization exactly once");
   }
-  args.push(reviewerInput);
+  args.push(preparePiPrompt(config.primerPath, reviewerInput));
   return args;
 }
 
@@ -1155,10 +1193,19 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
-  const selected = resolveSelectedPiLaunch();
-  const gate = opts.beforeRuntimeStart && !selected ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
-  const pty = (supervision.spawnPty ?? spawnPty)(selected?.entryFile ?? gate?.file ?? "pi", selected ? ["--pa-managed-child", ...args] : gate?.args ?? args,
-    { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env: selected ? selectedPiEnvironment(selected, env) : gate?.env ?? env });
+  let selected: ReturnType<typeof resolveSelectedPiLaunch>;
+  let gate: ReturnType<typeof createRuntimeStartGate> | null;
+  let pty: IPty;
+  let spawnAttempted = false;
+  try {
+    selected = resolveSelectedPiLaunch();
+    env = piPromptEnvironment(env, Boolean(selected));
+    gate = opts.beforeRuntimeStart && !selected ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
+    const childEnv = selected ? selectedPiEnvironment(selected, env) : gate?.env ?? env;
+    spawnAttempted = true;
+    pty = (supervision.spawnPty ?? spawnPty)(selected?.entryFile ?? gate?.file ?? "pi", selected ? ["--pa-managed-child", ...args] : gate?.args ?? args,
+      { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env: childEnv });
+  } catch { return Promise.resolve(piPromptStartFailure(args, deployDir, spawnAttempted)); }
   let runtimePid = pty.pid;
   const input = supervision.input ?? process.stdin;
   const output = supervision.output ?? process.stdout;
@@ -1383,7 +1430,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       void monitorProcessExit();
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
-  return finishBrowserLifecycle(completion, env);
+  return finishPiPromptLifecycle(finishBrowserLifecycle(completion, env), args, dirname(opts.primerPath));
 }
 function deliverToPiSinkThenObserve(value: string, sink: (original: string) => void, observe: (original: string) => void): void {
   sink(value);

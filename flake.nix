@@ -332,6 +332,7 @@
                 extensionModule = "$share/packages/pi-pa/dist/pi-extension/index.js";
                 sourceModule = "$share/packages/pa-core/dist/local-source-file.js";
                 publicationModule = "$share/packages/pi-pa/dist/pi-extension/read-publication.js";
+                promptModule = "$share/packages/pi-pa/dist/prompt-transport.js";
                 addonFile = "$share/native-addons/pi-node-24/better_sqlite3.node";
               }});
               EOF
