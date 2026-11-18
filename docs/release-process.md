@@ -12,6 +12,14 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-318 integration candidate restores plain **`0.1.174`** across the four
+shared manifests, matching origin/develop `407a87047fdf801b7fecc44a06687c232bbc37a2`
+observed on 2026-11-19. Sinh reported the trial working well and explicitly
+requested PR merge into develop and ticket/session closure. This records operator
+feedback and integration direction, not agent-verified exact installed provenance
+or production PAPC enablement. The labelled `3316758` trial and existing installed
+artifacts are unchanged; normal develop auto-patch versioning resumes after merge.
+
 The PAP-318 worktree trial label is **`0.1.174-pap318.1`** across the four shared
 manifests, selected by the operator for build identification. `runtime-host`
 remains independently versioned. Build from the clean exact label commit and
