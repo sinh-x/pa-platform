@@ -12,6 +12,18 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-318 worktree trial label is **`0.1.174-pap318.1`** across the four shared
+manifests, selected by the operator for build identification. `runtime-host`
+remains independently versioned. Build from the clean exact label commit and
+verify `packageVersion` and `sourceSha` in
+`share/pa-platform/review-runtime-provenance.json` separately from the readable
+label. This version-only change does not install or activate a package, enable
+PAPC profiles, retry a live ticket, create a release/tag, or establish installed
+qualification or human acceptance. Config pins, dependencies, lockfile and Nix
+dependency hashes are unchanged. Restore the current plain develop version before
+normal integration. PAP-318 source/process evidence remains in the
+[implementation report](../plans/2026-11-18-PAP-318-pi-primer-file-transport/phase-4-evidence.md).
+
 The PAP-316 source integration candidate restores plain **`0.1.173`** across the
 four shared manifests to match current develop and retain its normal auto-patch
 flow. The separately installed `0.1.173-pap316.1` trial and its provenance remain
