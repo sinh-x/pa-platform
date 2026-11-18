@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { PiAdapter } from "../../adapter.js";
 
@@ -27,16 +28,17 @@ const outputByShape: Record<OutputShape, string> = {
 };
 
 const dir = mkdtempSync(join(tmpdir(), "ppa-open-stdin-child-"));
-const primer = join(dir, "primer.md");
+const primer = join(dir, "primer.txt");
 writeFileSync(primer, "open stdin lifecycle fixture");
 const pty = new ForegroundFixturePty();
+let childEnv: NodeJS.ProcessEnv | undefined;
 const readableFlowingBefore = process.stdin.readableFlowing;
 const adapter = new PiAdapter({
   cwd: dir,
   versionProbe: () => "0.84.4",
   nativeRegistryProbe: () => undefined,
   supervision: {
-    spawnPty: () => pty as never,
+    spawnPty: (_file, _args, options) => { childEnv = options.env; return pty as never; },
     input: process.stdin,
     output: process.stdout,
     processExists: () => true,
@@ -45,7 +47,17 @@ const adapter = new PiAdapter({
 
 try {
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-open-stdin", mode: "foreground", sessionId: "open-stdin-session" });
-  setTimeout(() => {
+  setTimeout(async () => {
+    if (process.env.PAP315_FIXTURE_HERDR_REPORT === "1" && childEnv?.HERDR_SOCKET_PATH) {
+      await new Promise<void>((resolve, reject) => {
+        const socket = connect(childEnv!.HERDR_SOCKET_PATH!);
+        socket.on("error", reject);
+        socket.on("connect", () => socket.write(`${JSON.stringify({ id: "fixture-report", method: "pane.report_agent", params: {
+          pane_id: childEnv!.HERDR_PANE_ID, source: "herdr:pi", agent: "pi", seq: 41, state: "idle", agent_session_id: "open-stdin-session",
+        } })}\n`));
+        socket.on("data", () => { socket.destroy(); resolve(); });
+      });
+    }
     pty.emitData(outputByShape[outputShape]);
     process.stdout.write(`${JSON.stringify({
       type: "child-exit-evidence",
