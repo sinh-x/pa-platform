@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readProcessFingerprint } from "@pa-platform/pa-core";
-import { cleanupPiPromptArgs, consumePiPromptArgs, piPromptDiagnostic, PI_PROMPT_MAX_BYTES, preparePiPrompt } from "../prompt-transport.js";
+import { appendRegistryEvent, closeDb, queryDeploymentStatus, readProcessFingerprint } from "@pa-platform/pa-core";
+import { cleanupPiPromptArgs, consumePiPromptArgs, PiPromptCleanupError, piPromptDiagnostic, PI_PROMPT_MAX_BYTES, preparePiPrompt } from "../prompt-transport.js";
 import { createRuntimeStartGate } from "../runtime-start-gate.js";
 import test from "node:test";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { PiAdapter } from "../adapter.js";
+import { PiAdapter, readPiBackgroundConfig, readPiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
+import { runPiBackgroundRunner } from "../background-runner.js";
 
 const incident = "x".repeat(635831);
 const digest = (body: string) => createHash("sha256").update(body).digest("hex");
@@ -70,6 +71,117 @@ for (const variant of ["missing", "changed", "replaced", "symlink", "hardlink", 
   });
 }
 function dirnameForTest(root: string): string { return join(root, "foreign"); }
+
+type PreparationFault = "exclusive-open" | "write" | "fsync" | "close" | "replacement" | "cleanup" | "startup-cleanup";
+async function preparationFault(variant: PreparationFault, run: () => void | Promise<void>): Promise<void> {
+  const original = { open: fs.openSync, write: fs.writeFileSync, sync: fs.fsyncSync, close: fs.closeSync, unlink: fs.unlinkSync, rename: fs.renameSync };
+  const inputs = new Map<number, string>(); let fired = false;
+  const fault = () => Object.assign(new Error("synthetic preparation failure"), { code: "EIO" });
+  try {
+    fs.openSync = (path, flags, mode) => {
+      if (String(path).endsWith(".input") && typeof flags === "number" && (flags & fs.constants.O_CREAT)) {
+        if (variant === "exclusive-open") { original.write(path, "foreign replacement", { mode: 0o400 }); throw Object.assign(fault(), { code: "EEXIST" }); }
+        const fd = original.open(path, flags, mode); inputs.set(fd, String(path)); return fd;
+      }
+      return original.open(path, flags, mode);
+    };
+    fs.writeFileSync = (file, data, options) => {
+      if (variant === "write" && typeof file === "number" && inputs.has(file) && !fired) { fired = true; original.write(file, "partial"); throw fault(); }
+      return original.write(file, data, options);
+    };
+    fs.fsyncSync = fd => {
+      if (["fsync", "replacement", "cleanup"].includes(variant) && inputs.has(fd) && !fired) {
+        fired = true; const path = inputs.get(fd)!;
+        if (variant === "replacement") { original.rename(path, `${path}.original`); original.write(path, "foreign replacement", { mode: 0o400 }); }
+        throw fault();
+      }
+      return original.sync(fd);
+    };
+    fs.closeSync = fd => {
+      const input = inputs.delete(fd); original.close(fd);
+      if (variant === "close" && input && !fired) { fired = true; throw fault(); }
+    };
+    fs.unlinkSync = path => {
+      if ((variant === "cleanup" || variant === "startup-cleanup") && String(path).includes(".cleanup-") && String(path).endsWith("/input")) throw Object.assign(fault(), { code: "EACCES" });
+      return original.unlink(path);
+    };
+    syncBuiltinESMExports(); await run();
+  } finally {
+    fs.openSync = original.open; fs.writeFileSync = original.write; fs.fsyncSync = original.sync; fs.closeSync = original.close; fs.unlinkSync = original.unlink; fs.renameSync = original.rename; syncBuiltinESMExports();
+    for (const fd of inputs.keys()) { try { original.close(fd); } catch { /* an injected close may already have completed */ } }
+  }
+}
+
+for (const variant of ["exclusive-open", "write", "fsync", "close", "replacement", "cleanup"] as const) test(`PAP-318 preparation ${variant} failure preserves owned cleanup state and foreign evidence`, async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap318-preparation-"));
+  try {
+    const primer = join(root, "primer.md"); writeFileSync(primer, "ordinary");
+    await preparationFault(variant, () => {
+      assert.throws(() => preparePiPrompt(primer, "ordinary\n<protected-review-metadata>synthetic-private-context</protected-review-metadata>"), error => {
+        assert.ok(error instanceof Error); assert.doesNotMatch(error.message, /synthetic-private-context/);
+        assert.equal(error instanceof PiPromptCleanupError, ["close", "replacement", "cleanup"].includes(variant)); return true;
+      });
+    });
+    if (variant === "exclusive-open") assert.equal(fs.readFileSync(snapshotPath(root), "utf8"), "foreign replacement");
+    if (variant === "replacement") {
+      assert.ok(readdirSync(root).some(path => path.endsWith(".original")));
+      const claim = readdirSync(root).find(path => path.includes(".cleanup-"))!;
+      assert.equal(fs.readFileSync(join(root, claim, "input"), "utf8"), "foreign replacement");
+    }
+    if (["write", "fsync", "close"].includes(variant)) assert.deepEqual(readdirSync(root), ["primer.md"]);
+    if (variant === "cleanup") assert.ok(readdirSync(root).some(path => path.includes(".cleanup-")));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("PAP-318 adapter and persistent supervisor truthfully report uncertain preparation cleanup without spawning", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap318-preparation-owner-")), prior = { ...process.env }; closeDb();
+  try {
+    const primerPath = join(root, "primer.md"); writeFileSync(primerPath, incident); let spawns = 0;
+    const adapter = new PiAdapter({ cwd: root, env: {}, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: { spawnProcess() { spawns++; throw Error("must not spawn"); } } });
+    await preparationFault("cleanup", async () => {
+      const result = await adapter.spawn({ primerPath, deployId: "d-318aaa", mode: "dry-run" });
+      assert.equal(result.exitCode, 1); assert.equal(result.metadata?.cleanupVerified, false); assert.match(result.errorMessage!, /PI_PROMPT_CLEANUP/);
+    });
+    for (const key of Object.keys(process.env)) if (key.startsWith("PA_")) delete process.env[key];
+    process.env.PA_AI_USAGE_HOME = root; process.env.PA_REGISTRY_DB = join(root, "registry.db");
+    appendRegistryEvent({ deployment_id: "d-318bbb", team: "builder", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+    const config: PiBackgroundConfig = { schemaVersion: 1, ownershipToken: "inert-owner", deploymentId: "d-318bbb", team: "builder", cwd: root, primerPath, logFile: join(root, "pi.log"), sessionId: "inert-session", managed: false, skills: [] };
+    await preparationFault("cleanup", () => runPiBackgroundRunner(config, { supervision: { spawnProcess() { spawns++; throw Error("must not spawn"); } } }));
+    const ownership = readPiSupervisorOwnership(join(root, "pi-supervisor.json"));
+    assert.match(ownership?.error ?? "", /PI_PROMPT_CLEANUP/); assert.equal(ownership?.terminalStatus, "failed");
+    assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "crashed", "retain the existing registry failure-event contract");
+    assert.equal(ownership?.cleanupVerified, false);
+    assert.equal(readdirSync(root).filter(path => path.includes(".cleanup-")).length, 2);
+    // Exercise the OUTER background adapter too: a known-dead runner must not
+    // overwrite the real supervisor's retained-input fact with process cleanup.
+    assert.equal(spawns, 0);
+    let admittedChildren = 0;
+    for (const [variant, deployId] of [["cleanup", "d-318ccc"], ["startup-cleanup", "d-318ddd"]] as const) {
+      const outerRoot = join(root, "deployments", deployId); mkdirSync(outerRoot, { recursive: true });
+      const outerPrimer = join(outerRoot, "primer.md"); writeFileSync(outerPrimer, incident);
+      appendRegistryEvent({ deployment_id: deployId, team: "builder", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+      let runnerDone: Promise<void> | undefined;
+      const outer = new PiAdapter({ cwd: root, env: { PA_TEAM: "builder" }, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+        supervision: {
+          launchBackgroundRunner(_path, configPath) {
+            runnerDone = runPiBackgroundRunner(readPiBackgroundConfig(configPath), { supervision: {
+              spawnProcess() { spawns++; throw Error("synthetic no-child spawn failure"); }, onSpawn() { admittedChildren++; },
+            } });
+            return Object.assign(new EventEmitter(), { pid: 830318, unref() {} }) as never;
+          }, processGroupGone: () => true, sendSignal() {},
+        } });
+      await preparationFault(variant, async () => {
+        const result = await outer.spawn({ primerPath: outerPrimer, deployId, mode: "background" });
+        await runnerDone;
+        assert.equal(result.exitCode, 1); assert.equal(result.metadata?.cleanupVerified, false); assert.match(result.errorMessage!, /PI_PROMPT_CLEANUP/);
+      });
+      assert.equal(readPiSupervisorOwnership(join(outerRoot, "pi-supervisor.json"))?.cleanupVerified, false);
+      assert.equal(readdirSync(outerRoot).filter(path => path.includes(".cleanup-")).length, 1);
+    }
+    assert.equal(spawns, 1, "only the successful-preparation case reaches the throwing OS-spawn seam");
+    assert.equal(admittedChildren, 0, "neither path starts an actual Pi child");
+  } finally { closeDb(); process.env = prior; rmSync(root, { recursive: true, force: true }); }
+});
 
 test("PAP-318 atomic cleanup claim retains a concurrent public-path replacement", () => {
   const root = mkdtempSync(join(tmpdir(), "pap318-claim-")), originalRename = fs.renameSync;

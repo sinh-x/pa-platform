@@ -1,6 +1,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { PiPromptCleanupError } from "./prompt-transport.js";
 import {
   advanceParentAuthoritySnapshot,
   appendActivityEvent,
@@ -76,6 +77,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let childFingerprint: ProcessFingerprint | undefined;
   let normalExecutionExit: number | undefined;
   let ready = false;
+  let cleanupUnverified = false;
   let repositoryLease = config.repositoryLease;
   let repositoryBorrower = config.repositoryBorrower;
   let repositoryLeaseTransferred = false;
@@ -99,6 +101,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     ...(childPid ? { childPid } : {}),
     updatedAt: now().toISOString(),
     finalizationDeadlineMs: FINALIZATION_DEADLINE_MS,
+    ...(cleanupUnverified ? { cleanupVerified: false as const } : {}),
     ...extra,
   });
 
@@ -279,7 +282,11 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       result = await startReviewer();
     }
 
-    if (!ready || !childPid) throw new Error("runner-spawn: Pi child did not expose a process id");
+    cleanupUnverified ||= result.metadata?.["cleanupVerified"] === false;
+    if (!ready || !childPid) {
+      if (cleanupUnverified) throw new PiPromptCleanupError();
+      throw new Error("runner-spawn: Pi child did not expose a process id");
+    }
     if (result.metadata?.["normalExit"] === true && typeof result.metadata["rawExitCode"] === "number"
       && result.metadata["cleanupVerified"] !== false && !shutdown.signal.aborted) normalExecutionExit = result.metadata["rawExitCode"];
     writePiSupervisorOwnership(ownershipPath, ownership("finalizing"));
@@ -344,6 +351,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     writePiSupervisorOwnership(ownershipPath, ownership("finalized", { terminalEvent: terminal.event, terminalStatus: terminal.status }));
     audit.observe("background-diagnostic", terminal.diagnostic, secrets);
   } catch (error) {
+    cleanupUnverified ||= error instanceof PiPromptCleanupError;
     terminateChild();
     const reason = bounded(categoryForRunnerError(error), secrets, TERMINAL_DIAGNOSTIC_MAX);
     try {
@@ -562,6 +570,7 @@ function terminalTimestamp(deployDir: string, success: boolean, fallback: Date):
 }
 
 function categoryForRunnerError(error: unknown): string {
+  if (error instanceof PiPromptCleanupError) return error.message;
   const message = error instanceof Error ? error.message : String(error);
   if (/^runner-(?:readiness|spawn|timeout|shutdown|process|persistence|terminal|launcher):/.test(message)) return message;
   if (/persist|write|rename|registry|database|sqlite/i.test(message)) return `runner-persistence: ${message}`;

@@ -9,6 +9,10 @@ Source: published r002 requirements and UAT package; original failed deployment 
 3. Add explicit version dispatch for a reusable read-only document profile. Preserve fixed historical v1/v2 bindings and route exclusions. Prove committed configuration additions/edits/renames and all three Analyst modes on the same runtime; document the contract. Commit after focused checks.
 4. Run integrated typecheck/build/regression and independent review; repair findings and commit the evidence report. Installed pairing, hosted CI, activation, normal-operator retry and human UAT are separate, not implied by local success.
 
+## Final source status
+
+Phases 1–4 are implemented, locally verified and committed separately; see each phase's evidence file. The full repository run passed with 4311 passing tests and 20 retained skips. The final narrow supervisor correction subsequently passed fresh typecheck/build, 51 transport/background tests, 17 inventory tests and the independently source-built actual selected Pi initial-input fixture. Independent narrow review closed the last recorded source finding. Installed pairing, production PAPC enablement, hosted CI, normal-provider trial and human UAT remain separate unperformed qualification, not implied acceptance.
+
 ## Pre-edit transport design
 
 The public Pi file processor wraps text in a filename element and strips BOM; piped stdin trims text and changes interactive dispatch. Neither preserves the required initialization contract. Public upstream source inspected through web retrieval: packages/coding-agent/src/{cli/file-processor.ts,main.ts}, 2026-11-18. This is source evidence, not exact installed provenance. Local selected-Pi docs/parser access remains denied by the source-security owner (hardlink qualification), even after an explicitly authorized scoped AgentKit exception; no reader exception or content-copy workaround is permitted.

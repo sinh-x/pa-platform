@@ -202,7 +202,7 @@ test("general server review opt-in remains an operator resource, never decision 
 
 test("Analyst identity, own-deployment sources and review convergence retain finite effect owners", () => {
   assert.match(operation("deploy.launch").reason, /analyst\/analyze.*v2/);
-  assert.match(operation("deploy.launch").reason, /no generic ticket privilege/);
+  assert.match(operation("deploy.launch").reason, /no generic ticket privilege/i);
   for (const action of ["inspect", "set"]) {
     assert.match(operation(`ticket.status.${action}`).reason, /natively bound analyst\/analyze/);
   }
@@ -235,6 +235,17 @@ test("PAP-316 inventory covers selection, source intake and real bridge ingress 
     "packages/pa-core/src/serve-lifecycle.ts", "packages/pa-core/src/cli/commands/serve.ts"]) {
     assert.ok(Object.hasOwn(manifest.sources, path), `untracked PAP-316 effect/identity dependency: ${path}`);
   }
+});
+
+test("PAP-318 reconciles bounded transport and explicit v3 profile admission without new public effects", () => {
+  assert.match(operation("deploy.launch").reason, /Explicit v3 pa-readonly-document\/v1/);
+  assert.match(operation("deploy.launch").reason, /missing mode\/default cannot fall through/);
+  assert.match(operation("deploy.launch").reason, /bounded prompt references/);
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8"));
+  for (const path of ["packages/pa-core/src/readonly-document-config.ts", "packages/pi-pa/src/prompt-transport.ts", "packages/pi-pa/src/prompt-preload.ts", "packages/pi-pa/src/background-runner.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked PAP-318 admission/transport/lifecycle dependency: ${path}`);
+  }
+  for (const row of interactionCatalogue) assert.equal(row.nativeForms.some(form => /pa_prompt|pa_readonly_profile/.test(form)), false);
 });
 
 test("PAP-298 selected host changes existing launch/resume mechanics, not public commands or grants", () => {

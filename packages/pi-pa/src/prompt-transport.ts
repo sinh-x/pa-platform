@@ -13,6 +13,9 @@ export function piPromptDiagnostic(): string {
 export function piPromptCleanupDiagnostic(): string {
   return "Pi prompt cleanup is incomplete.\nCondition: Input ownership or process termination could not be verified.\nSource: Launcher-owned prompt lifecycle (PI_PROMPT_CLEANUP).\nReason: The original input or an uncertain process may remain; no replacement launch is safe yet.\nCorrection: Ask the runtime owner to inspect this original launch and retained input. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve original deployment, process and input evidence.\nResume Action: Reconcile the original outcome and cleanup before requesting another effect; native admission runs again.";
 }
+export class PiPromptCleanupError extends Error {
+  constructor() { super(piPromptCleanupDiagnostic()); }
+}
 function rejected(): never { throw new Error(piPromptDiagnostic()); }
 
 /** Atomically claim the public pathname before destruction. A concurrent public
@@ -67,19 +70,35 @@ export function readPiPrimer(path: string): string {
   try { directory(dirname(path)); return readExact(path, false).toString("utf8"); } catch { return rejected(); }
 }
 export function preparePiPrompt(primerPath: string, composed?: string): string {
-  let path: string | undefined;
+  let fd: number | undefined, owned: PromptReference | undefined;
+  let created = false, closeFailed = false;
   try {
     const root = dirname(primerPath); directory(root);
     const source = readExact(primerPath, false);
     const body = composed === undefined ? source : Buffer.from(composed, "utf8");
     if (body.length > PI_PROMPT_MAX_BYTES) rejected();
-    path = join(root, `pi-prompt-${randomUUID()}.input`);
-    const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    let stat: BigIntStats;
-    try { writeFileSync(fd, body); fchmodSync(fd, 0o400); fsyncSync(fd); stat = fstatSync(fd, { bigint: true }); } finally { closeSync(fd); }
-    const reference: PromptReference = { path, bytes: body.length, sha256: createHash("sha256").update(body).digest("hex"), dev: String(stat.dev), ino: String(stat.ino) };
-    return PREFIX + Buffer.from(JSON.stringify(reference)).toString("base64url");
-  } catch { if (path) { try { unlinkSync(path); } catch { /* retain the original preparation failure */ } } return rejected(); }
+    const path = join(root, `pi-prompt-${randomUUID()}.input`);
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    created = true;
+    // Capture physical ownership immediately, before any partial write/chmod/fsync.
+    const identity = fstatSync(fd, { bigint: true });
+    owned = { path, bytes: body.length, sha256: createHash("sha256").update(body).digest("hex"), dev: String(identity.dev), ino: String(identity.ino) };
+    writeFileSync(fd, body); fchmodSync(fd, 0o400); fsyncSync(fd);
+    const after = fstatSync(fd, { bigint: true });
+    if (after.dev !== identity.dev || after.ino !== identity.ino || !same(after, lstatSync(path, { bigint: true }))) rejected();
+    const closing = fd; fd = undefined;
+    try { closeSync(closing); } catch { closeFailed = true; throw new PiPromptCleanupError(); }
+    return PREFIX + Buffer.from(JSON.stringify(owned)).toString("base64url");
+  } catch {
+    let uncertain = created && !owned || closeFailed;
+    if (owned) {
+      try { removeClaim(claim(owned)); }
+      catch { uncertain = true; } // Never delete an uncreated/substituted public path.
+    }
+    if (fd !== undefined) { try { closeSync(fd); } catch { uncertain = true; } }
+    if (uncertain) throw new PiPromptCleanupError();
+    return rejected();
+  }
 }
 function reference(arg: string, root: string): PromptReference {
   if (arg.length > 8192 || !arg.startsWith(PREFIX)) rejected();

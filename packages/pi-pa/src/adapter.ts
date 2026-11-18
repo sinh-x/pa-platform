@@ -15,7 +15,7 @@ import { browserLifecycleEnvironment, cleanupManagedBrowser } from "./axi-browse
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
 import { createRuntimeStartGate } from "./runtime-start-gate.js";
-import { cleanupPiPromptArgs, piPromptCleanupDiagnostic, piPromptDiagnostic, preparePiPrompt, readPiPrimer } from "./prompt-transport.js";
+import { cleanupPiPromptArgs, PiPromptCleanupError, piPromptCleanupDiagnostic, piPromptDiagnostic, preparePiPrompt, readPiPrimer } from "./prompt-transport.js";
 import { awaitSelectedPiChild, resolveSelectedPiLaunch, selectedPiEnvironment } from "./selected-pi-launch.js";
 import { assertSelectedPiResumeHost, recordSelectedPiLaunch, selectedPiResumeDiagnostic } from "./selected-pi-resume.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
@@ -113,6 +113,8 @@ export interface PiSupervisorOwnership {
   finalizationDeadlineMs: number;
   terminalEvent?: "completed" | "crashed";
   terminalStatus?: "success" | "failed";
+  /** Absence preserves legacy evidence; false retains unverified input/process cleanup. */
+  cleanupVerified?: false;
   error?: string;
 }
 export interface PiToolProtocolOutcome {
@@ -318,7 +320,9 @@ export class PiAdapter implements RuntimeAdapter {
     // Background owns its snapshot in the persistent runner, not this launcher.
     if (opts.mode !== "background" || this.runCommand) {
       try { args.push(preparePiPrompt(opts.primerPath)); }
-      catch { return failure(piPromptDiagnostic()); }
+      catch (error) { return error instanceof PiPromptCleanupError
+        ? { ...failure(piPromptCleanupDiagnostic()), metadata: { cleanupVerified: false } }
+        : failure(piPromptDiagnostic()); }
     }
     const result = this.runCommand
       ? await finishPiPromptLifecycle(Promise.resolve().then(() => this.runCommand!(args, { cwd, env: piEnv })), args, dirname(opts.primerPath))
@@ -669,7 +673,6 @@ export function inspectPiToolProtocol(events: Array<Record<string, unknown>>): {
 }
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: line.slice(0, MAX_BODY) }); } }
 export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}, startup?: PiStartupContext): Promise<PiCommandResult> {
-  env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -686,6 +689,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   let child: ChildProcess;
   try {
     selected = resolveSelectedPiLaunch();
+    env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
     env = piPromptEnvironment(env, Boolean(selected));
     child = spawnProcess(selected?.entryFile ?? "pi", selected ? ["--pa-managed-child", ...args] : args,
       { cwd, env: selected ? selectedPiEnvironment(selected, env) : env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -949,9 +953,18 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     let configCleanupError: string | undefined;
     try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); safeUnlink(validationHandoffPath); }
     catch (error) { configCleanupError = `config cleanup failed: ${boundedRunnerDiagnostic(error, input.secrets)}`; }
+    // Reobserve this exact supervisor after termination: it may have published
+    // retained-input uncertainty during shutdown. Prose is never lifecycle authority.
+    let inputCleanupVerified = false;
+    try {
+      const terminal = readOwnership(ownershipPath);
+      const matching = terminal?.deploymentId === input.opts.deployId && terminal.ownershipToken === ownershipToken;
+      inputCleanupVerified = Boolean(matching && (terminal.state === "failed" || terminal.state === "finalized") && terminal.cleanupVerified !== false);
+      if (ownership?.deploymentId === input.opts.deployId && ownership.ownershipToken === ownershipToken && ownership.cleanupVerified === false) inputCleanupVerified = false;
+    } catch { inputCleanupVerified = false; }
     const baseReason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
     const reason = [baseReason, cleanup.diagnostic, configCleanupError].filter(Boolean).join("; ");
-    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, cleanupVerified: cleanup.verified, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, cleanupVerified: cleanup.verified && inputCleanupVerified && !configCleanupError, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
   }
   const established = ownership!;
   runner.unref();
@@ -965,6 +978,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       supervisorPid: established.supervisorPid,
       ...(established.childPid ? { pid: established.childPid } : {}),
       ownershipFile: ownershipPath,
+      ...(established.cleanupVerified === false ? { cleanupVerified: false } : {}),
       ...(input.opts.repositoryLease ? { repositoryLeaseTransferred: true } : {}),
       ...(input.opts.repositoryBorrower ? { repositoryBorrowerTransferred: true } : {}),
     },
@@ -1138,7 +1152,7 @@ export function readPiSupervisorOwnership(path: string): PiSupervisorOwnership |
   const body = readFileSync(path, "utf8");
   if (Buffer.byteLength(body) > 16 * 1024) throw new Error("Pi supervisor ownership evidence exceeds 16384 bytes");
   const value = JSON.parse(body) as Partial<PiSupervisorOwnership>;
-  if (value.schemaVersion !== 1 || typeof value.deploymentId !== "string" || typeof value.ownershipToken !== "string" || typeof value.state !== "string" || typeof value.ready !== "boolean" || !Number.isInteger(value.supervisorPid) || Number(value.supervisorPid) <= 0 || typeof value.updatedAt !== "string" || !Number.isInteger(value.finalizationDeadlineMs)) throw new Error("Pi supervisor ownership evidence is malformed");
+  if (value.schemaVersion !== 1 || typeof value.deploymentId !== "string" || typeof value.ownershipToken !== "string" || typeof value.state !== "string" || typeof value.ready !== "boolean" || !Number.isInteger(value.supervisorPid) || Number(value.supervisorPid) <= 0 || typeof value.updatedAt !== "string" || !Number.isInteger(value.finalizationDeadlineMs) || (value.cleanupVerified !== undefined && value.cleanupVerified !== false)) throw new Error("Pi supervisor ownership evidence is malformed");
   return value as PiSupervisorOwnership;
 }
 
@@ -1190,14 +1204,15 @@ function boundedRunnerDiagnostic(error: unknown, _secrets: string[]): string { r
 function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
 
 function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions, startup?: PiStartupContext): Promise<PiCommandResult> {
-  env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const deployDir = dirname(opts.primerPath);
-  const terminalAtLaunch = readPiTerminalStatus(deployDir);
+  let terminalAtLaunch: ReturnType<typeof readPiTerminalStatus>;
   let selected: ReturnType<typeof resolveSelectedPiLaunch>;
   let gate: ReturnType<typeof createRuntimeStartGate> | null;
   let pty: IPty;
   let spawnAttempted = false;
   try {
+    env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: deployDir });
+    terminalAtLaunch = readPiTerminalStatus(deployDir);
     selected = resolveSelectedPiLaunch();
     env = piPromptEnvironment(env, Boolean(selected));
     gate = opts.beforeRuntimeStart && !selected ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
