@@ -138,5 +138,23 @@ typecheck/build and secrets scan passing. The earlier full workspace test attemp
 remains incomplete after a 600 s timeout; no full-suite/hosted-CI success is
 claimed. See the [validation report](../plans/reports/validation-261118-2305-pap315-foreground-closeout.md).
 
+## P4 scoped live observations
+
+The actual cleanup module, driven by controlled lifecycle frames for a real Pi
+process, received clear acknowledgement in **313.39 ms** against installed Herdr
+0.9.5/protocol 22. Its immediate outcome was honestly `acknowledged/still-listed`;
+separate fresh read-only observation established absence at **541.17 ms**. The
+shell/pane and unrelated agents remained, and Sinh explicitly confirmed those
+sidebar postconditions. No clear retry, installation or pane closure occurred.
+
+This is not full installed-PPA end-to-end acceptance: two real source-PPA
+sessions quit normally but never appeared in Herdr while alive, so they cannot
+prove removal. Their registration/composition lane and remaining live abnormal/
+replacement/supervisor-death matrix remain unqualified. See the
+[qualification report](../plans/reports/qualification-261118-2305-pap315-foreground-closeout.md)
+for exact candidates, original failures, test-fixture boundaries and remaining
+acceptance lanes. Neither source tests nor scoped visual confirmation completes
+all original acceptance criteria.
+
 The earlier advisory helper failed because its required skill was missing; no
 skill code was repaired. Live observations remain separate from source evidence.

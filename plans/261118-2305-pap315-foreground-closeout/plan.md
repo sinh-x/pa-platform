@@ -64,6 +64,20 @@ path. No shared-socket check-then-clear is claimed to be a general atomic guard.
    and shell preservation. No installation/global extension edit is selected;
    installed-PPA rollout and genuine human sidebar/UAT remain separate evidence.
 
+## Delivery record
+
+- Revised P1: `7991148`, corrected foreground ordering contract.
+- Revised P2: `8c7a354`, actual bounded cleanup implementation and regressions.
+- Revised P3: `ea95ff8`, three independent review fixes and 262 passing focused
+  tests; workspace typecheck/build passed. Full workspace tests remain incomplete.
+- Revised P4: scoped live protocol/process and visual observations are recorded in
+  `plans/reports/qualification-261118-2305-pap315-foreground-closeout.md`, with a
+  reproducible guarded manual fixture beside this plan. Acknowledgement 313.39 ms,
+  fresh absence 541.17 ms, shells and other agents preserved; Sinh confirmed the
+  sidebar postconditions. Full installed-PPA qualification is still partial,
+  because the ordinary source-PPA launches did not register while alive and the
+  remaining live matrix was not executed. No installation or global hook edit.
+
 ## Discovery limits
 
 Public audit revision: Herdr
