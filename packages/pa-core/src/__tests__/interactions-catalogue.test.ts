@@ -164,6 +164,79 @@ test("local review discovery distinguishes unauthenticated journal writes, liste
   }
 });
 
+test("general server review opt-in remains an operator resource, never decision or runner authority", () => {
+  for (const [id, form] of [["serve.start", "serve --local-review"], ["serve.restart", "serve restart --local-review"]] as const) {
+    const row = operation(id);
+    assert.ok(row.cliForms.includes(form));
+    assert.equal(row.effectClass, "resource"); assert.equal(row.targetDisposition, "operator-only");
+    assert.deepEqual(row.channels, ["cli"]); assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null); assert.equal(row.delegationBinding, null);
+    assert.match(row.reason, /allocates a server resource/);
+    assert.match(row.reason, /POST \/api\/documents\/local-review/);
+    assert.match(row.reason, /127\.0\.0\.1.*::1/);
+    assert.match(row.reason, /local-unverified.*not authenticated human consent/);
+    assert.match(row.reason, /No CLI\/API effect parity/);
+    assert.match(row.reason, /no publication, ref\/link, queue or runner authority/);
+    assert.match(row.requiredContext.join(" "), /no caller authentication/);
+    assert.doesNotMatch(row.requiredContext.join(" "), /authenticated caller/);
+    assert.match(row.supportedNextStep, /serve --help/);
+    assert.doesNotMatch(row.supportedNextStep, /current session/);
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.map(entry => entry.operationId === id ? { ...entry, effectClass: "read" } : entry)).includes("effect-regression"));
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.map(entry => entry.operationId === id ? { ...entry, targetDisposition: "native-supported" } : entry)).includes("operator-boundary"));
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(entry => entry.operationId !== id)).includes("missing-effect-variant"));
+  }
+  assert.ok(operation("serve.restart").aliases.includes("restart --local-review"));
+  for (const id of ["serve.stop", "serve.status"]) {
+    assert.equal([...operation(id).cliForms, ...operation(id).aliases].some(form => form.includes("--local-review")), false);
+  }
+  for (const action of ["publish", "complete-branch", "queue", "refresh"]) {
+    assert.deepEqual(operation(`handoff.${action}`).channels, ["native"]);
+    assert.deepEqual(operation(`handoff.${action}`).cliForms, []);
+  }
+  // HTTP is a transport dependency, not a fictitious channel/tool in the
+  // source discovery contract, which supports only CLI/native descriptions.
+  for (const row of interactionCatalogue) {
+    assert.equal(row.nativeForms.some(form => /pa_local_review|pa_review_server/.test(form)), false);
+  }
+});
+
+test("Analyst identity, own-deployment sources and review convergence retain finite effect owners", () => {
+  assert.match(operation("deploy.launch").reason, /analyst\/analyze.*v2/);
+  assert.match(operation("deploy.launch").reason, /no generic ticket privilege/);
+  for (const action of ["inspect", "set"]) {
+    assert.match(operation(`ticket.status.${action}`).reason, /natively bound analyst\/analyze/);
+  }
+  const draft = operation("document.native.draft"), check = operation("document.native.check"), freeze = operation("document.native.freeze");
+  assert.equal(draft.effectClass, "write"); assert.equal(check.effectClass, "read"); assert.equal(freeze.effectClass, "write");
+  for (const row of [draft, check, freeze]) {
+    assert.deepEqual(row.channels, ["native"]); assert.deepEqual(row.cliForms, []);
+    assert.match(row.reason, /own-deployment.*selected policy/);
+    assert.match(row.reason, /no repository write/);
+  }
+  assert.match(operation("handoff.review").reason, /original request.*canonical.*decision/);
+  assert.match(operation("handoff.review").reason, /detachment.*not.*Cancel/);
+  assert.match(operation("handoff.review").reason, /v1.*foreground/);
+  const store = readFileSync(resolve(root, "packages/pa-core/src/tickets/store.ts"), "utf8");
+  assert.match(store, /privileged: deployment\.team !== "analyst"/);
+  const session = readFileSync(resolve(root, "packages/pi-pa/src/document-session.ts"), "utf8");
+  assert.match(session, /documentTicketMutationContext\(caller: PiDocumentCaller, tool: "pa_document" \| "pa_handoff" \| "pa_ticket_status"\)/);
+  assert.match(session, /if \(!capabilityToolSelected\(caller\.capabilities\.policy, tool\)\) throw new DocumentPackageError\("DOCUMENT_AUTHORITY"\)/);
+});
+
+test("PAP-316 inventory covers selection, source intake and real bridge ingress owners", () => {
+  // Typed repository-owned fixture, not an unvalidated production input boundary.
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  for (const path of ["packages/pa-core/src/analyst-resource-selection.ts", "packages/pa-core/src/mode-capabilities.ts",
+    "packages/pa-core/src/mode-capability-selection.ts", "packages/pa-core/src/selected-config-source.ts",
+    "packages/pa-core/src/deploy/plan.ts", "packages/pa-core/src/deploy/repository-admission.ts",
+    "packages/pi-pa/src/process-identity.ts", "packages/pa-core/src/documents/package-contract.ts",
+    "packages/pa-core/src/documents/package-tools.ts", "packages/pa-core/src/documents/package-service.ts",
+    "packages/pa-core/src/agent-api/routes/local-review.ts", "packages/pa-core/src/agent-api/index.ts",
+    "packages/pa-core/src/serve-lifecycle.ts", "packages/pa-core/src/cli/commands/serve.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked PAP-316 effect/identity dependency: ${path}`);
+  }
+});
+
 test("PAP-298 selected host changes existing launch/resume mechanics, not public commands or grants", () => {
   for (const id of ["deploy.launch", "deploy.resume"]) {
     const row = operation(id);
@@ -184,7 +257,7 @@ test("PAP-298 selected host changes existing launch/resume mechanics, not public
     assert.ok(Object.hasOwn(manifest.sources, path), `untracked selected-host authority/contract source: ${path}`);
 });
 
-test("normal Pi resource discovery retains launch effects without new selectors or native grants", () => {
+test("managed Pi skills and protected-review extensions retain independent launch boundaries", () => {
   for (const id of ["deploy.launch", "deploy.resume", "deploy.rogue-one"]) {
     const row = operation(id);
     assert.equal(row.effectClass, "launch");
@@ -201,8 +274,13 @@ test("normal Pi resource discovery retains launch effects without new selectors 
   assert.match(host, /args\[\+\+index\] === selection\.extensionModule && \+\+extensionCount === 1/);
   assert.match(host, /fs\.realpathSync\(path\) !== selection\.extensionModule/);
   const adapter = readFileSync(resolve(root, "packages/pi-pa/src/adapter.ts"), "utf8");
-  assert.match(adapter, /if \(plan\.reviewCheckout \|\| protectedValidationLaunch\) args\.push\("--no-skills", "--no-extensions"\)/);
-  assert.match(adapter, /if \(config\.validationHandoffPath \|\| reviewerContext\) args\.push\("--no-skills", "--no-extensions"\)/);
+  // Managed skill discovery is disabled independently of the stricter protected
+  // review extension boundary. Neither check substitutes for the other.
+  assert.match(adapter, /if \(plan\) \{\s*(?:\/\/[^\n]*\n\s*)*args\.push\("--no-skills"\);/);
+  assert.match(adapter, /if \(plan\.reviewCheckout \|\| protectedValidationLaunch\) args\.push\("--no-extensions"\);/);
+  assert.match(adapter, /if \(config\.managed \|\| config\.validationHandoffPath \|\| reviewerContext\) args\.push\("--no-skills"\);/);
+  assert.match(adapter, /if \(config\.validationHandoffPath \|\| reviewerContext\) args\.push\("--no-extensions"\);/);
+  assert.match(adapter, /if \(plan\.modeCapabilityBinding\?\.schemaVersion !== "pa-mode-capability-binding\/v2"\) \{\s*for \(const skill of plan\.skills\) args\.push\("--skill", skill\.path\);/);
 });
 
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {

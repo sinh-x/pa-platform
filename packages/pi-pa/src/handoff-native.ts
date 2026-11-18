@@ -8,11 +8,11 @@ import {
   RegistryReaderOpeningJournal, TicketStore, capabilityToolSelected, documentReject, getAiUsageDir, getDb, getTicketsDir,
   handoffBranchIntentSha, inspectFullDocumentReader, intakeNativeHandoffTicket, nativeHandoffPlanIdentity, nativeHandoffTicketVersion, openBoundDocumentReader, openDurableRegistryDatabase, parseWorkflowRequest,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow,
-  planNativeHandoffTicket, presentFullDocumentReader, readArtifactFile, resolveTrustedTicketMutationContext, stageNativeHandoffTicket,
+  planNativeHandoffTicket, presentFullDocumentReader, readArtifactFile, stageNativeHandoffTicket,
   workflowDigest, executeLocalReview, getDeployPaths, assertNativeRestartProcessDead, localHandoffReviewHooks, refreshNativeHandoffTicket, withLocalHandoffRepository, type NativeHandoffPlanningHost, type NativeHandoffReviewHost, type LocalReviewOutcome,
 } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
-import { authenticatePiDocumentCaller } from "./document-session.js";
+import { authenticatePiDocumentCaller, documentTicketMutationContext } from "./document-session.js";
 import { SystemDocumentBrowserFallback } from "./handoff-browser-fallback.js";
 import { showHandoffReview, type HandoffReviewUi } from "./pi-extension/handoff-review-ui.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
@@ -127,11 +127,12 @@ function reviewHost(context: PiHandoffContext, tickets: TicketStore, db: ReturnT
           assertNativeRestartProcessDead(original);
         }
       },
-      async capture(request, view) {
+      async capture(request, view, settled) {
         const before = authenticate();
         if (context.mode !== "tui" || !context.ui?.custom || signal?.aborted) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
-        const outcome = await showHandoffReview(context.ui, request, view, signal);
-        if (!isDeepStrictEqual(before, authenticate())) throw new DocumentPackageError("DOCUMENT_STALE");
+        const detached = signal && settled ? AbortSignal.any([signal, settled]) : signal ?? settled;
+        const outcome = await showHandoffReview(context.ui, request, view, detached, "detached");
+        if (outcome !== "detached" && !isDeepStrictEqual(before, authenticate())) throw new DocumentPackageError("DOCUMENT_STALE");
         return outcome;
       },
     },
@@ -164,7 +165,7 @@ function services(context: PiHandoffContext, db: ReturnType<typeof getDb>, signa
   if (realpathSync(artifactRoot) !== artifactRoot || inside(caller.repoRoot, artifactRoot) || inside(join(artifactRoot, "agent-teams/requirements/artifacts"), caller.repoRoot)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   try { if (realpathSync(getTicketsDir()) !== getTicketsDir()) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
+  const tickets = new TicketStore(undefined, documentTicketMutationContext(authenticatePiDocumentCaller(context), "pa_handoff"));
   const journal = new RegistryHandoffReviewJournal(db), review = new HandoffReviewService(journal, reviewHost(context, tickets, db, signal));
   const publication = (subjectSha256: string) => {
     const { subject, intent } = journal.subject(subjectSha256);

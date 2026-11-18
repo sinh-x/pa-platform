@@ -3,6 +3,7 @@ import { DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, runServeLifecycle } from "../..
 import type { ServeAction } from "../../serve-lifecycle.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
+import { isLocalReviewBind, localReviewBridgeFailure } from "../../agent-api/routes/local-review.js";
 
 interface ParsedServeArgs {
   port: number;
@@ -11,6 +12,7 @@ interface ParsedServeArgs {
   cors: boolean;
   force: boolean;
   dev: boolean;
+  localReview: boolean;
 }
 
 /**
@@ -36,7 +38,7 @@ function isDevModeTruthy(value: string | undefined): boolean {
 }
 
 function parseServeArgs(argv: string[], action: ServeAction): ParsedServeArgs | { error: string } {
-  const opts: ParsedServeArgs = { port: DEFAULT_SERVE_PORT, host: DEFAULT_SERVE_HOST, background: false, cors: false, force: false, dev: false };
+  const opts: ParsedServeArgs = { port: DEFAULT_SERVE_PORT, host: DEFAULT_SERVE_HOST, background: false, cors: false, force: false, dev: false, localReview: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--port") {
@@ -55,8 +57,11 @@ function parseServeArgs(argv: string[], action: ServeAction): ParsedServeArgs | 
     else if (arg === "--cors") opts.cors = true;
     else if (arg === "--force") opts.force = true;
     else if (arg === "--dev") opts.dev = true;
+    else if (arg === "--local-review") opts.localReview = true;
     else return { error: `Unsupported serve option: ${arg}` };
   }
+  if (opts.localReview && (action === "stop" || action === "status")) return { error: localReviewBridgeFailure("OPTIONS").message };
+  if (opts.localReview && !isLocalReviewBind(opts.host)) return { error: localReviewBridgeFailure("BIND").message };
   if ((action === "stop" || action === "status") && (opts.background || opts.force || opts.cors || opts.dev)) return { error: `${action} only supports --host and --port options` };
   return opts;
 }
@@ -77,7 +82,8 @@ export async function runServeCommand(command: string, argv: string[], io: Requi
 }
 
 function serveUsageText(action: ServeAction): string {
-  if (action === "start") return "Usage: serve [--port <port>] [--host <host>] [--background] [--cors] [--force] [--dev]";
-  if (action === "restart") return "Usage: restart [--port <port>] [--host <host>] [--background] [--cors] [--dev]";
+  const reviewHelp = "\n--local-review: opt in to POST /api/documents/local-review; requires --host 127.0.0.1 or ::1.\nDecisions are local-unverified, not authenticated human consent. Any local process can read eligible reviews and decide.\nNo browser/forwarding/CORS support for this route; no publication, ref, queue or runner authority.";
+  if (action === "start") return "Usage: serve [--port <port>] [--host <host>] [--background] [--cors] [--force] [--dev] [--local-review]" + reviewHelp;
+  if (action === "restart") return "Usage: restart [--port <port>] [--host <host>] [--background] [--cors] [--dev] [--local-review]" + reviewHelp;
   return `Usage: ${action}`;
 }

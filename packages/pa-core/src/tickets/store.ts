@@ -981,7 +981,9 @@ export function resolveTrustedTicketMutationContext(principal: TicketMutationPri
   if (!deploymentId) return { privileged: false };
   const deployment = queryDeploymentStatus(deploymentId);
   if (!deployment || deployment.status !== "running") return { privileged: false };
-  return { team: deployment.team, mode: deployment.mode, privileged: true };
+  // A public Analyst start is not generic CLI/API lifecycle authority. Finite
+  // native owners authenticate the explicit effective identity separately.
+  return { team: deployment.team, mode: deployment.mode, privileged: deployment.team !== "analyst" };
 }
 
 function normalizeTimestamp(value: unknown): string {

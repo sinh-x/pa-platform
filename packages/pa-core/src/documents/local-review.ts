@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { MODE_CAPABILITY_SESSION, parseModeCapabilityBinding } from "../mode-capabilities.js";
+import { MODE_CAPABILITY_SESSION, modeCapabilityRouteMatches, modeCapabilityActor, parseModeCapabilityBinding } from "../mode-capabilities.js";
 import { getAiUsageDir, getTicketsDir } from "../paths.js";
 import { openDurableRegistryDatabase, openReadonlyRegistryDatabase } from "../registry/db.js";
 import { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
@@ -25,7 +25,7 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
   const events = rows.map(value => object(value, fields));
   const starts = events.filter(e => e.event === "started"), start = starts[0];
   if (starts.length !== 1 || !start || start.note !== MODE_CAPABILITY_SESSION || start.runtime !== "pi" || start.binary !== "ppa"
-    || start.team !== "requirements" || start.mode !== "analyze" || start.repo !== intent.repository.root
+    || !["requirements", "analyst"].includes(String(start.team)) || start.mode !== "analyze" || start.repo !== intent.repository.root
     || start.repo_root !== intent.repository.root || start.worktree_root !== intent.repository.root
     || start.rogue_one || start.builder_authority || start.treehouse_path || start.ticket_slot_id || start.repository_permit
     || start.parent_deployment_id || start.resumed_from_deployment_id || start.fallback || start.review_checkout || start.ticket_worktree_selection) documentReject("DOCUMENT_AUTHORITY");
@@ -34,7 +34,8 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
     raw = text(start.mode_capability_binding, undefined, 65536);
     binding = parseModeCapabilityBinding(strictJson(Buffer.from(raw), 65536));
   } catch { return documentReject("DOCUMENT_AUTHORITY"); }
-  if (JSON.stringify(binding) !== raw || digest(raw) !== subject.selectionSha256
+  if (JSON.stringify(binding) !== raw || !modeCapabilityRouteMatches(binding, start.team, start.mode)
+    || binding.schemaVersion === "pa-mode-capability-binding/v2" && binding.repoKey !== intent.repository.key || digest(raw) !== subject.selectionSha256
     || !["document.local-review", "document.handoff", "document.package"].every(id => binding.policy.allow.includes(id))) documentReject("DOCUMENT_AUTHORITY");
   // Original association may be retained after completion. Subsequent current
   // custody is deliberately NOT inferred from this historical proof.
@@ -42,7 +43,7 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
   const edges = events.filter(e => e.event === "ticket-associated");
   if (edges.length > 1) documentReject("DOCUMENT_AUTHORITY");
   for (const edge of edges) {
-    if (associated !== null || edge.previous_ticket_id || edge.actor !== "requirements/analyze" || edge.ticket_id !== intent.ticket) documentReject("DOCUMENT_AUTHORITY");
+    if (associated !== null || edge.previous_ticket_id || edge.actor !== modeCapabilityActor(binding) || edge.ticket_id !== intent.ticket) documentReject("DOCUMENT_AUTHORITY");
     associated = edge.ticket_id;
   }
   if (associated !== intent.ticket) documentReject("DOCUMENT_AUTHORITY");
@@ -50,7 +51,7 @@ export function verifyLocalReviewOrigin(db: Database.Database, tickets: TicketSt
     deploymentId: subject.origin.deploymentId, sessionId: subject.origin.sessionId, repoKey: intent.repository.key, repoRoot: intent.repository.root, ticket: intent.ticket };
   if (!isDeepStrictEqual(nativeHandoffPlanIdentity(originCoordinates, intent.requestId), subject.origin.planIdentity)) documentReject("DOCUMENT_AUTHORITY");
   const plan = tickets.inspectHandoffWithIntent(subject.origin.planIdentity);
-  if (!plan?.complete || plan.record.actor !== "requirements/analyze" || plan.record.change.kind !== "plan"
+  if (!plan?.complete || plan.record.actor !== modeCapabilityActor(binding) || plan.record.change.kind !== "plan"
     || handoffBranchIntentSha(plan.record.change.intent) !== handoffBranchIntentSha(intent)
     || plan.record.after.id !== intent.ticket || plan.record.after.project !== intent.repository.key
     || subject.callerIdentitySha256 !== intent.callerIdentitySha256) documentReject("DOCUMENT_AUTHORITY");

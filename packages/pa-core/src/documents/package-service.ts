@@ -15,8 +15,8 @@ import type { TicketStore } from "../tickets/store.js";
 import { TicketPackagePublication } from "../tickets/package-publication.js";
 import type { OperationResult } from "../operations/result.js";
 import { digest, ID, integer, JsonWorkflowError, object, relativePath, SHA256, text, workflowTicket } from "../workflows/contracts.js";
-import { DocumentPackageError, documentGuard, documentPackageSha, documentReject, DOCUMENT_ACTION_FIELDS, DOCUMENT_LIMITS, parseDocumentPackage, parseDocumentRequest, type DocumentPackage } from "./package-contract.js";
-import { checkDocumentPackage, compareDocumentPackages, documentText, readDocumentSources, validateDocumentBytes } from "./package-tools.js";
+import { DocumentPackageError, documentDeploymentSourceOwner, documentGuard, documentPackageSha, documentReject, documentSource, DOCUMENT_ACTION_FIELDS, DOCUMENT_LIMITS, parseDocumentPackage, parseDocumentRequest, type DocumentPackage } from "./package-contract.js";
+import { assertDocumentSourceIntake, checkDocumentPackage, compareDocumentPackages, documentText, readDocumentSources, validateDocumentBytes } from "./package-tools.js";
 
 export interface DocumentCaller { deploymentId: string; repoKey: string; repoRoot: string; ticket: string | null; identitySha256: string; sessionId?: string }
 export interface DocumentPackageHost {
@@ -24,7 +24,8 @@ export interface DocumentPackageHost {
   /** Native launch dispatch only, not imported package/request metadata. */
   workspaceProfile?: boolean;
   confirmationProfile?: boolean;
-  /** Qualified policy-profile document.package selection only, never config text. */
+  /** Qualified policy-profile document.package selection only, never config text.
+   * Also gates deployment-source authoring/intake, not retained continuation. */
   recoveryProfile?: boolean;
   retire?(request: NativeRetirementRequest): Promise<NativeRetirementResult>;
   inspectBranch?(ticket: string): Record<string, unknown> | Promise<Record<string, unknown>>;
@@ -138,8 +139,9 @@ export class DocumentPackageService {
           return { ticket, reused: false, packageApproval: "not-issued" };
         });
       } else if (action === "draft") {
-        const path = relativePath(r.path);
-        if (!path.startsWith(`agent-teams/requirements/artifacts/drafts/${caller.deploymentId}/`) || !/\.(?:md|txt)$/.test(path) || typeof r.content !== "string" || !r.content.length || /[\p{Cs}]/u.test(r.content)) documentReject();
+        const path = documentSource(r.path);
+        assertDocumentSourceIntake([path], caller.deploymentId, this.host.recoveryProfile === true);
+        if ((documentDeploymentSourceOwner(path) === null && !path.startsWith(`agent-teams/requirements/artifacts/drafts/${caller.deploymentId}/`)) || !/\.(?:md|txt)$/.test(path) || typeof r.content !== "string" || !r.content.length || /[\p{Cs}]/u.test(r.content)) documentReject();
         const expected = r.expectedSha256 === null ? null : text(r.expectedSha256, SHA256), bytes = Buffer.from(r.content), sha256 = digest(bytes);
         validateDocumentBytes({ id: "draft", role: "specification", mediaType: "text/plain", source: path, description: "unsigned draft", bytes: bytes.length, sha256 }, bytes);
         result = this.host.tickets.withWorkflowTransaction(() => {
@@ -177,7 +179,8 @@ export class DocumentPackageService {
         try { assertNoSensitiveMatch("content", content); } catch { documentReject("DOCUMENT_SOURCE"); }
         this.caller(); result = { path, sha256: digest(bytes), bytes: bytes.length, content: content.slice(0, 16000), excerpt: content.length > 16000, source: "selected-local-file", fetched: false };
       } else if (action === "check" || action === "freeze") {
-        const subject = parseDocumentPackage(r.package); this.caller(subject);
+        const subject = parseDocumentPackage(r.package), intakeCaller = this.caller(subject);
+        assertDocumentSourceIntake(subject.members.map(member => member.source), intakeCaller.deploymentId, this.host.recoveryProfile === true);
         const bytes = readDocumentSources(subject, this.host.artifactRoot), checks = checkDocumentPackage(subject, bytes);
         if (action === "check") result = checks;
         else { this.continuation(subject); const expected = this.revision(subject, r.expectedRevision); this.caller(subject); this.journal.freeze(subject, expected, bytes); result = { ...this.view(subject), checks, state: "unapproved-snapshot" }; }

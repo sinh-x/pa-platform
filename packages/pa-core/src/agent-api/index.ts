@@ -10,12 +10,16 @@ import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
 import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, sessionRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 import { hub, startWatchers } from "./ws/index.js";
+import { createLocalReviewHttpServer, LOCAL_REVIEW_PATH, localReviewBridgeFailure } from "./routes/local-review.js";
 import { SessionManager, type SessionStreamEvent } from "./ws/session-hub.js";
 import { resolveTrustedTicketMutationContext, TicketStore } from "../tickets/store.js";
 import type { TicketMutationPrincipal } from "../tickets/store.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
+  /** Explicit server-owner opt-in. Use the returned createServer factory with
+   * the Node adapter; review requires a numeric loopback bind and native peer. */
+  enableLocalReview?: boolean;
   hooks?: CoreExecutionHooks;
   enableLiveUpdates?: boolean;
   /**
@@ -40,6 +44,8 @@ export interface AgentApiOptions {
 
 export interface AgentApiInstance {
   app: Hono;
+  /** Required Node factory when local review is enabled; never a handler seam. */
+  createServer?: typeof createLocalReviewHttpServer;
   injectWebSocket: (server: Server | Http2Server | Http2SecureServer) => void;
   cleanup: () => void;
 }
@@ -57,6 +63,11 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   };
   const callerMutationContext = (c: Context) => resolveTrustedTicketMutationContext(authenticateMutationPrincipal(c, mutationAuth), true);
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
+  // Native HTTP owns ingress and dispatch. Embedders omitting its factory fail
+  // closed, BEFORE general CORS/error wrappers; app.request is not a trusted peer.
+  app.all(LOCAL_REVIEW_PATH, (c) => opts.enableLocalReview
+    ? c.json(localReviewBridgeFailure("PEER"), 403)
+    : c.notFound());
   if (opts.enableCors) app.use("*", cors({
     origin: "*",
     allowMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -254,6 +265,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   }
   return {
     app,
+    ...(opts.enableLocalReview ? { createServer: createLocalReviewHttpServer } : {}),
     injectWebSocket,
     cleanup: () => {
       watchers?.cleanup();

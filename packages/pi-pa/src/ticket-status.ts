@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { TicketStore, TicketStatusError, ticketStatusService, parseTicketStatusRequest, getAiUsageDir, getTicketsDir, resolveTrustedTicketMutationContext } from "@pa-platform/pa-core";
-import { authenticatePiDocumentCaller, authenticatePiDocumentCliProcess, type PiDocumentCaller } from "./document-session.js";
+import { TicketStore, TicketStatusError, ticketStatusService, parseTicketStatusRequest, getAiUsageDir, getTicketsDir } from "@pa-platform/pa-core";
+import { authenticatePiDocumentCaller, authenticatePiDocumentCliProcess, documentTicketMutationContext, type PiDocumentCaller } from "./document-session.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
 
 /** Both routes call the same owner with derived identity, never an actor override. */
@@ -17,12 +17,12 @@ export function executePiTicketStatus(raw: string, context?: PiWorkflowContext, 
     return caller;
   };
   const caller = authenticate();
-  const store = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false));
+  const store = new TicketStore(undefined, documentTicketMutationContext(caller, "pa_ticket_status"));
   return ticketStatusService(raw, { store, authenticate });
 }
 export function runTicketStatusCommand(args: string[], io: { stdout(text: string): void; stderr(text: string): void }): number {
   if (args.length === 1 && args[0] === "--help") {
-    io.stdout('Usage: ppa ticket-status --request <JSON>\nSelected fresh Pi requirements/analyze only. pa-ticket-status/v1: inspect(project,ticket), then set(project,ticket,requestId,expectedVersion,status). Administrative status only; no publication, queue, acceptance or launch. Preserve original request coordinates after an uncertain result.'); return 0;
+    io.stdout('Usage: ppa ticket-status --request <JSON>\nSelected fresh Pi policy sessions only: requirements/analyze or natively bound analyst/analyze. pa-ticket-status/v1: inspect(project,ticket), then set(project,ticket,requestId,expectedVersion,status). Administrative status only; no publication, queue, acceptance or launch. Preserve original request coordinates after an uncertain result.'); return 0;
   }
   try {
     if (args.length !== 2 || args[0] !== "--request") throw new TicketStatusError("TICKET_STATUS_INPUT");

@@ -23,10 +23,15 @@ export interface DocumentPackage {
 export function documentGuard<T>(read: () => T): T {
   try { return read(); } catch (error) { if (error instanceof DocumentPackageError) throw error; return documentReject(); }
 }
-/** Only non-project requirements artifacts. Destinations are derived, not imported. */
+/** Deployment identity is syntactic here. Authenticated ownership belongs to intake,
+ * never to parsing retained snapshots or deriving publication/reader destinations. */
+export function documentDeploymentSourceOwner(path: string): string | null {
+  return /^deployments\/(d-[0-9a-f]{6})\/artifacts\//.exec(path)?.[1] ?? null;
+}
+/** Finite non-project artifact roots only. Destinations are derived, not imported. */
 export function documentSource(value: unknown): string {
   const path = relativePath(value);
-  if (!/^agent-teams\/requirements\/artifacts\/(?:drafts|reviews)\//.test(path)) documentReject();
+  if (!/^agent-teams\/requirements\/artifacts\/(?:drafts|reviews)\//.test(path) && documentDeploymentSourceOwner(path) === null) documentReject();
   return path;
 }
 export function parseDocumentMember(value: unknown): DocumentMember {

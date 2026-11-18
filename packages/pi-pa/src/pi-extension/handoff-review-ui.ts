@@ -51,14 +51,16 @@ class HandoffReviewDialog implements Component {
     ].map(line => truncateToWidth(line, bounded));
   }
 }
-export async function showHandoffReview(ui: HandoffReviewUi, request: HandoffReviewRequest, view: HandoffReviewView, signal?: AbortSignal): Promise<HandoffReviewOutcome> {
+export function showHandoffReview(ui: HandoffReviewUi, request: HandoffReviewRequest, view: HandoffReviewView, signal?: AbortSignal): Promise<HandoffReviewOutcome>;
+export function showHandoffReview(ui: HandoffReviewUi, request: HandoffReviewRequest, view: HandoffReviewView, signal: AbortSignal | undefined, abortOutcome: "detached"): Promise<HandoffReviewOutcome | "detached">;
+export async function showHandoffReview(ui: HandoffReviewUi, request: HandoffReviewRequest, view: HandoffReviewView, signal?: AbortSignal, abortOutcome: "cancelled" | "detached" = "cancelled"): Promise<HandoffReviewOutcome | "detached"> {
   if (!ui.custom) throw new Error("DOCUMENT_UI_UNAVAILABLE");
   let abort: (() => void) | undefined;
   try {
-    return await ui.custom<HandoffReviewOutcome>((tui, theme, _keys, done) => {
+    return await ui.custom<HandoffReviewOutcome | "detached">((tui, theme, _keys, done) => {
       let finished = false;
-      const finish = (result: HandoffReviewOutcome) => { if (!finished) { finished = true; done(result); } };
-      abort = () => finish("cancelled"); signal?.addEventListener("abort", abort, { once: true });
+      const finish = (result: HandoffReviewOutcome | "detached") => { if (!finished) { finished = true; done(result); } };
+      abort = () => finish(abortOutcome); signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
       return new HandoffReviewDialog(tui, theme, request, view, finish);
     });

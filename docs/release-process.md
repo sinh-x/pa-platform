@@ -12,6 +12,26 @@ The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages
 
 ## Ticket-Local Build Labels
 
+The PAP-316 source integration candidate restores plain **`0.1.173`** across the
+four shared manifests to match current develop and retain its normal auto-patch
+flow. The separately installed `0.1.173-pap316.1` trial and its provenance remain
+unchanged. PAPC-092 is the companion for the remaining Analyst configuration,
+resource closure, installed-pair qualification and separately authorized
+future-start adoption; PAPC-090 retains workflow ownership. Source integration
+is not full AC acceptance, configuration activation or a Builder change.
+
+The PAP-316 worktree trial label is **`0.1.173-pap316.1`** across the four shared
+manifests, set at the operator's request for installation identification. A
+separately rebuilt/selected CLI must display `ppa 0.1.173-pap316.1`; verify
+`packageVersion` and the exact clean label commit's `sourceSha` in
+`share/pa-platform/review-runtime-provenance.json` as well. `runtime-host` stays
+independently versioned. This label does not install or activate the requirements
+workflow, change the PAPC pin/dependencies/Nix dependency hash, create a release
+or tag, or close the remaining installed/CI/browser/human qualification in the
+[PAP-316 report](../plans/reports/implementation-261118-pap316-requirements-handoff.md).
+Builder changes remain deferred. Restore the current plain develop version
+before normal integration; existing installations are unchanged by this edit.
+
 The PAP-302 **source integration candidate** restores plain **`0.1.166`** across
 the four shared manifests for develop's normal auto-patch flow. It pins merged
 PAPC-087 config `504a8dcc333fec6169b4b0242718bcbc3773ccff` after strict source
@@ -138,7 +158,17 @@ Use `corepack pnpm bump:refresh-hash` when only the Nix dependency hash needs to
 
 ## CI Expectations
 
-CI verifies typecheck, build, tests, generated completions, fish syntax, and the exact paired config contract on pushes and pull requests targeting `develop` or `main`. Repository administrators must configure `PA_PLATFORM_CONFIG_TOKEN` with read access to the private companion repository. The paired check intentionally remains red until the pinned config commit is present on config `develop`, enforcing config-first integration before the consuming platform change.
+CI verifies PAP-owned typecheck, build, code tests, pairing-contract fixtures,
+generated completions, Fish syntax and completion timing. It checks out only this
+repository and requires no operator-configuration repository or access token. The
+pairing fixture lane exercises repository-owned disposable test data; it does not
+fetch or validate an external checkout.
+
+A green hosted run is not proof of compatibility with an actual selected
+operator configuration. Exact operator-local configuration pairing and real
+installed/foreground/browser/human qualification remain separate evidence; they
+are not silently passed or waived by this CI change. PAPC-092 owns the outstanding
+Analyst configuration integration and qualification follow-up.
 
 Version tagging remains an explicit manual release step so package version, changelog, Nix hash refresh, release commit, annotated tag, and tag push happen together through `scripts/dev/version_bump.sh`.
 

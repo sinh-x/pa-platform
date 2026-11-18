@@ -25,7 +25,7 @@ export interface NativeHandoffReviewHost {
     presentation: Record<string, unknown>; documents: { id: string; mediaType: string; sha256: string; content: string | null }[] }): Promise<Uint8Array>;
   afterPersist?(stage: "requested" | "captured" | "issued"): void;
   localReview?: LocalHandoffReviewHooks & {
-    capture(request: HandoffReviewRequest, view: HandoffReviewView): Promise<LocalReviewOutcome>;
+    capture(request: HandoffReviewRequest, view: HandoffReviewView, signal?: AbortSignal): Promise<LocalReviewOutcome | "detached">;
   };
 }
 export interface HandoffReviewView {
@@ -137,17 +137,45 @@ export class HandoffReviewService {
       if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256);
       else this.current(subject, intent);
       const local = new LocalHandoffReviewService(this.journal, { ...hooks, artifactRoot: this.host.artifactRoot, tickets: this.host.tickets });
-      const pending = operation === "revoke" ? await local.revoke(subjectSha256, expectedRevision, targetDecisionId!) : await local.request(subjectSha256, expectedRevision);
-      const events = this.journal.events(subjectSha256), original = events.find(e => e.kind === "requested" && e.request.requestKey === pending.requestKey);
-      if (original?.kind !== "requested") return pending;
-      const issued = events.find(e => e.kind === "issued" && e.decision.requestKey === original.request.requestKey);
-      if (issued?.kind === "issued") return local.decide(subjectSha256, expectedRevision, original.request.requestKey, issued.decision.outcome);
-      const stale = events.find(e => e.kind === "stale");
-      if (stale?.kind === "stale") return local.staleResult(subjectSha256, stale.stale);
-      const view = await local.view(subjectSha256);
-      const outcome = await hooks.capture(original.request, view);
-      if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
-      return local.decide(subjectSha256, expectedRevision, original.request.requestKey, outcome);
+      const requestKey = handoffReviewRequestKey(subjectSha256, expectedRevision, operation, targetDecisionId), controller = new AbortController();
+      // Observe ORIGINAL coordinates across every async boundary, including
+      // request/view loading. Delivery failure cannot erase a saved decision.
+      const recorded = () => {
+        const history = this.journal.events(subjectSha256);
+        const decision = history.find(e => e.kind === "issued" && e.decision.requestKey === requestKey);
+        if (decision?.kind === "issued") return local.decide(subjectSha256, expectedRevision, requestKey, decision.decision.outcome);
+        const stale = history.find(e => e.kind === "stale");
+        return stale?.kind === "stale" ? Promise.resolve(local.staleResult(subjectSha256, stale.stale)) : null;
+      };
+      let timer: ReturnType<typeof setInterval> | undefined;
+      try {
+        const external = new Promise<Record<string, unknown>>((resolve, reject) => {
+          timer = setInterval(() => {
+            try { const saved = recorded(); if (saved) { clearInterval(timer); saved.then(resolve, reject); } }
+            catch (error) { reject(error); }
+          }, 100);
+        });
+        const foreground = async () => {
+          const pending = operation === "revoke" ? await local.revoke(subjectSha256, expectedRevision, targetDecisionId!) : await local.request(subjectSha256, expectedRevision);
+          const original = this.journal.events(subjectSha256).find(e => e.kind === "requested" && e.request.requestKey === requestKey);
+          if (original?.kind !== "requested") return pending;
+          const saved = recorded(); if (saved) return await saved;
+          if (controller.signal.aborted) return documentReject("DOCUMENT_UNAVAILABLE");
+          const view = await local.view(subjectSha256);
+          const loaded = recorded(); if (loaded) return await loaded;
+          if (controller.signal.aborted) return documentReject("DOCUMENT_UNAVAILABLE");
+          const outcome = await hooks.capture(original.request, view, controller.signal);
+          const captured = recorded(); if (captured) return await captured;
+          if (outcome === "detached" || controller.signal.aborted) return documentReject("DOCUMENT_UNAVAILABLE");
+          if (caller.deploymentId !== subject.origin.deploymentId) this.assertEffectCaller(subjectSha256); else this.current(subject, intent);
+          return local.decide(subjectSha256, expectedRevision, requestKey, outcome);
+        };
+        return await Promise.race([foreground(), external]);
+      } catch (error) {
+        // First canonical issuance wins over view/capture failure or a conflicting
+        // local input. Detachment never submits a compensating shared Cancel.
+        const saved = recorded(); if (saved) return await saved; throw error;
+      } finally { if (timer) clearInterval(timer); controller.abort(); }
     }
     const requestKey = handoffReviewRequestKey(subjectSha256, expectedRevision, operation, targetDecisionId);
     let events = this.journal.events(subjectSha256);
