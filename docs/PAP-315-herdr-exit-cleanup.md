@@ -1,6 +1,14 @@
 # PAP-315: foreground Herdr exit cleanup
 
-Delivery status: P1 audit and the explicitly narrowed P2 safe source work are
+> **Revised at Sinh's direction, 2026-11-18 23:05:** the blanket unavailable
+> verdict below is superseded by the
+> [foreground-closeout implementation plan](../plans/261118-2305-pap315-foreground-closeout/plan.md).
+> Normal same-shell launch ordering is already guaranteed by foreground PPA.
+> A correlated server response supplies a usable completion barrier; actual
+> cleanup is now being implemented. Historical results and limitations below
+> are retained, not current product acceptance.
+
+Historical delivery status: P1 audit and the explicitly narrowed P2 safe source work are
 committed. P3 focused checks passed (224 tests), with workspace typecheck/build/
 completions passing and the full test run timing out. P4 remains blocked.
 See the [validation report](../plans/reports/validation-261118-2137-pap315-herdr-exit-cleanup.md)
