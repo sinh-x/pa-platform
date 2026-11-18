@@ -108,8 +108,8 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
     // Preserve exact report bytes/server validation. Never reset the supervisor
     // watermark if a discovered reporter or extension reload resets its counter.
     // Mark before submission; a failed response never permits a later clear.
+    if (next.seq > maxSeq && next.session) ownedSession = next.session;
     maxSeq = Math.max(maxSeq, next.seq);
-    if (next.session) ownedSession = next.session;
     active = (async () => {
       const reply = await rpc(next.frame, next.id, performance.now() + 750);
       if (reply.kind !== "reply" || object(reply.body.error)) uncertainReport = true;
@@ -119,7 +119,7 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       }
     })().finally(() => { active = undefined; drain(); });
   };
-  const server = createServer(client => {
+  const server = createServer({ allowHalfOpen: true }, client => {
     if (closing || clients.size >= 64) { client.destroy(); return; }
     clients.add(client); client.on("error", () => client.destroy()); client.on("close", () => clients.delete(client));
     // Half-written local requests must not keep the supervisor alive forever.
@@ -149,7 +149,12 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       // extra routing authority, response parsing or transcript retention.
       const upstream = connect(binding.socketPath); upstreams.add(upstream);
       upstream.on("error", () => { client.destroy(); upstream.destroy(); });
-      upstream.on("close", () => { upstreams.delete(upstream); client.destroy(); });
+      upstream.on("close", () => {
+        upstreams.delete(upstream);
+        // pipe() ends the downstream gracefully after EOF. Destroying it here
+        // would discard writes still buffered for a slow consumer.
+        if (!upstream.readableEnded) client.destroy();
+      });
       client.on("close", () => upstream.destroy());
       upstream.on("connect", () => {
         if (closing || disposed || client.destroyed) { upstream.destroy(); return; }

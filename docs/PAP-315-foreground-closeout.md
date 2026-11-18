@@ -17,7 +17,7 @@ The relay is part of the supervisor process, not a daemon, additional reporter,
 Pi extension or model-facing socket tool. It recognizes only its fixed pane's
 `herdr:pi` / `pi` session/state reports for cleanup ownership. It serializes
 these existing requests, preserves their bytes and IDs, tracks the maximum
-forwarded safe-integer sequence and last reported session reference, and awaits
+forwarded safe-integer sequence and its newest-sequence session reference, and awaits
 complete correlated replies. It does not infer a counter from wall time. Queued
 reports are bounded to 32, each at most 4096 bytes; no automatic retry is added.
 Existing independent reporter sequence rules remain server-owned. An observed
@@ -127,6 +127,16 @@ from source-candidate tests against installed Pi/Herdr.
   oversized/rejected/no-op replies, missing socket, counter reset, and delayed
   old-clear/later-sequence cases are source fixtures, not installed acceptance.
 
+## P3 review and validation
+
+Independent review found and corrected stale-session watermark alignment,
+response-buffer truncation at upstream EOF, and request write-half-close handling.
+New real local fixtures exercise stale/equal report sequences and delayed 4 MiB
+responses to slow consumers. A separate follow-up review found no additional
+actionable defect. Final focused lane: **262 passed, 0 failed**, with workspace
+typecheck/build and secrets scan passing. The earlier full workspace test attempt
+remains incomplete after a 600 s timeout; no full-suite/hosted-CI success is
+claimed. See the [validation report](../plans/reports/validation-261118-2305-pap315-foreground-closeout.md).
+
 The earlier advisory helper failed because its required skill was missing; no
-skill code was repaired. Later source review, full checks and live observations
-are reported separately rather than inferred from these P2 checks.
+skill code was repaired. Live observations remain separate from source evidence.

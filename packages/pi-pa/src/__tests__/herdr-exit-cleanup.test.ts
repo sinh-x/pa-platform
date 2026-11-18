@@ -67,7 +67,7 @@ class Backend {
 async function fixture(run: (root: string, env: NodeJS.ProcessEnv, backend: Backend) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "herdr-exit-")), path = join(root, "herdr.sock"), backend = new Backend();
   const sockets = new Set<Socket>();
-  const server = createServer(socket => {
+  const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket); socket.on("error", () => {}); socket.on("close", () => sockets.delete(socket));
     let carry = "";
     socket.on("data", chunk => {
@@ -162,6 +162,16 @@ test("report counter reset/reuse cannot lower the captured final watermark", asy
   assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
   assert.deepEqual(backend.requests.filter(request => request.method === "pane.report_agent").map(request => request.params.seq), [100, 1, 1, 99, 101], "report bytes/sequence semantics stay owned by the existing server");
   assert.equal(backend.requests.find(request => request.method === "pane.clear_agent_authority")!.params.seq, 102);
+}));
+
+test("stale and equal-sequence reports from another session cannot overwrite cleanup ownership", async () => fixture(async (_root, env, backend) => {
+  const stage = (await createHerdrExitCleanup(env))!;
+  for (const [session, seq] of [["A", 10], ["B", 12], ["A", 11], ["C", 12]] as const) {
+    await call(stage.environment.HERDR_SOCKET_PATH!, "pane.report_agent", report(seq, session));
+  }
+  assert.equal(backend.registration!.agent_session.value, "B");
+  assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
+  assert.equal(backend.requests.find(request => request.method === "pane.clear_agent_authority")!.params.seq, 13);
 }));
 
 test("sequence exhaustion never substitutes a guessed maximum or submits a clear", async () => fixture(async (_root, env, backend) => {
@@ -280,6 +290,30 @@ test("existing non-lifecycle API requests and large replies pass through unchang
   assert.deepEqual(backend.requests[0], { id: "preserved-id", method: "inert.echo", params });
   assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("skipped", false, "pty-exit", "not-reported"));
 }));
+
+test("opaque forwarding preserves write-half-close and buffered replies to slow consumers", async context => {
+  for (const halfClose of [false, true]) await context.test(`halfClose=${halfClose}`, () => fixture(async (_root, env, backend) => {
+    const stage = (await createHerdrExitCleanup(env))!;
+    const expected = Buffer.from(`${JSON.stringify({ id: "large", result: { text: "x".repeat(4 * 1024 * 1024) } })}\n`);
+    backend.intercept = (_request, socket) => { setTimeout(() => socket.end(expected), 25); };
+    try {
+      const actual = await new Promise<Buffer>((resolve, reject) => {
+        const socket = connect(stage.environment.HERDR_SOCKET_PATH!), chunks: Buffer[] = [];
+        const timer = setTimeout(() => { socket.destroy(); reject(new Error("opaque response timed out")); }, 2_000);
+        socket.on("error", error => { clearTimeout(timer); socket.destroy(); reject(error); });
+        socket.on("connect", () => {
+          const frame = `${JSON.stringify({ id: "large", method: "inert.large", params: {} })}\n`;
+          if (halfClose) socket.end(frame); else socket.write(frame);
+          socket.pause(); setTimeout(() => socket.resume(), 75);
+        });
+        socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+        socket.on("end", () => { clearTimeout(timer); socket.destroy(); resolve(Buffer.concat(chunks)); });
+      });
+      assert.equal(actual.length, expected.length, "no tail bytes may be discarded at upstream EOF");
+      assert.equal(actual.equals(expected), true);
+    } finally { stage.dispose(); }
+  }));
+});
 
 test("actual supervisor awaits clear before returning, preserving normal/crash/signal results", async context => {
   for (const [exitCode, signal] of [[0, 0], [7, 0], [143, 15], [137, 9]] as const) await context.test(`${exitCode}/${signal}`, () => fixture(async (root, env, backend) => {

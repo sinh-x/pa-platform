@@ -12,7 +12,7 @@
     "packages/pi-pa/runtime/selected-pi-host.mjs": "3a126778238c95435897aedf8572012ed4dd6fe0c8b6136bbf23941238194760",
     "packages/pi-pa/runtime/selected-pi-environment.json": "2c2ec40103bbdd7675b62ba602f8e6aaff18ad9e695178c997f7e17cb8c518b0",
     "packages/pi-pa/src/adapter.ts": "1c854b9360ed0933c9c141b764ba755937dc47195f44ea25ea2dddf0c08c0886",
-    "packages/pi-pa/src/herdr-exit-cleanup.ts": "eb38a9bca93509e39e918b7495506e91ae36d72bd64c94ffec27f630d7f891e0",
+    "packages/pi-pa/src/herdr-exit-cleanup.ts": "669755783a16f462c36858f96576ec7035736463f4910252419d2abbc1207d1f",
     "packages/pi-pa/src/native-host.ts": "d0b83852df9e9b3a9cd67a30a8af8cf67d947db3bba929e50266aa633143a3b8",
     "packages/pi-pa/src/selected-pi-launch.ts": "f38b423206a152fe6ebfd5f7e85a0a9a98076e4a18da7c9205567ecc2f6fa217",
     "packages/pi-pa/src/selected-pi-resume.ts": "51d54e190e914a7d29e372d8b071c8c449e5aabff2d695eaba1b780dc8485432",
