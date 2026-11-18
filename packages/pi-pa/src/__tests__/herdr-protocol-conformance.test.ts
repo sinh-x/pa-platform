@@ -91,6 +91,40 @@ test("lifecycle payloads conform to the bundled Herdr protocol-22 definitions", 
   for (const [name, payload] of invalid) assert.notDeepEqual(violations(defs[name]!, payload), [], `${name} ${JSON.stringify(payload)}`);
 });
 
+test("protocol-22 cleanup grammar has no expected-incarnation conditional", () => {
+  assert.deepEqual(Object.keys(defs["PaneClearAgentAuthorityParams"]!.properties!).sort(), ["pane_id", "seq", "source"]);
+  assert.deepEqual(Object.keys(defs["PaneReleaseAgentParams"]!.properties!).sort(), ["agent", "pane_id", "seq", "source"]);
+  // Structural validity says nothing about official-source no-ops or removal.
+  assert.deepEqual(violations(defs["PaneClearAgentAuthorityParams"]!, { pane_id: binding.paneId, source: "herdr:pi", seq: 13 }), []);
+});
+
+test("source-derived counterexamples reject treating shared-source sequences as retirement guards", () => {
+  // Deliberately small model of public Herdr ee5bfb5 state.rs:1742-1808.
+  // This characterizes the safety gap; it is NOT installed-server acceptance
+  // or a substitute for a future actual-server race test.
+  const pane = () => {
+    let current: string | undefined, watermark = 0;
+    return {
+      report(incarnation: string, seq: number) { if (seq > watermark) { current = incarnation; watermark = seq; } },
+      clear(seq: number) { if (current !== undefined && seq > watermark) { current = undefined; watermark = seq; } },
+      get current() { return current; },
+    };
+  };
+  const delayedClear = pane(), unrelated = pane();
+  delayedClear.report("A", 10); unrelated.report("other", 20);
+  delayedClear.report("B", 12); // same shell after A's local timeout/return
+  delayedClear.clear(13); // A's queued request is still applicable to B
+  assert.equal(delayedClear.current, undefined, "a higher seq can delete the replacement");
+  assert.equal(unrelated.current, "other");
+
+  const absentAuthority = pane();
+  absentAuthority.clear(12); // early-return path records no fence
+  absentAuthority.report("A", 11);
+  assert.equal(absentAuthority.current, "A", "late old state resurrects without an absent-authority fence");
+  const ordered = pane(); ordered.report("A", 10); ordered.clear(12); ordered.report("A", 11);
+  assert.equal(ordered.current, undefined, "a watermark only helps where it is actually retained");
+});
+
 const agent = (overrides: Partial<HerdrPeerAgent> = {}): HerdrPeerAgent => ({
   pane_id: "w1:p3A", agent: "pi", agent_status: "idle", completion_seq: 4, state_change_seq: 12,
   interactive_ready: true, launch_pending: false, cwd: "/home/inert/peer-worktree",

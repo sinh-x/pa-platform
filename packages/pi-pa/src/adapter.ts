@@ -16,6 +16,7 @@ import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
 import { createRuntimeStartGate } from "./runtime-start-gate.js";
 import { cleanupPiPromptArgs, PiPromptCleanupError, piPromptCleanupDiagnostic, piPromptDiagnostic, preparePiPrompt, readPiPrimer } from "./prompt-transport.js";
+import { createHerdrExitCleanup, type HerdrExitCleanupResult } from "./herdr-exit-cleanup.js";
 import { awaitSelectedPiChild, resolveSelectedPiLaunch, selectedPiEnvironment } from "./selected-pi-launch.js";
 import { assertSelectedPiResumeHost, recordSelectedPiLaunch, selectedPiResumeDiagnostic } from "./selected-pi-resume.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
@@ -1209,6 +1210,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   let selected: ReturnType<typeof resolveSelectedPiLaunch>;
   let gate: ReturnType<typeof createRuntimeStartGate> | null;
   let pty: IPty;
+  let herdrExitCleanup: ReturnType<typeof createHerdrExitCleanup>;
+  let herdrCleanup: HerdrExitCleanupResult | undefined;
   let spawnAttempted = false;
   try {
     env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: deployDir });
@@ -1217,6 +1220,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     env = piPromptEnvironment(env, Boolean(selected));
     gate = opts.beforeRuntimeStart && !selected ? createRuntimeStartGate(dirname(opts.primerPath), args, env) : null;
     const childEnv = selected ? selectedPiEnvironment(selected, env) : gate?.env ?? env;
+    herdrExitCleanup = createHerdrExitCleanup(childEnv);
     spawnAttempted = true;
     pty = (supervision.spawnPty ?? spawnPty)(selected?.entryFile ?? gate?.file ?? "pi", selected ? ["--pa-managed-child", ...args] : gate?.args ?? args,
       { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env: childEnv });
@@ -1267,7 +1271,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       const restoreError = restoreTerminal();
       const finalError = error ?? restoreError;
       const finalStatus = finalError && status === 0 ? 1 : status;
-      resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: runtimePid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
+      resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: runtimePid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}), ...(herdrCleanup ? { herdrCleanup } : {}) } });
     };
     const finishEvidence = (): void => {
       if (evidenceFinished) return;
@@ -1297,6 +1301,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const finishExit = (exitCode: number, signal?: number): void => {
       if (settled || exited) return;
       exited = true;
+      herdrCleanup = herdrExitCleanup?.afterVerifiedExit("pty-exit");
       normalExit = !cleanupPending && !signal; rawExitCode = exitCode;
       if (cleanupPending) {
         if (exitCode !== 0 && cleanupStatus === 0) {
@@ -1326,9 +1331,11 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
           const terminal = readPiTerminalStatus(deployDir);
           const predatesLaunch = terminal && terminalAtLaunch?.timestamp === terminal.timestamp && terminalAtLaunch.type === terminal.type;
           if (terminal && !predatesLaunch) {
+            herdrCleanup = herdrExitCleanup?.afterVerifiedExit("confirmed-process-gone");
             finishExit(terminal.stopReason === "error" ? 1 : 0);
             return;
           }
+          herdrCleanup = herdrExitCleanup?.afterVerifiedExit("confirmed-process-gone");
           try { finishEvidence(); }
           catch (error) { settle(1, error instanceof Error ? error : new Error(String(error))); return; }
           settle(1, new Error(`process-exit-status-unavailable: Pi process ${pty.pid} exited without a terminal marker or PTY exit status`));
@@ -1358,6 +1365,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
             await sleep(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
             if (!settled && !exited && confirmProcessExit()) {
               exited = true;
+              herdrCleanup = herdrExitCleanup?.afterVerifiedExit("confirmed-process-gone");
               finishCleanup();
             }
           }

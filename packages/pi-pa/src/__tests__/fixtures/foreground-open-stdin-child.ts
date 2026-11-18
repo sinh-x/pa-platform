@@ -61,6 +61,7 @@ try {
     type: "adapter-settled",
     outputShape,
     exitCode: result.exitCode,
+    herdrCleanup: result.metadata?.herdrCleanup,
     readableFlowing: process.stdin.readableFlowing,
     dataListeners: process.stdin.listenerCount("data"),
   })}\n`);

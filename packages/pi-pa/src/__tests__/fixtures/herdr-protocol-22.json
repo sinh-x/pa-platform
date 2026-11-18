@@ -4,9 +4,29 @@
     "protocol": 22,
     "schemaVersion": 1,
     "extracted": "2026-11-16",
-    "note": "Subset of schemas.request.$defs copied verbatim for the PAP-303 lifecycle bridge. Not a general Herdr schema mirror; regenerate from the installed CLI when the protocol changes."
+    "note": "Subset of schemas.request.$defs for the PAP-303 lifecycle bridge and PAP-315 cleanup audit. Not a general Herdr schema mirror; regenerate from the installed CLI when the protocol changes.",
+    "cleanupExtracted": "2026-11-18"
   },
   "defs": {
+    "PaneClearAgentAuthorityParams": {
+      "properties": {
+        "pane_id": { "type": "string" },
+        "seq": { "format": "uint64", "minimum": 0, "type": ["integer", "null"] },
+        "source": { "type": ["string", "null"] }
+      },
+      "required": ["pane_id"],
+      "type": "object"
+    },
+    "PaneReleaseAgentParams": {
+      "properties": {
+        "agent": { "type": "string" },
+        "pane_id": { "type": "string" },
+        "seq": { "format": "uint64", "minimum": 0, "type": ["integer", "null"] },
+        "source": { "type": "string" }
+      },
+      "required": ["pane_id", "source", "agent"],
+      "type": "object"
+    },
     "PaneAgentState": {
       "enum": ["idle", "working", "blocked", "unknown"],
       "type": "string"

@@ -90,6 +90,7 @@ export function createHerdrReporter(binding: HerdrBinding, options: HerdrReporte
   const timeoutMs = Math.min(Math.max(options.timeoutMs ?? 750, 100), 2000);
   let seq = Date.now() * 1000, closed = false, sending = false;
   let sessionSlot: string | undefined, stateSlot: string | undefined, active: HerdrSocket | undefined, sessionRef: HerdrSessionRef = {};
+  let cancelActive: (() => void) | undefined;
   const nextSeq = () => ++seq;
   const drain = () => {
     if (closed || sending) return;
@@ -104,8 +105,10 @@ export function createHerdrReporter(binding: HerdrBinding, options: HerdrReporte
       clearTimeout(timer);
       if (active) { try { active.destroy(); } catch { /* owned socket already gone */ } active = undefined; }
       sending = false;
+      cancelActive = undefined;
       drain();
     };
+    cancelActive = finish;
     const timer = setTimeout(finish, timeoutMs);
     timer.unref?.();
     try {
@@ -114,7 +117,12 @@ export function createHerdrReporter(binding: HerdrBinding, options: HerdrReporte
       socket.on("error", finish);
       socket.on("end", finish);
       socket.on("data", finish);
-      socket.on("connect", () => { try { socket.write(payload); } catch { finish(); } });
+      socket.on("connect", () => {
+        // Destroying a socket does not retract an already queued connect event.
+        // Neither shutdown nor a timed-out attempt may submit a late report.
+        if (closed || finished || active !== socket) return;
+        try { socket.write(payload); } catch { finish(); }
+      });
     } catch { finish(); }
   };
   return {
@@ -131,7 +139,7 @@ export function createHerdrReporter(binding: HerdrBinding, options: HerdrReporte
     },
     close() {
       closed = true; sessionSlot = undefined; stateSlot = undefined;
-      if (active) { try { active.destroy(); } catch { /* owned socket already gone */ } active = undefined; }
+      cancelActive?.();
     },
   };
 }

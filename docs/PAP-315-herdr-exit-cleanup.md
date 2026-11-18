@@ -91,6 +91,60 @@ server work. The official Pi v9 asset likewise has no actual-exit cleanup and
 can retry reports. Do not introduce a second reporter or assume PA can quiesce
 unowned official-extension requests.
 
+## P2: authorized safe PA-side checkpoint
+
+After P1, Sinh explicitly selected **complete safe PA-side work; leave deletion
+blocked**. This narrows delivery, not the original product acceptance criteria.
+No upstream repository change, install or live cleanup was authorized.
+
+`src/herdr-exit-cleanup.ts` (under `packages/pi-pa/`) snapshots eligibility from
+the actual foreground child's environment, using the existing explicit-opt-in
+socket validator. Only PTY exit or existing confirmed-process-gone paths memoize
+an immutable result. The adapter adds optional metadata:
+
+```json
+{"herdrCleanup":{"status":"unavailable","reason":"incarnation-safe-retirement-unsupported","deathEvidence":"pty-exit"}}
+```
+
+The fallback evidence value is `confirmed-process-gone`. This is an additive
+internal result field, not a deletion/ownership claim or a new human-facing
+message. No socket is opened, no process identity is fabricated, no timer or
+retry is created, and no child result, registry terminal event, terminal stream
+or finalizer is replaced. Binding/ownership transfer and a real retirement
+transport remain unimplemented until a safe supported server contract exists.
+Selected-host eligibility uses its actual filtered child environment, so the
+unforwarded bindings remain inert. Headless paths do not create this checkpoint.
+
+The existing PA reporter now closes its active attempt through the same
+idempotent finish path, disposing its timer and dropping queued slots. Connect
+callbacks check closed/finished/active identity before writing, so callbacks
+queued before close or timeout cannot write stale reports afterward. This is
+local quiescence only; it cannot retract an already submitted server request or
+quiesce an independently loaded official extension.
+
+Source inventory reconciliation covers only the adapter, checkpoint and reporter.
+There is no new CLI/native operation, capability, environment forwarding or
+permission. Existing interaction catalogue tests confirm no Herdr command is
+advertised. No human-facing diagnostic was added or modified, so there is no
+before/after CLI wording or installed readability claim.
+
+P2 checks (2026-11-18):
+
+- Initial checkpoint/reporter lane: 18 passed; expanded protocol lane: 27 passed.
+- Combined checkpoint, lifecycle, protocol, adapter, extension composition and
+  interaction catalogue: **109 passed, 0 failed, 0 skipped** (119.97 s).
+- `corepack pnpm --filter @pa-platform/pi-pa typecheck`: passed.
+- `corepack pnpm secrets:scan` and `git diff --check`: passed.
+- Open-stdin subprocess tests, with the unavailable checkpoint selected, measured
+  21.0 / 21.5 / 28.2 ms after child-exit evidence for valid JSON / plain text /
+  other JSON; writer remained open, listeners were restored, one settlement.
+- Fake PTY normal/nonzero/SIGTERM/SIGKILL, EOF, confirmed-death and unproven-death
+  cancellation paths made zero cleanup socket connections. These are source
+  fixtures, not signals sent to live Pi or installed Herdr observations.
+- Protocol race tests are explicitly source-derived counterexamples, not actual
+  server tests or proof of a retirement guard. No transport response handling or
+  remote cleanup success is exercised because the unsafe effect is unavailable.
+
 ## Standalone and supervisor death
 
 No standalone shutdown-hook change is made here. Pi shutdown hooks also occur
