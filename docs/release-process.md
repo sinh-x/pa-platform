@@ -158,7 +158,17 @@ Use `corepack pnpm bump:refresh-hash` when only the Nix dependency hash needs to
 
 ## CI Expectations
 
-CI verifies typecheck, build, tests, generated completions, fish syntax, and the exact paired config contract on pushes and pull requests targeting `develop` or `main`. Repository administrators must configure `PA_PLATFORM_CONFIG_TOKEN` with read access to the private companion repository. The paired check intentionally remains red until the pinned config commit is present on config `develop`, enforcing config-first integration before the consuming platform change.
+CI verifies PAP-owned typecheck, build, code tests, pairing-contract fixtures,
+generated completions, Fish syntax and completion timing. It checks out only this
+repository and requires no operator-configuration repository or access token. The
+pairing fixture lane exercises repository-owned disposable test data; it does not
+fetch or validate an external checkout.
+
+A green hosted run is not proof of compatibility with an actual selected
+operator configuration. Exact operator-local configuration pairing and real
+installed/foreground/browser/human qualification remain separate evidence; they
+are not silently passed or waived by this CI change. PAPC-092 owns the outstanding
+Analyst configuration integration and qualification follow-up.
 
 Version tagging remains an explicit manual release step so package version, changelog, Nix hash refresh, release commit, annotated tag, and tag push happen together through `scripts/dev/version_bump.sh`.
 

@@ -30,6 +30,22 @@ test('ordinary CI has no Nix step and package builds are manual/release-only', (
   assert.match(pkg.scripts.test, /src\/\*\*\/\*\.test\.ts/);
 });
 
+test('hosted CI checks only this repository and its owned fixtures without external configuration access', () => {
+  const root = new URL('../../', import.meta.url);
+  const workflow = load(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  const steps = Object.values(workflow.jobs).flatMap(job => job.steps ?? []);
+  const checkouts = steps.filter(step => /^actions\/checkout@/.test(step.uses ?? ''));
+  assert.equal(checkouts.length, 1, 'CI must check out only the current PAP repository');
+  assert.equal(checkouts[0].with?.repository, undefined, 'the checkout must use the current repository');
+  assert.doesNotMatch(JSON.stringify(workflow), /pa-platform-config|PA_PLATFORM_CONFIG_TOKEN|PA_PHASE5_CONFIG_ROOT|paired-config|verify:paired-config|--require-origin-develop/);
+  const commands = steps.map(step => step.run ?? '').join('\n');
+  for (const command of ['pnpm install --frozen-lockfile', 'pnpm run typecheck', 'pnpm run build', 'pnpm run test:code', 'pnpm run test:paired-gate', 'pnpm run completions']) {
+    assert.ok(commands.includes(command), `repository-owned check removed: ${command}`);
+  }
+  assert.match(commands, /repository-owned fixtures/i);
+  assert.match(commands, /operator-local configuration pairing.*separate/i);
+});
+
 test('stale manual inventory fails instead of silently omitting coverage', () => {
   assert.throws(() => partitionTests(['src/a.test.ts'], manualIntegration['pa-core']), /Manual integration entry no longer exists/);
 });
