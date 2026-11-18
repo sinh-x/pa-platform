@@ -38,6 +38,19 @@ A read of the selected installed Pi `docs/extensions.md` was denied with
 reader or copied file. New standalone-hook implementation is therefore not
 claimed; existing PA lifecycle APIs can be assessed from repository source.
 
+## Phase progress
+
+- P1 committed as `ed49242`: protocol audit and concrete safety gaps.
+- Sinh selected the explicit safe PA-side scope, leaving deletion blocked.
+- P2 committed as `f51efac`: unavailable supervisor checkpoint, local reporter
+  shutdown hardening, regressions and source-inventory reconciliation.
+- P3 source validation and independent agent review are recorded in
+  `plans/reports/validation-261118-2137-pap315-herdr-exit-cleanup.md`.
+  Focused lane: 224 passed. Workspace typecheck/build/completions passed; full
+  workspace tests exceeded the 600 s budget and remain incomplete.
+- P4 installed qualification is blocked, not accepted. A separate handoff must
+  retain all unexecuted installed/human lanes and the upstream contract owner.
+
 ## Validation lanes
 
 Source: lifecycle, protocol, supervisor, replacement/delayed-report tests;
