@@ -48,8 +48,10 @@ claimed; existing PA lifecycle APIs can be assessed from repository source.
   `plans/reports/validation-261118-2137-pap315-herdr-exit-cleanup.md`.
   Focused lane: 224 passed. Workspace typecheck/build/completions passed; full
   workspace tests exceeded the 600 s budget and remain incomplete.
-- P4 installed qualification is blocked, not accepted. A separate handoff must
-  retain all unexecuted installed/human lanes and the upstream contract owner.
+- P4 installed qualification is blocked, not accepted. The separately committed
+  `plans/reports/handoff-261118-2137-pap315-herdr-exit-cleanup.md` retains every
+  unexecuted installed/human lane, exact observed installed metadata, upstream
+  contract owner and recovery limitations. No live qualification was performed.
 
 ## Validation lanes
 

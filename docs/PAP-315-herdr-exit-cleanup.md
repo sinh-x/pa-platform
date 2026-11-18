@@ -1,5 +1,12 @@
 # PAP-315: foreground Herdr exit cleanup
 
+Delivery status: P1 audit and the explicitly narrowed P2 safe source work are
+committed. P3 focused checks passed (224 tests), with workspace typecheck/build/
+completions passing and the full test run timing out. P4 remains blocked.
+See the [validation report](../plans/reports/validation-261118-2137-pap315-herdr-exit-cleanup.md)
+and [installed/UAT handoff](../plans/reports/handoff-261118-2137-pap315-herdr-exit-cleanup.md).
+Original product acceptance is incomplete; this branch does not remove entries.
+
 ## P1 outcome
 
 **Automatic deletion is unsafe on the audited protocol-22 shared `herdr:pi`
