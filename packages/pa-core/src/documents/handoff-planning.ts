@@ -8,7 +8,7 @@ import { withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.j
 import { getBranchPattern, loadRepoEntry } from "../repos.js";
 import { creationDigest } from "../tickets/create-intent.js";
 import { getDb } from "../registry/db.js";
-import type { TicketStore } from "../tickets/store.js";
+import { TicketStore } from "../tickets/store.js";
 import type { Ticket } from "../tickets/types.js";
 import { SHA256, text } from "../workflows/contracts.js";
 import { handoffBranchIntentSha, parseHandoffRequest, type HandoffBranchIntent } from "./handoff-contract.js";
@@ -29,6 +29,32 @@ export function nativeHandoffTicketVersion(ticket: Ticket): string { return crea
 export function nativeHandoffPlanIdentity(caller: NativeHandoffPlanningCaller, requestId: string) {
   return { scope: creationDigest({ domain: "pa-handoff-plan/v1", deploymentId: caller.deploymentId, sessionId: caller.sessionId,
     identitySha256: caller.identitySha256, selectionSha256: caller.selectionSha256, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket }), requestId };
+}
+
+/** Same-session pre-subject observation. No intake, locks, DB opening, Git
+ * observation or state repair. Native adapters own caller authentication. */
+export function observeNativeHandoffPlan(host: NativeHandoffPlanningHost, rawRequest: string) {
+  const request = parseHandoffRequest(rawRequest);
+  if (request.action !== "plan") return documentReject("DOCUMENT_INPUT");
+  const initial = structuredClone(host.authenticate());
+  text(initial.identitySha256, SHA256);
+  if (initial.ticket !== request.ticket) documentReject("DOCUMENT_AUTHORITY");
+  const repo = loadRepoEntry(initial.repoKey);
+  if (!repo || repo.path !== initial.repoRoot) documentReject("DOCUMENT_AUTHORITY");
+  const identity = nativeHandoffPlanIdentity(initial, request.requestId);
+  const observed = TicketStore.observeHandoffWithIntent(identity, request.ticket);
+  if (observed.ticket.project !== initial.repoKey || !isDeepStrictEqual(initial, host.authenticate())) documentReject("DOCUMENT_AUTHORITY");
+  const intent = observed.record?.change.kind === "plan" ? observed.record.change.intent : null;
+  if (observed.record && (!intent || intent.ticket !== request.ticket || intent.branch !== request.branch
+    || intent.expectedTicketVersion !== request.expectedTicketVersion || intent.requestId !== request.requestId
+    || intent.callerIdentitySha256 !== initial.identitySha256 || intent.repository.key !== initial.repoKey
+    || intent.repository.root !== initial.repoRoot)) documentReject("DOCUMENT_CONFLICT");
+  return { schemaVersion: "pa-handoff-plan-status/v1" as const, identity,
+    original: { ticket: request.ticket, requestId: request.requestId, expectedTicketVersion: request.expectedTicketVersion, branch: request.branch },
+    disposition: observed.record ? observed.complete ? "complete" : "partial" : "absent", intent,
+    ticketVersion: creationDigest(observed.ticket), ticketMatchesExpectedVersion: creationDigest(observed.ticket) === request.expectedTicketVersion,
+    ticketStatus: observed.ticket.status, nextOwner: "original-plan-owner", observation: "point-in-time-not-effect-admission",
+    authorityGranted: false, launchReady: false };
 }
 
 /** Native v2 successor only. Stable identity is derived from the exact stale

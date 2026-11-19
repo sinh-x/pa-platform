@@ -4,11 +4,11 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
-  DocumentPackageError, HandoffPublicationService, HandoffReviewService, LocalHandoffReviewService, isModeCapabilitySession, RegistryHandoffReviewJournal,
+  DocumentPackageError, RepositoryRefError, TicketHandoffError, HandoffPublicationService, HandoffReviewService, LocalHandoffReviewService, isModeCapabilitySession, RegistryHandoffReviewJournal,
   RegistryReaderOpeningJournal, TicketStore, capabilityToolSelected, documentReject, getAiUsageDir, getDb, getTicketsDir,
   handoffBranchIntentSha, inspectFullDocumentReader, intakeNativeHandoffTicket, nativeHandoffPlanIdentity, nativeHandoffTicketVersion, openBoundDocumentReader, openDurableRegistryDatabase, parseWorkflowRequest,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow,
-  planNativeHandoffTicket, presentFullDocumentReader, readArtifactFile, stageNativeHandoffTicket,
+  planNativeHandoffTicket, observeNativeHandoffPlan, presentFullDocumentReader, readArtifactFile, stageNativeHandoffTicket,
   workflowDigest, executeLocalReview, getDeployPaths, assertNativeRestartProcessDead, localHandoffReviewHooks, refreshNativeHandoffTicket, withLocalHandoffRepository, type NativeHandoffPlanningHost, type NativeHandoffReviewHost, type LocalReviewOutcome,
 } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
@@ -23,7 +23,7 @@ type Effects = { publish: boolean; branchRef: boolean; queue: boolean };
 type Request =
   | { action: "intake"; ticket: string } | { action: "intake"; title: string; content: string }
   | { action: "stage"; ticket: string; requestId: string; expectedTicketVersion: string; stage: "analysis" | "review" | "changes-requested" }
-  | { action: "plan"; ticket: string; requestId: string; branch: string; expectedTicketVersion: string }
+  | { action: "plan" | "plan-status"; ticket: string; requestId: string; branch: string; expectedTicketVersion: string }
   | { action: "prepare-review"; documentSubjectSha256: string; planRequestId: string; effects: Effects }
   | { action: "review" | "request"; subjectSha256: string; expectedRevision: number }
   | { action: "show"; subjectSha256: string }
@@ -75,7 +75,7 @@ function parse(row: Record<string, unknown>): Request {
     if (!(["analysis", "review", "changes-requested"] as unknown[]).includes(row.stage)) throw new DocumentPackageError("DOCUMENT_INPUT");
     return { action, ticket: ticket(row.ticket), requestId: id(row.requestId), expectedTicketVersion: sha(row.expectedTicketVersion), stage: row.stage as "analysis" | "review" | "changes-requested" };
   }
-  if (action === "plan") {
+  if (action === "plan" || action === "plan-status" && row.schemaVersion === LOCAL_VERSION) {
     exact(row, ["schemaVersion", "action", "ticket", "requestId", "branch", "expectedTicketVersion"]);
     return { action, ticket: ticket(row.ticket), requestId: id(row.requestId), branch: text(row.branch, undefined, 256), expectedTicketVersion: sha(row.expectedTicketVersion) };
   }
@@ -200,6 +200,9 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
     const selection = authenticatePiDocumentCaller(context).capabilities;
     if (!selection || !["document.local-review", "document.handoff", "document.package"].every(id => selection.policy.allow.includes(id))) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   }
+  if (request.action === "plan-status") {
+    return observeNativeHandoffPlan(planningHost(context, signal), JSON.stringify({ schemaVersion: "pa-handoff-request/v1", ...request, action: "plan" }));
+  }
   if (local && (request.action === "show" || request.action === "status")) {
     return executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "show", subjectSha256: request.subjectSha256 }));
   }
@@ -222,6 +225,7 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
   } finally { db.close(); }
 }
 async function executeHandoff(request: Request,  context: PiHandoffContext, db: ReturnType<typeof getDb>, local: boolean, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  if (request.action === "plan-status") return documentReject("DOCUMENT_INPUT"); // Read-only path is dispatched before writable services.
   const s = services(context, db, signal);
   if (request.action === "intake") {
     const host = { authenticate: () => authenticatePiHandoffCaller(context, signal), assertAvailable(expected: ReturnType<typeof authenticatePiHandoffCaller>) {
@@ -320,13 +324,25 @@ export function handoffFailure(error: unknown): Record<string, unknown> {
     DOCUMENT_UNCERTAIN: "The original operation may be partial; its outcome or cleanup is not established.",
     DOCUMENT_UNAVAILABLE: "A required native owner or environment is unavailable; the exact cause is not established here.",
   };
-  let code = "DOCUMENT_UNAVAILABLE";
+  let code = "DOCUMENT_UNAVAILABLE", establishedReason: string | undefined;
   try {
-    if (error instanceof DocumentPackageError) {
+    if (error instanceof RepositoryRefError) {
+      const reason = Object.getOwnPropertyDescriptor(error, "reason")?.value;
+      const safe: Record<string, string> = {
+        "retained-custody": "The repository-ref owner found retained repository custody; it cannot admit this operation or reclaim that custody.",
+        "active-or-uncertain-writer": "The repository-ref owner found live or uncertain ticket ownership; concurrent effects remain blocked.",
+        "inventory-changed": "The repository-ref owner's physical inventory changed during admission; the operation's result remains unverified.",
+      };
+      if (typeof reason === "string" && Object.hasOwn(safe, reason)) { code = reason === "inventory-changed" ? "DOCUMENT_UNCERTAIN" : "DOCUMENT_CONFLICT"; establishedReason = safe[reason]; }
+    } else if (error instanceof TicketHandoffError) {
+      const cause = Object.getOwnPropertyDescriptor(error, "code")?.value;
+      const mapped: Record<string, string> = { TICKET_HANDOFF_INPUT: "DOCUMENT_INPUT", TICKET_HANDOFF_STALE: "DOCUMENT_STALE", TICKET_HANDOFF_CONFLICT: "DOCUMENT_CONFLICT", TICKET_HANDOFF_SCOPE: "DOCUMENT_AUTHORITY", TICKET_HANDOFF_UNCERTAIN: "DOCUMENT_UNCERTAIN" };
+      if (typeof cause === "string" && Object.hasOwn(mapped, cause)) { code = mapped[cause]!; establishedReason = `The ticket handoff owner established ${cause}. ${reasons[code]}`; }
+    } else if (error instanceof DocumentPackageError) {
       const descriptor = Object.getOwnPropertyDescriptor(error, "code");
       if (descriptor && "value" in descriptor && typeof descriptor.value === "string" && Object.hasOwn(reasons, descriptor.value)) code = descriptor.value;
     }
   } catch { /* Hostile exception proxies are not trusted diagnostic facts. */ }
-  const guidance = `Handoff completion is not established; preserve any completed effects.\nCondition: This handoff operation cannot report verified completion.\nSource: Native handoff owner (${code}).\nReason: ${reasons[code] ?? reasons.DOCUMENT_UNAVAILABLE}\nCorrection: Ask the runtime owner to inspect the original request and native records. Impact: read-only. Actor: agent or operator. New approval: not required for inspection; repairs need their owning authority. Prerequisite: retain the original subject, revision, request and decision coordinates.\nResume Action: Continue the same operation only after the owner establishes its state and resolves the cause. Remaining effects recheck admission; do not create a replacement request or repeat approval to bypass uncertainty.`;
+  const guidance = `Handoff completion is not established; preserve any completed effects.\nCondition: This handoff operation cannot report verified completion.\nSource: Native handoff owner (${code}).\nReason: ${establishedReason ?? reasons[code] ?? reasons.DOCUMENT_UNAVAILABLE}\nCorrection: Ask the runtime owner to inspect the original request and native records. Impact: read-only. Actor: agent or operator. New approval: not required for inspection; repairs need their owning authority. Prerequisite: retain the original subject, revision, request and decision coordinates.\nResume Action: Continue the same operation only after the owner establishes its state and resolves the cause. Remaining effects recheck admission; do not create a replacement request or repeat approval to bypass uncertainty.`;
   return { schemaVersion: "pa-handoff-result/v1", ok: false, code, guidance, scope: "this-operation-only", executionAdmitted: false };
 }

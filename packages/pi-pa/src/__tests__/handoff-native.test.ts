@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -133,6 +133,51 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     async close() { for (const continuation of continuations) await continuation.shutdown(); await lifecycle.shutdown(); closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); } };
   } catch (error) { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); throw error; }
 }
+
+test("registered original plan observation is read-only before a subject and preserves stale no-intent coordinates", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const intake = await f.checked({ action: "intake", ticket: "EX-1" });
+    const request = { action: "plan-status", ticket: "EX-1", requestId: "original-observation", branch: "feature/EX-1-observation", expectedTicketVersion: intake.ticketVersion };
+    const tickets = join(f.usage, "tickets"), before = readdirSync(tickets).sort();
+    const first = await f.checked(request);
+    assert.equal(first.disposition, "absent"); assert.equal(first.ticketMatchesExpectedVersion, true);
+    assert.equal(first.authorityGranted, false); assert.equal(first.launchReady, false);
+    assert.deepEqual(readdirSync(tickets).sort(), before);
+    new TicketStore().comment("EX-1", "fixture", "Later unrelated comment");
+    const stale = await f.checked(request);
+    assert.equal(stale.disposition, "absent"); assert.equal(stale.ticketMatchesExpectedVersion, false);
+    assert.equal(stale.nextOwner, "original-plan-owner");
+    assert.equal(stale.original.expectedTicketVersion, intake.ticketVersion);
+    const planned = await f.checked({ ...request, action: "plan", expectedTicketVersion: nativeHandoffTicketVersion(new TicketStore().get("EX-1")!) });
+    const complete = await f.checked({ ...request, expectedTicketVersion: planned.intent.expectedTicketVersion });
+    assert.equal(complete.disposition, "complete"); assert.deepEqual(complete.intent, planned.intent);
+    const wrong = await f.handoff({ ...request, expectedTicketVersion: "f".repeat(64) });
+    assert.equal(wrong.code, "DOCUMENT_CONFLICT");
+    for (const extra of [{ originDeploymentId: "d-ffffff" }, { root: f.repo }, { actor: "operator" }]) {
+      assert.equal((await f.handoff({ ...request, ...extra })).code, "DOCUMENT_INPUT");
+    }
+    assert.equal(f.prompts(), 0); assert.equal(f.git("for-each-ref", `refs/heads/${request.branch}`), "");
+  } finally { await f.close(); }
+});
+
+test("registered plan preserves established repository custody cause without echoing private marker", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const intake = await f.checked({ action: "intake", ticket: "EX-1" });
+    // Use the actual exported custody marker, not an exception-text mock.
+    const { REPOSITORY_MUTATION_LEASE_FILE } = await import("@pa-platform/pa-core");
+    const path = join(f.repo, ".git", REPOSITORY_MUTATION_LEASE_FILE);
+    writeFileSync(path, "PRIVATE_CUSTODY_SENTINEL");
+    const result = await f.handoff({ action: "plan", ticket: "EX-1", requestId: "blocked-original", branch: "feature/EX-1-blocked", expectedTicketVersion: intake.ticketVersion });
+    assert.equal(result.ok, false); assert.equal(result.code, "DOCUMENT_CONFLICT");
+    const output = JSON.stringify(result);
+    assert.match(output, /retained repository custody/); assert.doesNotMatch(output, /PRIVATE_CUSTODY_SENTINEL/);
+    assert.equal(readFileSync(path, "utf8"), "PRIVATE_CUSTODY_SENTINEL");
+    assert.equal(new TicketStore().get("EX-1")!.linkedBranches.length, 0);
+    assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
 
 for (const supplied of [false, true]) test(`registered native policy handoff completes ${supplied ? "supplied" : "ticketless"} intake, real plan/publication/ref/link with one synthetic UI and no checkout`, async () => {
   const f = fixture(undefined, supplied);
@@ -1057,6 +1102,24 @@ test("P3 R4 retained v1 queue reply-loss recovery still requires live approval",
     await f.checked({ action: "revoke", subjectSha256: p.subjectSha256, expectedRevision: 2, decisionId: decision.decisionId });
     assert.equal((await f.handoff({ action: "queue", ...coordinates })).code, "DOCUMENT_AUTHORITY");
   } finally { await f.close(); }
+});
+
+test("typed handoff causes are bounded and hostile error facts never become diagnostic prose", async () => {
+  const { RepositoryRefError, TicketHandoffError } = await import("@pa-platform/pa-core");
+  for (const error of [new RepositoryRefError("retained-custody"), new RepositoryRefError("active-or-uncertain-writer"), new RepositoryRefError("inventory-changed"),
+    ...(["TICKET_HANDOFF_INPUT", "TICKET_HANDOFF_STALE", "TICKET_HANDOFF_CONFLICT", "TICKET_HANDOFF_SCOPE", "TICKET_HANDOFF_UNCERTAIN"] as const).map(code => new TicketHandoffError(code))]) {
+    const result = handoffFailure(error), guidance = result.guidance as string;
+    assert.notEqual(result.code, "DOCUMENT_UNAVAILABLE"); assert.ok(guidance.length <= 2000);
+    for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(guidance.split(label).length, 2);
+    assert.equal(result.executionAdmitted, false);
+  }
+  const forged = new Error("ref owner overlaps retained repository custody");
+  Object.defineProperty(forged, "reason", { get() { throw Error("PRIVATE_HOSTILE"); } });
+  assert.equal(handoffFailure(forged).code, "DOCUMENT_UNAVAILABLE");
+  const tampered = new RepositoryRefError("retained-custody");
+  Object.defineProperty(tampered, "reason", { get() { throw Error("PRIVATE_HOSTILE"); } });
+  assert.equal(handoffFailure(tampered).code, "DOCUMENT_UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify(handoffFailure(tampered)), /PRIVATE_HOSTILE/);
 });
 
 test("handoff diagnostics are fixed bounded plain text and never echo arbitrary exceptions", () => {

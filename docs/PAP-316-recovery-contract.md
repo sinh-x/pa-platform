@@ -63,6 +63,34 @@ same-operation partial/lost-response recovery is reused and tested, not replaced
 with global historical-association exemptions. Unsupported retained origin
 adoption stays a specific original-owner dependency.
 
+## P1 source evidence and message examples
+
+The registered-tool red reproduced two distinct gaps before source changes:
+`plan-status` returned `DOCUMENT_INPUT`, and a real preserved custody marker
+returned `DOCUMENT_UNAVAILABLE` instead of its established owner cause.
+`/tmp/pap316-followup-p1-red.log`: 0/2 passed. After minimal implementation,
+`/tmp/pap316-followup-p1-focused.log`: 4/4 passed, including typed/hostile messages.
+Core intake/planning/ticket/Git/branch regressions passed 112/112 with no skips
+(`/tmp/pap316-followup-p1-core.log`). Workspace typecheck passed. The first
+complete native suite exceeded its 300-second execution bound after 23 passing
+cases; that attempt is incomplete, not a full-suite pass.
+
+Affected categories are native handoff failures/blockers and tool information.
+Before: an established custody conflict became a generic unavailable result.
+After: the same denial returns existing `DOCUMENT_CONFLICT`, explaining that the
+repository-ref owner found retained custody and cannot reclaim it. Original
+request inspection is the recommended read-only action; repairs still require
+the genuine owner. Unknown errors still say the cause is not established.
+Ticket-owner errors map only their finite typed codes to existing document codes.
+Raw exception prose, marker content and hostile getters are never guidance.
+
+The existing result envelope, error flag, streams and `executionAdmitted=false`
+remain unchanged. The necessary new observation result is separately versioned;
+no effect API or imported authority was introduced. Structural checks confirm
+one five-label envelope under 2,000 UTF-16 units. Agent plain-text review finds
+outcome, consequence and next owner explicit; genuine human readability and
+installed propagation are not claimed.
+
 ## Phase exits
 
 - P0: evidence and finite contract above; incident cause remains unknown.

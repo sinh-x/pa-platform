@@ -50,10 +50,37 @@ export class TicketStore {
   private readonly context: TicketMutationContext;
   private transactionDepth = 0;
 
-  constructor(dir = getTicketsDir(), context: TicketMutationContext = {}) {
+  constructor(dir = getTicketsDir(), context: TicketMutationContext = {}, initialize = true) {
     this.dir = dir;
     this.context = context;
-    mkdirSync(this.dir, { recursive: true });
+    if (initialize) mkdirSync(this.dir, { recursive: true });
+  }
+
+  /** Pure existing-file observation, without constructor initialization or mutex
+   * creation. Double-read rejects visible concurrent changes; this snapshot is
+   * never an effect admission and cannot reconcile an unfinished operation. */
+  static observeHandoffWithIntent(identity: TicketCreateIntentIdentity, ticketId: string, dir = getTicketsDir()) {
+    if (!isCanonicalTicketId(ticketId)) handoffFail("TICKET_HANDOFF_INPUT");
+    const store = new TicketStore(dir, {}, false), files = new AdvisoryFiles(dir), key = handoffKey(identity);
+    const snapshot = () => {
+      const record = readHandoffIntent(dir, key);
+      const bytes = files.file(`${ticketId}.json`) as Buffer;
+      const raw = parseReviewEvidenceJson(bytes, "handoff-ticket") as Record<string, unknown>;
+      if (raw.id !== ticketId || raw._alias || typeof raw.createdAt !== "string" || typeof raw.updatedAt !== "string") handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      const ticket = store.normalizeTicket(raw), audits = store.readCreationAudits();
+      if (record && record.before.id !== ticketId) handoffFail("TICKET_HANDOFF_CONFLICT");
+      return { record, ticket, complete: record ? handoffAuditComplete(record, audits.entries) : false, auditSha256: creationDigest(audits.raw), ticketSha256: creationDigest(bytes) };
+    };
+    try {
+      const first = snapshot(), second = snapshot();
+      if (!isDeepStrictEqual(first, second)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      return { record: first.record, ticket: first.ticket, complete: first.complete };
+    } catch (error) {
+      // Only the owner-established conflict is specific; all unreadable or
+      // unstable evidence stays unknown, never an absent intent.
+      if (error instanceof Error && Object.getOwnPropertyDescriptor(error, "code")?.value === "TICKET_HANDOFF_CONFLICT") throw error;
+      return handoffFail("TICKET_HANDOFF_UNCERTAIN");
+    }
   }
 
   private withTransaction<T>(operation: () => T): T {
