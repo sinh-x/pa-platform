@@ -9,7 +9,7 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PiAdapter, runPiManagedProcess } from "../adapter.js";
-import { createHerdrExitCleanup, herdrExitCleanupMessage, HERDR_EXIT_BUDGET_MS } from "../herdr-exit-cleanup.js";
+import { createHerdrExitCleanup, herdrExitCleanupMessage, HERDR_EXIT_BUDGET_MS, HERDR_MANAGED_AGENT } from "../herdr-exit-cleanup.js";
 import { selectedPiEnvironment } from "../selected-pi-launch.js";
 
 type Json = Record<string, any>;
@@ -18,8 +18,8 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const report = (seq: number, session = "A") => ({ pane_id: "w1:p315", source: "herdr:pi", agent: "pi", seq, agent_session_id: session, state: "idle" });
 const metadata = (status: string, submitted: boolean, deathEvidence = "pty-exit", reason?: string) => ({ status, ...(reason ? { reason } : {}), submitted, deathEvidence });
 function assertOutcome(actual: unknown, expected: Json): void {
-  const { requestId, source, elapsedMs, ...rest } = actual as Json;
-  assert.deepEqual(rest, expected);
+  const { requestId, source, agent, elapsedMs, ...rest } = actual as Json;
+  assert.deepEqual(rest, expected); assert.equal(agent, "ppa-pi");
   assert.ok(Number.isFinite(elapsedMs) && elapsedMs >= 0 && elapsedMs < 750);
   assert.match(source, /^ppa:pi:[0-9a-f-]{36}$/);
   if (expected.submitted) assert.match(requestId, /^ppa-herdr:[0-9a-f-]{36}$/);
@@ -49,13 +49,14 @@ const call = (path: string, method: string, params: Json = {}, id = `${method}:$
 class Backend {
   requests: Json[] = [];
   watermarks = new Map<string, number>();
+  recentPiExit = false;
   registration: Json | undefined;
   intercept?: (request: Json, socket: Socket, apply: () => void) => void;
   apply(request: Json, socket: Socket): void {
     let result: Json = {};
     const { method, params } = request;
     if (method === STATE) {
-      if (params.source !== "herdr:pi" && params.seq > (this.watermarks.get(params.source) ?? -1)) {
+      if (params.source !== "herdr:pi" && !(this.recentPiExit && params.agent === "pi") && params.seq > (this.watermarks.get(params.source) ?? -1)) {
         this.watermarks.set(params.source, params.seq);
         // Native Herdr retains an omitted command for the SAME source, and
         // reconciles it away when a different source owns the pane.
@@ -159,13 +160,20 @@ test("managed source registers a hidden Pi and preserves native resume without c
   assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
 }));
 
+test("managed ppa-pi identity remains self-reported after a previous detected Pi exit", async () => fixture(async (_root, env, backend) => {
+  backend.recentPiExit = true;
+  const stage = await registered(env);
+  assert.equal(backend.registration!.agent, "ppa-pi");
+  assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
+}));
+
 test("release uses original binding and later sequence; duplicate exit shares one completion", async () => fixture(async (_root, env, backend) => {
   const stage = await registered(env), endpoint = stage.environment.HERDR_SOCKET_PATH!, source = backend.registration!.source;
   env.HERDR_PANE_ID = "replacement"; env.HERDR_SOCKET_PATH = "/other.sock";
   const first = stage.afterVerifiedExit("pty-exit"); assert.equal(stage.afterVerifiedExit("confirmed-process-gone"), first);
   assertOutcome(await first, metadata("verified-absent", true)); assert.equal(existsSync(endpoint), false);
   const releases = backend.requests.filter(request => request.method === RELEASE);
-  assert.equal(releases.length, 1); assert.deepEqual(releases[0]!.params, { pane_id: "w1:p315", source, agent: "pi", seq: 9 });
+  assert.equal(releases.length, 1); assert.deepEqual(releases[0]!.params, { pane_id: "w1:p315", source, agent: HERDR_MANAGED_AGENT, seq: 9 });
   assert.deepEqual(backend.requests.map(request => request.method), [SESSION, STATE, RELEASE, "agent.get"]); stage.dispose();
 }));
 

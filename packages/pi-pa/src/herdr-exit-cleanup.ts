@@ -6,6 +6,8 @@ import { isAbsolute, join } from "node:path";
 import { HERDR_REQUEST_LIMIT_BYTES, HERDR_SOURCE, resolveHerdrBinding } from "./pi-extension/herdr-lifecycle.js";
 
 export const HERDR_EXIT_BUDGET_MS = 500;
+/** PPA is self-reported: the actual Pi child lives behind a different PTY. */
+export const HERDR_MANAGED_AGENT = "ppa-pi";
 const FRAME_LIMIT = 1024 * 1024; // Herdr protocol 22's existing initial-frame bound.
 const RESPONSE_LIMIT = 64 * 1024;
 const QUEUE_LIMIT = 32;
@@ -17,6 +19,7 @@ export interface HerdrExitCleanupResult {
   readonly requestId?: string;
   /** Native launch incarnation, not a conversation ID or a permission token. */
   readonly source: string;
+  readonly agent: typeof HERDR_MANAGED_AGENT;
   readonly elapsedMs: number;
   readonly deathEvidence: HerdrChildDeathEvidence;
 }
@@ -133,7 +136,7 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
     // the old source's recovery is then reconciled away without unregistering
     // the continuing process or inventing a fallback executable.
     const source = newer && stateReport && stateReported && reference !== stateReference ? `ppa:pi:${randomUUID()}` : managedSource;
-    const params: Json = { ...object(next.body.params)!, source };
+    const params: Json = { ...object(next.body.params)!, source, agent: HERDR_MANAGED_AGENT };
     delete params.resume_argv;
     delete params.agent_session_id; delete params.agent_session_path; // native custom sources ignore these
     const resume = newer && stateReport ? resumeArgv(ownedSession) : undefined;
@@ -225,7 +228,7 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
     const deadline = performance.now() + HERDR_EXIT_BUDGET_MS;
     let submitted = false, requestId: string | undefined;
     const result = (status: HerdrExitCleanupResult["status"], reason?: HerdrExitCleanupResult["reason"]): CleanupObservation =>
-      Object.freeze({ status, ...(reason ? { reason } : {}), submitted, ...(requestId ? { requestId } : {}), source: managedSource, deathEvidence });
+      Object.freeze({ status, ...(reason ? { reason } : {}), submitted, ...(requestId ? { requestId } : {}), source: managedSource, agent: HERDR_MANAGED_AGENT, deathEvidence });
     closing = true; server.close(); queue.length = 0;
     for (const client of clients) client.destroy();
     // The one budget also cuts short an already forwarded report's 750 ms wait.
@@ -242,7 +245,7 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       // failed connect. At most one attempt; disconnect is not cancellation.
       // The server compares the current authority's source+agent atomically.
       // A delayed A release cannot remove B, even with a larger A sequence.
-      const cleared = await request("pane.release_agent", { pane_id: binding.paneId, source: managedSource, agent: "pi", seq: maxSeq + 1 }, deadline,
+      const cleared = await request("pane.release_agent", { pane_id: binding.paneId, source: managedSource, agent: HERDR_MANAGED_AGENT, seq: maxSeq + 1 }, deadline,
         id => { submitted = true; requestId = id; });
       if (cleared.kind !== "reply") return result("unconfirmed", classify(cleared));
       if (object(cleared.body.error)) return result("unconfirmed", "rejected");

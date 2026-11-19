@@ -100,8 +100,8 @@ test("protocol-22 cleanup grammar has no expected-incarnation conditional", () =
 
 test("managed incarnation uses the supported source-qualified release and native resume fields", () => {
   const source = "ppa:pi:11111111-1111-4111-8111-111111111111";
-  assert.deepEqual(violations(defs["PaneReleaseAgentParams"]!, { pane_id: binding.paneId, source, agent: "pi", seq: 8 }), []);
-  assert.deepEqual(violations(defs["PaneReportAgentParams"]!, { ...herdrStateParams(binding, "idle", 7), source, resume_argv: ["pi", "--session", "/tmp/session.jsonl"] }), []);
+  assert.deepEqual(violations(defs["PaneReleaseAgentParams"]!, { pane_id: binding.paneId, source, agent: "ppa-pi", seq: 8 }), []);
+  assert.deepEqual(violations(defs["PaneReportAgentParams"]!, { ...herdrStateParams(binding, "idle", 7), source, agent: "ppa-pi", resume_argv: ["pi", "--session", "/tmp/session.jsonl"] }), []);
 });
 
 test("source-derived counterexamples reject treating shared-source sequences as retirement guards", () => {

@@ -12,7 +12,11 @@ fresh PPA registrations. Its release operation also intentionally ignores
 official sources. Reusing that source was the remaining integration defect.
 
 `packages/pi-pa/src/herdr-exit-cleanup.ts` assigns a fresh native
-`ppa:pi:<UUID>` source to each foreground launch. A conversation/reference change
+`ppa:pi:<UUID>` source to each foreground launch and, with Sinh's explicit
+selection, reports the managed entry as **`ppa-pi`**. This is Herdr's genuine
+self-reported-agent path, not its known/process-detected `pi` identity; it avoids
+known-Pi process-exit suppression for the hidden PTY. PPA's runtime/provider
+identity remains Pi and standalone reporting is unchanged. A conversation/reference change
 rebinds that authority atomically through the next state report, without an
 unregister operation, so a previous conversation's resume command cannot survive
 a new unrepresentable reference. The existing launch-scoped in-process relay
@@ -48,7 +52,7 @@ and method objects are never coerced. Malformed input cannot escape a socket
 callback and terminate the supervisor.
 
 Herdr does not expose custom `agent_session` metadata or infer its resume plan.
-The relay preserves native Pi recovery using supported `resume_argv` on current
+The relay preserves native Pi recovery for the `ppa-pi` entry using supported `resume_argv` on current
 state reports: `pi --session <validated path-or-id>`, preferring the absolute
 session path. Native 4096-byte path and 512-byte ID bounds are used. Stale reports
 cannot overwrite that command. An explicitly absent/rejected new reference
@@ -78,7 +82,7 @@ finishes, before existing registry settlement and shell return.
 At death, intake closes and unsent reports are discarded. The supervisor waits
 for any already submitted owned report. If that delivery is uncertain, it
 submits no destructive release. Otherwise, after an owned state report, it sends
-at most one release for the captured pane, unique managed source, `agent:pi`,
+at most one release for the captured pane, unique managed source, `agent:ppa-pi`,
 and `seq:maxForwardedSeq+1`. The source guard—not session metadata or a preflight
 read—protects foreign/replacement registrations. A fresh `agent.get` follows a
 correlated acknowledgement to distinguish OK from actual absence.
@@ -128,10 +132,12 @@ retirement when report delivery is uncertain and never blindly retries effects.
 
 ## Standalone, supervisor death and recovery
 
-No managed Home Manager extension is edited. Standalone actual-quit integration
-and server-side liveness recovery remain with NX-069/Herdr/Pi. Supervisor SIGKILL
-cannot execute JavaScript cleanup and can leave its relay endpoint on disk or a
-stale registration; that behavior must be observed, not called automatic success.
+No managed Home Manager extension is edited. Standalone actual-quit integration remains with NX-069/Herdr/Pi. For the explicit
+self-reported `ppa-pi` identity, Herdr supports clearing a claim when that pane
+returns to an idle shell, scoped by the native observation timestamp. That is a
+server fallback, not a Pi shutdown hook. Supervisor SIGKILL cannot execute PPA's
+JavaScript cleanup and can leave its relay endpoint on disk or an orphan child;
+actual process/list behavior must be observed before claiming fallback success.
 
 For an uncertain operation, retain the exact deployment, managed source and
 request ID. Inspect that same request and fresh process/Herdr state before any
