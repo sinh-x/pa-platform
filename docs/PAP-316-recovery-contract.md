@@ -91,6 +91,25 @@ one five-label envelope under 2,000 UTF-16 units. Agent plain-text review finds
 outcome, consequence and next owner explicit; genuine human readability and
 installed propagation are not claimed.
 
+## P2 original-operation and retained-history qualification
+
+The existing recovery owners required no demonstrated behavior change. Added
+five composition cases cover pre-intent, intent, ticket and audit interruption,
+later comments, immutable original coordinates, read-only observation and caller
+lineage drift. The combined planning/ticket suites passed 61/61, zero skips
+(`/tmp/pap316-followup-p2-recovery.log`). Existing tests additionally retain
+advanced native branches, original base/actor, competing-process exclusion,
+legacy/foreign-marker rejection and unchanged physical refs.
+
+A completed original plan replays its saved receipt while preserving later
+comments. A partial plan followed by unrelated ticket work remains uncertain;
+no-intent plus stale CAS remains stale. Observation identifies their original
+owner without replaying, refreshing CAS, dropping later work or inventing an
+adoption grant. Such protected blockers are intentional supported dispositions,
+not repaired by broad historical-association exceptions. The original foreign
+PAPC-093 operation still needs its genuine owner; this same-session source seam
+cannot select another deployment by a model-supplied identifier.
+
 ## Phase exits
 
 - P0: evidence and finite contract above; incident cause remains unknown.

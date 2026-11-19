@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { planNativeHandoffTicket, type NativeHandoffPlanningHost } from "../documents/handoff-planning.js";
+import { observeNativeHandoffPlan, planNativeHandoffTicket, type NativeHandoffPlanningHost } from "../documents/handoff-planning.js";
 import { HANDOFF_SESSION_VERSION } from "../documents/handoff-intake.js";
 import { stageNativeHandoffTicket } from "../documents/handoff-lifecycle.js";
 import { completeNativeHandoffBranch } from "../documents/handoff-native-branch.js";
@@ -41,6 +41,50 @@ function fixture(note = HANDOFF_SESSION_VERSION) {
     plans: () => readdirSync(dir).filter(name => name.startsWith(".ticket-handoff-")),
     close() { closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); } };
 }
+
+for (const point of ["pre-intent", "intent", "ticket", "audit"] as const) test(`original ${point} observation and later-comment recovery preserve original coordinates and partial history`, () => {
+  const f = fixture();
+  try {
+    if (point !== "pre-intent") {
+      f.host.afterPersist = stage => { if (stage === point) throw Error("original reply lost"); };
+      assert.throws(() => f.run(), /original reply lost/); delete f.host.afterPersist;
+    }
+    f.store.comment("EX-1", "fixture", "Later comment must survive");
+    const before = readFileSync(join(f.dir, "EX-1.json")), audit = f.store.readAudit(), records = f.plans().map(name => readFileSync(join(f.dir, name)));
+    const observe = () => observeNativeHandoffPlan(f.host, JSON.stringify(f.request));
+    const status = observe();
+    assert.equal(status.disposition, point === "pre-intent" ? "absent" : point === "audit" ? "complete" : "partial");
+    assert.equal(status.original.expectedTicketVersion, f.request.expectedTicketVersion);
+    assert.equal(status.ticketMatchesExpectedVersion, false); assert.equal(status.nextOwner, "original-plan-owner");
+    assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), before); assert.deepEqual(f.store.readAudit(), audit);
+    assert.deepEqual(f.plans().map(name => readFileSync(join(f.dir, name))), records);
+    if (point === "audit") {
+      const recovered = f.run(); assert.equal(recovered.reused, true);
+      assert.equal(recovered.ticket.comments.at(-1)?.content, "Later comment must survive");
+      assert.equal(recovered.intent.base.sha, f.base);
+    } else {
+      assert.throws(() => f.run(), point === "pre-intent" ? /DOCUMENT_STALE/ : /TICKET_HANDOFF_UNCERTAIN/);
+      assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), before);
+    }
+    assert.deepEqual(f.store.readAudit(), audit); assert.equal(observe().disposition, status.disposition);
+    assert.equal(f.git("for-each-ref", `refs/heads/${f.request.branch}`), "");
+  } finally { f.close(); }
+});
+
+test("plan observation cannot select foreign request or caller lineage", () => {
+  const f = fixture();
+  try {
+    f.run();
+    assert.throws(() => observeNativeHandoffPlan(f.host, JSON.stringify({ ...f.request, branch: "feature/EX-1-foreign" })), /DOCUMENT_CONFLICT/);
+    f.caller.ticket = "EX-2";
+    assert.throws(() => observeNativeHandoffPlan(f.host, JSON.stringify(f.request)), /DOCUMENT_AUTHORITY/);
+    f.caller.ticket = "EX-1";
+    let calls = 0;
+    f.host.authenticate = () => ({ ...f.caller, sessionId: ++calls > 1 ? "foreign" : f.caller.sessionId });
+    assert.throws(() => observeNativeHandoffPlan(f.host, JSON.stringify(f.request)), /DOCUMENT_AUTHORITY/);
+    assert.equal(f.plans().length, 1);
+  } finally { f.close(); }
+});
 
 test("actual registered observer pins develop and persists/rereads one SHA-free planned link, with no ref/resource effect", () => {
   const f = fixture();
