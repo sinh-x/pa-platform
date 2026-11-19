@@ -110,6 +110,30 @@ not repaired by broad historical-association exceptions. The original foreign
 PAPC-093 operation still needs its genuine owner; this same-session source seam
 cannot select another deployment by a model-supplied identifier.
 
+## P3 runtime primer routing
+
+Both normal and minimal bare composition now project PAPC-093's canonical
+administrative/product/native distinction and date/issue/slug naming under the
+effective deployment artifact home. Existing launcher template variables supply
+identity/date; authored context and `PA_DEPLOYMENT_DIR` cannot override the root.
+These composition inputs are not process authentication or write admission.
+Source CWD, omitted tools/hooks and retained pinned projections remain unchanged.
+No filesystem destination is initialized by rendering this guidance.
+
+The helper's intended-cause red had seven failures before implementation
+(`/tmp/pap-316-p3-primer-red.log`). Parent verification of routing, primer,
+handoff-primer and rogue-one suites passed 83/83 with zero skips
+(`/tmp/pap316-followup-p3.log`). It covers alternate effective homes, independent
+deployments, missing/spoofed context, hostile naming/locations, omitted resources
+and retained projections. This proves actual primer composition, not subsequent
+agent compliance or output-writer enforcement.
+
+The real managed AgentKit environment bridge/emitter, its finite authenticated
+context contract, and application diagnostic validators remain separately owned
+and unmodified. No environment allowlist was widened. Consequently runtime
+primer delivery is partial end-to-end PAPC-093 routing, not a claim that conflicting
+installed hook directives or all administrative producers are repaired.
+
 ## Phase exits
 
 - P0: evidence and finite contract above; incident cause remains unknown.
