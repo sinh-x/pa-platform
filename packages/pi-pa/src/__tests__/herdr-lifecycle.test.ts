@@ -86,6 +86,75 @@ test("reporter sends one bounded request per payload, keeps only the latest stat
   assert.equal(opened, closedCount, "closed reporter accepts no further work");
 });
 
+test("closed and timed-out reporters cannot write through late connect callbacks", context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const stop of ["close", "timeout"] as const) {
+    const sockets: Array<{ events: Map<string, (...args: unknown[]) => void>; destroyed: number }> = [];
+    const writes: string[] = [];
+    const reporter = createHerdrReporter({ socketPath: "/inert/herdr.sock", paneId: "w1:p2Z" }, {
+      timeoutMs: 100,
+      open: () => {
+        const state = { events: new Map<string, (...args: unknown[]) => void>(), destroyed: 0 };
+        sockets.push(state);
+        return {
+          on: (event, listener) => state.events.set(event, listener),
+          write: value => writes.push(value),
+          destroy: () => { state.destroyed++; },
+        };
+      },
+    });
+    reporter.session({ sessionId: "A" });
+    reporter.state("working");
+    reporter.state("idle");
+    if (stop === "close") { reporter.close(); reporter.close(); }
+    else context.mock.timers.tick(100);
+    // A destroyed attempt may deliver a queued connect even while the next
+    // attempt is active. It must not write its stale session after that state.
+    sockets[0]!.events.get("connect")?.();
+    assert.deepEqual(writes, [], stop);
+    if (stop === "timeout") {
+      assert.equal(sockets.length, 2);
+      sockets[1]!.events.get("connect")?.();
+      assert.equal(JSON.parse(writes[0]!).params.state, "idle");
+      reporter.close();
+    } else assert.equal(sockets.length, 1, "close drops both queued slots");
+    const writesAtClose = writes.length;
+    for (const socket of sockets) {
+      socket.events.get("connect")?.();
+      socket.events.get("data")?.();
+      socket.events.get("end")?.();
+      socket.events.get("error")?.();
+    }
+    reporter.session({ sessionId: "B" }); reporter.state("blocked");
+    context.mock.timers.tick(10_000);
+    assert.equal(writes.length, writesAtClose);
+    assert.ok(sockets.every(socket => socket.destroyed === 1), "each owned attempt is disposed exactly once");
+  }
+});
+
+test("report sequence increases across continuing-process new/resume/fork sessions", async () => {
+  const requests: Array<{ method: string; params: { seq: number; session_start_source?: string } }> = [];
+  const reporter = createHerdrReporter({ socketPath: "/inert/herdr.sock", paneId: "w1:p2Z" }, {
+    open: () => {
+      const events = new Map<string, (...args: unknown[]) => void>();
+      return {
+        on: (event, listener) => { events.set(event, listener); if (event === "connect") queueMicrotask(listener); },
+        write: value => { requests.push(JSON.parse(value)); events.get("data")?.(); },
+        destroy() {},
+      };
+    },
+  });
+  for (const reason of ["startup", "new", "resume", "fork"]) {
+    reporter.session({ sessionId: "same-conversation", reason });
+    reporter.state("idle");
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  reporter.close();
+  assert.equal(requests.length, 8);
+  assert.ok(requests.every((request, index) => index === 0 || request.params.seq > requests[index - 1]!.params.seq));
+  assert.ok(requests.every(request => ["pane.report_agent_session", "pane.report_agent"].includes(request.method)), "no transition emits teardown");
+});
+
 test("module registers only with a validated binding and reports lifecycle without prompt authority", async () => socketFixture(async socketPath => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const runtime = { on: (event: string, handler: (...args: unknown[]) => unknown) => { handlers.set(event, handler); } } as unknown as PiRuntime;
