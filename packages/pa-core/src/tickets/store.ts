@@ -16,6 +16,7 @@ import { nowUtc, parseTimestamp } from "../time.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
 import { isCanonicalTicketId, matchAssignee } from "./validate.js";
+import { parseModeCapabilityBinding } from "../mode-capabilities.js";
 import { queryDeploymentStatus } from "../registry/index.js";
 import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
@@ -981,9 +982,15 @@ export function resolveTrustedTicketMutationContext(principal: TicketMutationPri
   if (!deploymentId) return { privileged: false };
   const deployment = queryDeploymentStatus(deploymentId);
   if (!deployment || deployment.status !== "running") return { privileged: false };
-  // A public Analyst start is not generic CLI/API lifecycle authority. Finite
-  // native owners authenticate the explicit effective identity separately.
-  return { team: deployment.team, mode: deployment.mode, privileged: deployment.team !== "analyst" };
+  // Public profile names are not generic CLI/API lifecycle authority, even if
+  // configured to spell a historical privileged role. Finite owners alone map
+  // the authenticated effective identity; retained v1/v2 behavior is unchanged.
+  let readonlyProfile = false;
+  if (deployment.mode_capability_binding) {
+    try { readonlyProfile = parseModeCapabilityBinding(JSON.parse(deployment.mode_capability_binding)).schemaVersion === "pa-mode-capability-binding/v3"; }
+    catch { return { team: deployment.team, mode: deployment.mode, privileged: false }; }
+  }
+  return { team: deployment.team, mode: deployment.mode, privileged: deployment.team !== "analyst" && !readonlyProfile };
 }
 
 function normalizeTimestamp(value: unknown): string {

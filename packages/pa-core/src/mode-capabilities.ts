@@ -4,6 +4,10 @@ import { createHash } from "node:crypto";
 export const MODE_CAPABILITY_POLICY_VERSION = "pa-mode-capabilities/v1" as const;
 export const MODE_CAPABILITY_PROFILE = "pa-document-policy/v1" as const;
 export const MODE_CAPABILITY_SESSION = "requirements-document-policy/v1" as const;
+/** Explicit opt-in: v1/v2 bindings and their session marker never acquire these semantics. */
+export const READONLY_DOCUMENT_PROFILE = "pa-readonly-document/v1" as const;
+export const READONLY_DOCUMENT_SESSION = "readonly-document-policy/v1" as const;
+export function isModeCapabilitySession(value: unknown): boolean { return value === MODE_CAPABILITY_SESSION || value === READONLY_DOCUMENT_SESSION; }
 export const MODE_CAPABILITY_MAX_BYTES = 64 * 1024;
 
 // This is the inventory of trusted implementations, NOT a role's default selection.
@@ -92,9 +96,40 @@ export interface AnalystModeCapabilityBinding {
   readonly identity: typeof ANALYST_NATIVE_IDENTITY;
   readonly resources: readonly { readonly path: string; readonly sha256: string }[];
 }
-export type ModeCapabilityBinding = HistoricalModeCapabilityBinding | AnalystModeCapabilityBinding;
+export interface ReadonlyDocumentBinding extends Omit<AnalystModeCapabilityBinding, "schemaVersion" | "resourcePath" | "profile" | "identity"> {
+  readonly schemaVersion: "pa-mode-capability-binding/v3";
+  readonly resourcePath: string;
+  readonly profile: typeof READONLY_DOCUMENT_PROFILE;
+  readonly identity: { readonly publicTeam: string; readonly publicMode: string; readonly effectiveTeam: "requirements"; readonly effectiveMode: "analyze"; readonly actor: "requirements/analyze" };
+}
+export type ResourceModeCapabilityBinding = AnalystModeCapabilityBinding | ReadonlyDocumentBinding;
+export type ModeCapabilityBinding = HistoricalModeCapabilityBinding | ResourceModeCapabilityBinding;
+export function hasModeResources(binding: ModeCapabilityBinding | undefined): binding is ResourceModeCapabilityBinding {
+  return binding?.schemaVersion === "pa-mode-capability-binding/v2" || binding?.schemaVersion === "pa-mode-capability-binding/v3";
+}
+export function modeCapabilitySessionMatches(binding: ModeCapabilityBinding, session: unknown): boolean {
+  return session === (binding.schemaVersion === "pa-mode-capability-binding/v3" ? READONLY_DOCUMENT_SESSION : MODE_CAPABILITY_SESSION);
+}
+export function modePublicName(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(value)) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  return value;
+}
+/** Fixed v1 support inventory, never a default set. Registry additions cannot widen it. */
+export const READONLY_DOCUMENT_CAPABILITIES: readonly string[] = Object.freeze([
+  "document.package", "document.handoff", "document.local-review", "document.workspace",
+  "ticket.read-comment", "ticket.intake", "capability.discover", "bulletin.read", "registry.read", "status.read",
+  "template.draft", "human.question", "session.todo", "context.read", "web.public-read", "ticket.status",
+  "ordinary.bash", "ordinary.read", "ordinary.edit", "ordinary.write",
+]);
+/** Only existing finite read-only-document implementations; workflow execution is not this profile. */
+export function parseReadonlyDocumentPolicy(value: unknown): ModeCapabilityPolicy {
+  bindingRecord(value, ["version", "allow"]);
+  const policy = parseModeCapabilityPolicy(value);
+  if (policy.allow.some(id => !READONLY_DOCUMENT_CAPABILITIES.includes(id))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
+  return policy;
+}
 /** Captured committed content only. The native launch owner separately rechecks freshness. */
-export interface ModeResourceSnapshot { readonly binding: AnalystModeCapabilityBinding; read(path: string): string }
+export interface ModeResourceSnapshot { readonly binding: ResourceModeCapabilityBinding; read(path: string): string }
 export function modeResourcePath(value: unknown): string {
   if (typeof value !== "string" || value.length > 1024 || !/^[A-Za-z0-9_./-]+$/.test(value) || value.split("/").length > 16 || value.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw new ModeCapabilityError("CAPABILITY_BINDING");
   return value;
@@ -104,12 +139,8 @@ function bindingRecord(value: unknown, keys: string[]): Record<string, unknown> 
   if (Reflect.ownKeys(raw).length !== keys.length || keys.some(key => !descriptors[key] || !("value" in descriptors[key]!))) throw new ModeCapabilityError("CAPABILITY_BINDING");
   return raw;
 }
-function parseAnalystBinding(value: unknown): AnalystModeCapabilityBinding {
-  const raw = bindingRecord(value, ["schemaVersion", "configRoot", "configRevision", "resourcePath", "resourceSha256", "profile", "policy", "repoKey", "identity", "resources"]);
-  const identity = bindingRecord(raw.identity, Object.keys(ANALYST_NATIVE_IDENTITY));
-  if (Object.entries(ANALYST_NATIVE_IDENTITY).some(([key, expected]) => identity[key] !== expected)
-    || raw.profile !== MODE_CAPABILITY_PROFILE || raw.resourcePath !== "teams/analyst.yaml"
-    || typeof raw.configRoot !== "string" || raw.configRoot.length > 4096 || !raw.configRoot.startsWith("/") || /[\u0000-\u0020\u007f-\u009f\\\\]/.test(raw.configRoot) || raw.configRoot.split("/").slice(1).some(part => !part || part === "." || part === "..")
+function parseResourceBindingFields(raw: Record<string, unknown>) {
+  if (typeof raw.configRoot !== "string" || raw.configRoot.length > 4096 || !raw.configRoot.startsWith("/") || /[\u0000-\u0020\u007f-\u009f\\\\]/.test(raw.configRoot) || raw.configRoot.split("/").slice(1).some(part => !part || part === "." || part === "..")
     || typeof raw.configRevision !== "string" || !/^[a-f0-9]{40}$/.test(raw.configRevision)
     || typeof raw.resourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(raw.resourceSha256)
     || typeof raw.repoKey !== "string" || !/^[a-z][a-z0-9._-]{0,127}$/.test(raw.repoKey)
@@ -121,19 +152,41 @@ function parseAnalystBinding(value: unknown): AnalystModeCapabilityBinding {
   });
   if (resources.some((entry, i) => i > 0 && resources[i - 1]!.path.localeCompare(entry.path) >= 0)
     || !resources.some(entry => entry.path === raw.resourcePath && entry.sha256 === raw.resourceSha256)) throw new ModeCapabilityError("CAPABILITY_BINDING");
-  const binding: AnalystModeCapabilityBinding = Object.freeze({ schemaVersion: "pa-mode-capability-binding/v2", configRoot: raw.configRoot, configRevision: raw.configRevision,
-    resourcePath: "teams/analyst.yaml", resourceSha256: raw.resourceSha256, profile: MODE_CAPABILITY_PROFILE, policy: parseModeCapabilityPolicy(raw.policy), repoKey: raw.repoKey,
-    identity: ANALYST_NATIVE_IDENTITY, resources: Object.freeze(resources) });
+  return { configRoot: raw.configRoot, configRevision: raw.configRevision, resourceSha256: raw.resourceSha256, repoKey: raw.repoKey, resources: Object.freeze(resources) };
+}
+function boundedBinding<T extends ModeCapabilityBinding>(binding: T): T {
   if (Buffer.byteLength(JSON.stringify(binding)) > MODE_CAPABILITY_MAX_BYTES) throw new ModeCapabilityError("CAPABILITY_BINDING");
-  return binding;
+  return Object.freeze(binding);
+}
+function parseAnalystBinding(value: unknown): AnalystModeCapabilityBinding {
+  const raw = bindingRecord(value, ["schemaVersion", "configRoot", "configRevision", "resourcePath", "resourceSha256", "profile", "policy", "repoKey", "identity", "resources"]);
+  const identity = bindingRecord(raw.identity, Object.keys(ANALYST_NATIVE_IDENTITY));
+  if (Object.entries(ANALYST_NATIVE_IDENTITY).some(([key, expected]) => identity[key] !== expected)
+    || raw.profile !== MODE_CAPABILITY_PROFILE || raw.resourcePath !== "teams/analyst.yaml") throw new ModeCapabilityError("CAPABILITY_BINDING");
+  const fields = parseResourceBindingFields(raw);
+  return boundedBinding({ schemaVersion: "pa-mode-capability-binding/v2", configRoot: fields.configRoot, configRevision: fields.configRevision,
+    resourcePath: "teams/analyst.yaml", resourceSha256: fields.resourceSha256, profile: MODE_CAPABILITY_PROFILE, policy: parseModeCapabilityPolicy(raw.policy), repoKey: fields.repoKey,
+    identity: ANALYST_NATIVE_IDENTITY, resources: fields.resources });
+}
+function parseReadonlyBinding(value: unknown): ReadonlyDocumentBinding {
+  const raw = bindingRecord(value, ["schemaVersion", "configRoot", "configRevision", "resourcePath", "resourceSha256", "profile", "policy", "repoKey", "identity", "resources"]);
+  const identity = bindingRecord(raw.identity, Object.keys(ANALYST_NATIVE_IDENTITY));
+  const publicTeam = modePublicName(identity.publicTeam), publicMode = modePublicName(identity.publicMode);
+  if (raw.profile !== READONLY_DOCUMENT_PROFILE || raw.resourcePath !== `teams/${publicTeam}.yaml`
+    || identity.effectiveTeam !== "requirements" || identity.effectiveMode !== "analyze" || identity.actor !== "requirements/analyze") throw new ModeCapabilityError("CAPABILITY_BINDING");
+  const fields = parseResourceBindingFields(raw);
+  return boundedBinding({ schemaVersion: "pa-mode-capability-binding/v3", configRoot: fields.configRoot, configRevision: fields.configRevision,
+    resourceSha256: fields.resourceSha256, repoKey: fields.repoKey, resources: fields.resources, resourcePath: `teams/${publicTeam}.yaml`,
+    profile: READONLY_DOCUMENT_PROFILE, policy: parseReadonlyDocumentPolicy(raw.policy),
+    identity: Object.freeze({ publicTeam, publicMode, effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" }) });
 }
 /** Authenticate the public route against the binding, never against an env alias. */
 export function modeCapabilityRouteMatches(binding: ModeCapabilityBinding, team: unknown, mode: unknown): boolean {
-  return mode === "analyze" && (binding.schemaVersion === "pa-mode-capability-binding/v2" ? team === binding.identity.publicTeam : team === "requirements");
+  return hasModeResources(binding) ? team === binding.identity.publicTeam && mode === binding.identity.publicMode : team === "requirements" && mode === "analyze";
 }
 /** Actor attribution is explicitly the effective native owner in v2; history is unchanged. */
 export function modeCapabilityActor(binding: ModeCapabilityBinding): "requirements/analyze" {
-  return binding.schemaVersion === "pa-mode-capability-binding/v2" ? binding.identity.actor : "requirements/analyze";
+  return hasModeResources(binding) ? binding.identity.actor : "requirements/analyze";
 }
 export interface HistoricalModeCapabilityBinding {
   readonly schemaVersion: "pa-mode-capability-binding/v1";
@@ -149,6 +202,7 @@ export function createModeCapabilityBinding(configRevision: string, raw: Uint8Ar
 }
 export function parseModeCapabilityBinding(value: unknown): ModeCapabilityBinding {
   const raw = record(value);
+  if (raw.schemaVersion === "pa-mode-capability-binding/v3") return parseReadonlyBinding(raw);
   if (raw.schemaVersion === "pa-mode-capability-binding/v2") return parseAnalystBinding(raw);
   if (Object.keys(raw).sort().join(",") !== "configRevision,policy,profile,resourcePath,resourceSha256,schemaVersion" || raw.schemaVersion !== "pa-mode-capability-binding/v1" || raw.profile !== MODE_CAPABILITY_PROFILE || raw.resourcePath !== "teams/requirements.yaml" || typeof raw.configRevision !== "string" || !/^[a-f0-9]{40}$/.test(raw.configRevision) || typeof raw.resourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(raw.resourceSha256)) throw new ModeCapabilityError("CAPABILITY_BINDING");
   return Object.freeze({ schemaVersion: "pa-mode-capability-binding/v1", configRevision: raw.configRevision, resourcePath: "teams/requirements.yaml", resourceSha256: raw.resourceSha256, profile: MODE_CAPABILITY_PROFILE, policy: parseModeCapabilityPolicy(raw.policy) });

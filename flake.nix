@@ -332,6 +332,7 @@
                 extensionModule = "$share/packages/pi-pa/dist/pi-extension/index.js";
                 sourceModule = "$share/packages/pa-core/dist/local-source-file.js";
                 publicationModule = "$share/packages/pi-pa/dist/pi-extension/read-publication.js";
+                promptModule = "$share/packages/pi-pa/dist/prompt-transport.js";
                 addonFile = "$share/native-addons/pi-node-24/better_sqlite3.node";
               }});
               EOF
@@ -431,6 +432,7 @@
             export PA_PI_SQLITE_NATIVE_BINDING=$PA_SQLITE_NATIVE_BINDING
             export PA_REQUIRE_PI_SQLITE_NATIVE_BINDING=1
             ${host.node}/bin/node --test ${./scripts/dev/pi-read-publication-runtime.test.mjs}
+            ${pkgs.nodejs_22}/bin/node --test ${./scripts/dev/pi-primer-input-runtime.test.mjs}
             ${pkgs.nodejs_22}/bin/node --test ${./scripts/dev/selected-pi-host.test.mjs}
             echo 'Source and native qualification passed. Installation and human acceptance remain separate.'
           '';

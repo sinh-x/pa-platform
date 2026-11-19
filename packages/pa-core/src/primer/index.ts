@@ -5,7 +5,7 @@ import { digest } from "../workflows/contracts.js";
 import { resolve } from "node:path";
 import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
-import { MODE_CAPABILITY_PROFILE, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityPolicy, selectedCapabilityTools, type ModeResourceSnapshot } from "../mode-capabilities.js";
+import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_PROFILE, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityPolicy, selectedCapabilityTools, type ModeResourceSnapshot } from "../mode-capabilities.js";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
@@ -56,7 +56,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   // Source/report composition grants no native authority. Require V2 capture
   // only for explicit native Analyst composition; production launch admission
   // remains independently fail-closed in the launcher/execution-plan owners.
-  if (options.modeResources || (options.teamConfig.name === "analyst" && options.requirementsDocument)) {
+  if (options.modeResources || (options.teamConfig.name === "analyst" && options.requirementsDocument) || mode?.document_profile === READONLY_DOCUMENT_PROFILE && options.requirementsDocument) {
     const resources = options.modeResources, binding = resources?.binding;
     if (!resources || !binding || options.runtime !== "pi" || !options.requirementsDocument || options.workflow
       || !modeCapabilityRouteMatches(binding, options.teamConfig.name, mode?.id) || binding.repoKey !== options.repository?.repoKey
@@ -69,7 +69,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime));
   const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
   const setup = options.runtime === "pi" && options.teamConfig.name === "repo-setup" && mode?.id === "setup";
-  const document = options.runtime === "pi" && options.requirementsDocument === true && !options.workflow && (options.teamConfig.name === "requirements" || !!options.modeResources) && mode?.id === "analyze";
+  const document = options.runtime === "pi" && options.requirementsDocument === true && !options.workflow && (options.modeResources ? modeCapabilityRouteMatches(options.modeResources.binding, options.teamConfig.name, mode?.id) : options.teamConfig.name === "requirements" && mode?.id === "analyze");
   const toolReference = setup ? REPO_SETUP_TOOL_REFERENCE : demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime));
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
@@ -96,9 +96,9 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ] : []),
     ...(document ? [
       "## Requirements supporting capabilities",
-      ...(options.modeResources ? ["Public identity: analyst/analyze. Effective native identity and audit actor: requirements/analyze (explicit pa-mode-capability-binding/v2 mapping). Environment and registry remain analyst/analyze; this is not impersonation, a retained-session upgrade or human authentication."] : []),
-      ...(mode?.document_profile === MODE_CAPABILITY_PROFILE ? [
-        "Native profile: pa-document-policy/v1. PAPC selects exact capabilities; the native launch binds this selection immutably. This is not a retained v1/v2/v3/v4 session upgrade.",
+      ...(options.modeResources ? [`Public identity: ${options.modeResources.binding.identity.publicTeam}/${options.modeResources.binding.identity.publicMode}. Effective native identity and audit actor: requirements/analyze (explicit ${options.modeResources.binding.schemaVersion} mapping). Environment and registry remain ${options.teamConfig.name}/${mode?.id}; this is not impersonation, a retained-session upgrade or human authentication.`] : []),
+      ...(mode?.document_profile === MODE_CAPABILITY_PROFILE || mode?.document_profile === READONLY_DOCUMENT_PROFILE ? [
+        `Native profile: ${mode.document_profile}. PAPC selects exact capabilities; the native launch binds this selection immutably. This is not a retained v1/v2/v3/v4 session upgrade.`,
         `Selected capability IDs: ${JSON.stringify(parseModeCapabilityPolicy(mode.capability_policy).allow)}. Selected tools: ${JSON.stringify(selectedCapabilityTools(parseModeCapabilityPolicy(mode.capability_policy)))}. An empty set grants no model tools. Omitted tools cannot be invoked by aliases, delegation or reload.`,
         "Use only selected tools with their native schemas and effect owners. Package confirmation preserves the original request revision/scope; ticket intake preserves original request IDs/content and inspected versions for native CAS recovery. Source discovery is source-only inventory, not installed availability or authority. These semantics do not grant an omitted capability or bypass existing approval, path, secret, workspace or cleanup controls.",
         "Ordinary bash/read/edit/write are available only when explicitly selected. Investigate freely, including the whole normal effective ai-usage workspace; save authored mutable artifacts there. Requirements/analyze must not write repositories or mutate Git, including generated files/caches/build outputs. This is task policy, not a repository sandbox. No builder preparation, resource operations or protected-effect bypass is granted. Existing sessions never widen from config edits. Source support is not installed qualification, public-egress activation or human UAT; follow the separately selected PAPC process.",
@@ -591,7 +591,7 @@ function renderSelectedRequirementsCompletion(options: GeneratePrimerOptions): s
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName, document = false, options?: GeneratePrimerOptions): string {
   assertSupportedRuntime(runtime);
-  const selectedPolicy = runtime === "pi" && document && mode?.document_profile === MODE_CAPABILITY_PROFILE;
+  const selectedPolicy = runtime === "pi" && document && (mode?.document_profile === MODE_CAPABILITY_PROFILE || mode?.document_profile === READONLY_DOCUMENT_PROFILE);
   if (runtime === "pi" && document) return [
     "## Deployment Instructions",
     selectedPolicy

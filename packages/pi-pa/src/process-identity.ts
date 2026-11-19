@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, lstatSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parseReviewEvidenceJson, readProcessFingerprint, readReviewEvidenceFile, type ProcessFingerprint } from "@pa-platform/pa-core";
+import { getDeploymentEvents, MODE_CAPABILITY_MAX_BYTES, ModeCapabilityError, modeCapabilityRouteMatches, modeCapabilitySessionMatches, parseModeCapabilityBinding, parseReviewEvidenceJson, readProcessFingerprint, readReviewEvidenceFile, type ProcessFingerprint } from "@pa-platform/pa-core";
 
 export const PI_PROCESS_IDENTITY_FILE = "pi-process-identity.json";
 const MAX_IDENTITY_BYTES = 4096;
@@ -76,6 +76,19 @@ export function recordPiReadonlyRoleProcessIdentity(env: NodeJS.ProcessEnv, depl
     || (env["PA_TEAM"] === "analyst" && env["PA_MODE"] === "analyze")
     || (env["PA_TEAM"] === "repo-setup" && env["PA_MODE"] === "setup")
     || env["PA_TEAM"] === "rogue-one") {
+    recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
+    return;
+  }
+  if (env.PA_DEPLOYMENT_ID !== deploymentId) return;
+  const starts = getDeploymentEvents(deploymentId).filter(event => event.event === "started"), start = starts[0];
+  if (starts.length === 1 && start?.mode_capability_binding) {
+    try {
+      if (Buffer.byteLength(start.mode_capability_binding) > MODE_CAPABILITY_MAX_BYTES) throw new ModeCapabilityError("CAPABILITY_BINDING");
+      const binding = parseModeCapabilityBinding(JSON.parse(start.mode_capability_binding));
+      if (binding.schemaVersion !== "pa-mode-capability-binding/v3" || JSON.stringify(binding) !== start.mode_capability_binding
+        || !modeCapabilitySessionMatches(binding, start.note) || !modeCapabilityRouteMatches(binding, start.team, start.mode)
+        || !modeCapabilityRouteMatches(binding, env.PA_TEAM, env.PA_MODE) || start.runtime !== "pi" || start.binary !== "ppa") throw new ModeCapabilityError("CAPABILITY_BINDING");
+    } catch { throw new ModeCapabilityError("CAPABILITY_BINDING"); }
     recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
   }
 }

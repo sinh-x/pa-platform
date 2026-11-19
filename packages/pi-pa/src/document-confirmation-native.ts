@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
-import { MODE_CAPABILITY_SESSION, capabilityToolSelected, DocumentPackageError, workflowDigest, type DocumentPackageHost } from "@pa-platform/pa-core";
+import { isModeCapabilitySession, capabilityToolSelected, DocumentPackageError, workflowDigest, type DocumentPackageHost } from "@pa-platform/pa-core";
 import { authenticatePiDocumentCaller, assertSameDocumentCaller, confirmationDocumentCaller } from "./document-session.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
 import type { DocumentConfirmationUi } from "./pi-extension/document-confirmation-ui.js";
@@ -14,7 +14,7 @@ export function createPiDocumentRetirement(context: PiDocumentConfirmationContex
   authenticate = () => authenticatePiDocumentCaller(context), signal?: AbortSignal): NonNullable<DocumentPackageHost["retire"]> {
   return async request => {
     const before = authenticate();
-    if (before.profile !== MODE_CAPABILITY_SESSION || !before.capabilities || !capabilityToolSelected(before.capabilities.policy, "pa_document") || !before.sessionId || context.mode !== "tui" || !context.ui?.custom) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
+    if (!isModeCapabilitySession(before.profile) || !before.capabilities || !capabilityToolSelected(before.capabilities.policy, "pa_document") || !before.sessionId || context.mode !== "tui" || !context.ui?.custom) throw new DocumentPackageError("DOCUMENT_UNAVAILABLE");
     if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
     const interactionId = `interaction-${randomUUID()}`;
     const { showDocumentConfirmation } = await import("./pi-extension/document-confirmation-ui.js");

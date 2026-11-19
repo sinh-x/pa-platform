@@ -22,7 +22,7 @@ export function executePiTicketStatus(raw: string, context?: PiWorkflowContext, 
 }
 export function runTicketStatusCommand(args: string[], io: { stdout(text: string): void; stderr(text: string): void }): number {
   if (args.length === 1 && args[0] === "--help") {
-    io.stdout('Usage: ppa ticket-status --request <JSON>\nSelected fresh Pi policy sessions only: requirements/analyze or natively bound analyst/analyze. pa-ticket-status/v1: inspect(project,ticket), then set(project,ticket,requestId,expectedVersion,status). Administrative status only; no publication, queue, acceptance or launch. Preserve original request coordinates after an uncertain result.'); return 0;
+    io.stdout('Usage: ppa ticket-status --request <JSON>\nSelected fresh Pi policy sessions only: requirements/analyze or natively bound analyst/analyze, or an explicit pa-readonly-document/v1 selection with ticket.status. pa-ticket-status/v1: inspect(project,ticket), then set(project,ticket,requestId,expectedVersion,status). Administrative status only; no publication, queue, acceptance or launch. Preserve original request coordinates after an uncertain result.'); return 0;
   }
   try {
     if (args.length !== 2 || args[0] !== "--request") throw new TicketStatusError("TICKET_STATUS_INPUT");

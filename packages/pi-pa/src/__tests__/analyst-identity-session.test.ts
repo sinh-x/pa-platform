@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, MODE_CAPABILITY_SESSION, TicketStore, getDb, getAiUsageDir, getDeploymentEvents, documentPackageSha, workflowDigest, verifyLocalReviewOrigin, RegistryHandoffReviewJournal, type DocumentPackage, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, MODE_CAPABILITY_SESSION, READONLY_DOCUMENT_SESSION, parseModeCapabilityBinding, TicketStore, getDb, getAiUsageDir, getDeploymentEvents, documentPackageSha, workflowDigest, verifyLocalReviewOrigin, RegistryHandoffReviewJournal, type DocumentPackage, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { authenticatePiDocumentCaller, selectsDocumentSession } from "../document-session.js";
 import { deployWithPi } from "../deploy.js";
@@ -20,7 +20,11 @@ const binding = { schemaVersion: "pa-mode-capability-binding/v2", configRoot: "/
   identity: { publicTeam: "analyst", publicMode: "analyze", effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" },
   resources: [{ path: "teams/analyst.yaml", sha256: "b".repeat(64) }] };
 
-test("PAP-316 public session closes native intake/plan/origin/publication/link/queue without env impersonation", async () => {
+for (const generic of [false, true]) test(`${generic ? "PAP-318 generic v3" : "PAP-316 fixed v2"} session closes native intake/plan/origin/publication/link/queue without env impersonation`, async () => {
+  const publicTeam = generic ? "evidence-lab" : "analyst", publicMode = generic ? "report" : "analyze";
+  const selected = generic ? { ...binding, schemaVersion: "pa-mode-capability-binding/v3", profile: "pa-readonly-document/v1", resourcePath: `teams/${publicTeam}.yaml`,
+    identity: { ...binding.identity, publicTeam, publicMode }, resources: [{ path: `teams/${publicTeam}.yaml`, sha256: binding.resourceSha256 }] } : binding;
+  const profile = generic ? READONLY_DOCUMENT_SESSION : MODE_CAPABILITY_SESSION;
   const prior = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "pap316-session-")); closeDb();
   const repo = join(root, "repo"), config = join(root, "config"), usage = join(root, "usage");
   try {
@@ -29,17 +33,17 @@ test("PAP-316 public session closes native intake/plan/origin/publication/link/q
     execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Disposable local develop"], { cwd: repo, stdio: "pipe" });
     writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
     Object.assign(process.env, { PA_PLATFORM_CONFIG: config, PA_AI_USAGE_HOME: usage, PA_REGISTRY_DB: join(root, "registry.db"),
-      PA_DEPLOYMENT_ID: "d-316101", PA_TEAM: "analyst", PA_MODE: "analyze", PA_REPO: repo, PA_WORKTREE_ROOT: repo, PA_PI_EXECUTION_MODE: "foreground" });
+      PA_DEPLOYMENT_ID: "d-316101", PA_TEAM: publicTeam, PA_MODE: publicMode, PA_REPO: repo, PA_WORKTREE_ROOT: repo, PA_PI_EXECUTION_MODE: "foreground" });
     delete process.env.PA_TICKET_ID; process.chdir(repo);
     const directory = ensureDeployDir("d-316101"); process.env.PA_DEPLOYMENT_DIR = directory;
-    emitStartedEvent({ deploymentId: "d-316101", team: "analyst", mode: "analyze", runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo,
-      note: MODE_CAPABILITY_SESSION, modeCapabilityBinding: JSON.stringify(binding) });
-    emitPidEvent({ deploymentId: "d-316101", team: "analyst", pid: process.pid });
+    emitStartedEvent({ deploymentId: "d-316101", team: publicTeam, mode: publicMode, runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo,
+      note: profile, modeCapabilityBinding: JSON.stringify(generic ? parseModeCapabilityBinding(selected) : selected) });
+    emitPidEvent({ deploymentId: "d-316101", team: publicTeam, pid: process.pid });
     assert.equal(recordPiProcessIdentity("d-316101", directory, process.pid), true);
     const context = { cwd: repo, mode: "tui" as const, sessionManager: { getSessionId: () => "disposable-analyst" } };
     const caller = authenticatePiDocumentCaller(context);
-    assert.deepEqual(caller.capabilities, binding);
-    assert.equal(caller.profile, MODE_CAPABILITY_SESSION);
+    assert.deepEqual(caller.capabilities, selected);
+    assert.equal(caller.profile, profile);
     assert.throws(() => authenticatePiDocumentCaller(context, { ...process.env, PA_DEPLOYMENT_DIR: join(root, "foreign-deployment") }));
     const events = new EventEmitter(), registered = new Set<string>(); let active: string[] = [];
     registerDocumentModule({ on: events.on.bind(events), registerTool: tool => { registered.add(tool.name); }, setActiveTools: names => { active = names; } });
@@ -81,7 +85,7 @@ test("PAP-316 public session closes native intake/plan/origin/publication/link/q
     for (const changes of [{ PA_TEAM: "requirements" }, { PA_MODE: "investigate" }, { PA_PI_EXECUTION_MODE: "background" }]) {
       assert.throws(() => authenticatePiDocumentCaller(context, { ...process.env, ...changes }));
     }
-    assert.equal(process.env.PA_TEAM, "analyst");
+    assert.equal(process.env.PA_TEAM, publicTeam);
   } finally { closeDb(); process.chdir(cwd); process.env = prior; rmSync(root, { recursive: true, force: true }); }
 });
 

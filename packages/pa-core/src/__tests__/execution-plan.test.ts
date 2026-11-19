@@ -9,6 +9,7 @@ import { DeployModeSelectionError, resolveDeployMode, validateDeployRequestField
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { repositoryMutationLeasePath, type RepositoryAdmissionOperation, type RepositoryGitSnapshot } from "../deploy/repository-admission.js";
 import type { TeamConfig } from "../types.js";
+import { READONLY_DOCUMENT_PROFILE, parseModeCapabilityBinding, parseModeCapabilityPolicy } from "../mode-capabilities.js";
 
 function team(skill?: string): TeamConfig {
   return {
@@ -146,6 +147,30 @@ function withPlatformConfig<T>(config: string, callback: () => T): T {
     else process.env["PA_PLATFORM_CONFIG"] = previous;
   }
 }
+
+test("PAP-318 profile plans derive read-only semantics independently of public names and reject widened or noncanonical routes", () => {
+  const fixture = createFixture("readonly-profile");
+  try { withPlatformConfig(fixture.config, () => {
+    const policy = parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: ["context.read"] });
+    const mode = { id: "report", label: "Report", objective: "docs/report.md", document_profile: READONLY_DOCUMENT_PROFILE, capability_policy: policy };
+    const teamConfig: TeamConfig = { name: "builder", description: "Public name is not role authority", agents: [], objective: "unused", deploy_modes: [mode] };
+    const binding = parseModeCapabilityBinding({ schemaVersion: "pa-mode-capability-binding/v3", configRoot: fixture.config, configRevision: "a".repeat(40), resourcePath: "teams/builder.yaml", resourceSha256: "b".repeat(64),
+      profile: READONLY_DOCUMENT_PROFILE, policy, repoKey: "registered", identity: { publicTeam: "builder", publicMode: "report", effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" }, resources: [{ path: "teams/builder.yaml", sha256: "b".repeat(64) }] });
+    const options = { request: { team: "builder", mode: "report" }, teamConfig, mode, runtime: "pi" as const, deploymentId: "d-318001", deploymentDir: fixture.root,
+      activityLogPath: join(fixture.root, "activity.jsonl"), environment: { PA_TEAM: "builder", PA_MODE: "report" }, timeoutSeconds: 60, cwd: fixture.repo, modeCapabilityBinding: binding };
+    const plan = resolveExecutionPlan(options);
+    assert.equal(plan.team, "builder"); assert.equal(plan.mode, "report"); assert.equal(plan.repositoryAdmission.access, "read-only"); assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+    for (const request of [{ force: true }, { background: true }, { resume: "d-318999" }, { ticketWorktree: true }]) assert.throws(() => resolveExecutionPlan({ ...options, request: { ...options.request, ...request } }));
+    assert.throws(() => resolveExecutionPlan({ ...options, cwd: fixture.linked }));
+    assert.throws(() => resolveExecutionPlan({ ...options, environment: { PA_TEAM: "requirements", PA_MODE: "analyze" } }));
+    assert.throws(() => resolveExecutionPlan({ ...options, modeCapabilityBinding: undefined }));
+    assert.throws(() => resolveExecutionPlan({ ...options, runtime: "opencode" }));
+    for (const name of ["analyst", "evidence-lab", "builder", "requirements"]) {
+      assert.throws(() => resolveExecutionPlan({ ...options, teamConfig: { ...teamConfig, name }, mode: undefined, modeCapabilityBinding: undefined,
+        request: { team: name }, environment: {} }), /CAPABILITY_PROFILE/, `missing mode must not create a generic ${name} route`);
+    }
+  }); } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
 
 function resolveRepoPlan(repo: string | undefined, fixture: ExecutionRepoFixture, deploymentId = "d-plan", cwd?: string): ExecutionPlan {
   const teamConfig = team();

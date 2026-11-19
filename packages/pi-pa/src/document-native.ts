@@ -4,7 +4,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { userInfo } from "node:os";
 import {
-  MODE_CAPABILITY_SESSION, capabilityToolSelected, DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
+  isModeCapabilitySession, capabilityToolSelected, DocumentPackageError, DocumentPackageService, RegistryDocumentJournal, TicketStore, getAiUsageDir, getDb, getTicketsDir,
   observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, readTicketWorkflow, workflowDigest,
   type DocumentPackageHost, parseDocumentRequest, DOCUMENT_ACTION_FIELDS, workflowObject,
 } from "@pa-platform/pa-core";
@@ -73,10 +73,10 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   const tickets = new TicketStore(undefined, documentTicketMutationContext(caller, "pa_document"));
   const host: DocumentPackageHost = { artifactRoot, tickets, authenticate, workspaceProfile: workspaceDocumentCaller(caller),
     confirmationProfile: confirmationDocumentCaller(caller),
-    recoveryProfile: caller.profile === MODE_CAPABILITY_SESSION && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"),
+    recoveryProfile: isModeCapabilitySession(caller.profile) && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"),
     ...(confirmationDocumentCaller(caller) ? { inspectBranch: (ticket: string) => inspectPiDocumentBranch(authenticate(), ticket, tickets) } : {}),
     ...(confirmationDocumentCaller(caller) && (context as PiDocumentConfirmationContext).ui?.custom ? { confirm: createPiDocumentConfirmation(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
-    ...(caller.profile === MODE_CAPABILITY_SESSION && caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document") && (context as PiDocumentConfirmationContext).ui?.custom ? { retire: createPiDocumentRetirement(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
+    ...(isModeCapabilitySession(caller.profile) && caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document") && (context as PiDocumentConfirmationContext).ui?.custom ? { retire: createPiDocumentRetirement(context as PiDocumentConfirmationContext, authenticate, signal) } : {}),
     capture: createPiDocumentCapture(context, authenticate, signal),
     assertEffectAvailable(subject) {
       authenticate();
