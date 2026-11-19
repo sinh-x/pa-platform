@@ -32,7 +32,16 @@ dependency hashes are unchanged. Restore the current plain develop version befor
 normal integration. PAP-318 source/process evidence remains in the
 [implementation report](../plans/2026-11-18-PAP-318-pi-primer-file-transport/phase-4-evidence.md).
 
-The current rebased PAP-316 follow-up worktree trial label is
+The PAP-316 follow-up integration candidate restores plain **`0.1.176`** across
+the four shared manifests, matching fetched origin/develop `07e4289`. Sinh
+explicitly requested PR merge into develop and source-work wrap-up, leaving UAT
+and full verification for later. This records the integration decision, not a
+full acceptance pass. The installed `0.1.176-pap316.2` trial remains unchanged;
+no reinstall, configuration activation, native handoff effects or worktree return
+is performed by the version restoration. Deferred qualification and actual
+source/installed observations remain in the [recovery contract](PAP-316-recovery-contract.md).
+
+The preceding rebased PAP-316 follow-up worktree trial label was
 **`0.1.176-pap316.2`** across the four shared manifests, at Sinh's request for
 self-managed installation/testing. The seven unmerged follow-ups were rebased
 onto fetched origin/develop `07e4289e74bded49304c435f652010146562b9ee`

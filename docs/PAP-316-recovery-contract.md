@@ -1,5 +1,42 @@
 # PAP-316 follow-up: original planning recovery
 
+## Current disposition: source integration; full verification deferred
+
+On 2026-11-19 Sinh explicitly requested PR merge into `develop` and source-work
+wrap-up, leaving UAT and full verification for later. The integration candidate
+restores plain 0.1.176 for normal develop auto-patch flow. The installed
+0.1.176-pap316.2 trial and clean reference commit
+`4d967b3d427eb9ee79d71f282c9549346764be3d` remain historical trial evidence;
+source integration does not reinstall or change the selected configuration.
+
+Post-rebase checks passed: workspace typecheck/build, 100 core planning/ticket/
+catalogue/routing/profile cases, five registered observation/diagnostic cases,
+five Pi profile/session cases, and 109 OPA cases with one unavailable external
+fixture skipped. Installed CLI/HTTP safety smoke passed 20/20 after a preserved
+harness-only failure; native Pi/SQLite preflight passed. Current PAPC at 7aad756
+selects the Analyst read-only profiles and analyze handoff capabilities, so the
+older omitted-profile observation is not a current blocker. The installed package
+metadata reports `unversioned-dirty-source`; exact installed source/module parity
+was not established, and Sinh did not treat that fact as a feature-availability
+or source-merge blocker.
+
+Integration preparation reran typecheck/build/completions successfully. The
+repository-owned pairing fixture lane initially had 30 passes and 15 failures:
+two structural-preview callers still supplied noncanonical synthetic deployment
+IDs. Only those preview inputs were updated to valid synthetic IDs; runtime
+validation and all assertions remain intact. The rerun passed 45/45 with no skips,
+and focused catalogue/routing checks passed 29/29. This is fixture compatibility,
+not an external configuration checkout or a foreground/installed qualification.
+
+These results do not establish genuine foreground/client/effect recovery,
+forwarding, browser/accessibility, human UAT, complete final-candidate regression
+or independent candidate review. Hosted CI results must be reported separately
+from source fixtures and installed smoke. Deferred qualification remains with
+PAP-317/PAPC-092 and its actual operator/review owners; no duplicate follow-up or
+completed-case claim is created. Original PAPC-093 incident records and protected
+history remain untouched. The dated phase evidence below is retained, not reset
+or relabelled as complete UAT by this source-integration decision.
+
 ## P0 baseline and scope
 
 The selected editing checkout is `feature/PAP-316-approval-handoff` at
