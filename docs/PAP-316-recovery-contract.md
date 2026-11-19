@@ -182,6 +182,38 @@ and its repaired OPA rerun are separate evidence. A final complete workspace run
 independent candidate-bound source review and applicable CI remain required for
 P4 acceptance; these source commits do not declare that gate complete.
 
+## P5 handoff: qualification remains open
+
+Source repair candidate: `858d01c` (P4 continuation). Catalogue verification
+separately passed 16/16 after final digest reconciliation. Completions generation
+passed with no tracked completion changes; staged secret scan and whitespace
+checks passed before the source commit. A transient Git index lock prevented the
+first commit attempt; it disappeared without deletion or repair, then the same
+staged candidate committed successfully.
+
+Next work, in order:
+
+1. Runtime source owner: finish complete final-candidate workspace/Pi regression
+   with a sufficient bounded execution window, preserving the failed workspace
+   run and both incomplete focused runs. Do not remove cases or weaken gates.
+   Obtain separate independent source review and applicable candidate-bound CI.
+2. Original PAPC-093 runtime owner: inspect/reconcile the preserved original
+   foreign-session operation. Same-session `plan-status` cannot impersonate that
+   origin or authorize adoption, refreshed CAS or a replacement request. The
+   incident's inner cause remains unproven; no live operation was retried here.
+3. PAP-317 and PAPC-092 owners: establish exact installed runtime/config/resource
+   provenance and separately qualify genuine supplied-ticket/ticketless entry,
+   open-Pi external decisions, partial effects/recovery and actual reader delivery.
+4. Browser/accessibility and Sinh: perform genuine reader/human UAT. Future-start
+   adoption remains a separate decision, not an implication of these source checks.
+
+PAPC-093 managed AgentKit/application writers remain separate routing owners.
+No runtime install, live final decision, publication, branch/link repair, queue,
+checkout allocation/return, push/merge or implementation launch was performed.
+Decision trust stays **local-unverified**, not authenticated human consent.
+Original completed effects/history and the old deployment's still-running registry
+record remain preserved. Overall P4/P5 acceptance is **partial**, not completed.
+
 ## Phase exits
 
 - P0: evidence and finite contract above; incident cause remains unknown.
