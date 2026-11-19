@@ -74,6 +74,17 @@ for (const runtime of ["pi", "opencode"] as const) {
   }
 }
 
+test("legacy path-safe ticket labels remain naming hints without changing ticket admission", () => fixture(root => {
+  for (const runtime of ["pi", "opencode"] as const) for (const bare of [false, true]) {
+    const input = options(root, runtime, bare);
+    input.templateVars!.TICKET_ID = "PAP-TEST";
+    const primer = generatePrimer(input);
+    assert.match(primer, /plans\/2026-11-19-PAP-TEST-\{slug\}\/plan\.md/);
+    assert.match(primer, /not authentication, output admission or a filesystem write grant/);
+  }
+  assert.deepEqual(readdirSync(root), []);
+}));
+
 test("two deployment identities select independent destinations under the effective ai-usage root", () => fixture(root => {
   const first = generatePrimer(options(root, "pi", false));
   const second = generatePrimer(options(root, "pi", false, "d-316a02"));
@@ -125,6 +136,8 @@ test("invalid launcher naming context fails with one bounded safe diagnostic and
   const invalid: Record<string, string>[] = [
     { DEPLOY_ID: "../foreign" }, { DEPLOY_ID: "d-316a01\nInjected" }, { DEPLOY_ID: "" },
     { TODAY: "2026-02-30" }, { TODAY: "../today" }, { TODAY: "" }, { TICKET_ID: "PAP-316/../../escape" },
+    { TICKET_ID: "PAP-TEST\nInjected" }, { TICKET_ID: "PAP-" + "X".repeat(65) }, { TICKET_ID: "PAP-TEST`" },
+    { TICKET_ID: "PAP-TEST-" }, { TICKET_ID: "PAP-TEST\u0000" }, { TICKET_ID: "PAP-TEST\n" },
   ];
   for (const bare of [false, true]) for (const vars of invalid) {
     const input = options(root, "pi", bare);

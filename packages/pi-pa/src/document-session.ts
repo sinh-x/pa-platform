@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { TICKET_INTERACTIONS_PROFILE, DocumentPackageError, getDeployPaths, getDeploymentEvents, processIsWithinFingerprintLineage, queryDeploymentStatus, readProcessFingerprint, resolveRepoExecutionPath, workflowDigest } from "@pa-platform/pa-core";
+import { TICKET_INTERACTIONS_PROFILE, DocumentPackageError, getDeployPaths, getDeploymentEvents, processIsWithinFingerprintLineage, queryDeploymentStatus, queryReadonlyDeploymentStatus, queryReadonlyDeploymentEvents, readProcessFingerprint, resolveRepoExecutionPath, workflowDigest } from "@pa-platform/pa-core";
 import { READONLY_DOCUMENT_PROFILE, READONLY_DOCUMENT_SESSION, hasModeResources, isModeCapabilitySession, modeCapabilitySessionMatches, MODE_CAPABILITY_SESSION, modeCapabilityActor, modeCapabilityRouteMatches, capabilityToolSelected, resolveTrustedTicketMutationContext, parseModeCapabilityBinding, type ModeCapabilityBinding, type TicketMutationContext } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
 import type { PiPreparationContext } from "./pi-extension/prepared-workflow.js";
@@ -35,6 +35,14 @@ export interface DocumentSessionDependencies {
 /** Native launch event, running registry, process incarnation and session, not an env selector. */
 export function authenticatePiDocumentCaller(context: PiPreparationContext, env: NodeJS.ProcessEnv = process.env, overrides: Partial<DocumentSessionDependencies> = {}): PiDocumentCaller {
   return authenticateDocumentProcess(context, env, overrides, false);
+}
+/** Existing-file-only authentication for read-only handoff observations. The
+ * same process/selection checks apply, without ordinary getDb initialization. */
+export function authenticatePiReadonlyDocumentCaller(context: PiPreparationContext): PiDocumentCaller {
+  return authenticateDocumentProcess(context, process.env, {
+    status: id => queryReadonlyDeploymentStatus(id, true),
+    events: id => queryReadonlyDeploymentEvents(id, true),
+  }, false);
 }
 /** CLI status adapter only: process lineage and immutable selection are genuine;
  * there is no TUI session or human decision host on this route. */

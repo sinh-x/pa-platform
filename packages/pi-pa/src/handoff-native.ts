@@ -12,7 +12,7 @@ import {
   workflowDigest, executeLocalReview, getDeployPaths, assertNativeRestartProcessDead, localHandoffReviewHooks, refreshNativeHandoffTicket, withLocalHandoffRepository, type NativeHandoffPlanningHost, type NativeHandoffReviewHost, type LocalReviewOutcome,
 } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
-import { authenticatePiDocumentCaller, documentTicketMutationContext } from "./document-session.js";
+import { authenticatePiDocumentCaller, authenticatePiReadonlyDocumentCaller, documentTicketMutationContext } from "./document-session.js";
 import { SystemDocumentBrowserFallback } from "./handoff-browser-fallback.js";
 import { showHandoffReview, type HandoffReviewUi } from "./pi-extension/handoff-review-ui.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
@@ -98,7 +98,7 @@ function parse(row: Record<string, unknown>): Request {
 export interface PiHandoffContext extends PiWorkflowContext { readonly ui?: PiWorkflowContext["ui"] & HandoffReviewUi }
 export function authenticatePiHandoffCaller(context: PiHandoffContext, signal?: AbortSignal) {
   if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
-  const caller = authenticatePiDocumentCaller(context);
+  const caller = authenticatePiReadonlyDocumentCaller(context);
   if (!isModeCapabilitySession(caller.profile) || !caller.capabilities || !caller.sessionId || !caller.handoffIdentitySha256 || !capabilityToolSelected(caller.capabilities.policy, "pa_handoff")) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   return Object.freeze({ deploymentId: caller.deploymentId, sessionId: caller.sessionId, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket,
     identitySha256: caller.handoffIdentitySha256, selectionSha256: workflowDigest(JSON.stringify(caller.capabilities)) });
@@ -197,7 +197,7 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
   catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
   authenticatePiHandoffCaller(context, signal);
   if (local) {
-    const selection = authenticatePiDocumentCaller(context).capabilities;
+    const selection = authenticatePiReadonlyDocumentCaller(context).capabilities;
     if (!selection || !["document.local-review", "document.handoff", "document.package"].every(id => selection.policy.allow.includes(id))) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   }
   if (request.action === "plan-status") {

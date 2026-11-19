@@ -8,7 +8,6 @@ import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
 import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_PROFILE, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityPolicy, selectedCapabilityTools, type ModeResourceSnapshot } from "../mode-capabilities.js";
 import { getDeploymentDir, getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { DEPLOYMENT_ID_PATTERN, MAX_DEPLOYMENT_CORRELATION_PATH_CHARS } from "../deploy/correlation.js";
-import { isCanonicalTicketId } from "../tickets/validate.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import { assertSupportedRuntime } from "../deploy/runtime-config.js";
@@ -202,7 +201,9 @@ function renderAdministrativeArtifactRouting(options: GeneratePrimerOptions): st
   const date = vars.TODAY ?? "", timestamp = Date.parse(date), issue = vars.TICKET_ID || "no-ticket";
   if (!DEPLOYMENT_ID_PATTERN.test(vars.DEPLOY_ID) || !/^\d{4}-\d{2}-\d{2}$/.test(date)
     || !Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== date
-    || (issue !== "no-ticket" && !isCanonicalTicketId(issue))) throw unavailable();
+    // Historical adapter labels (for example PAP-TEST) remain safe naming
+    // hints. Native ticket admission keeps its own stricter canonical-ID check.
+    || (issue !== "no-ticket" && (issue.length > 64 || !/^[A-Z][A-Z0-9]*-[A-Z0-9]+(?:-[A-Z0-9]+)*(?![\s\S])/.test(issue)))) throw unavailable();
   const artifacts = resolve(getDeploymentDir(vars.DEPLOY_ID), "artifacts");
   if (artifacts.length > MAX_DEPLOYMENT_CORRELATION_PATH_CHARS || /[\u0000-\u001f\u007f-\u009f`]/.test(artifacts)) throw unavailable();
   // Minimal projection of PAPC-093's canonical administrative/product/native

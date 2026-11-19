@@ -57,6 +57,23 @@ for (const kind of ["ticket-alias", "ticket-symlink", "intent-corrupt", "audit-t
   assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir), /TICKET_HANDOFF_UNCERTAIN/);
 }));
 
+test("plan observation rejects orphan completion audits and malformed current ticket fields", () => fixture(f => {
+  f.plan();
+  const intentPath = join(f.dir, `.ticket-handoff-${handoffKey(identity)}.json`), intentBytes = readFileSync(intentPath);
+  rmSync(intentPath);
+  assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir), /TICKET_HANDOFF_UNCERTAIN/, "orphan completion evidence is not clean absence");
+  writeFileSync(intentPath, intentBytes);
+}));
+
+test("plan observation rejects malformed current ticket fields before public projection", () => fixture(f => {
+  f.plan();
+  const path = join(f.dir, `${f.ticket.id}.json`), original = JSON.parse(readFileSync(path, "utf8"));
+  for (const changes of [{ status: { private: "PRIVATE_STATUS" } }, { status: "PRIVATE_STATUS" }, { linkedBranches: "malformed" }, { comments: "malformed" }, { doc_refs: {} }]) {
+    writeFileSync(path, JSON.stringify({ ...original, ...changes }));
+    assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir), /TICKET_HANDOFF_UNCERTAIN/);
+  }
+}));
+
 test("real TicketStore writes a correlated planned link and full native intent without invalid legacy SHA fields", () => fixture(f => {
   const result = f.plan(), stored = readHandoffIntent(f.dir, result.key)!;
   assert.deepEqual(stored.change, { kind: "plan", intent: f.intent });

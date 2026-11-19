@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { handoffKey, handoffFail, parseTicketHandoffChange, handoffCandidate, readHandoffIntent, handoffIntents, publishHandoffIntent, handoffAudit, handoffAuditComplete, type TicketHandoffChange, type TicketHandoffHooks } from "./handoff-intent.js";
+import { TicketHandoffError, handoffKey, handoffFail, parseTicketHandoffChange, handoffCandidate, readHandoffIntent, handoffIntents, publishHandoffIntent, handoffAudit, handoffAuditComplete, type TicketHandoffChange, type TicketHandoffHooks } from "./handoff-intent.js";
 import { statusFail, statusKey, statusVersion, statusCandidate, statusIntents, readStatusIntent, publishStatusIntent, statusAudit, statusAuditComplete, TICKET_STATUSES, type TicketStatusHooks } from "./status-intent.js";
 import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
 import { AdvisoryFiles } from "../operations/files.js";
@@ -66,8 +66,19 @@ export class TicketStore {
       const record = readHandoffIntent(dir, key);
       const bytes = files.file(`${ticketId}.json`) as Buffer;
       const raw = parseReviewEvidenceJson(bytes, "handoff-ticket") as Record<string, unknown>;
-      if (raw.id !== ticketId || raw._alias || typeof raw.createdAt !== "string" || typeof raw.updatedAt !== "string") handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      if (!raw || raw.id !== ticketId || raw._alias || typeof raw.createdAt !== "string" || typeof raw.updatedAt !== "string"
+        || typeof raw.project !== "string" || raw.status !== undefined && !VALID_STATUSES.has(raw.status as TicketStatus)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      for (const field of ["title", "summary", "description", "assignee", "priority", "type", "estimate", "from", "to"])
+        if (raw[field] !== undefined && typeof raw[field] !== "string") handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      // Omitted legacy collections retain their existing defaults; malformed
+      // present collections cannot be normalized into apparently valid evidence.
+      for (const field of ["tags", "blockedBy", "doc_refs", "comments", "linkedBranches", "linkedCommits", "subTickets"]) {
+        const value = raw[field];
+        if (value !== undefined && (!Array.isArray(value) || value.some(item => field === "tags" || field === "blockedBy"
+          ? typeof item !== "string" : !item || typeof item !== "object" || Array.isArray(item)))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      }
       const ticket = store.normalizeTicket(raw), audits = store.readCreationAudits();
+      if (!record && audits.entries.some(row => row.changes?.handoffIntent?.[1] === key)) handoffFail("TICKET_HANDOFF_UNCERTAIN");
       if (record && record.before.id !== ticketId) handoffFail("TICKET_HANDOFF_CONFLICT");
       return { record, ticket, complete: record ? handoffAuditComplete(record, audits.entries) : false, auditSha256: creationDigest(audits.raw), ticketSha256: creationDigest(bytes) };
     };
@@ -78,7 +89,7 @@ export class TicketStore {
     } catch (error) {
       // Only the owner-established conflict is specific; all unreadable or
       // unstable evidence stays unknown, never an absent intent.
-      if (error instanceof Error && Object.getOwnPropertyDescriptor(error, "code")?.value === "TICKET_HANDOFF_CONFLICT") throw error;
+      if (error instanceof TicketHandoffError && error.code === "TICKET_HANDOFF_CONFLICT") throw error;
       return handoffFail("TICKET_HANDOFF_UNCERTAIN");
     }
   }

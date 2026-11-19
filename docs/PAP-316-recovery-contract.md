@@ -134,6 +134,54 @@ and unmodified. No environment allowlist was widened. Consequently runtime
 primer delivery is partial end-to-end PAPC-093 routing, not a claim that conflicting
 installed hook directives or all administrative producers are repaired.
 
+## P4 continuation: observation purity and adapter compatibility
+
+The inherited P4 overlay now uses existing-file-only registry status/events for
+handoff process authentication, including registered-tool guards. A missing
+registry remains missing, and a checkpointed registry is read without creating
+WAL/SHM files. Effects still open their existing durable connection only after
+admission; read-only authentication grants no additional capability. Ticket
+observation rejects orphan completion audits and malformed present ticket
+collections/status rather than normalizing them into clean absence. The source
+catalogue explicitly classifies `handoff.plan-status` as read-only and inventories
+its typed repository-ref dependencies.
+
+Full workspace testing exposed a P3 compatibility defect: path-safe historical
+adapter labels such as `PAP-TEST` were rejected by the new primer naming check.
+The new focused regression failed for that exact cause before the minimal fix.
+Routing now accepts bounded uppercase issue labels as **naming hints only**;
+native ticket owners retain canonical numeric-ID admission. Traversal, controls,
+trailing newlines, markup delimiters, oversized labels and empty components still
+reject. No launcher, native ticket grammar or repository ownership was widened.
+
+Before: a previously supported OPA launch with `PAP-TEST` failed during primer
+composition. After: composition supplies the current deployment artifact location;
+actual persistence and ticket effects still require their existing admission.
+The invalid-context blocker text and its five-label envelope remain unchanged.
+Affected paths/categories: normal/bare Pi/OPA primer information and composition
+blockers; registered native handoff observation, authentication and owner failures.
+Agent plain-text review is not independent human readability review.
+
+Actual continuation checks (deployment `d-fe1db6`, Node 22.23.4, pnpm 10.28.0):
+
+| Command / scope | Observed result |
+| --- | --- |
+| `corepack pnpm typecheck` and `corepack pnpm build` | Passed after the compatibility fix. |
+| `corepack pnpm test` before that fix | Root harness 43 passed; core 2,447 passed / 14 skipped / zero failed. OPA 74 passed / 35 failed / one skipped; the workspace command failed and later package completion was not established. Full captured output: `/tmp/pi-bash-77c8819a3f38cd96.log` (tool-managed temporary evidence, not a permanent artifact). |
+| Core ticket/planning/catalogue/routing focused suites before compatibility fix | 90 passed, zero skipped. |
+| Registered original-plan/observation/custody/hostile diagnostics selection | Five passed, zero skipped. |
+| Legacy-label intended-cause regression | One failed before fix. |
+| Core routing/primer/handoff/rogue suites after fix | 81 passed, zero skipped. |
+| `corepack pnpm --filter @pa-platform/opencode-pa test` after fix | 109 passed / zero failed / one unavailable external-config fixture skipped. |
+| Pi native handoff + Analyst identity + session + transport suites, 500-second bound | 55 subtests reported passed before timeout; no complete suite pass. Includes all eight CLI/API outcome convergence cases, conflicting foreground input and disconnect/detachment. |
+| Core API/source/review/catalogue selection, 100-second bound | 84 subtests reported passed before timeout; no complete suite pass. |
+| Pi document-session and local-review CLI/contract/server suites separately | 34 passed, zero skipped. |
+
+Timeouts are incomplete checks, not passing suites. The first workspace failure
+and its repaired OPA rerun are separate evidence. A final complete workspace run,
+independent candidate-bound source review and applicable CI remain required for
+P4 acceptance; these source commits do not declare that gate complete.
+
 ## Phase exits
 
 - P0: evidence and finite contract above; incident cause remains unknown.

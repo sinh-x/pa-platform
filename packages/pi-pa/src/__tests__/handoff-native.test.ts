@@ -161,6 +161,23 @@ test("registered original plan observation is read-only before a subject and pre
   } finally { await f.close(); }
 });
 
+test("registered plan observation never opens a writable registry or initializes missing evidence", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const intake = await f.checked({ action: "intake", ticket: "EX-1" });
+    closeDb();
+    const before = readdirSync(f.root).sort(), bytes = readFileSync(join(f.root, "registry.db"));
+    const request = { action: "plan-status", ticket: "EX-1", requestId: "readonly-probe", branch: "feature/EX-1-readonly", expectedTicketVersion: intake.ticketVersion };
+    assert.equal((await f.checked(request)).disposition, "absent");
+    assert.deepEqual(readdirSync(f.root).sort(), before, "observation must not allocate registry WAL/SHM files");
+    assert.deepEqual(readFileSync(join(f.root, "registry.db")), bytes);
+    closeDb(); rmSync(join(f.root, "registry.db"));
+    const missing = readdirSync(f.root).sort();
+    await assert.rejects(() => f.handoff(request), /registry-missing/);
+    assert.deepEqual(readdirSync(f.root).sort(), missing, "missing registry must remain missing");
+  } finally { await f.close(); }
+});
+
 test("registered plan preserves established repository custody cause without echoing private marker", async () => {
   const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
   try {
