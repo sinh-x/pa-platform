@@ -55,6 +55,26 @@ its remaining server-side liveness dependency disclosed.
    production wiring. Keep shell and other sessions intact. Do not install
    globally, push or declare ticket Done without supported final evidence.
 
+## Finalization checkpoint
+
+Source commits through `20c973f` implement conditional managed retirement and
+input/resume hardening. Sinh explicitly chose the self-reported `ppa-pi` identity
+and authorized PR creation/merge **if all checks are good**. The final immutable
+package smoke passed; live EOF/signals/transitions/replacement guard/server
+fallback and scoped sidebar observation are recorded in
+`plans/reports/final-validation-261119-0800-pap315-finish.md`.
+
+The original full Pi attempt had prerequisite failures and timed out. All its
+failed cases passed a supported-toolchain targeted rerun. A full correct-toolchain
+attempt and complete-file continuation are retained separately; pending results
+and required hosted CI remain merge gates, not presumed passes. A draft PR may
+collect CI while those gates finish; no force/admin merge is permitted.
+
+The unexecuted live delay proxy was removed through native trash T-542, with
+prototype bytes retained in Git9880bde. Privacy approval could not be applied;
+no bypass or substitute full-environment access was used. The installed stale
+source check is a separate diagnostic, not a claim that that proxy ran.
+
 All delegates receive this worktree, timezone Asia/Saigon and language en_US.UTF-8.
 No modification of the unrelated learning-management journal or bulletin is part
 of this continuation.

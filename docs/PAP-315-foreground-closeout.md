@@ -155,14 +155,20 @@ normal same-shell B is not permitted to overlap A's foreground closeout.
 - Rebase and completion plan:
   [2026-11-19 record](../plans/261119-0800-pap315-finish/plan.md). Original branch
   history is retained in `refs/backup/PAP-315/20261119-0800`.
-- Current managed-source work: 42 relay tests passed, including hidden-Pi state,
-  native resume, lower/equal/higher-counter delayed release, duplicate callbacks,
-  reply failures, half-close/4 MiB buffering and open-stdin natural exit. The
-  first pre-build run timed out because PAP-318's compiled preload was absent;
-  after workspace build the rerun passed. Initial TypeScript index typing was
-  corrected; neither initial failure is re-labelled a pass.
-- A real source-PPA launch `d-82653f` on the managed-source build appeared in
-  Herdr while live and disappeared after `/quit`, leaving its shell open. This
-  is the first production-wired observation without synthetic lifecycle frames.
-  Final exact-candidate checks and the remaining live matrix are recorded
-  separately; no global install, hosted CI or full-suite success is inferred.
+- Final feature/protocol cases: 61 passed, including malformed Unicode, native
+  resume, lower/equal/higher-counter delayed release, duplicate callbacks,
+  reply failures, half-close/4 MiB buffering and open-stdin natural exit. Original
+  failures and subsequent fixes are preserved in the reports, not relabelled.
+- The approved `ppa-pi` immutable package passed actual EOF, child SIGTERM/KILL,
+  same-process reload/new/fork/resume, normal quit and server fallback after
+  supervisor death. A new process resuming the same conversation survived an
+  installed stale-source retirement with a forced maximum-safe counter, then
+  retired normally itself. Exact final package smoke verified absence in
+  211.69 ms; ordinary cleanup stages measured about204–212ms.
+- Sinh confirmed sidebar disappearance and preservation of other sessions. The
+  temporary test pane was closed only after that scoped confirmation. This is
+  not blanket acceptance of unperformed network-delay or standalone variants.
+- See [final evidence](../plans/reports/final-validation-261119-0800-pap315-finish.md)
+  for package paths, source hashes, failed/timed-out attempts, corrected-toolchain
+  reruns and outstanding merge gates. No global installation or hosted/full-suite
+  pass is inferred from an immutable package build or scoped live check.
