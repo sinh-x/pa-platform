@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { RepositoryRefError } from "./repository-ref-error.js";
 import { LOCAL_GIT_CONTROL_FLAGS, assertSupportedGitMetadataRead } from "./local-git-effects.js";
 import {
   chmodSync,
@@ -655,11 +656,11 @@ export function withRepositoryRefAdmission<T>(canonicalRepoRoot: string, exclusi
       const initial = locations(), metadata = initial.map(item => repositoryMetadataIdentity(root, item.root, item.gitDir, primary));
       const unchanged = () => {
         exclusion.assertNoActiveWriters();
-        if (JSON.stringify(locations()) !== JSON.stringify(initial) || initial.some((item, index) => repositoryMetadataIdentity(root, item.root, item.gitDir, primary) !== metadata[index])) throw new Error("ref worktree inventory changed");
+        if (JSON.stringify(locations()) !== JSON.stringify(initial) || initial.some((item, index) => repositoryMetadataIdentity(root, item.root, item.gitDir, primary) !== metadata[index])) throw new RepositoryRefError("inventory-changed");
         for (const item of initial) for (const name of [REPOSITORY_CHILD_SETTLEMENT_FILE, REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
           try { lstatSync(join(item.gitDir, name)); }
           catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-          throw new Error("ref owner overlaps retained repository custody");
+          throw new RepositoryRefError("retained-custody");
         }
       };
       const locked = (index: number): T => {

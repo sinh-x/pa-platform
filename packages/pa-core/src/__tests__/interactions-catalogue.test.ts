@@ -114,11 +114,11 @@ test("native-only owners are accounted for without inventing CLI commands or gra
 });
 
 test("new handoff source dispatch is explicit and does not widen retained document owners or claim installed admission", () => {
-  for (const action of ["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue", "open", "status", "show", "preflight", "request", "decide", "refresh"]) {
+  for (const action of ["intake", "stage", "plan", "prepare-review", "review", "revoke", "publish", "complete-branch", "queue", "open", "status", "plan-status", "show", "preflight", "request", "decide", "refresh"]) {
     const row = operation(`handoff.${action}`);
     assert.deepEqual(row.nativeForms, [`pa_handoff:${action}`]); assert.deepEqual(row.cliForms, []);
     assert.equal(row.nativeBinding, null); assert.equal(row.sourceHandler, "packages/pi-pa/src/pi-extension/handoff-tool.ts");
-    assert.equal(row.effectClass, ["status", "show", "preflight"].includes(action) ? "read" : action === "open" ? "resource" : "write");
+    assert.equal(row.effectClass, ["status", "plan-status", "show", "preflight"].includes(action) ? "read" : action === "open" ? "resource" : "write");
   }
   for (const id of ["document.native.plan", "document.native.complete-branch", "document.native.open"]) {
     assert.equal(interactionCatalogue.some(row => row.operationId === id), false);
@@ -229,6 +229,7 @@ test("PAP-316 inventory covers selection, source intake and real bridge ingress 
   for (const path of ["packages/pa-core/src/analyst-resource-selection.ts", "packages/pa-core/src/mode-capabilities.ts",
     "packages/pa-core/src/mode-capability-selection.ts", "packages/pa-core/src/selected-config-source.ts",
     "packages/pa-core/src/deploy/plan.ts", "packages/pa-core/src/deploy/repository-admission.ts",
+    "packages/pa-core/src/deploy/repository-ref-error.ts", "packages/pa-core/src/deploy/ticket-concurrency.ts",
     "packages/pi-pa/src/process-identity.ts", "packages/pa-core/src/documents/package-contract.ts",
     "packages/pa-core/src/documents/package-tools.ts", "packages/pa-core/src/documents/package-service.ts",
     "packages/pa-core/src/agent-api/routes/local-review.ts", "packages/pa-core/src/agent-api/index.ts",

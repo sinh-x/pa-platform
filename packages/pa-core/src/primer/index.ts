@@ -6,7 +6,8 @@ import { resolve } from "node:path";
 import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
 import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_PROFILE, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityPolicy, selectedCapabilityTools, type ModeResourceSnapshot } from "../mode-capabilities.js";
-import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
+import { getDeploymentDir, getPlatformHomeDir, getSkillsDir } from "../paths.js";
+import { DEPLOYMENT_ID_PATTERN, MAX_DEPLOYMENT_CORRELATION_PATH_CHARS } from "../deploy/correlation.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import { assertSupportedRuntime } from "../deploy/runtime-config.js";
@@ -29,6 +30,7 @@ export interface GeneratePrimerOptions {
   mode?: string;
   objective?: string;
   resolveFile?: (relativePath: string) => string | undefined;
+  /** Launcher-supplied substitutions, not caller authentication or output admission. */
   templateVars?: Record<string, string>;
   skillsDir?: string;
   extraInstructions?: string;
@@ -86,6 +88,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `> **Ticket:** ${options.templateVars?.TICKET_ID || "none"}`,
     ``,
     additionalInstructions,
+    renderAdministrativeArtifactRouting(options),
     ...(options.runtime === "pi" && options.workflow ? [
       "## JSON Workflow (pinned)",
       `Run: ${options.workflow.runId}; definition: ${options.workflow.workflowId}/${options.workflow.version}; raw SHA-256: ${options.workflow.sha256}; config: ${options.workflow.configRevision}.`,
@@ -162,6 +165,7 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
   const repository = options.repository ?? resolvePrimerRepositoryContext(extra);
   const context = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
   const channel = options.invocationChannel ?? "cli";
+  const artifactRouting = renderAdministrativeArtifactRouting(options);
   const body = [
     "# PA Deployment Primer",
     "",
@@ -176,6 +180,7 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
     renderTicketWorktreeSelection(options.ticketWorktreeSelection) ?? "",
     context ?? "Canonical deployment context unavailable.",
     "",
+    ...(artifactRouting ? [artifactRouting, ""] : []),
     "## Runtime Tools",
     toolReference,
     "",
@@ -183,6 +188,35 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
     rogueOneAuditNotice(channel),
   ].join("\n");
   return `${body}\n${renderSizeSignal(body, "rogue-one")}`;
+}
+
+function renderAdministrativeArtifactRouting(options: GeneratePrimerOptions): string {
+  // Both production launchers supply these template variables. They are location
+  // inputs to composition, not authenticated caller evidence or writer authority.
+  // Never recover them from authored context, PA_DEPLOYMENT_* or a raw root hint.
+  // Pinned/retained resources keep their existing routing, not today's defaults.
+  const vars = options.templateVars;
+  if (vars?.DEPLOY_ID === undefined || options.workflow || options.configResourceRoot) return "";
+  const unavailable = () => new Error("Administrative output routing could not be composed.\nCondition: Primer generation stopped before selecting an administrative output location.\nSource: Launcher-supplied deployment naming context.\nReason: The deployment identity, task date, ticket or effective location is invalid; no fallback destination was selected.\nCorrection: Ask the runtime owner to inspect the original launcher context. Impact: none to ask. Actor: agent or operator. New approval: not required to ask; inspection and correction need their own authority. Prerequisite: preserve the original deployment and task context.\nResume Action: Compose again only after the owner supplies valid context. Actual persistence still requires its existing output admission and safety checks.");
+  const date = vars.TODAY ?? "", timestamp = Date.parse(date), issue = vars.TICKET_ID || "no-ticket";
+  if (!DEPLOYMENT_ID_PATTERN.test(vars.DEPLOY_ID) || !/^\d{4}-\d{2}-\d{2}$/.test(date)
+    || !Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== date
+    // Historical adapter labels (for example PAP-TEST) remain safe naming
+    // hints. Native ticket admission keeps its own stricter canonical-ID check.
+    || (issue !== "no-ticket" && (issue.length > 64 || !/^[A-Z][A-Z0-9]*-[A-Z0-9]+(?:-[A-Z0-9]+)*(?![\s\S])/.test(issue)))) throw unavailable();
+  const artifacts = resolve(getDeploymentDir(vars.DEPLOY_ID), "artifacts");
+  if (artifacts.length > MAX_DEPLOYMENT_CORRELATION_PATH_CHARS || /[\u0000-\u001f\u007f-\u009f`]/.test(artifacts)) throw unavailable();
+  // Minimal projection of PAPC-093's canonical administrative/product/native
+  // distinction. Filesystem validation and all finite write grants stay with owners.
+  return [
+    "## Administrative Artifact Routing",
+    `Administrative artifacts: \`${artifacts}\`. New task plans, reports and check evidence belong here.`,
+    `Within that directory: \`plans/${date}-${issue}-{slug}/plan.md\`, \`reports/${date}-${issue}-{slug}.md\`, and \`checks/{task}/{new-evidence-file}.json\`. Use descriptive kebab-case components without separators, traversal or control characters; preserve conflicts instead of overwriting or silently renaming.`,
+    "Current-deployment routing takes precedence over repository/global output defaults; stale or foreign active plans may be admitted reading evidence but cannot redirect new administrative output.",
+    "Requested maintained product files stay in their actual scoped repository destinations; protected native records, logs, decisions and publication stay with their existing owners. Keep source-tool repository/worktree CWD unchanged.",
+    "If destination context is missing, inconsistent, denied or uncertain, stop the dependent persistence and report the owning blocker; no repository, temporary, foreign-deployment or alternate-writer fallback, and no disabling safety hooks. Independent safe reading and discussion may continue.",
+    "This location guidance is not authentication, output admission or a filesystem write grant. Use existing admitted writers and their path, sensitivity and no-clobber checks; omitted hooks, tools and capabilities remain omitted.",
+  ].join("\n");
 }
 
 function resolvePrimerRepositoryContext(extraInstructions: string | undefined): PrimerRepositoryContext | undefined {
@@ -723,6 +757,7 @@ const TILDE_FENCE_CLOSE_RE = /^\s*(~{3,})\s*$/;
 // form exactly matches one of these is demoted one extra level to avoid collision (MIN-1).
 const PRIMER_SECTION_HEADERS: ReadonlySet<string> = new Set([
   "## Additional Instructions",
+  "## Administrative Artifact Routing",
   "## User Objective",
   "## Objective",
   "## Runtime Tools",

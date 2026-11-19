@@ -862,9 +862,9 @@ export function queryReadonlyRepoSetupLaunch(deployId: string): DeploymentStatus
 }
 
 /** Resume inspection must not allocate, initialize or migrate registry state. */
-export function queryReadonlyDeploymentStatus(deployId: string): DeploymentStatus | null {
-  if (!existsSync(getRegistryDbPath())) return null;
-  const db = openReadonlyRegistryDatabase();
+export function queryReadonlyDeploymentStatus(deployId: string, existingFilesOnly = false): DeploymentStatus | null {
+  if (!existingFilesOnly && !existsSync(getRegistryDbPath())) return null;
+  const db = openReadonlyRegistryDatabase(existingFilesOnly);
   try {
     const row = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
     return row ? deploymentFromRow(row) : null;

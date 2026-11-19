@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { RepositoryRefError } from "./repository-ref-error.js";
 import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -491,7 +492,7 @@ export function withRepositoryRefTicketExclusion<T>(key: string, canonicalRepoRo
       for (const path of ticketEvidencePaths(ticketSlotDirectory(root))) {
         const row = inspectSlot(path, readProcessFingerprint);
         if (row.state !== "prepared" || row.reservation.repoRoot !== root || row.reservation.repoKey !== key
-          || path !== preparedRepositoryTicketReservationPath(root, row.reservation.ticket)) throw new Error("repository ref overlaps live or uncertain ticket ownership");
+          || path !== preparedRepositoryTicketReservationPath(root, row.reservation.ticket)) throw new RepositoryRefError("active-or-uncertain-writer");
       }
     } });
     activeRefExclusions.set(owner, root);

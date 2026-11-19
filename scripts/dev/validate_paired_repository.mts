@@ -83,7 +83,7 @@ function validatePlanFirstRequirementsContracts(configRoot: string, directLocal 
       repository: { repoKey: "pa-platform-config", repoRoot: configRoot },
       resolveFile: (relativePath) => resolve(configRoot, relativePath),
       skillsDir: resolve(configRoot, "skills", "global"),
-      templateVars: { DEPLOY_ID: `paired-${mode}`, TEAM_NAME: "requirements", TICKET_ID: "PAPC-024", TODAY: "2026-09-19" },
+      templateVars: { DEPLOY_ID: "d-000024", TEAM_NAME: "requirements", TICKET_ID: "PAPC-024", TODAY: "2026-09-19" },
     });
     // Only this exact enabled/typed route replaces procedural paragraphs.
     // Every unselected mode retains the previous complete legacy checks.
@@ -109,7 +109,7 @@ export function validateDirectLocalProfile(configRoot: string, workflows: Readon
   if (!mode || team.deploy_modes?.some((entry) => entry.id === "implement")) throw new Error("Direct local producer cannot restore an implement fallback");
   const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: "orchestrator", objective: "Validate the scoped ordinary local source pair.", repository: { repoKey: "pa-platform-config", repoRoot: configRoot },
     resolveFile: (path) => resolve(configRoot, path), skillsDir: resolve(configRoot, "skills/global"),
-    templateVars: { DEPLOY_ID: "paired-local", TEAM_NAME: "builder", TICKET_ID: "PAP-268", TODAY: "2026-10-26" } });
+    templateVars: { DEPLOY_ID: "d-000268", TEAM_NAME: "builder", TICKET_ID: "PAP-268", TODAY: "2026-10-26" } });
   // A fresh process prevents ESM/require cache from certifying bytes belonging
   // to a previously selected config SHA. Only this fixed source-only checker
   // runs; it receives no ambient credentials or PA/PI/Git authority environment.

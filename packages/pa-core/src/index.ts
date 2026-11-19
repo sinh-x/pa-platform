@@ -60,6 +60,8 @@ export * from "./documents/index.js";
 export * from "./documents/handoff-contract.js";
 export * from "./documents/handoff-intake.js";
 export * from "./documents/handoff-planning.js";
+export * from "./deploy/repository-ref-error.js";
+export { TicketHandoffError } from "./tickets/handoff-intent.js";
 export * from "./documents/handoff-lifecycle.js";
 export * from "./documents/handoff-review.js";
 export * from "./documents/local-review.js";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,47 @@ function setup() {
   const plan = (extra = hooks) => store.applyHandoffWithIntent(ticket.id, creationDigest(ticket), { kind: "plan", intent }, actor, identity, extra);
   return { root, config, repo, dir, git, base, store, ticket, intent, plan };
 }
+
+test("existing-file plan observation does not initialize missing stores or repair partials", () => fixture(f => {
+  const missing = join(f.root, "missing"), names = readdirSync(f.root);
+  assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, missing), /TICKET_HANDOFF_UNCERTAIN/);
+  assert.deepEqual(readdirSync(f.root), names);
+  const before = readdirSync(f.dir).sort();
+  assert.equal(TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir).record, undefined);
+  assert.deepEqual(readdirSync(f.dir).sort(), before);
+  assert.throws(() => f.plan({ ...hooks, afterPersist(stage: string) { if (stage === "intent") throw Error("lost reply"); } } as any));
+  const files = readdirSync(f.dir).sort(), bytes = files.map(name => readFileSync(join(f.dir, name)));
+  const partial = TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir);
+  assert.equal(partial.complete, false); assert.ok(partial.record);
+  assert.deepEqual(readdirSync(f.dir).sort().map(name => readFileSync(join(f.dir, name))), bytes);
+  f.plan(); assert.equal(TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir).complete, true);
+}));
+
+for (const kind of ["ticket-alias", "ticket-symlink", "intent-corrupt", "audit-torn"] as const) test(`read-only plan observation keeps ${kind} unknown without repair`, () => fixture(f => {
+  f.plan();
+  if (kind === "ticket-alias") writeFileSync(join(f.dir, `${f.ticket.id}.json`), JSON.stringify({ _alias: true, movedTo: "SMP-999" }));
+  if (kind === "ticket-symlink") { const path = join(f.dir, `${f.ticket.id}.json`); rmSync(path); symlinkSync(join(f.root, "outside"), path); }
+  if (kind === "intent-corrupt") writeFileSync(join(f.dir, `.ticket-handoff-${handoffKey(identity)}.json`), "PRIVATE_CORRUPT");
+  if (kind === "audit-torn") writeFileSync(join(f.dir, "audit.jsonl"), "PRIVATE_TORN");
+  assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir), /TICKET_HANDOFF_UNCERTAIN/);
+}));
+
+test("plan observation rejects orphan completion audits and malformed current ticket fields", () => fixture(f => {
+  f.plan();
+  const intentPath = join(f.dir, `.ticket-handoff-${handoffKey(identity)}.json`), intentBytes = readFileSync(intentPath);
+  rmSync(intentPath);
+  assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir), /TICKET_HANDOFF_UNCERTAIN/, "orphan completion evidence is not clean absence");
+  writeFileSync(intentPath, intentBytes);
+}));
+
+test("plan observation rejects malformed current ticket fields before public projection", () => fixture(f => {
+  f.plan();
+  const path = join(f.dir, `${f.ticket.id}.json`), original = JSON.parse(readFileSync(path, "utf8"));
+  for (const changes of [{ status: { private: "PRIVATE_STATUS" } }, { status: "PRIVATE_STATUS" }, { linkedBranches: "malformed" }, { comments: "malformed" }, { doc_refs: {} }]) {
+    writeFileSync(path, JSON.stringify({ ...original, ...changes }));
+    assert.throws(() => TicketStore.observeHandoffWithIntent(identity, f.ticket.id, f.dir), /TICKET_HANDOFF_UNCERTAIN/);
+  }
+}));
 
 test("real TicketStore writes a correlated planned link and full native intent without invalid legacy SHA fields", () => fixture(f => {
   const result = f.plan(), stored = readHandoffIntent(f.dir, result.key)!;
