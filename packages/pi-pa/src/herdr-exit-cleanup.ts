@@ -181,7 +181,14 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
         // Bound BEFORE stringify, never coerce a method object, and compare
         // canonical UTF-8 BYTES. Lossy decoding must not admit invalid input.
         let canonical = false;
-        try { canonical = newline + 1 <= HERDR_REQUEST_LIMIT_BYTES && Buffer.from(`${JSON.stringify(body)}\n`).equals(prefix.subarray(0, newline + 1)); }
+        try {
+          canonical = newline + 1 <= HERDR_REQUEST_LIMIT_BYTES && Buffer.from(`${JSON.stringify(body, (key, value: unknown) => {
+            // JSON.parse accepts escaped lone surrogates that native Herdr's
+            // Unicode parser rejects. Rewriting must not remove that rejection.
+            if (Buffer.from(key).toString("utf8") !== key || (typeof value === "string" && Buffer.from(value).toString("utf8") !== value)) throw new Error();
+            return value;
+          })}\n`).equals(prefix.subarray(0, newline + 1));
+        }
         catch { /* malformed/deep input is advisory rejection, not supervisor death */ }
         if (typeof body?.id !== "string" || !canonical || !Number.isSafeInteger(params.seq) || (params.seq as number) < 0 || queue.length >= QUEUE_LIMIT) {
           respond(client, typeof body?.id === "string" && Buffer.byteLength(body.id) <= 256 ? body.id : "", "invalid_lifecycle_report"); return;

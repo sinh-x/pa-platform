@@ -231,6 +231,10 @@ test("malformed method, deeply nested owned input and invalid UTF-8 cannot kill 
   const valid = Buffer.from(`${JSON.stringify({ id: "bad-utf8", method: STATE, params: { ...report(2), message: "MARKER" } })}\n`), offset = valid.indexOf("MARKER");
   const invalid = Buffer.concat([valid.subarray(0, offset), Buffer.from([0xff]), valid.subarray(offset + 6)]);
   assert.equal((await rawCall(endpoint, invalid)).error.code, "invalid_lifecycle_report");
+  const invalidScalar = `${JSON.stringify({ id: "bad-scalar", method: STATE, params: { ...report(2), agent_session_path: "/tmp/quote's-\ud800.jsonl" } })}\n`;
+  assert.equal((await rawCall(endpoint, invalidScalar)).error.code, "invalid_lifecycle_report");
+  const invalidKey = `${JSON.stringify({ id: "bad-key", method: STATE, params: { ...report(2), ["\ud800"]: "inert" } })}\n`;
+  assert.equal((await rawCall(endpoint, invalidKey)).error.code, "invalid_lifecycle_report");
   assert.equal(backend.requests.length, 1, "invalid frames are never normalized into accepted managed reports");
   await call(endpoint, STATE, report(3)); assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
 }));
