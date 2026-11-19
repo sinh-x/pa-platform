@@ -32,7 +32,25 @@ dependency hashes are unchanged. Restore the current plain develop version befor
 normal integration. PAP-318 source/process evidence remains in the
 [implementation report](../plans/2026-11-18-PAP-318-pi-primer-file-transport/phase-4-evidence.md).
 
-The PAP-316 source integration candidate restores plain **`0.1.173`** across the
+The current rebased PAP-316 follow-up worktree trial label is
+**`0.1.176-pap316.2`** across the four shared manifests, at Sinh's request for
+self-managed installation/testing. The seven unmerged follow-ups were rebased
+onto fetched origin/develop `07e4289e74bded49304c435f652010146562b9ee`
+(0.1.176), retaining its PAP-318 profile/primer and PAP-315 Herdr changes.
+The already-integrated PAP-316 source delivery was not replayed a second time.
+The pre-rebase `0.1.173-pap316.2` candidate `0d820fb` remains available at
+`backup/PAP-316-before-rebase-0d820fb`; its prior results remain historical.
+Build the clean exact rebased commit and verify its actual `sourceSha` separately
+from the readable version. `runtime-host` remains independently versioned.
+No installation, configuration selection/activation, dependency/config-pin/Nix
+hash change, tag, push, merge or PAP-316 acceptance follows. Full final-candidate
+regression, independent review and installed/client/browser/human qualification
+remain open; see [the recovery handoff](PAP-316-recovery-contract.md).
+Restore the current plain develop version before eventual source integration.
+The `.1` trial and prior integration notes below are historical, not the current
+worktree label.
+
+The earlier PAP-316 source integration candidate restored plain **`0.1.173`** across the
 four shared manifests to match current develop and retain its normal auto-patch
 flow. The separately installed `0.1.173-pap316.1` trial and its provenance remain
 unchanged. PAPC-092 is the companion for the remaining Analyst configuration,
@@ -40,7 +58,7 @@ resource closure, installed-pair qualification and separately authorized
 future-start adoption; PAPC-090 retains workflow ownership. Source integration
 is not full AC acceptance, configuration activation or a Builder change.
 
-The PAP-316 worktree trial label is **`0.1.173-pap316.1`** across the four shared
+The earlier PAP-316 worktree trial label was **`0.1.173-pap316.1`** across the four shared
 manifests, set at the operator's request for installation identification. A
 separately rebuilt/selected CLI must display `ppa 0.1.173-pap316.1`; verify
 `packageVersion` and the exact clean label commit's `sourceSha` in
