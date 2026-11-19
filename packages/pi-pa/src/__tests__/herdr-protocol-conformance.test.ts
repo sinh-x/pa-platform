@@ -98,6 +98,12 @@ test("protocol-22 cleanup grammar has no expected-incarnation conditional", () =
   assert.deepEqual(violations(defs["PaneClearAgentAuthorityParams"]!, { pane_id: binding.paneId, source: "herdr:pi", seq: 13 }), []);
 });
 
+test("managed incarnation uses the supported source-qualified release and native resume fields", () => {
+  const source = "ppa:pi:11111111-1111-4111-8111-111111111111";
+  assert.deepEqual(violations(defs["PaneReleaseAgentParams"]!, { pane_id: binding.paneId, source, agent: "pi", seq: 8 }), []);
+  assert.deepEqual(violations(defs["PaneReportAgentParams"]!, { ...herdrStateParams(binding, "idle", 7), source, resume_argv: ["pi", "--session", "/tmp/session.jsonl"] }), []);
+});
+
 test("source-derived counterexamples reject treating shared-source sequences as retirement guards", () => {
   // Deliberately small model of public Herdr ee5bfb5 state.rs:1742-1808.
   // This characterizes the safety gap; it is NOT installed-server acceptance

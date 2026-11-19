@@ -15,7 +15,21 @@ export interface HerdrExitCleanupResult {
   readonly reason?: "not-reported" | "foreign-registration" | "report-uncertain" | "timeout" | "socket-error" | "invalid-response" | "rejected" | "still-listed" | "sequence-exhausted";
   readonly submitted: boolean;
   readonly requestId?: string;
+  /** Native launch incarnation, not a conversation ID or a permission token. */
+  readonly source: string;
+  readonly elapsedMs: number;
   readonly deathEvidence: HerdrChildDeathEvidence;
+}
+type CleanupObservation = Omit<HerdrExitCleanupResult, "elapsedMs">;
+
+/** Advisory activity text only; never formats raw replies or changes exit status. */
+export function herdrExitCleanupMessage(result: Pick<HerdrExitCleanupResult, "status">): string {
+  switch (result.status) {
+    case "verified-absent": return "Pi exited and its Herdr entry is absent. No action is required.";
+    case "acknowledged": return "Pi exited. Herdr handled the cleanup request, but entry removal is not verified. Inspect the existing session before requesting cleanup again.";
+    case "skipped": return "Pi exited without reported managed Herdr state, so no cleanup was submitted. If an entry remains, inspect that existing session before requesting cleanup.";
+    case "unconfirmed": return "Pi exited, but Herdr cleanup is unconfirmed. Preserve the original request and inspect its outcome before requesting another cleanup.";
+  }
 }
 export interface HerdrExitCleanup {
   readonly environment: NodeJS.ProcessEnv;
@@ -31,18 +45,20 @@ const sessionRef = (params: Json): Session | undefined => {
   const text = (value: unknown): value is string => typeof value === "string" && /^[^\u0000-\u001f\u007f]{1,1024}$/.test(value);
   return text(path) && isAbsolute(path) ? { kind: "path", value: path } : text(id) ? { kind: "id", value: id } : undefined;
 };
-const sameSession = (left: Session, right: unknown): boolean => {
-  const row = object(right); return row?.kind === left.kind && row.value === left.value;
-};
+const resumeArgv = (session: Session | undefined): string[] | undefined => session
+  && !session.value.includes("'") && !session.value.startsWith("-") ? ["pi", "--session", session.value] : undefined;
 
 /** Launch-owned in-process relay, not a second reporter or a model socket tool.
- * Capture the existing child's exact lifecycle sequence; serialize its reports
- * with supervisor teardown. Other existing Herdr API traffic passes unchanged
+ * Bind the child's reports to one managed source incarnation. Official Pi's
+ * source is process-detection gated and its release is ignored; custom sources
+ * support both PPA's hidden PTY and atomic source-qualified release. Capture
+ * exact lifecycle sequences and serialize reports with supervisor teardown.
+ * Other existing Herdr API traffic passes unchanged
  * to the ORIGINAL socket, preserving CLI/tools/subscriptions and their authority.
  * No payload/reply is logged or published. No retry is introduced here.
  *
  * Foreground ownership provides the normal same-shell ordering. A submitted
- * clear with no acknowledgement remains uncertain, never verified disappearance.
+ * release with no acknowledgement remains uncertain, never verified disappearance.
  */
 export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<HerdrExitCleanup | undefined> {
   if (env.PA_HERDR_LIFECYCLE === "0") return undefined;
@@ -59,12 +75,12 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       return current.isSocket() && current.dev === originalSocket.dev && current.ino === originalSocket.ino && current.ctimeMs === originalSocket.ctimeMs;
     } catch { return false; }
   };
-  const endpoint = join(root, "h.sock");
+  const endpoint = join(root, "h.sock"), managedSource = `ppa:pi:${randomUUID()}`;
   const clients = new Set<Socket>(), upstreams = new Set<Socket>();
   let closing = false, disposed = false, uncertainReport = false, maxSeq = -1;
-  let ownedSession: Session | undefined, active: Promise<void> | undefined;
+  let ownedSession: Session | undefined, stateReported = false, active: Promise<void> | undefined;
   let completion: Promise<HerdrExitCleanupResult> | undefined;
-  const queue: Array<{ client: Socket; frame: string; id: string; seq: number; session?: Session }> = [];
+  const queue: Array<{ client: Socket; body: Json; id: string; seq: number; session?: Session }> = [];
 
   const rpc = (frame: string, id: string, deadline: number, onSubmit?: () => void): Promise<Reply> => new Promise(resolve => {
     if (disposed || !sameSocket()) { resolve({ kind: "socket-error" }); return; }
@@ -105,14 +121,27 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
   const drain = (): void => {
     if (closing || active || !queue.length) return;
     const next = queue.shift()!;
-    // Preserve exact report bytes/server validation. Never reset the supervisor
-    // watermark if a discovered reporter or extension reload resets its counter.
-    // Mark before submission; a failed response never permits a later clear.
-    if (next.seq > maxSeq && next.session) ownedSession = next.session;
+    const newer = next.seq > maxSeq;
+    if (newer && next.session) ownedSession = next.session;
+    const params: Json = { ...object(next.body.params)!, source: managedSource };
+    // Herdr does not infer session metadata/resume for custom sources. Preserve
+    // its existing native Pi resume command through the supported state field.
+    // Never let a stale report overwrite the current reported resume command.
+    delete params.resume_argv;
+    const stateReport = next.body.method === "pane.report_agent";
+    const resume = newer && stateReport ? resumeArgv(ownedSession) : undefined;
+    if (resume) params.resume_argv = resume;
+    let frame = `${JSON.stringify({ ...next.body, params })}\n`;
+    if (Buffer.byteLength(frame) > HERDR_REQUEST_LIMIT_BYTES && resume) {
+      delete params.resume_argv; frame = `${JSON.stringify({ ...next.body, params })}\n`;
+    }
+    if (Buffer.byteLength(frame) > HERDR_REQUEST_LIMIT_BYTES) { respond(next.client, next.id, "invalid_lifecycle_report"); drain(); return; }
+    // Mark before submission; a failed response never permits a later release.
     maxSeq = Math.max(maxSeq, next.seq);
     active = (async () => {
-      const reply = await rpc(next.frame, next.id, performance.now() + 750);
+      const reply = await rpc(frame, next.id, performance.now() + 750);
       if (reply.kind !== "reply" || object(reply.body.error)) uncertainReport = true;
+      else if (stateReport) stateReported = true;
       if (!next.client.destroyed) {
         if (reply.kind === "reply") next.client.end(`${JSON.stringify(reply.body)}\n`);
         else respond(next.client, next.id, "delivery_unconfirmed");
@@ -138,11 +167,14 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       const owned = ["pane.report_agent", "pane.report_agent_session"].includes(String(body?.method))
         && params?.pane_id === binding.paneId && params.source === HERDR_SOURCE && params.agent === "pi";
       if (owned) {
-        if (typeof body?.id !== "string" || Buffer.byteLength(frame) > HERDR_REQUEST_LIMIT_BYTES
+        // Official/PA integrations emit canonical JSON. Reject noncanonical
+        // owned frames instead of turning duplicate-key/invalid JSON into a
+        // different valid request while rewriting its source.
+        if (typeof body?.id !== "string" || JSON.stringify(body) !== frame.trim() || Buffer.byteLength(frame) > HERDR_REQUEST_LIMIT_BYTES
           || !Number.isSafeInteger(params.seq) || (params.seq as number) < 0 || queue.length >= QUEUE_LIMIT) {
           respond(client, typeof body?.id === "string" ? body.id : "", "invalid_lifecycle_report"); return;
         }
-        queue.push({ client, frame, id: body.id, seq: params.seq as number, session: sessionRef(params) });
+        queue.push({ client, body, id: body.id, seq: params.seq as number, session: sessionRef(params) });
         drain(); return;
       }
       // Transparent existing API traffic: no rewriting, synthesized command,
@@ -180,11 +212,11 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
     server.on("error", () => dispose()); server.unref();
   } catch { dispose(); return undefined; }
 
-  const finish = async (deathEvidence: HerdrChildDeathEvidence): Promise<HerdrExitCleanupResult> => {
+  const finish = async (deathEvidence: HerdrChildDeathEvidence): Promise<CleanupObservation> => {
     const deadline = performance.now() + HERDR_EXIT_BUDGET_MS;
     let submitted = false, requestId: string | undefined;
-    const result = (status: HerdrExitCleanupResult["status"], reason?: HerdrExitCleanupResult["reason"]): HerdrExitCleanupResult =>
-      Object.freeze({ status, ...(reason ? { reason } : {}), submitted, ...(requestId ? { requestId } : {}), deathEvidence });
+    const result = (status: HerdrExitCleanupResult["status"], reason?: HerdrExitCleanupResult["reason"]): CleanupObservation =>
+      Object.freeze({ status, ...(reason ? { reason } : {}), submitted, ...(requestId ? { requestId } : {}), source: managedSource, deathEvidence });
     closing = true; server.close(); queue.length = 0;
     for (const client of clients) client.destroy();
     // The one budget also cuts short an already forwarded report's 750 ms wait.
@@ -194,18 +226,14 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
     try {
       await active;
       if (uncertainReport) return result("unconfirmed", "report-uncertain");
-      if (!ownedSession || maxSeq < 0) return result("skipped", "not-reported");
-      const before = await request("agent.get", { target: binding.paneId }, deadline);
-      if (before.kind !== "reply") return result("unconfirmed", classify(before));
-      if (object(before.body.error)?.code === "agent_not_found") return result("verified-absent");
-      if (object(before.body.error)) return result("unconfirmed", "rejected");
-      const agent = object(object(before.body.result)?.agent);
-      if (agent?.pane_id !== binding.paneId || agent.agent !== "pi" || !sameSession(ownedSession, agent.agent_session)) return result("skipped", "foreign-registration");
+      if (!stateReported || maxSeq < 0) return result("skipped", "not-reported");
       if (!Number.isSafeInteger(maxSeq + 1)) return result("unconfirmed", "sequence-exhausted");
       if (performance.now() >= deadline) return result("unconfirmed", "timeout");
       // Record the original request only at possible delivery, never on a
       // failed connect. At most one attempt; disconnect is not cancellation.
-      const cleared = await request("pane.clear_agent_authority", { pane_id: binding.paneId, source: HERDR_SOURCE, seq: maxSeq + 1 }, deadline,
+      // The server compares the current authority's source+agent atomically.
+      // A delayed A release cannot remove B, even with a larger A sequence.
+      const cleared = await request("pane.release_agent", { pane_id: binding.paneId, source: managedSource, agent: "pi", seq: maxSeq + 1 }, deadline,
         id => { submitted = true; requestId = id; });
       if (cleared.kind !== "reply") return result("unconfirmed", classify(cleared));
       if (object(cleared.body.error)) return result("unconfirmed", "rejected");
@@ -217,7 +245,13 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
   };
   return {
     environment: { ...env, HERDR_SOCKET_PATH: endpoint },
-    afterVerifiedExit(evidence) { return completion ??= finish(evidence); },
+    afterVerifiedExit(evidence) {
+      if (!completion) {
+        const started = performance.now();
+        completion = finish(evidence).then(result => Object.freeze({ ...result, elapsedMs: performance.now() - started }));
+      }
+      return completion;
+    },
     dispose,
   };
 }

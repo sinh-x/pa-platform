@@ -1,160 +1,153 @@
-# PAP-315: foreground cleanup before shell return
+# PAP-315: managed foreground lifecycle and closeout
 
-This is the current implementation contract. It supersedes the blanket
-unavailable conclusion in [the historical audit](PAP-315-herdr-exit-cleanup.md).
-Normal same-shell replacement cannot begin until foreground PPA returns; this
-ordering is used, not treated as an upstream blocker.
+This is the current contract after rebasing onto develop v0.1.175. Earlier
+shared-source clear implementations and controlled-frame observations remain
+historical evidence in the linked reports, not the current protocol choice.
 
-## Implemented ownership and ordering
+## Managed owner, not an official process-detected Pi
 
-`packages/pi-pa/src/herdr-exit-cleanup.ts` creates a private 0700 temporary Unix
-socket for one foreground child. The actual validated original Herdr socket,
-pane and socket-file incarnation are captured before spawn. The child receives
-the relay endpoint, not a newly discovered/current pane at exit. Existing native
-runtime PID admission and process-death evidence remain in `adapter.ts`.
+PPA runs Pi in a separate PTY behind its Node supervisor. Herdr's official
+`herdr:pi` full-lifecycle source expects detected Pi and can therefore ignore
+fresh PPA registrations. Its release operation also intentionally ignores
+official sources. Reusing that source was the remaining integration defect.
 
-The relay is part of the supervisor process, not a daemon, additional reporter,
-Pi extension or model-facing socket tool. It recognizes only its fixed pane's
-`herdr:pi` / `pi` session/state reports for cleanup ownership. It serializes
-these existing requests, preserves their bytes and IDs, tracks the maximum
-forwarded safe-integer sequence and its newest-sequence session reference, and awaits
-complete correlated replies. It does not infer a counter from wall time. Queued
-reports are bounded to 32, each at most 4096 bytes; no automatic retry is added.
-Existing independent reporter sequence rules remain server-owned. An observed
-counter reset cannot lower the supervisor's final watermark.
+`packages/pi-pa/src/herdr-exit-cleanup.ts` assigns a fresh native
+`ppa:pi:<UUID>` source to each foreground launch. The existing launch-scoped
+in-process relay translates only its fixed pane's official Pi lifecycle frames
+to that managed source. It does not add another reporter, extension, daemon,
+model-facing socket tool or permission. A new process resuming the same
+conversation still receives a different source incarnation.
 
-Other Herdr operations pass through unchanged to the originally selected socket
-using ordinary Node socket piping. This deliberately preserves existing Herdr
-CLI/tools and subscription streams; no new command, permission, target choice or
-peer-message interface is introduced. The original server's 1 MiB initial-frame
-bound is retained. Requests/replies are not logged or exposed through cleanup
-metadata. Fixed native cleanup replies are bounded to 64 KiB and interpreted
-only inside the supervisor.
+Custom-source state reports can establish Pi identity without process detection.
+At actual child death, supported `pane.release_agent` compares current source
+and agent **atomically**, before accepting its sequence. A delayed A release
+cannot remove B's current authority, including when B's counter is lower or B
+resumes the same conversation. This is the existing supported conditional
+contract, not a read-then-clear workaround or a new upstream API requirement.
+Standalone official reporting is unchanged; official-source release remains a
+no-op and is not used by managed cleanup.
 
-Only authoritative PTY exit or the adapter's existing confirmed-process-gone
-fallback starts cleanup. Input `/quit`, EOF, idle/working/blocked, agent-end and
-continuing-process new/resume/fork do not themselves prove death. The adapter
-stops input forwarding and restores the terminal while continuing to hold the
-foreground until cleanup finishes; its existing registry finalizer runs later.
-No added signal, pane close, daemon restart, Git operation or second terminal
-event is introduced.
+## Binding, serialization and resume compatibility
 
-At child death, the supervisor closes intake and drops unsent reports. It waits
-for an already forwarded owned report, then observes `agent.get` and checks that
-its pane, Pi agent and session reference match the launch-owned report. An
-unowned/foreign registration is preserved. Any uncertain report suppresses clear.
-It sends at most one `pane.clear_agent_authority` for the original pane,
-`source:herdr:pi`, and `seq:maxForwardedSeq+1`. Official-source `release_agent`
-is not used. After correlated clear acknowledgement it requests fresh agent
-state; only a fresh `agent_not_found` observation establishes verified absence.
+The original validated Herdr socket/pane and socket-file incarnation are captured
+before spawn. A private 0700 temporary Unix socket is passed to the actual child.
+Existing native runtime PID admission and verified process-death paths remain
+owned by `adapter.ts`; cleanup never chooses whichever pane is current at exit.
 
-The entire post-death stage has one monotonic **500 ms** budget, including report
-settlement, ownership observation, connect/write, acknowledgement, readback and
-resource disposal. Every socket/timer belongs to that stage or the live relay;
-all are disposed before foreground return. Herdr failures are advisory and do
-not rewrite the child's status, terminal streams or registry settlement.
+Matching session/state requests are serialized, bounded to 4096 encoded bytes,
+and queued at most 32 deep. The relay captures the maximum forwarded sequence
+without inventing a timestamp watermark. Stale/equal-sequence references cannot
+overwrite its current resume reference. Source rewriting accepts the canonical
+JSON emitted by the official/PA integrations; duplicate/noncanonical owned
+frames are rejected rather than converted into different valid requests.
+
+Herdr does not expose custom `agent_session` metadata or infer its resume plan.
+The relay preserves native Pi recovery using supported `resume_argv` on current
+state reports: `pi --session <validated path-or-id>`, preferring the absolute
+session path. Stale reports cannot overwrite that command. Invalid shell text
+or an encoded-size overflow omits this optional command rather than forwarding
+an invalid request or inventing another executable. This preserves supported
+normal paths, not exact official metadata/deduplication. It does not alter PPA's
+own resume admission or selected-host policy. Resume commands containing
+apostrophes remain unsupported by Herdr's reported-command contract.
+
+Other Herdr operations pass through unchanged to the captured original socket
+using socket piping, retaining the original 1 MiB initial-frame bound. Normal EOF
+is graceful, including slow consumers and request write-half-close. No opaque
+request/reply body is logged or published. This preserves existing transport;
+it does not claim that Herdr's process-detection-based interactive agent controls
+are available for every self-reported PPA entry.
+
+## Actual exit and one bounded retirement
+
+Only PTY exit or the existing positively confirmed-process-gone fallback starts
+closeout. `/quit` input, EOF, idle/working/blocked, agent-end and continuing-process
+new/resume/fork are not themselves death evidence. Input forwarding stops and
+terminal state is restored, but PPA holds the foreground until the Herdr stage
+finishes, before existing registry settlement and shell return.
+
+At death, intake closes and unsent reports are discarded. The supervisor waits
+for any already submitted owned report. If that delivery is uncertain, it
+submits no destructive release. Otherwise, after an owned state report, it sends
+at most one release for the captured pane, unique managed source, `agent:pi`,
+and `seq:maxForwardedSeq+1`. The source guard—not session metadata or a preflight
+read—protects foreign/replacement registrations. A fresh `agent.get` follows a
+correlated acknowledgement to distinguish OK from actual absence.
+
+One monotonic **500 ms total budget** covers pending-report settlement, connect,
+write, response, readback and disposal. No retry, added signal, pane closure,
+daemon restart, Git action or second registry terminal event is introduced.
+Herdr outcomes are advisory and cannot rewrite Pi's result or terminal streams.
+All owned sockets/timers are disposed before normal foreground return.
 
 ## Selection and inert paths
 
-A complete `HERDR_ENV=1`, valid pane and exact same-user/root Unix socket select
-managed cleanup for ordinary foreground Pi, including the official integration
-without PA's optional lifecycle bridge. Explicit `PA_HERDR_LIFECYCLE=0` disables
-it. The PA lifecycle bridge itself remains separately opt-in; no extra writer is
-loaded. Protected extension policy is unchanged. Headless/background launches
-have no relay. Selected-host environment filtering remains unchanged and drops
-Herdr bindings, so that path is inert rather than silently broadening admission.
-Missing, aliased, partial or foreign bindings are inert. If no owned report was
-seen, cleanup is skipped and no destructive request is synthesized.
+Complete `HERDR_ENV=1`, valid pane and exact same-user/root Unix socket select
+managed foreground lifecycle. Explicit `PA_HERDR_LIFECYCLE=0` disables it. The
+PA bridge remains separately opt-in; the relay also accepts the discovered
+official integration, so it loads no competing reporter. Protected extension
+policy is unchanged. Headless/background paths have no relay. Selected-host
+filtering remains unchanged and drops Herdr bindings, keeping that path inert
+rather than silently broadening its allowlist. Partial, aliased, missing or
+foreign bindings are inert. Session-only/no-state paths submit no retirement.
 
-## Outcomes and exceptional uncertainty
+## Native observations and honest uncertainty
 
-Optional `metadata.herdrCleanup` distinguishes:
+`metadata.herdrCleanup` and one advisory `herdr_cleanup` activity observation
+retain native `source`, `requestId` when submitted, actual death evidence and
+`elapsedMs` including local disposal. The activity uses the existing deployment
+log, not stdout/stderr or another terminal finalizer. Its static text distinguishes:
 
-- `verified-absent`: a fresh server observation found no agent, not merely OK.
-- `acknowledged`: the clear handler replied, but disappearance is not verified
-  (for example, process fallback still appears or readback exceeded the budget).
-- `skipped`: no owned report or a different registration was observed.
-- `unconfirmed`: timeout, report uncertainty, socket/protocol/rejection failure or
-  sequence exhaustion. `submitted` indicates possible destructive delivery.
+- `verified-absent`: a fresh server observation found no agent; no action needed.
+- `acknowledged`: the handler replied, but entry removal is not verified; inspect
+  the existing session before another cleanup request.
+- `skipped`: no managed state was reported; no destructive request was submitted.
+- `unconfirmed`: delivery/response/sequence/socket outcome is uncertain; preserve
+  the original request and inspect before requesting another cleanup.
 
-A submitted clear also retains its bounded native `requestId` for reconciliation.
-No raw reply, exception, transcript, environment, socket path or session text is
-published. No human-facing CLI message or CLI grammar is added.
+No raw exception/reply, transcript, credentials, socket path or session text is
+copied into that guidance. The random source is an incarnation identifier, not a
+permission token. Formatting is side-effect-free; audit persistence failure
+cannot prevent Pi settlement. No CLI grammar or machine stream is changed.
 
-A correlated response is a handler-completion barrier in the audited server, so
-normal same-shell B begins only after A's acknowledged operation has completed.
-A clear submitted before a timeout can still apply later: disconnect is not
-cancellation. It is never retried or reported as successful removal without
-observation. Normal later-launch increasing-sequence behavior is regression
-covered; arbitrary independent launch, wall-clock rollback/server reanchor and
-server-restart races are **not** promoted to an atomic incarnation guard by this
-implementation. The public schema has no such guard. These exceptional cases
-remain a qualification/recovery limitation, not a blanket prohibition on the
-supported normal path. The socket-file check rejects observed server replacement.
+A missing reply is never cancellation. A submitted release can still execute
+after timeout, but its source/agent guard preserves a different current managed
+registration. An uncertain already-submitted **state report** is a distinct
+remaining delivery limitation: local disconnect cannot retract server work, and
+no successful cleanup/fence is claimed for that path. Closeout suppresses
+retirement when report delivery is uncertain and never blindly retries effects.
 
 ## Standalone, supervisor death and recovery
 
-This fix is owned by PPA after actual child death. It does not edit the managed
-standalone Pi integration or add shutdown hooks that could unregister continuing
-processes. NX-069/Herdr/Pi still owns standalone actual-quit integration and any
-server-side liveness recovery. Supervisor SIGKILL cannot run JavaScript cleanup;
-no automatic recovery is promised. A private temporary relay endpoint can remain
-on disk after abrupt supervisor death, but is not a daemon or a recovery owner.
+No managed Home Manager extension is edited. Standalone actual-quit integration
+and server-side liveness recovery remain with NX-069/Herdr/Pi. Supervisor SIGKILL
+cannot execute JavaScript cleanup and can leave its relay endpoint on disk or a
+stale registration; that behavior must be observed, not called automatic success.
 
-For an uncertain outcome, preserve the original deployment, target and request
-ID. Inspect that same operation and fresh Herdr/process state before considering
-another effect. Never blindly resend, issue a guessed release, close the pane or
-restart the daemon. Exclude live/replacement sessions and use a separately
-authorized maintenance window or a server-supported guarded operation for manual
-recovery. There is no generic safe concurrent read-then-clear recovery claim.
+For an uncertain operation, retain the exact deployment, managed source and
+request ID. Inspect that same request and fresh process/Herdr state before any
+separately authorized repair. Do not blindly resend, use shared-source clear,
+restart the daemon, close the pane or delete evidence. A separately authorized
+source-qualified release is conditional on the captured managed incarnation;
+normal same-shell B is not permitted to overlap A's foreground closeout.
 
-Installed validation must separately show absence in a fresh list/snapshot and
-actual sidebar, an open functioning shell, and preservation of unrelated/new
-sessions. A generic OK, source test, generated report or version label does not
-substitute. Full installed-PPA adoption and genuine human UAT remain distinct
-from source-candidate tests against installed Pi/Herdr.
+## Evidence by candidate
 
-## P2 source checks
-
-- Checkpoint/relay suite: 32 passed. Combined relay/lifecycle/protocol/adapter/
-  composition/catalogue lane: **127 passed, 0 failed**, 146.67 s.
-- pi-pa typecheck, secrets scan and `git diff --check`: passed.
-- Responsive natural open-stdin exit: 27.9–41.2 ms; dead connection: 26.1–39.9 ms;
-  unresponsive cleanup: 524.5–529.1 ms after child-exit evidence. All remain below
-  the unchanged 1000 ms bound, with writer open and input listeners restored.
-- Pending-report and shared-deadline tests measure scheduling tolerance around
-  the 500 ms stage. At-most-once, duplicate callbacks, partial/malformed/wrong-ID/
-  oversized/rejected/no-op replies, missing socket, counter reset, and delayed
-  old-clear/later-sequence cases are source fixtures, not installed acceptance.
-
-## P3 review and validation
-
-Independent review found and corrected stale-session watermark alignment,
-response-buffer truncation at upstream EOF, and request write-half-close handling.
-New real local fixtures exercise stale/equal report sequences and delayed 4 MiB
-responses to slow consumers. A separate follow-up review found no additional
-actionable defect. Final focused lane: **262 passed, 0 failed**, with workspace
-typecheck/build and secrets scan passing. The earlier full workspace test attempt
-remains incomplete after a 600 s timeout; no full-suite/hosted-CI success is
-claimed. See the [validation report](../plans/reports/validation-261118-2305-pap315-foreground-closeout.md).
-
-## P4 scoped live observations
-
-The actual cleanup module, driven by controlled lifecycle frames for a real Pi
-process, received clear acknowledgement in **313.39 ms** against installed Herdr
-0.9.5/protocol 22. Its immediate outcome was honestly `acknowledged/still-listed`;
-separate fresh read-only observation established absence at **541.17 ms**. The
-shell/pane and unrelated agents remained, and Sinh explicitly confirmed those
-sidebar postconditions. No clear retry, installation or pane closure occurred.
-
-This is not full installed-PPA end-to-end acceptance: two real source-PPA
-sessions quit normally but never appeared in Herdr while alive, so they cannot
-prove removal. Their registration/composition lane and remaining live abnormal/
-replacement/supervisor-death matrix remain unqualified. See the
-[qualification report](../plans/reports/qualification-261118-2305-pap315-foreground-closeout.md)
-for exact candidates, original failures, test-fixture boundaries and remaining
-acceptance lanes. Neither source tests nor scoped visual confirmation completes
-all original acceptance criteria.
-
-The earlier advisory helper failed because its required skill was missing; no
-skill code was repaired. Live observations remain separate from source evidence.
+- Historical v0.1.174 candidate: 262 focused checks and controlled live frames,
+  with acknowledgement at 313.39 ms and separate absence at 541.17 ms. Sinh's
+  sidebar confirmation applies to that scoped case, not full product acceptance.
+  See [historical qualification](../plans/reports/qualification-261118-2305-pap315-foreground-closeout.md).
+- Rebase and completion plan:
+  [2026-11-19 record](../plans/261119-0800-pap315-finish/plan.md). Original branch
+  history is retained in `refs/backup/PAP-315/20261119-0800`.
+- Current managed-source work: 42 relay tests passed, including hidden-Pi state,
+  native resume, lower/equal/higher-counter delayed release, duplicate callbacks,
+  reply failures, half-close/4 MiB buffering and open-stdin natural exit. The
+  first pre-build run timed out because PAP-318's compiled preload was absent;
+  after workspace build the rerun passed. Initial TypeScript index typing was
+  corrected; neither initial failure is re-labelled a pass.
+- A real source-PPA launch `d-82653f` on the managed-source build appeared in
+  Herdr while live and disappeared after `/quit`, leaving its shell open. This
+  is the first production-wired observation without synthetic lifecycle frames.
+  Final exact-candidate checks and the remaining live matrix are recorded
+  separately; no global install, hosted CI or full-suite success is inferred.

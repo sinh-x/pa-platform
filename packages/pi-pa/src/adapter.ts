@@ -16,7 +16,7 @@ import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
 import { createRuntimeStartGate } from "./runtime-start-gate.js";
 import { cleanupPiPromptArgs, PiPromptCleanupError, piPromptCleanupDiagnostic, piPromptDiagnostic, preparePiPrompt, readPiPrimer } from "./prompt-transport.js";
-import { createHerdrExitCleanup, type HerdrChildDeathEvidence, type HerdrExitCleanupResult } from "./herdr-exit-cleanup.js";
+import { createHerdrExitCleanup, herdrExitCleanupMessage, type HerdrChildDeathEvidence, type HerdrExitCleanupResult } from "./herdr-exit-cleanup.js";
 import { awaitSelectedPiChild, resolveSelectedPiLaunch, selectedPiEnvironment } from "./selected-pi-launch.js";
 import { assertSelectedPiResumeHost, recordSelectedPiLaunch, selectedPiResumeDiagnostic } from "./selected-pi-resume.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
@@ -1280,6 +1280,14 @@ async function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessE
       void (async () => {
         try {
           if (herdrDeathEvidence) herdrCleanup = await herdrExitCleanup?.afterVerifiedExit(herdrDeathEvidence);
+          if (herdrCleanup) {
+            // Preserve native uncertainty/request coordinates for reconciliation
+            // without adding stdout/stderr or another registry terminal event.
+            try {
+              appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "text", source: "pi", partType: "herdr_cleanup",
+                body: herdrExitCleanupMessage(herdrCleanup), metadata: { ...herdrCleanup } }), resolve(deployDir, "activity.jsonl"));
+            } catch { /* Advisory audit persistence cannot prevent settlement. */ }
+          }
         } catch { /* Herdr is advisory and cannot rewrite or prevent Pi settlement. */ }
         finally { herdrExitCleanup?.dispose(); }
         resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: runtimePid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}), ...(herdrCleanup ? { herdrCleanup } : {}) } });
