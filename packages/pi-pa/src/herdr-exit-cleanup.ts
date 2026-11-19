@@ -42,8 +42,9 @@ type Reply = { kind: "reply"; body: Json } | { kind: "timeout" | "socket-error" 
 const object = (value: unknown): Json | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : undefined;
 const sessionRef = (params: Json): Session | undefined => {
   const path = params.agent_session_path, id = params.agent_session_id;
-  const text = (value: unknown): value is string => typeof value === "string" && /^[^\u0000-\u001f\u007f]{1,1024}$/.test(value);
-  return text(path) && isAbsolute(path) ? { kind: "path", value: path } : text(id) ? { kind: "id", value: id } : undefined;
+  const text = (value: unknown, bytes: number): value is string => typeof value === "string" && value.length > 0
+    && !/[\u0000-\u001f\u007f-\u009f]/u.test(value) && Buffer.byteLength(value) <= bytes;
+  return text(path, 4096) && isAbsolute(path) ? { kind: "path", value: path } : text(id, 512) ? { kind: "id", value: id } : undefined;
 };
 const resumeArgv = (session: Session | undefined): string[] | undefined => session
   && !session.value.includes("'") && !session.value.startsWith("-") ? ["pi", "--session", session.value] : undefined;
@@ -75,12 +76,13 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       return current.isSocket() && current.dev === originalSocket.dev && current.ino === originalSocket.ino && current.ctimeMs === originalSocket.ctimeMs;
     } catch { return false; }
   };
-  const endpoint = join(root, "h.sock"), managedSource = `ppa:pi:${randomUUID()}`;
+  const endpoint = join(root, "h.sock");
+  let managedSource = `ppa:pi:${randomUUID()}`;
   const clients = new Set<Socket>(), upstreams = new Set<Socket>();
   let closing = false, disposed = false, uncertainReport = false, maxSeq = -1;
-  let ownedSession: Session | undefined, stateReported = false, active: Promise<void> | undefined;
+  let ownedSession: Session | undefined, stateReference: string | undefined, stateReported = false, active: Promise<void> | undefined;
   let completion: Promise<HerdrExitCleanupResult> | undefined;
-  const queue: Array<{ client: Socket; body: Json; id: string; seq: number; session?: Session }> = [];
+  const queue: Array<{ client: Socket; body: Json; id: string; seq: number; session?: Session; referencePresent: boolean }> = [];
 
   const rpc = (frame: string, id: string, deadline: number, onSubmit?: () => void): Promise<Reply> => new Promise(resolve => {
     if (disposed || !sameSocket()) { resolve({ kind: "socket-error" }); return; }
@@ -121,14 +123,19 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
   const drain = (): void => {
     if (closing || active || !queue.length) return;
     const next = queue.shift()!;
-    const newer = next.seq > maxSeq;
-    if (newer && next.session) ownedSession = next.session;
-    const params: Json = { ...object(next.body.params)!, source: managedSource };
-    // Herdr does not infer session metadata/resume for custom sources. Preserve
-    // its existing native Pi resume command through the supported state field.
-    // Never let a stale report overwrite the current reported resume command.
+    const newer = next.seq > maxSeq, stateReport = next.body.method === "pane.report_agent";
+    // Absent/rejected reference on a NEW session must not reuse the previous
+    // conversation. A state without a new reference can use its session report.
+    if (newer && (next.referencePresent || !stateReport)) ownedSession = next.session;
+    const reference = ownedSession ? `${ownedSession.kind}\u0000${ownedSession.value}` : "";
+    // Native Herdr retains an omitted resume command for the same source.
+    // Rebind on a conversation change atomically through the new state report;
+    // the old source's recovery is then reconciled away without unregistering
+    // the continuing process or inventing a fallback executable.
+    const source = newer && stateReport && stateReported && reference !== stateReference ? `ppa:pi:${randomUUID()}` : managedSource;
+    const params: Json = { ...object(next.body.params)!, source };
     delete params.resume_argv;
-    const stateReport = next.body.method === "pane.report_agent";
+    delete params.agent_session_id; delete params.agent_session_path; // native custom sources ignore these
     const resume = newer && stateReport ? resumeArgv(ownedSession) : undefined;
     if (resume) params.resume_argv = resume;
     let frame = `${JSON.stringify({ ...next.body, params })}\n`;
@@ -137,6 +144,7 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
     }
     if (Buffer.byteLength(frame) > HERDR_REQUEST_LIMIT_BYTES) { respond(next.client, next.id, "invalid_lifecycle_report"); drain(); return; }
     // Mark before submission; a failed response never permits a later release.
+    if (newer && stateReport) { managedSource = source; stateReference = reference; }
     maxSeq = Math.max(maxSeq, next.seq);
     active = (async () => {
       const reply = await rpc(frame, next.id, performance.now() + 750);
@@ -164,17 +172,18 @@ export async function createHerdrExitCleanup(env: NodeJS.ProcessEnv): Promise<He
       let body: Json | undefined;
       try { body = object(JSON.parse(frame)); } catch { /* original server owns malformed requests */ }
       const params = object(body?.params);
-      const owned = ["pane.report_agent", "pane.report_agent_session"].includes(String(body?.method))
+      const owned = (body?.method === "pane.report_agent" || body?.method === "pane.report_agent_session")
         && params?.pane_id === binding.paneId && params.source === HERDR_SOURCE && params.agent === "pi";
       if (owned) {
-        // Official/PA integrations emit canonical JSON. Reject noncanonical
-        // owned frames instead of turning duplicate-key/invalid JSON into a
-        // different valid request while rewriting its source.
-        if (typeof body?.id !== "string" || JSON.stringify(body) !== frame.trim() || Buffer.byteLength(frame) > HERDR_REQUEST_LIMIT_BYTES
-          || !Number.isSafeInteger(params.seq) || (params.seq as number) < 0 || queue.length >= QUEUE_LIMIT) {
-          respond(client, typeof body?.id === "string" ? body.id : "", "invalid_lifecycle_report"); return;
+        // Bound BEFORE stringify, never coerce a method object, and compare
+        // canonical UTF-8 BYTES. Lossy decoding must not admit invalid input.
+        let canonical = false;
+        try { canonical = newline + 1 <= HERDR_REQUEST_LIMIT_BYTES && Buffer.from(`${JSON.stringify(body)}\n`).equals(prefix.subarray(0, newline + 1)); }
+        catch { /* malformed/deep input is advisory rejection, not supervisor death */ }
+        if (typeof body?.id !== "string" || !canonical || !Number.isSafeInteger(params.seq) || (params.seq as number) < 0 || queue.length >= QUEUE_LIMIT) {
+          respond(client, typeof body?.id === "string" && Buffer.byteLength(body.id) <= 256 ? body.id : "", "invalid_lifecycle_report"); return;
         }
-        queue.push({ client, body, id: body.id, seq: params.seq as number, session: sessionRef(params) });
+        queue.push({ client, body, id: body.id, seq: params.seq as number, session: sessionRef(params), referencePresent: Object.hasOwn(params, "agent_session_path") || Object.hasOwn(params, "agent_session_id") });
         drain(); return;
       }
       // Transparent existing API traffic: no rewriting, synthesized command,

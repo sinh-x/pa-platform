@@ -25,7 +25,7 @@ function assertOutcome(actual: unknown, expected: Json): void {
   if (expected.submitted) assert.match(requestId, /^ppa-herdr:[0-9a-f-]{36}$/);
   else assert.equal(requestId, undefined);
 }
-function rawCall(path: string, frame: string): Promise<Json> {
+function rawCall(path: string, frame: string | Buffer): Promise<Json> {
   return new Promise((resolve, reject) => {
     const socket = connect(path); let carry = "";
     const timer = setTimeout(() => { socket.destroy(); reject(new Error("fixture request timed out")); }, 2_000);
@@ -57,7 +57,10 @@ class Backend {
     if (method === STATE) {
       if (params.source !== "herdr:pi" && params.seq > (this.watermarks.get(params.source) ?? -1)) {
         this.watermarks.set(params.source, params.seq);
-        this.registration = { pane_id: params.pane_id, agent: params.agent, source: params.source, state: params.state, resume_argv: params.resume_argv };
+        // Native Herdr retains an omitted command for the SAME source, and
+        // reconciles it away when a different source owns the pane.
+        const resume = params.resume_argv ?? (this.registration?.source === params.source ? this.registration.resume_argv : undefined);
+        this.registration = { pane_id: params.pane_id, agent: params.agent, source: params.source, state: params.state, resume_argv: resume };
       }
     } else if (method === SESSION) {
       // Custom session reports carry local relay facts, but create no authority.
@@ -179,6 +182,49 @@ test("unsupported resume text is omitted rather than rejected or executed", asyn
   await call(stage.environment.HERDR_SOCKET_PATH!, STATE, { ...report(1), agent_session_path: "/tmp/quote's-session.jsonl" });
   assert.equal(backend.registration!.resume_argv, undefined);
   assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
+}));
+
+test("new references cannot retain the previous conversation's native recovery command", async context => {
+  for (const replacement of [
+    { agent_session_path: `/${"x".repeat(1100)}`, valid: true },
+    { agent_session_path: "/tmp/quote's-session.jsonl", valid: false },
+    { agent_session_path: "", valid: false },
+    { agent_session_path: "/tmp/control\u0080.jsonl", valid: false },
+    { agent_session_id: "x".repeat(513), valid: false },
+  ]) await context.test(JSON.stringify(replacement), () => fixture(async (_root, env, backend) => {
+    const stage = await registered(env), sourceA = backend.registration!.source;
+    const { valid, ...reference } = replacement;
+    await call(stage.environment.HERDR_SOCKET_PATH!, STATE, { pane_id: "w1:p315", source: "herdr:pi", agent: "pi", state: "idle", seq: 9, ...reference });
+    assert.notEqual(backend.registration!.source, sourceA, "new state rebinds without an unregister operation");
+    assert.deepEqual(backend.registration!.resume_argv, valid ? ["pi", "--session", reference.agent_session_path] : undefined);
+    assert.equal(backend.requests.some(request => request.method === RELEASE), false);
+    assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
+  }));
+});
+
+test("an absent reference in a new session clears recovery, while state-only absence retains its session", async () => fixture(async (_root, env, backend) => {
+  const stage = await registered(env), endpoint = stage.environment.HERDR_SOCKET_PATH!, initialSource = backend.registration!.source;
+  const noRef = { pane_id: "w1:p315", source: "herdr:pi", agent: "pi", state: "idle" };
+  await call(endpoint, STATE, { ...noRef, seq: 9 });
+  assert.equal(backend.registration!.source, initialSource);
+  assert.deepEqual(backend.registration!.resume_argv, ["pi", "--session", "A"]);
+  await call(endpoint, SESSION, { ...noRef, seq: 10, session_start_source: "new" });
+  await call(endpoint, STATE, { ...noRef, seq: 11 });
+  assert.notEqual(backend.registration!.source, initialSource); assert.equal(backend.registration!.resume_argv, undefined);
+  assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
+}));
+
+test("malformed method, deeply nested owned input and invalid UTF-8 cannot kill or rewrite the supervisor", async () => fixture(async (_root, env, backend) => {
+  const stage = (await createHerdrExitCleanup(env))!, endpoint = stage.environment.HERDR_SOCKET_PATH!;
+  await rawCall(endpoint, '{"id":"object-method","method":{"toString":null},"params":{}}\n');
+  assert.deepEqual(backend.requests[0]!.method, { toString: null }, "opaque malformed request remains server-owned");
+  const deep = `{"id":"deep","method":"${STATE}","params":${JSON.stringify(report(1)).slice(0, -1)},"nested":${"[".repeat(8000)}0${"]".repeat(8000)}}}\n`;
+  assert.equal((await rawCall(endpoint, deep)).error.code, "invalid_lifecycle_report");
+  const valid = Buffer.from(`${JSON.stringify({ id: "bad-utf8", method: STATE, params: { ...report(2), message: "MARKER" } })}\n`), offset = valid.indexOf("MARKER");
+  const invalid = Buffer.concat([valid.subarray(0, offset), Buffer.from([0xff]), valid.subarray(offset + 6)]);
+  assert.equal((await rawCall(endpoint, invalid)).error.code, "invalid_lifecycle_report");
+  assert.equal(backend.requests.length, 1, "invalid frames are never normalized into accepted managed reports");
+  await call(endpoint, STATE, report(3)); assertOutcome(await stage.afterVerifiedExit("pty-exit"), metadata("verified-absent", true));
 }));
 
 test("session-only and noncanonical/duplicate-key frames cannot manufacture managed state ownership", async () => fixture(async (_root, env, backend) => {

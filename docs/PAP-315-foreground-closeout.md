@@ -12,8 +12,11 @@ fresh PPA registrations. Its release operation also intentionally ignores
 official sources. Reusing that source was the remaining integration defect.
 
 `packages/pi-pa/src/herdr-exit-cleanup.ts` assigns a fresh native
-`ppa:pi:<UUID>` source to each foreground launch. The existing launch-scoped
-in-process relay translates only its fixed pane's official Pi lifecycle frames
+`ppa:pi:<UUID>` source to each foreground launch. A conversation/reference change
+rebinds that authority atomically through the next state report, without an
+unregister operation, so a previous conversation's resume command cannot survive
+a new unrepresentable reference. The existing launch-scoped in-process relay
+translates only its fixed pane's official Pi lifecycle frames
 to that managed source. It does not add another reporter, extension, daemon,
 model-facing socket tool or permission. A new process resuming the same
 conversation still receives a different source incarnation.
@@ -39,14 +42,20 @@ and queued at most 32 deep. The relay captures the maximum forwarded sequence
 without inventing a timestamp watermark. Stale/equal-sequence references cannot
 overwrite its current resume reference. Source rewriting accepts the canonical
 JSON emitted by the official/PA integrations; duplicate/noncanonical owned
-frames are rejected rather than converted into different valid requests.
+frames are rejected rather than converted into different valid requests. Byte
+comparison rejects invalid UTF-8, frame size is checked before serialization,
+and method objects are never coerced. Malformed input cannot escape a socket
+callback and terminate the supervisor.
 
 Herdr does not expose custom `agent_session` metadata or infer its resume plan.
 The relay preserves native Pi recovery using supported `resume_argv` on current
 state reports: `pi --session <validated path-or-id>`, preferring the absolute
-session path. Stale reports cannot overwrite that command. Invalid shell text
-or an encoded-size overflow omits this optional command rather than forwarding
-an invalid request or inventing another executable. This preserves supported
+session path. Native 4096-byte path and 512-byte ID bounds are used. Stale reports
+cannot overwrite that command. An explicitly absent/rejected new reference
+clears the cached conversation; a fresh state authority reconciles away native
+Herdr's retained old command. Invalid shell text or an encoded-size overflow
+omits this optional command rather than forwarding an invalid request or
+inventing another executable. This preserves supported
 normal paths, not exact official metadata/deduplication. It does not alter PPA's
 own resume admission or selected-host policy. Resume commands containing
 apostrophes remain unsupported by Herdr's reported-command contract.
