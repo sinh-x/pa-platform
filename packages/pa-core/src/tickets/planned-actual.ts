@@ -74,6 +74,7 @@ export interface ComparisonEvidence {
   class: "source" | "installed" | "independent" | "browser" | "human-uat";
   state: "passed" | "failed" | "not-run" | "pending" | "unknown";
   locator: string | null; observedAt: string | null; coverage: readonly string[]; trust: "native" | "local-unverified" | "not-observed";
+  applicability?: "current" | "historical" | "unverified"; candidateSha?: string;
 }
 /** Owner-authenticated metadata for the existing immutable report, NOT another report. */
 export interface ActualRecord {
@@ -119,10 +120,12 @@ export function parseActualRecord(value: unknown): ActualRecord {
   const outcome = (["success", "partial", "failed", "interrupted"] as const).find(s => s === r.outcome); if (!outcome) throw new Error("Invalid report outcome");
   const locator = text(r.locator); parseComparisonLocator(locator);
   return { locator, binding: parseComparisonBinding(r.binding), plannedReference: text(r.plannedReference), reportId: workflowSha(r.reportId), reportSourceSha256: workflowSha(r.reportSourceSha256), reportPath: text(r.reportPath), ownerPath: text(r.ownerPath), outcome, scope: text(r.scope), observations: parseActualObservations(r.observations), actualOnly: parseActualOnly(r.actualOnly), evidence: list(r.evidence, item => {
-    const e = workflowObject(item, ["class", "state", "locator", "observedAt", "coverage", "trust"]);
+    const e = workflowObject(item, ["class", "state", "locator", "observedAt", "coverage", "trust", ...["applicability", "candidateSha"].filter(key => item !== null && typeof item === "object" && Object.hasOwn(item, key))]);
     const kind = classes.find(c => c === e.class), state = (["passed", "failed", "not-run", "pending", "unknown"] as const).find(s => s === e.state), trust = (["native", "local-unverified", "not-observed"] as const).find(t => t === e.trust);
     if (!kind || !state || !trust || (state === "passed" || state === "failed") && (!e.locator || !e.observedAt || trust === "not-observed")) throw new Error("Invalid comparison evidence");
-    return { class: kind, state, trust, locator: e.locator === null ? null : text(e.locator), observedAt: e.observedAt === null ? null : workflowTimestamp(e.observedAt), coverage: list(e.coverage, ac) };
+    const applicability = e.applicability === undefined ? kind === "source" ? "unverified" : "current" : (["current", "historical", "unverified"] as const).find(a => a === e.applicability);
+    if (!applicability) throw new Error("Invalid evidence applicability");
+    return { class: kind, state, trust, applicability, ...(e.candidateSha === undefined ? {} : { candidateSha: workflowSha(e.candidateSha, 40) }), locator: e.locator === null ? null : text(e.locator), observedAt: e.observedAt === null ? null : workflowTimestamp(e.observedAt), coverage: list(e.coverage, ac) };
   }) };
 }
 /** Exact retained phase-report reading recipe; no rendering or file publication authority. */
@@ -206,7 +209,7 @@ export async function projectPlannedActual(ticket: Ticket, reference: string | u
       if (actual.locator !== ref.path || actual.plannedReference !== reference || !same(actual.binding, binding)) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
       if (actual.observations.some(o => !plan.rows.some(r => r.id === o.ac))) { result.issues.push({ state: "conflict" }); continue; }
       const previous = result.actuals.find(r => r.reportId === actual.reportId);
-      const baseline: ComparisonEvidence[] = classes.filter(kind => kind === "human-uat" || !actual.evidence.some(e => e.class === kind)).map(kind => ({ class: kind, state: "not-run", locator: null, observedAt: null, coverage: [], trust: "not-observed" }));
+      const baseline: ComparisonEvidence[] = classes.filter(kind => kind === "human-uat" || !actual.evidence.some(e => e.class === kind && e.applicability === "current")).map(kind => ({ class: kind, state: "not-run", locator: null, observedAt: null, coverage: [], trust: "not-observed" }));
       const evidence = previous?.evidence ?? baseline;
       const appended = [...evidence, ...actual.evidence.filter(e => !evidence.some(p => same(e, p)))];
       if (previous) {
@@ -215,7 +218,7 @@ export async function projectPlannedActual(ticket: Ticket, reference: string | u
       } else result.actuals.push({ locator: actual.locator, binding: actual.binding, reportId: actual.reportId, reportSourceSha256: actual.reportSourceSha256, reportPath: actual.reportPath, ownerPath: actual.ownerPath, scope: actual.scope, outcome: actual.outcome, narrativeTrust: "agent-labelled-not-acceptance", rows: rows(plan, actual), actualOnly: actual.actualOnly, evidence: appended });
     }
     for (const a of result.actuals) for (const kind of classes) {
-      const observations = a.evidence.filter(e => e.class === kind);
+      const observations = a.evidence.filter(e => e.class === kind && e.applicability === "current");
       if (observations.some(e => e.state === "passed" && observations.some(o => o.state === "failed" && (kind !== "source" || e.locator === o.locator) && (e.coverage.length === 0 || o.coverage.length === 0 || e.coverage.some(id => o.coverage.includes(id)))))) result.issues.push({ state: "conflict" });
     }
     for (const a of result.actuals) for (const b of result.actuals) {

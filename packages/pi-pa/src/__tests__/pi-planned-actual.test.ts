@@ -25,7 +25,7 @@ import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 const sha = "a".repeat(40), time = "2026-11-21T00:00:00.000Z";
 const source = (ref: string): SourceVersion => ({ ref, version: "v1", sha256: workflowDigest(ref) });
 const plan: PlannedRecord = { reference: `review:${"b".repeat(64)}`, repository: { key: "test", root: "/test" }, ticket: "TEST-1", subjectSha256: "c".repeat(64), revision: 3, manifestSha256: "d".repeat(64), deliverySha256: "e".repeat(64), state: "approved", entry: "file:///planned/index.html", rows: [{ id: "AC-01", expectation: "Print every member." }] };
-function fixture() {
+function fixture(options: { dirty?: boolean; current?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "pap327-native-actual-"));
   const authority = new PiPreparedNativeAuthority({ root: join(root, "protected"), aiUsageRoot: join(root, "artifacts") });
   const store = authority.reports(true, "d-aaaaaa")!;
@@ -35,7 +35,8 @@ function fixture() {
   const actorId = workflowDigest(JSON.stringify(actor));
   const diff = blob(Buffer.from("Native fixture diff.\n"));
   const checks = [{ command: "fixture-source-check", candidateSha: sha, state: "passed", exitCode: 0, output: evidence.publish("fixture-check", { exitCode: 0, candidateSha: sha }) }];
-  const facts = evidence.publish("report-facts", { actor: actorId, blob: blob(Buffer.from(JSON.stringify({ actor, snapshot: { head: sha }, checks, execution: null, scopeProven: false, operations: [], omissions: [], sourceFailure: false, privateDiff: diff }))) });
+  const execution = { candidateSha: sha, operation: null, plan: { scope: "Ticket export behavior", paths: ["src/export.ts"] }, custody: { state: "orchestrator-direct" }, passedChecks: options.current === false ? {} : { source: checks[0]!.output } };
+  const facts = evidence.publish("report-facts", { actor: actorId, blob: blob(Buffer.from(JSON.stringify({ actor, snapshot: { head: sha, dirty: options.dirty ?? false }, checks, execution, scopeProven: true, operations: [], omissions: ["Product browser observation not supplied."], sourceFailure: false, privateDiff: diff }))) });
   const report = parsePhaseReport({ schemaVersion: "phase-report/v1", identity: { date: "2026-11-21", team: "builder", ticket: "TEST-1", deploymentId: "d-aaaaaa", phaseId: "phase-5", attempt: 1, executor: "orchestrator-direct" }, outcome: "partial", startedAt: time, finishedAt: time, baseSha: sha, candidateSha: sha, commitState: "no-commit", sections: Object.fromEntries(PHASE_REPORT_SECTIONS.map(k => [k, "Native fixture; no acceptance claimed."])), checks, previousAttempts: [], evidence: facts });
   const captured = evidence.publish("phase-report", { actor: actorId, facts, report: blob(Buffer.from(JSON.stringify(report))), diff, phaseId: "phase-5", attempt: 1 });
   const publicRoot = join(authority.aiUsageRoot, "agent-teams/builder/artifacts"); mkdirSync(publicRoot, { recursive: true, mode: 0o700 });
@@ -146,6 +147,7 @@ test("native ticket/report owner exercise: authenticated metadata attachment and
   try {
     const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
     assert.equal(actual.binding.candidateSha, sha); assert.equal(actual.reportId, f.receipt.reportId);
+    assert.equal(actual.evidence[0]?.applicability, "current");
     assert.deepEqual(actual.evidence.map(e => [e.class, e.state, e.coverage]), [["source", "passed", []]]);
     const companion = readFileSync(f.locator);
     await assert.rejects(attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => { throw new Error("fixture admission denied"); }));
@@ -174,6 +176,19 @@ test("native ticket/report owner exercise: authenticated metadata attachment and
     assert.deepEqual(await f.native.resolveActual(join(f.root, "relocated", f.locator.split("/").at(-1)!)), { state: "integrity-failure" });
     writeFileSync(actual.reportPath, "tampered");
     const bad = await f.native.resolveActual(f.locator); assert.deepEqual(bad, { state: "integrity-failure" });
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+for (const options of [{ dirty: false, current: false }, { dirty: true, current: false }, { dirty: true, current: true }]) test(`native checks are not current from HEAD/status alone: ${JSON.stringify(options)}`, async () => {
+  const f = fixture(options);
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.evidence[0]?.state, "passed", "the historical observation is preserved");
+    assert.equal(actual.evidence[0]?.applicability, "historical");
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    const comparison = await projectPlannedActual(f.ticketStore.get("TEST-1")!, plan.reference, sha, f.projectionHost);
+    assert.equal(comparison.actuals[0]?.evidence.some(e => e.class === "source" && e.state === "passed" && e.applicability === "current"), false);
+    assert.match(actual.scope, /src\/export.ts/); assert.match(actual.scope, /orchestrator-direct/); assert.match(actual.scope, /Product browser observation not supplied/);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 

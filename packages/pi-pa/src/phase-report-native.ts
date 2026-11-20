@@ -172,7 +172,18 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
         const observations = parseActualObservations(payload.observations), actualOnly = parseActualOnly(payload.actualOnly);
         const publicText = JSON.stringify([observations, actualOnly]); assertNoSensitiveMatch("content", publicText);
         if (nativePublicText(publicText, environmentSecrets(process.env)) !== publicText) throw workflowError();
-        const observed: ComparisonEvidence[] = report.checks.filter(c => c.candidateSha === binding.candidateSha).map(c => ({ class: "source", state: c.state === "not-run" ? "not-run" : c.state,
+        const execution = facts.execution;
+        const settled = execution !== null && typeof execution === "object" && "operation" in execution && execution.operation === null
+          && "candidateSha" in execution && execution.candidateSha === binding.candidateSha && "passedChecks" in execution
+          && execution.passedChecks !== null && typeof execution.passedChecks === "object" && !Array.isArray(execution.passedChecks);
+        // A clean tree is bound by HEAD. Dirty comparisons have no content-version
+        // selector in the retained schema, so NEVER apply their green checks.
+        // Status/porcelain digests do not identify changed file bytes.
+        const passedChecks = execution !== null && typeof execution === "object" && "passedChecks" in execution ? execution.passedChecks : null;
+        const currentOutputs = settled && passedChecks !== null && typeof passedChecks === "object" && facts.scopeProven === true && facts.sourceFailure === false && "dirty" in snapshot && snapshot.dirty === false
+          ? Object.values(passedChecks) : [];
+        const observed: ComparisonEvidence[] = report.checks.map(c => ({ class: "source", state: c.state, ...(c.candidateSha ? { candidateSha: c.candidateSha } : {}),
+          applicability: c.candidateSha === binding.candidateSha && c.state === "passed" && c.output && currentOutputs.some(output => equal(output, c.output)) ? "current" : "historical",
           locator: c.output ? c.output.ref : null, observedAt: c.output ? report.finishedAt : null, coverage: [], trust: c.output ? "native" : "not-observed" }));
         if (!Array.isArray(payload.deliveries) || payload.deliveries.length > 2 || !Array.isArray(payload.human) || payload.human.length > 128) throw workflowError();
         for (const input of payload.deliveries) {
@@ -189,13 +200,27 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
           observed.push({ class: "human-uat", state, locator: source.ref, observedAt: workflowTimestamp(human.observedAt), coverage: human.coverage.map(workflowText), trust: "local-unverified" });
         }
         return parseActualRecord({ locator, binding, plannedReference: payload.plannedReference, reportId: receipt.reportId, reportSourceSha256: receipt.sourceSha256, reportPath, ownerPath, outcome: report.outcome,
-          scope: `Native phase ${report.identity.phaseId}; attempt ${report.identity.attempt}`, observations, actualOnly, evidence: observed });
+          scope: actualScopeSummary(report, execution, facts.scopeProven, facts.omissions), observations, actualOnly, evidence: observed });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         return { state: code === "EACCES" || code === "EPERM" ? "denied" : code === "ENOENT" ? "missing" : "integrity-failure" };
       }
     },
   };
+}
+
+function actualScopeSummary(report: PhaseReport, execution: unknown, scopeProven: unknown, omissions: unknown): string {
+  const publicText = (value: string) => nativePublicText(value, environmentSecrets(process.env));
+  let admitted = "No admitted native phase plan available.";
+  if (execution !== null && typeof execution === "object" && "plan" in execution && execution.plan !== null && typeof execution.plan === "object") {
+    const plan = execution.plan;
+    if (!("scope" in plan) || typeof plan.scope !== "string" || !("paths" in plan) || !Array.isArray(plan.paths) || plan.paths.some(path => typeof path !== "string")) throw workflowError();
+    const paths = plan.paths.map((path: string) => findSensitiveMatch("path", path) || findSensitiveMatch("filename", path) ? `[omitted path SHA-256 ${workflowDigest(path)}]` : publicText(path));
+    admitted = `Admitted scope: ${publicText(plan.scope)}; paths: ${paths.join(", ")}.`;
+  }
+  const custody = execution !== null && typeof execution === "object" && "custody" in execution && execution.custody !== null && typeof execution.custody === "object" && "state" in execution.custody && typeof execution.custody.state === "string" ? publicText(execution.custody.state) : "unproven";
+  if (!Array.isArray(omissions) || omissions.some(value => typeof value !== "string")) throw workflowError();
+  return `Native phase ${report.identity.phaseId}; attempt ${report.identity.attempt}. ${admitted} Scope proof: ${scopeProven === true ? "proven by native producer" : "unproven"}. Custody: ${custody}; ${publicText(report.sections.custody)}. Omissions: ${omissions.length ? omissions.map(value => publicText(String(value))).join("; ") : "None recorded; absence is not acceptance."}`.replace(/[\r\n\t]/g, " ");
 }
 
 class NativeReportSession {

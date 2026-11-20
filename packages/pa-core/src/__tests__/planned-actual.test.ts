@@ -61,6 +61,17 @@ test("later matching human observations append, retain handback Not run, and con
   assert.equal((await project([unmet])).actuals[0]?.rows[0]?.disposition, "unmet");
   assert.equal((await project([actual, { ...unmet, reportId: sha("7"), locator: locator.replace(sha("e"), sha("8")) }])).state, "conflict");
 });
+test("historical source checks stay distinct and cannot conflict with current evidence", async () => {
+  const old = { ...actual.evidence[0]!, applicability: "historical" as const };
+  const current = { ...old, state: "failed" as const, applicability: "current" as const };
+  const r = await project([{ ...actual, evidence: [old, current] }]);
+  assert.equal(r.state, "available");
+  assert.deepEqual(r.actuals[0]?.evidence.filter(e => e.class === "source").map(e => [e.state, e.applicability]), [["passed", "historical"], ["failed", "current"]]);
+  const unverified = await project();
+  assert.ok(unverified.actuals[0]?.evidence.some(e => e.class === "source" && e.state === "not-run"));
+  assert.ok(unverified.actuals[0]?.evidence.some(e => e.class === "source" && e.state === "passed" && e.applicability === "unverified"));
+});
+
 test("only typed native artifact-stale errors become integrity failures, never prose or imported flags", () => {
   assert.deepEqual(plannedActualReadFailure(new ArtifactPolicyError("ARTIFACT_STALE")), { state: "integrity-failure" });
   for (const error of [new Error("ARTIFACT_STALE private"), { diagnostic: "ARTIFACT_STALE" }, null, new ArtifactPolicyError("ARTIFACT_RUNTIME_FAILED")]) assert.deepEqual(plannedActualReadFailure(error), { state: "unknown" });
