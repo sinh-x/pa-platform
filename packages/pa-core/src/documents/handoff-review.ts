@@ -7,6 +7,7 @@ import { ID, integer, text } from "../workflows/contracts.js";
 import { documentReject } from "./package-contract.js";
 import { handoffBranchIntentSha, parseHandoffBranchIntent, parseHandoffReviewSubject, type HandoffBranchIntent, type HandoffReviewSubject, type LocalHandoffReviewSubject, type LocalReviewOutcome, type LocalReviewRequest } from "./handoff-contract.js";
 import { nativeHandoffPlanIdentity, nativeHandoffTicketVersion } from "./handoff-planning.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 import { inspectFullDocumentReader } from "./reader-publication.js";
 import { documentText, validateDocumentBytes } from "./package-tools.js";
 
@@ -72,6 +73,7 @@ export class HandoffReviewService {
     if (caller.identitySha256 !== subject.callerIdentitySha256 || caller.selectionSha256 !== subject.selectionSha256
       || caller.ticket !== intent.ticket || caller.repoKey !== intent.repository.key || caller.repoRoot !== intent.repository.root
       || !caller.sessionId || !/^d-[a-f0-9]{6}$/.test(caller.deploymentId)) documentReject("DOCUMENT_AUTHORITY");
+    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     sync(this.host.assertAvailable(structuredClone(intent))); return caller;
   }
   private plan(intent: HandoffBranchIntent, identity: { scope: string; requestId: string }): void {
@@ -111,6 +113,7 @@ export class HandoffReviewService {
   assertEffectCaller(sha: string): void {
     const { subject, intent } = this.journal.subject(sha);
     if (subject.schemaVersion === "pa-handoff-review/v1") { this.current(subject, intent); return; }
+    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     const hooks = this.host.localReview;
     if (!hooks?.assertEffectCaller) documentReject("DOCUMENT_UNAVAILABLE");
     sync(hooks.assertOrigin(subject, intent));

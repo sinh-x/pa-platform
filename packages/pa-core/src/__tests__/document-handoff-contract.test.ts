@@ -64,6 +64,16 @@ test("registered-convention history parsing accepts safe feat/work branches with
   assert.deepEqual(parseHandoffBranchIntent(alphanumeric), alphanumeric);
 });
 
+test("convention-neutral structure keeps exact-ticket, kebab-topic and complete Git-ref safety", () => {
+  for (const prefix of ["feature", "feat", "work.+"]) {
+    for (const suffix of ["", "-topic", "topic-", "topic--other", "Topic", "topic.lock", "topic/../escape", "topic//escape", "topic@{0}", "topic\\\\escape", "topic.", "topic ", "topic\u007f", "topic?"])
+      rejects(() => parseHandoffBranchIntent({ ...intent(), branch: `${prefix}/EX-1-${suffix}` }));
+  }
+  for (const prefix of ["", "/work", "-work", ".work", "work/.hidden", "work.lock", "work//nested", "work..nested", "work@{0}", "work[", "work\\\\nested"])
+    rejects(() => parseHandoffBranchIntent({ ...intent(), branch: `${prefix}/EX-1-topic` }));
+  rejects(() => parseHandoffBranchIntent({ ...intent(), branch: `feat/EX-1-${"x".repeat(256)}` }));
+});
+
 test("P1 advanced reuse requires explicit original-base lineage and preserves a distinct observed develop/head", () => {
   const record = intent(); record.action = "reuse"; record.base.provenance = "native-original-base";
   record.base.observedDevelopSha = "e".repeat(40);

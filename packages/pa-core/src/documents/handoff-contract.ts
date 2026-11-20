@@ -79,10 +79,12 @@ function repository(value: unknown): HandoffRepository {
   return { key: text(row.key, ID), root, physicalIdentitySha256: text(row.physicalIdentitySha256, SHA256) };
 }
 function branchName(value: unknown, ticket: string): string {
-  // Candidate profile deliberately supports only the existing default feature
-  // convention. An owner must ALSO verify the registered repository convention.
+  // Pure historical shape, NOT current naming policy. Keep the exact-ticket /
+  // kebab-topic form, but let the registered owner select the literal prefix.
   const branch = text(value, undefined, 256);
-  if (!new RegExp(`^feature/${ticket}-[a-z0-9]+(?:-[a-z0-9]+)*$`).test(branch)) documentReject();
+  if (!new RegExp(`^.+/${ticket}-[a-z0-9]+(?:-[a-z0-9]+)*$`).test(branch)
+    || branch.startsWith("-") || /[\s~^:?*\[\\]/.test(branch) || branch.includes("..") || branch.includes("@{")
+    || branch.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"))) documentReject();
   return branch;
 }
 function utc(value: unknown): string {

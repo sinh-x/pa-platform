@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { withActiveRepositoryRefAdmission, withRepositoryRefAdmission, type RepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { getBranchPattern, loadRepoEntry } from "../repos.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 import { digest, parseWorkflowRequest, SHA256, text } from "../workflows/contracts.js";
 import { documentReject } from "./package-contract.js";
 import { handoffBranchIntentSha, parseHandoffBranchIntent, type HandoffBranchIntent, type HandoffRepository } from "./handoff-contract.js";
@@ -59,10 +59,7 @@ export class RegistryHandoffGitOwner {
     const intent = parseHandoffBranchIntent(rawIntent), operationId = text(rawOperationId, SHA256);
     const binding = handoffBranchIntentSha(intent), ref = `refs/heads/${intent.branch}`;
     const originId = intent.action === "reuse" ? intent.lineage!.operationSha256 : operationId;
-    const registered = () => {
-      const repo = loadRepoEntry(intent.repository.key);
-      if (!repo || repo.path !== intent.repository.root || getBranchPattern(repo) !== "feature/<ticket>-<topic>" || (repo.developBranch ?? "develop") !== "develop") documentReject("DOCUMENT_AUTHORITY");
-    };
+    const registered = () => assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     registered();
     const read = (): GitIntent | undefined => {
       const row = this.db.prepare("SELECT binding, marker FROM handoff_git_intents WHERE operation_id = ?").get(originId) as GitIntent | undefined;

@@ -9,7 +9,7 @@ import { MAX_REPOSITORY_TICKET_SLOT_BYTES, preparedRepositoryTicketReservationPa
 import { assertReservationInventory } from "../deploy/execution-custody.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { parseModeCapabilityBinding, modeCapabilityRouteMatches, isModeCapabilitySession, hasModeResources, modeCapabilitySessionMatches } from "../mode-capabilities.js";
-import { loadRepoEntry, getBranchPattern } from "../repos.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 import { readTicketWorkflow } from "../workflows/public.js";
 import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
 import type { TicketStore } from "../tickets/store.js";
@@ -44,8 +44,8 @@ function storage(root: string, relative: string): void {
   }
 }
 export function observeLocalHandoffDevelop(intent: HandoffBranchIntent): string {
-  const root = intent.repository.root, repo = loadRepoEntry(intent.repository.key);
-  if (!repo || repo.path !== root || getBranchPattern(repo) !== "feature/<ticket>-<topic>" || (repo.developBranch ?? "develop") !== "develop") documentReject("DOCUMENT_AUTHORITY");
+  const root = intent.repository.root;
+  assertRegisteredHandoffPolicy(intent.repository.key, root, intent.ticket, intent.branch);
   storage(root, "refs/heads/develop"); storage(root, "packed-refs");
   if (git(root, ["rev-parse", "--show-ref-format"]) !== "files" || git(root, ["rev-parse", "--show-object-format"]) !== "sha1"
     || git(root, ["symbolic-ref", "--quiet", "refs/heads/develop"], 1) !== null) documentReject("DOCUMENT_SOURCE");
@@ -57,6 +57,7 @@ export function observeLocalHandoffDevelop(intent: HandoffBranchIntent): string 
  * observation never reserves, reconciles, fsyncs or reacquires capacity locks. */
 export function assertLocalHandoffRepository(intent: HandoffBranchIntent, admission: RepositoryRefAdmission): void {
   withActiveRepositoryRefAdmission(admission, intent.repository.root, identity => {
+    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     if (identity !== intent.repository.physicalIdentitySha256) documentReject("DOCUMENT_STALE");
     const directory = dirname(preparedRepositoryTicketReservationPath(intent.repository.root, intent.ticket));
     const parent = lstatSync(directory);

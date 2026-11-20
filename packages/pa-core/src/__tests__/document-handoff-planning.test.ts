@@ -59,6 +59,33 @@ for (const prefix of ["feat", "work", "feature"]) test(`actual planner consumes 
   } finally { f.close(); }
 });
 
+test("registered policy aliases/defaults, exact literal matching and invalid present values fail closed", () => {
+  const f = fixture();
+  try {
+    const configure = (policy: string) => writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n${policy}`);
+    const before = readFileSync(join(f.dir, "EX-1.json"));
+    for (const policy of [
+      '    featureBranchPattern: feat/<ticket>-<topic>\n',
+      ...['null', 'false', '42', '[]', '{}', '\"\"', 'feature/<ticket>-<unknown>', 'feature/<topic>', 'feature/<ticket>', 'feature/.*/<ticket>-<topic>']
+        .map(value => `    featureBranchPattern: ${value}\n`),
+      '    feature_branch_pattern: null\n',
+      '    featureBranchPattern: null\n    feature_branch_pattern: feature/<ticket>-<topic>\n',
+    ]) {
+      configure(policy);
+      assert.throws(() => f.run(), /DOCUMENT_AUTHORITY/);
+      assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), before);
+      assert.equal(f.plans().length, 0); assert.equal(f.store.readAudit().length, 0);
+    }
+    f.request.branch = "work.+/EX-1-handoff";
+    configure('    featureBranchPattern: work.+/<ticket>-<topic>\n    feature_branch_pattern: feat/<ticket>-<topic>\n');
+    const result = f.run(); assert.equal(result.intent.branch, f.request.branch);
+    configure('    feature_branch_pattern: work.+/<ticket>-<topic>\n');
+    assert.equal(f.run().reused, true);
+    f.request.branch = "workZZ/EX-1-handoff";
+    assert.throws(() => f.run(), /DOCUMENT_AUTHORITY/);
+  } finally { f.close(); }
+});
+
 for (const point of ["pre-intent", "intent", "ticket", "audit"] as const) test(`original ${point} observation and later-comment recovery preserve original coordinates and partial history`, () => {
   const f = fixture();
   try {

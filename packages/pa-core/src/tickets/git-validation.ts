@@ -52,7 +52,7 @@ export function validateBranchName(branch: string, pattern: string): boolean {
 
 /** Validates one branch against one exact ticket rather than the multi-ticket grammar. */
 export function validateBranchNameForTicket(branch: string, ticket: string, pattern: string): boolean {
-  if (!/^[A-Z]+-\d+$/.test(ticket)) return false;
+  if (!/^[A-Z][A-Z0-9]*-\d+$/.test(ticket)) return false;
   const topicSegment = "[a-z0-9-]+";
   const regexBody = escapeRegex(pattern)
     .replace(/<ticket>/g, escapeRegex(ticket))
