@@ -84,12 +84,24 @@ requested/issued events, retaining the same decision ID, document identity and
 delivery identity. It must **not** call the combined-scope `approved()` method or
 convert this subject into publication/ref/queue authority.
 
-A separately authorized publisher must independently establish finite publication
-authority, active content eligibility and current caller/custody/lifecycle/target/
-predecessor/source/delivery admission. Its existing operation owner must persist
-intent before writes, verify all files and exact structured refs before primary,
-and resume only the original operation after interruption. That work is not
-implemented here and must not require another unchanged content signature.
+P2 now provides [separately authorized native Publish](content-publication.md).
+`pa_handoff` accepts strict `pa-content-publication/v1` actions `authorize`,
+`publish`, `status`, `revoke` and `supersede` using the exact reference. Native
+publication confirmation is separate from the existing content decision; no
+boolean/outcome import or second unchanged content signature is accepted.
+`pa_document` exposes the same finite owner through `content-publication-authorize`,
+`content-publish`, `content-publication-status`, `content-revoke` and
+`content-supersede`.
+
+The existing handoff publication/effect registry and TicketStore publication
+owner check active content eligibility, current caller/custody/lifecycle/target/
+predecessor/source/delivery admission, persist intent before writes and verify
+complete files and typed refs before sole requirements primary. Interrupted work
+continues only its original operation under fresh checks. Native revocation and
+explicit exact-successor supersession fence missing effects, not completed truth.
+No branch/link/queue/lifecycle/resources/launch effect follows publication.
+Review views expose eligibility and historical `recorded-complete` publication;
+that saved state alone does not establish current physical readback.
 
 Source tests are not installed qualification, browser/screen-reader observations,
 independent review or human UAT. None of those claims follows from this document.

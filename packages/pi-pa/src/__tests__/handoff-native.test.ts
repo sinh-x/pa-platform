@@ -137,6 +137,87 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
   } catch (error) { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
+test("registered content publication requires a separate finite native confirmation, not another content signature", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const ticketPath = join(f.usage, "tickets/EX-1.json"), initial = JSON.parse(readFileSync(ticketPath, "utf8"));
+    writeFileSync(ticketPath, JSON.stringify({ ...initial, status: "requirement-review", assignee: "requirements/team-manager" }));
+    const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    assert.equal(prepared.ok, true); const reference = prepared.result.reference;
+    const decision = await f.execute("pa_document", { action: "review-sign", reference });
+    assert.equal(decision.ok, true); assert.equal(f.prompts(), 1);
+    const refs = f.git("show-ref"), before = readFileSync(ticketPath);
+    const request = (action: string, extra = {}) => ({ schemaVersion: "pa-content-publication/v1", action, reference, ...extra });
+    assert.equal((await f.execute("pa_handoff", request("publish"))).ok, false);
+    assert.equal((await f.execute("pa_handoff", request("authorize", { authorized: true }))).code, "DOCUMENT_INPUT");
+    assert.deepEqual(readFileSync(ticketPath), before);
+    let publicationPrompts = 0;
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: async (title, choices) => {
+      publicationPrompts++; assert.match(title, /Publish exact/); assert.equal(choices[0], "Cancel"); return choices[1];
+    } } };
+    const authorized = await f.execute("pa_handoff", request("authorize"), context);
+    assert.equal(authorized.ok, true, JSON.stringify(authorized)); assert.equal(authorized.result.contentDecisionId, decision.result.decisionId);
+    const result = await f.execute("pa_document", { action: "content-publish", reference }, context);
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.result.publication, "verified");
+    assert.equal(result.result.contentDecisionId, decision.result.decisionId); assert.equal(publicationPrompts, 1); assert.equal(f.prompts(), 1);
+    assert.equal(f.git("show-ref"), refs); assert.equal(new TicketStore().get("EX-1")!.status, "requirement-review");
+    const replay = await f.execute("pa_handoff", request("publish"), context);
+    assert.equal(replay.ok, true, JSON.stringify(replay)); assert.deepEqual(replay.result, result.result);
+    const revoked = await f.execute("pa_handoff", request("revoke"), { ...context, ui: { ...context.ui, select: async (_title, choices) => choices[1] } });
+    assert.equal(revoked.ok, true, JSON.stringify(revoked)); assert.equal(revoked.result.eligibility, "revoked");
+    assert.equal((await f.execute("pa_handoff", request("publish"), context)).ok, true, "proven completed truth remains replayable after revocation");
+  } finally { await f.close(); }
+});
+
+test("native content publication admits a fresh selected continuation only after the original process ended", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const ticketPath = join(f.usage, "tickets/EX-1.json"), initial = JSON.parse(readFileSync(ticketPath, "utf8"));
+    writeFileSync(ticketPath, JSON.stringify({ ...initial, status: "requirement-review", assignee: "requirements/team-manager" }));
+    const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    const reference = prepared.result.reference;
+    assert.equal((await f.execute("pa_document", { action: "review-sign", reference })).ok, true);
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: async (_title, choices) => choices[1] } };
+    const request = { schemaVersion: "pa-content-publication/v1", reference };
+    assert.equal((await f.execute("pa_handoff", { ...request, action: "authorize" }, context)).ok, true);
+    const fresh = await f.continueInFreshSession("EX-1");
+    const result = await fresh.handoff({ ...request, action: "publish" });
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.result.publication, "verified");
+    assert.equal(f.prompts(), 1);
+  } finally { await f.close(); }
+});
+
+for (const variant of ["live-origin", "retained-custody", "wrong-target"] as const) test(`native content publication fences ${variant} without writes or a new content prompt`, async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const ticketPath = join(f.usage, "tickets/EX-1.json"), initial = JSON.parse(readFileSync(ticketPath, "utf8"));
+    writeFileSync(ticketPath, JSON.stringify({ ...initial, status: "requirement-review", assignee: "requirements/team-manager" }));
+    const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    const reference = prepared.result.reference;
+    assert.equal((await f.execute("pa_document", { action: "review-sign", reference })).ok, true);
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: async (_title, choices) => choices[1] } };
+    const request = { schemaVersion: "pa-content-publication/v1", reference };
+    assert.equal((await f.execute("pa_handoff", { ...request, action: "authorize" }, context)).ok, true);
+    const before = readFileSync(ticketPath), refs = f.git("show-ref");
+    if (variant === "retained-custody") writeFileSync(join(f.repo, ".git/pa-repository-mutation.lease.json"), "uncertain retained custody");
+    const result = variant === "retained-custody" ? await f.execute("pa_handoff", { ...request, action: "publish" }, context)
+      : await (await f.continueInFreshSession(variant === "wrong-target" ? "EX-2" : "EX-1", { liveOrigin: variant === "live-origin" })).handoff({ ...request, action: "publish" });
+    assert.equal(result.ok, false, JSON.stringify(result)); assert.deepEqual(readFileSync(ticketPath), before);
+    assert.equal(f.git("show-ref"), refs); assert.equal(f.prompts(), 1);
+    assert.equal(getDb().prepare("SELECT count(*) n FROM handoff_review_effects").get()?.n, 0);
+  } finally { await f.close(); }
+});
+
+test("an omitted immutable local-review capability cannot acquire publication authority", async () => {
+  const f = fixture(["document.handoff", "document.package"], true);
+  try {
+    const before = readFileSync(join(f.usage, "tickets/EX-1.json"));
+    const result = await f.execute("pa_handoff", { schemaVersion: "pa-content-publication/v1", action: "authorize", reference: `review:${"a".repeat(64)}` });
+    assert.equal(result.ok, false); assert.equal(result.code, "DOCUMENT_AUTHORITY"); assert.equal(f.prompts(), 0);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets/EX-1.json")), before);
+  } finally { await f.close(); }
+});
+
 test("registered content-only document/handoff/manual entries sign without plan or effect authority", async () => {
   const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
   try {

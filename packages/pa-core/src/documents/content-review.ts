@@ -17,7 +17,7 @@ export interface ContentReviewView {
   reference: string; subject: ContentReviewSubject; document: DocumentPackage; presentation: Record<string, unknown>;
   documents: { id: string; mediaType: string; sha256: string; content: string | null }[];
   actionable: boolean; trust: "local-unverified"; authentication: "not-provided";
-  approval: string; publication: "not-published"; history: ReturnType<RegistryHandoffReviewJournal["events"]>;
+  approval: string; publication: "not-published" | "recorded-complete"; eligibility: "active" | "revoked" | "superseded"; history: ReturnType<RegistryHandoffReviewJournal["events"]>;
 }
 export function contentReviewGuidance(code: unknown): string {
   const reasons: Record<string, string> = {
@@ -63,6 +63,7 @@ export class ContentReviewService {
       const reference = `review:${entry.sha256}`;
       try {
         this.selected(reference);
+        if (this.journal.events(entry.sha256).some(event => event.kind === "content-ineligible")) continue;
         await this.verified(reference);
         found.push({ reference, packageId: entry.document.packageId, revision: entry.document.revision, purpose: "sign-content-only" });
       } catch (error) {
@@ -93,9 +94,11 @@ export class ContentReviewService {
     });
     const history = this.journal.events(sha), saved = history.find(e => e.kind === "issued");
     this.selected(reference);
-    return { reference, subject, document, presentation, documents, history, actionable: verified && !saved,
+    const fence = history.find(e => e.kind === "content-ineligible"), request = history.find(e => e.kind === "requested");
+    return { reference, subject, document, presentation, documents, history, actionable: verified && !saved && !fence,
+      eligibility: fence?.kind === "content-ineligible" ? fence.fence.reason : "active",
       approval: saved?.kind === "issued" ? saved.decision.outcome : history.length ? "pending" : "not-requested",
-      publication: "not-published", trust: "local-unverified", authentication: "not-provided" };
+      publication: request?.kind === "requested" && this.journal.effect(sha, request.request.decisionId, "publish").completed ? "recorded-complete" : "not-published", trust: "local-unverified", authentication: "not-provided" };
   }
   private recorded(reference: string): Record<string, unknown> | null {
     const { sha } = this.selected(reference), events = this.journal.events(sha), request = events.find(e => e.kind === "requested"), issued = events.find(e => e.kind === "issued");

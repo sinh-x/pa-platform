@@ -6,6 +6,7 @@ import { documentGuard, documentPackageSha, documentReject, type DocumentPackage
 import { handoffBranchIntentSha, handoffReviewSubjectSha, parseHandoffBranchIntent, parseHandoffReviewSubject, type HandoffBranchIntent, type HandoffReviewSubject } from "../documents/handoff-contract.js";
 import { documentPending, RegistryDocumentJournal } from "./documents.js";
 import { contentReviewSubjectSha, parseContentReviewSubject, type ContentReviewSubject } from "../documents/content-review-contract.js";
+import type { ContentPublicationAuthority, ContentReviewFence } from "../documents/content-publication-contract.js";
 import { RegistryHandoffBranchJournal, handoffBranchOperationId } from "../documents/handoff-branch.js";
 
 export interface HandoffReviewRequest {
@@ -22,13 +23,29 @@ export interface HandoffStaleDisposition {
 }
 export type HandoffReviewEvent = { revision: number; predecessor: string | null } & (
   { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision }
-  | { kind: "stale"; stale: HandoffStaleDisposition });
+  | { kind: "stale"; stale: HandoffStaleDisposition }
+  | { kind: "publication-authorized"; authority: ContentPublicationAuthority }
+  | { kind: "content-ineligible"; fence: ContentReviewFence });
 function stale(value: unknown): HandoffStaleDisposition {
   const row = object(value, ["requestKey", "oldDevelopSha", "newDevelopSha", "observedAt"]);
   const result = { requestKey: row.requestKey === null ? null : text(row.requestKey, SHA256),
     oldDevelopSha: text(row.oldDevelopSha, /^[a-f0-9]{40}$/), newDevelopSha: text(row.newDevelopSha, /^[a-f0-9]{40}$/), observedAt: time(row.observedAt) };
   if (result.oldDevelopSha === result.newDevelopSha) documentReject("DOCUMENT_INPUT");
   return result;
+}
+function publicationAuthority(value: unknown): ContentPublicationAuthority {
+  const row = object(value, ["schemaVersion", "contentDecisionId", "caller", "scope", "method", "authorizedAt"]);
+  const caller = object(row.caller, ["callerIdentitySha256", "selectionSha256", "deploymentId", "sessionId"]);
+  return { schemaVersion: oneOf(row.schemaVersion, ["pa-content-publication-authority/v1"]), contentDecisionId: text(row.contentDecisionId, ID),
+    caller: { callerIdentitySha256: text(caller.callerIdentitySha256, SHA256), selectionSha256: text(caller.selectionSha256, SHA256),
+      deploymentId: text(caller.deploymentId, /^d-[a-f0-9]{6}$/), sessionId: text(caller.sessionId, undefined, 256) },
+    scope: oneOf(row.scope, ["publish-exact-content-only"]), method: oneOf(row.method, ["native-foreground-publication-confirmation"]), authorizedAt: time(row.authorizedAt) };
+}
+function contentFence(value: unknown): ContentReviewFence {
+  const row = object(value, ["decisionId", "reason", "successor", "recordedAt"]);
+  const reason = oneOf(row.reason, ["revoked", "superseded"]);
+  if (reason === "revoked" && row.successor !== null || reason === "superseded" && row.successor === null) documentReject("DOCUMENT_INPUT");
+  return { decisionId: text(row.decisionId, ID), reason, successor: row.successor === null ? null : text(row.successor, SHA256), recordedAt: time(row.recordedAt) };
 }
 const json = (value: unknown) => Buffer.from(JSON.stringify(value));
 function time(value: unknown): string {
@@ -121,6 +138,10 @@ export class RegistryHandoffReviewJournal {
     if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
     return rows.map(row => ({ sha256: row.sha256, ...this.contentSubject(row.sha256) }));
   }
+  publicationSubject(sha256: string) {
+    const subject = this.binding(sha256);
+    return subject.schemaVersion === "pa-content-review-subject/v1" ? { ...this.contentSubject(sha256), intent: null } : this.subject(sha256);
+  }
   private binding(sha256: string): HandoffReviewSubject | ContentReviewSubject {
     const row = this.db.prepare<[string], { body: string }>("SELECT body FROM handoff_review_subjects WHERE sha256=?").get(text(sha256, SHA256));
     if (!row) return documentReject("DOCUMENT_SOURCE");
@@ -166,17 +187,28 @@ export class RegistryHandoffReviewJournal {
     let predecessor: string | null = null; const events: HandoffReviewEvent[] = [];
     for (const row of rows) {
       const value = strictJson(Buffer.from(row.body), 65536), k = (value as { kind?: unknown }).kind;
-      const e = object(value, ["revision", "predecessor", "kind", k === "requested" ? "request" : k === "stale" ? "stale" : "decision"]);
+      const e = object(value, ["revision", "predecessor", "kind", k === "requested" ? "request" : k === "stale" ? "stale" : k === "publication-authorized" ? "authority" : k === "content-ineligible" ? "fence" : "decision"]);
       if (row.revision !== events.length + 1 || e.revision !== row.revision || e.predecessor !== predecessor || digest(row.body) !== row.sha256) documentReject("DOCUMENT_UNCERTAIN");
       const event: HandoffReviewEvent = k === "requested" ? { revision: row.revision, predecessor, kind: "requested", request: request(e.request) }
         : k === "issued" ? { revision: row.revision, predecessor, kind: "issued", decision: issued(e.decision, local) }
-        : k === "stale" && local ? { revision: row.revision, predecessor, kind: "stale", stale: stale(e.stale) } : documentReject("DOCUMENT_UNCERTAIN");
+        : k === "stale" && local ? { revision: row.revision, predecessor, kind: "stale", stale: stale(e.stale) }
+        : k === "publication-authorized" ? { revision: row.revision, predecessor, kind: "publication-authorized", authority: publicationAuthority(e.authority) }
+        : k === "content-ineligible" ? { revision: row.revision, predecessor, kind: "content-ineligible", fence: contentFence(e.fence) } : documentReject("DOCUMENT_UNCERTAIN");
       this.transition(subjectSha256, events, event); events.push(event); predecessor = row.sha256;
     } return events;
   }
   private transition(sha: string, prior: HandoffReviewEvent[], next: HandoffReviewEvent): void {
     const last = prior.at(-1), subject = this.binding(sha);
-    if (next.kind === "requested") {
+    if (next.kind === "publication-authorized" || next.kind === "content-ineligible") {
+      if (subject.schemaVersion !== "pa-content-review-subject/v1" || prior.some(e => e.kind === "content-ineligible")) documentReject("DOCUMENT_AUTHORITY");
+      const request = this.approvedFrom(prior, next.kind === "publication-authorized" ? next.authority.contentDecisionId : next.fence.decisionId);
+      if (next.kind === "publication-authorized" && (prior.some(e => e.kind === "publication-authorized") || request.schemaVersion !== "pa-content-review-request/v1")) documentReject("DOCUMENT_CONFLICT");
+      if (next.kind === "content-ineligible" && next.fence.reason === "superseded") {
+        const current = this.contentSubject(sha).document, successor = this.contentSubject(next.fence.successor!).document;
+        if (current.ticket !== successor.ticket || !isDeepStrictEqual(current.repository, successor.repository) || current.packageId !== successor.packageId || current.revision >= successor.revision) documentReject("DOCUMENT_AUTHORITY");
+        this.contentDecision(next.fence.successor!, false);
+      }
+    } else if (next.kind === "requested") {
       const r = next.request;
       if (subject.schemaVersion === "pa-content-review-subject/v1") {
         if (prior.length || r.schemaVersion !== "pa-content-review-request/v1" || r.operation !== "capture" || r.targetDecisionId !== null
@@ -205,16 +237,17 @@ export class RegistryHandoffReviewJournal {
   /** New bytes/subject cannot evade this owner's unresolved ticket history.
    * Revocation remains possible during partial effects; it grants no new write. */
   private assertNoOtherPending(sha: string, newRequest = false): void {
-    const { document } = this.subject(sha);
+    const { document } = this.publicationSubject(sha);
     if (documentPending(this.documents.events(document.repository.key, document.ticket)).length) documentReject("DOCUMENT_UNCERTAIN");
-    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects WHERE json_extract(body,'$.schemaVersion')<>'pa-content-review-subject/v1' LIMIT 1025").all() as { sha256: string }[];
+    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects LIMIT 1025").all() as { sha256: string }[];
     if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
     for (const row of rows) {
       if (row.sha256 === sha && !newRequest) continue;
-      const other = this.subject(row.sha256).document;
+      const binding = this.publicationSubject(row.sha256), other = binding.document;
       if (other.ticket !== document.ticket || other.repository.key !== document.repository.key) continue;
       const events = this.events(row.sha256);
-      if (events.at(-1)?.kind === "requested") documentReject("DOCUMENT_UNCERTAIN");
+      // A pending sign-only review is not an effect intent or ticket lock.
+      if (binding.subject.schemaVersion !== "pa-content-review-subject/v1" && events.at(-1)?.kind === "requested") documentReject("DOCUMENT_UNCERTAIN");
       for (const event of events) if (event.kind === "requested" && event.request.operation === "capture") {
         for (const operation of ["publish", "queue"] as const) {
           const effect = this.effect(row.sha256, event.request.decisionId, operation);
@@ -283,7 +316,7 @@ export class RegistryHandoffReviewJournal {
     const events = exists ? new RegistryHandoffBranchJournal(this.db, false).events(operationId) : [];
     return { operationId, started: events.length > 0, completed: events.at(-1)?.kind === "complete" };
   }
-  private append(sha: string, revision: number, data: { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision } | { kind: "stale"; stale: HandoffStaleDisposition }): void {
+  private append(sha: string, revision: number, data: { kind: "requested"; request: HandoffReviewRequest } | { kind: "issued"; decision: HandoffIssuedDecision } | { kind: "stale"; stale: HandoffStaleDisposition } | { kind: "publication-authorized"; authority: ContentPublicationAuthority } | { kind: "content-ineligible"; fence: ContentReviewFence }): void {
     this.transaction(() => {
       const prior = this.events(sha); if (prior.length !== revision) documentReject("DOCUMENT_CONFLICT");
       const last = this.db.prepare("SELECT sha256 FROM handoff_review_events WHERE subject_sha=? ORDER BY revision DESC LIMIT 1").get(sha) as { sha256: string } | undefined;
@@ -309,22 +342,59 @@ export class RegistryHandoffReviewJournal {
     if (events.at(-1)?.kind === "requested" || !this.subject(sha).subject.effects[effect]) documentReject("DOCUMENT_AUTHORITY");
     return r;
   }
+  /** Canonical content eligibility is NOT a combined effect grant. */
+  contentDecision(sha: string, active = true): HandoffReviewRequest {
+    this.contentSubject(sha);
+    const events = this.events(sha), request = events.find(e => e.kind === "requested");
+    if (request?.kind !== "requested" || request.request.operation !== "capture" || request.request.schemaVersion !== "pa-content-review-request/v1"
+      || active && events.some(e => e.kind === "content-ineligible")) return documentReject("DOCUMENT_AUTHORITY");
+    return this.approvedFrom(events, request.request.decisionId);
+  }
+  contentAuthority(sha: string, active = true): ContentPublicationAuthority {
+    const request = this.contentDecision(sha, active), event = this.events(sha).find(e => e.kind === "publication-authorized");
+    if (event?.kind !== "publication-authorized" || event.authority.contentDecisionId !== request.decisionId) return documentReject("DOCUMENT_AUTHORITY");
+    return event.authority;
+  }
+  authorizeContentPublication(sha: string, raw: ContentPublicationAuthority): void {
+    this.transaction(() => { this.contentDecision(sha); this.append(sha, this.events(sha).length, { kind: "publication-authorized", authority: publicationAuthority(raw) }); });
+  }
+  fenceContent(sha: string, reason: ContentReviewFence["reason"], successor: string | null = null): void {
+    this.transaction(() => {
+      const request = this.contentDecision(sha);
+      if (reason === "superseded") { if (successor === null) documentReject("DOCUMENT_INPUT"); this.contentDecision(successor); }
+      this.append(sha, this.events(sha).length, { kind: "content-ineligible", fence: contentFence({ decisionId: request.decisionId, reason, successor, recordedAt: new Date().toISOString() }) });
+    });
+  }
+  beginContentPublication(sha: string) {
+    return this.transaction(() => {
+      const authority = this.contentAuthority(sha); this.assertNoOtherPending(sha);
+      const effect = this.effect(sha, authority.contentDecisionId, "publish");
+      if (!effect.started) this.db.prepare("INSERT INTO handoff_review_effects(operation_id,body) VALUES(?,?)")
+        .run(effect.operationId, JSON.stringify({ subjectSha256: sha, decisionId: authority.contentDecisionId, operation: "publish" }));
+      return this.effect(sha, authority.contentDecisionId, "publish");
+    });
+  }
   /** Native completed-publication provenance only, not a transferred grant.
    * Deliberately does not invoke cross-subject pending admission: the successor
    * may be recovering its own partial publication. Its current authorization is
    * checked separately before every remaining write. */
   completedPublication(documentSha256: string): { subjectSha256: string; decisionId: string } | undefined {
     text(documentSha256, SHA256);
-    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects WHERE json_extract(body,'$.schemaVersion')<>'pa-content-review-subject/v1' LIMIT 1025").all() as { sha256: string }[];
+    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects LIMIT 1025").all() as { sha256: string }[];
     if (rows.length > 1024) return documentReject("DOCUMENT_UNCERTAIN");
     const matches = rows.flatMap(row => {
-      if (this.subject(row.sha256).subject.documentSubjectSha256 !== documentSha256) return [];
+      const binding = this.publicationSubject(row.sha256);
+      if (binding.subject.documentSubjectSha256 !== documentSha256) return [];
       const events = this.events(row.sha256);
       return events.flatMap(event => {
         if (event.kind !== "requested" || event.request.operation !== "capture"
           || !this.effect(row.sha256, event.request.decisionId, "publish").completed) return [];
-        if (events.at(-1)?.kind === "requested" || !this.subject(row.sha256).subject.effects.publish) return documentReject("DOCUMENT_AUTHORITY");
-        this.approvedFrom(events, event.request.decisionId);
+        if (binding.subject.schemaVersion === "pa-content-review-subject/v1") {
+          if (this.contentDecision(row.sha256, false).decisionId !== event.request.decisionId || !events.some(e => e.kind === "publication-authorized" && e.authority.contentDecisionId === event.request.decisionId)) documentReject("DOCUMENT_AUTHORITY");
+        } else {
+          if (events.at(-1)?.kind === "requested" || !binding.subject.effects.publish) return documentReject("DOCUMENT_AUTHORITY");
+          this.approvedFrom(events, event.request.decisionId);
+        }
         return [{ subjectSha256: row.sha256, decisionId: event.request.decisionId }];
       });
     });

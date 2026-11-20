@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mutatePiContentReview } from "./content-review-native.js";
+import { mutatePiContentPublication } from "./content-publication-native.js";
 import { inspectPiDocumentBranch } from "./document-branch.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -67,6 +68,15 @@ export async function mutatePiDocument(request: string, context: PiWorkflowConte
   const authenticate = () => { if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); return authenticatePiDocumentCaller(context); };
   const caller = authenticate(), artifactRoot = getAiUsageDir();
   const contentRequest = parseDocumentRequest(request);
+  const publicationAction: Readonly<Record<string, string>> = { "content-publication-authorize": "authorize", "content-publication-status": "status", "content-publish": "publish", "content-revoke": "revoke", "content-supersede": "supersede" };
+  if (Object.hasOwn(publicationAction, String(contentRequest.action))) {
+    try { workflowObject(contentRequest, ["action", ...DOCUMENT_ACTION_FIELDS[String(contentRequest.action)]!]); }
+    catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
+    const action = publicationAction[String(contentRequest.action)];
+    const { action: _action, ...coordinates } = contentRequest;
+    return { schemaVersion: "pa-document-result/v1", ok: true, action: contentRequest.action,
+      result: await mutatePiContentPublication(JSON.stringify({ schemaVersion: "pa-content-publication/v1", action, ...coordinates }), context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal), executionAdmitted: false };
+  }
   if (["review-prepare", "review-list", "review-show", "review-sign"].includes(String(contentRequest.action))) {
     try { workflowObject(contentRequest, ["action", ...DOCUMENT_ACTION_FIELDS[String(contentRequest.action)]!]); }
     catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }

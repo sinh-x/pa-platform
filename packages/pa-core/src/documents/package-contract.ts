@@ -66,6 +66,8 @@ export const DOCUMENT_ACTION_FIELDS: Readonly<Record<string, readonly string[]>>
   capabilities: [], status: ["ticket"], "branch-inspect": ["ticket"], "ticket-create": ["title", "content", "intakeId"], discover: ["path"], context: ["path"], draft: ["path", "content", "expectedSha256"],
   check: ["package"], freeze: ["package", "expectedRevision"], show: ["sha256"], present: ["sha256"], read: ["sha256", "path", "offset"], compare: ["sha256", "previousSha256"],
   "review-prepare": ["sha256"], "review-list": ["ticket"], "review-show": ["reference"], "review-sign": ["reference"],
+  "content-publication-authorize": ["reference"], "content-publication-status": ["reference"], "content-publish": ["reference"],
+  "content-revoke": ["reference"], "content-supersede": ["reference", "successorReference"],
   confirm: ["sha256", "expectedRevision", "scope"], "confirm-revoke": ["sha256", "expectedRevision", "decisionId"],
   "publication-diagnose": ["sha256", "expectedRevision", "operationId", "decisionId"],
   "publication-retire": ["sha256", "expectedRevision", "operationId", "decisionId", "requestId", "originalRequestSha256", "observationSha256"],

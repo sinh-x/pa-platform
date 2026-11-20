@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { publicationRecoveryGuidance, contentReviewGuidance, parseDocumentRequest, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, getConfigDir, getDeploymentEvents, readArtifactFile } from "@pa-platform/pa-core";
+import { publicationRecoveryGuidance, contentPublicationGuidance, contentReviewGuidance, parseDocumentRequest, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, getConfigDir, getDeploymentEvents, readArtifactFile } from "@pa-platform/pa-core";
 import { mutatePiDocument } from "../document-native.js";
 import { runDocumentConfirmationCommand } from "./document-confirmation-command.js";
 import { runContentReviewCommand } from "./content-review-command.js";
@@ -33,15 +33,16 @@ export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile =
         result = await mutate(input.request, context as PiWorkflowContext, signal, contentSignal);
       } catch (error) {
         const code = error instanceof DocumentPackageError ? error.code : "DOCUMENT_UNAVAILABLE";
-        let recovery = false, contentReview = false;
+        let recovery = false, contentReview = false, contentPublication = false;
         try {
           if (typeof input.request === "string") {
             const r = parseDocumentRequest(input.request);
             recovery = r.action === "publication-diagnose" || r.action === "publication-retire";
+            contentPublication = ["content-publication-authorize", "content-publication-status", "content-publish", "content-revoke", "content-supersede"].includes(String(r.action));
             contentReview = ["review-prepare", "review-list", "review-show", "review-sign"].includes(String(r.action));
           }
         } catch { /* Malformed input is not a trusted operation label. */ }
-        result = { schemaVersion: "pa-document-result/v1", ok: false, code, ...(recovery ? { guidance: publicationRecoveryGuidance(code) } : contentReview ? { guidance: contentReviewGuidance(code) } : {}), scope: "this-operation-only", executionAdmitted: false };
+        result = { schemaVersion: "pa-document-result/v1", ok: false, code, ...(contentPublication ? { guidance: contentPublicationGuidance(code) } : recovery ? { guidance: publicationRecoveryGuidance(code) } : contentReview ? { guidance: contentReviewGuidance(code) } : {}), scope: "this-operation-only", executionAdmitted: false };
       }
       let output = JSON.stringify(result);
       if (Buffer.byteLength(output) > 50 * 1024 || output.split("\n").length > 2000) {
@@ -128,7 +129,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     const interactionsProfile = caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION;
     const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile, isModeCapabilitySession(caller.profile) && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"), contentLifetime.signal);
     if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
-    if (caller.capabilities) document.description = "With document.local-review + document.handoff + document.package selected: review-prepare(sha256) returns an exact content-only reference without a branch plan; review-list(ticket) discovers references; review-show(reference) verifies complete immutable delivery; review-sign(reference) opens the shared sign-only foreground. Manual /pa-review REFERENCE and guided ppa document review REFERENCE use the same canonical decision. Signing grants/invokes no downstream effects. Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
+    if (caller.capabilities) document.description = "With document.local-review + document.handoff + document.package selected: content-publication-authorize(reference) requests separate native finite Publish authority without another content signature; content-publish(reference) performs only the exact authorized publication under fresh checks; content-publication-status(reference) recovers the same authority/operation. content-revoke(reference) and content-supersede(reference,successorReference) request native lifecycle fencing of missing effects, preserving completed history. No imported boolean/outcome or automatic effect. review-prepare(sha256) returns an exact content-only reference without a branch plan; review-list(ticket) discovers references; review-show(reference) verifies complete immutable delivery; review-sign(reference) opens the shared sign-only foreground. Manual /pa-review REFERENCE and guided ppa document review REFERENCE use the same canonical decision. Signing grants/invokes no downstream effects. Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
     const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
       ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_handoff") ? [createHandoffTool(caller.handoffIdentitySha256!, contentLifetime.signal)] : []),
       ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_ticket_status") ? [createTicketStatusTool(caller.identitySha256)] : []),

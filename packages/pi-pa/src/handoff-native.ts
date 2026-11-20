@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mutatePiContentReview } from "./content-review-native.js";
+import { mutatePiContentPublication } from "./content-publication-native.js";
 import { isDeepStrictEqual } from "node:util";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -192,6 +193,7 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
   let envelope: Record<string, unknown>;
   try { envelope = record(parseWorkflowRequest(raw)); }
   catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
+  if (envelope.schemaVersion === "pa-content-publication/v1") return mutatePiContentPublication(raw, context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal);
   if (envelope.schemaVersion === "pa-content-review/v1") return mutatePiContentReview(raw, context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal);
   let request: Request, local: boolean;
   try {
