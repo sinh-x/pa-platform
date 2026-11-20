@@ -4,12 +4,13 @@ import { isDeepStrictEqual } from "node:util";
 import { Lexer, walkTokens } from "marked";
 import { MODE_CAPABILITY_MAX_BYTES, MODE_CAPABILITY_PROFILE, ModeCapabilityError, READONLY_DOCUMENT_PROFILE, hasModeResources, modePublicName, ANALYST_NATIVE_IDENTITY, modeResourcePath, parseModeCapabilityBinding, type ModeCapabilityPolicy, type ModeResourceSnapshot } from "./mode-capabilities.js";
 import { CommittedConfigSource } from "./selected-config-source.js";
+import { parseSelectedPrimerBudget, SELECTED_PRIMER_BUDGET_PATH } from "./selected-mode-resources.js";
 import type { TeamConfig } from "./types.js";
 import { parseTeamYamlContent } from "./yaml-parser.js";
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const deny = (): never => { throw new ModeCapabilityError("CAPABILITY_BINDING"); };
-function decode(raw: Uint8Array): string { try { return new TextDecoder("utf-8", { fatal: true }).decode(raw); } catch { return deny(); } }
+function decode(raw: Uint8Array): string { try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw); } catch { return deny(); } }
 /** One source, no contract-manifest authority, selected-root overlay or directory discovery. */
 export function selectAnalystResources(expected: ModeCapabilityPolicy, source: CommittedConfigSource, selection: { team: TeamConfig; repoKey: string; mode?: string }) {
   const generic = selection.mode !== undefined && selection.team.deploy_modes?.some(mode => mode.id === selection.mode && mode.document_profile === READONLY_DOCUMENT_PROFILE);
@@ -22,6 +23,14 @@ export function selectAnalystResources(expected: ModeCapabilityPolicy, source: C
     || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(selection.repoKey)) return deny();
   const contents = new Map<string, string>([[resourcePath, decode(raw)]]), pending = new Set<string>();
   const add = (path: unknown) => { pending.add(modeResourcePath(path)); if (pending.size + contents.size > 128) deny(); };
+  // New selected Analyst composition binds its budget in the same resource set.
+  // Retained bindings and other routes do not acquire lean semantics implicitly.
+  if (generic && team.name === "analyst") {
+    const budget = source.read(SELECTED_PRIMER_BUDGET_PATH);
+    if (!budget) return deny();
+    parseSelectedPrimerBudget(decode(budget), team.name, mode.id);
+    contents.set(SELECTED_PRIMER_BUDGET_PATH, decode(budget));
+  }
   // Public v2 requires a real objective resource, never an inline/path fallback.
   add(mode.objective);
   const agents = mode.agents ?? team.agents.map(agent => agent.name);
@@ -65,7 +74,7 @@ export function selectAnalystResources(expected: ModeCapabilityPolicy, source: C
     resourcePath, resourceSha256: hash(raw), profile: mode.document_profile, policy: expected, repoKey: selection.repoKey,
     identity: generic ? { publicTeam: team.name, publicMode: mode.id, effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" } : ANALYST_NATIVE_IDENTITY, resources });
   if (!hasModeResources(binding)) return deny();
-  const snapshot: ModeResourceSnapshot = Object.freeze({ binding, read(path: string) {
+  const snapshot: ModeResourceSnapshot = Object.freeze({ binding, ...(generic && team.name === "analyst" ? { leanPrimer: true as const } : {}), read(path: string) {
     const body = contents.get(path), expected = binding.resources.find(resource => resource.path === path);
     if (body === undefined || !expected || hash(Buffer.from(body)) !== expected.sha256) return deny();
     return body;

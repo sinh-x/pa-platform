@@ -63,10 +63,12 @@ export class CommittedConfigSource {
   readonly #absent = new Set<string>();
   #total = 0;
   #objectBytes = 0;
-  private constructor(readonly root: string, private readonly selected: boolean, expected?: string) {
+  private constructor(readonly root: string, private readonly selected: boolean, expected?: string, private readonly pinned = false) {
     try {
-      this.revision = configSourceHead(root);
-      if (expected !== undefined && expected !== this.revision) fail("identity");
+      if (expected !== undefined && !/^[a-f0-9]{40}$/.test(expected)) fail("identity");
+      const head = configSourceHead(root);
+      this.revision = pinned ? expected ?? fail("identity") : head;
+      if (!pinned && expected !== undefined && expected !== this.revision) fail("identity");
       this.assertIdentity();
       const commit = this.object("commit", this.revision);
       const tree = /^tree ([a-f0-9]{40})\n/.exec(text(commit))?.[1];
@@ -78,8 +80,21 @@ export class CommittedConfigSource {
   static selected(): CommittedConfigSource { return new CommittedConfigSource(getPlatformHomeDir(), true); }
   /** Trusted source/qualification owner seam, never a public path or revision override. */
   static at(root: string, revision?: string): CommittedConfigSource { return new CommittedConfigSource(root, false, revision); }
+  /** Authenticated resource owners only: exact Git objects, no checkout/HEAD fallback.
+   * Possession of coordinates is not caller authentication or selection authority. */
+  static readPinned(root: string, revision: string, relative: string): Uint8Array {
+    try {
+      const source = new CommittedConfigSource(root, false, revision, true);
+      source.validateRelative(relative);
+      const raw = source.blob(relative);
+      if (!raw) fail("resource");
+      source.assertIdentity();
+      return Buffer.from(raw);
+    } catch (error) { if (error instanceof SelectedConfigError) throw error; return fail("resource"); }
+  }
   private assertIdentity(): void {
-    if (configSourceHead(this.root) !== this.revision) fail("drift");
+    const head = configSourceHead(this.root);
+    if (!this.pinned && head !== this.revision) fail("drift");
     if (this.selected && (getPlatformHomeDir() !== this.root || getTeamsDir() !== join(this.root, "teams") || realpathSync(getTeamsDir()) !== getTeamsDir())) fail("identity");
   }
   private remember(key: string, raw: Buffer): Buffer {
@@ -127,8 +142,11 @@ export class CommittedConfigSource {
     }
     return fail("resource");
   }
-  private path(relative: string): string {
+  private validateRelative(relative: string): void {
     if (!/^[A-Za-z0-9_./-]+$/.test(relative) || relative.length > 4096 || relative.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git") || relative.split("/").length > 16) fail("resource");
+  }
+  private path(relative: string): string {
+    this.validateRelative(relative);
     const parts = relative.split("/"); let parent = this.root;
     for (const part of parts.slice(0, -1)) {
       parent = join(parent, part);

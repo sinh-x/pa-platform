@@ -20,7 +20,7 @@ function config(name = "analyst", ids = ["analyze", "investigate", "research"]) 
 function fixture(run: (root: string, commit: () => void) => void) {
   const root = mkdtempSync(join(tmpdir(), "pap318-profile-"));
   try {
-    const files = { "teams/analyst.yaml": JSON.stringify(config()), "docs/agent.md": "Config-defined agent.", "docs/common.md": "[Reference](reference.md)", "docs/reference.md": "Transitive exact bytes.",
+    const files = { "primers/budgets.yaml": JSON.stringify({ $schema: "contracts/schemas/primer-budgets.schema.json", kind: "pa-primer-budgets", contractVersion: "1.0.0", unit: "lines", defaultMax: 1200, modes: ["analyze", "investigate", "research"].map(mode => ({ team: "analyst", mode, max: 9000 })) }), "teams/analyst.yaml": JSON.stringify(config()), "docs/agent.md": "Config-defined agent.", "docs/common.md": "[Reference](reference.md)", "docs/reference.md": "Transitive exact bytes.",
       "docs/project.md": "Selected project.", "docs/analyze.md": "Analyze; prepare a handoff.", "docs/investigate.md": "Evidence-backed diagnosis and repair direction; do not implement; feed analyze.",
       "docs/research.md": "Sourced comparison and recommendation; feed analyze.", "skills/global/method/SKILL.md": "Method [details](details.md)", "skills/global/method/details.md": "Exact method details." };
     for (const [path, body] of Object.entries(files)) { mkdirSync(join(root, path, ".."), { recursive: true }); writeFileSync(join(root, path), body); }
@@ -72,11 +72,12 @@ test("PAP-318 committed three modes and config-only add/edit/rename bind exact i
     assert.equal(binding.identity.publicMode, mode); assert.equal(modeCapabilityActor(binding), "requirements/analyze");
     assert.equal(modeCapabilityRouteMatches(binding, "analyst", mode), true); assert.equal(modeCapabilityRouteMatches(binding, "requirements", "analyze"), false);
     assert.equal(modeCapabilitySessionMatches(binding, MODE_CAPABILITY_SESSION), false); assert.equal(modeCapabilitySessionMatches(binding, READONLY_DOCUMENT_SESSION), true);
-    assert.deepEqual(binding.resources.map(file => file.path).sort(), ["teams/analyst.yaml", `docs/${mode}.md`, "docs/agent.md", "docs/common.md", "docs/reference.md", "docs/project.md", "skills/global/method/SKILL.md", "skills/global/method/details.md"].sort());
+    assert.deepEqual(binding.resources.map(file => file.path).sort(), ["primers/budgets.yaml", "teams/analyst.yaml", `docs/${mode}.md`, "docs/agent.md", "docs/common.md", "docs/reference.md", "docs/project.md", "skills/global/method/SKILL.md", "skills/global/method/details.md"].sort());
     assert.deepEqual([...selectedCapabilityTools(binding.policy)].sort(), mode === "analyze" ? ["pa_document", "pa_handoff"] : ["pa_ticket_intake", "read"]);
     const primer = generatePrimer({ runtime: "pi", teamConfig: selection.team, mode, requirementsDocument: true, modeResources: selection.resources,
       repository: { repoKey: "example", repoRoot: "/tmp/product" }, resolveFile() { assert.fail("No mutable fallback"); } });
-    for (const expected of [`Team: analyst`, `Mode: ${mode}`, "Transitive exact bytes", "Exact method details", "Config-defined agent", "requirements/analyze"]) assert.ok(primer.includes(expected), expected);
+    for (const expected of [`Team: analyst`, `Mode: ${mode}`, "Config-defined agent", "requirements/analyze", "budget=9000", "selected-resource:docs/reference.md", "selected-resource:skills/global/method/details.md"]) assert.ok(primer.includes(expected), expected);
+    assert.doesNotMatch(primer, /Transitive exact bytes|Exact method details/);
     assert.doesNotMatch(primer, /docs\/missing|not-selected|Public identity: requirements/);
     assert.throws(() => parseModeCapabilityBinding({ ...binding, schemaVersion: "pa-mode-capability-binding/v2" }));
     for (const fields of [{ actor: "builder" }, { profile: "writer/v1" }, { identity: { ...binding.identity, effectiveTeam: "builder" } }, { identity: { ...binding.identity, actor: "analyst/research" } }]) assert.throws(() => parseModeCapabilityBinding({ ...binding, ...fields }));
