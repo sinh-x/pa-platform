@@ -73,6 +73,41 @@ revision and effect set. `status` exposes original review coordinates. A saved
 request with no captured interaction remains uncertain; ordinary replay does not
 open a replacement prompt. Changed content/intent/effects needs its own review.
 
+## Registered branch conventions (PAP-324)
+
+Native handoff consumes the selected repository's registered
+`featureBranchPattern`, including its existing alias and omitted
+`feature/<ticket>-<topic>` default. It does not accept a prefix merely because
+another repository uses it. For example, a registered `feat/<ticket>-<topic>`
+accepts `feat/HR-005-global-meta-recents`, not the corresponding `feature/` name.
+Safe literal layouts such as `work/<ticket>/<topic>` also use the existing
+escaped-template matcher, not an arbitrary regular-expression configuration.
+Each usable template binds one exact ticket and one nonempty lowercase kebab
+topic. Invalid present policy does not silently select the default.
+
+Historical intent parsing is pure: it validates bounded Git-ref/ticket structure
+without consulting mutable registration. The current registered template owns
+strict topic matching at preparation, approval and effect boundaries; literal
+framing is not mistaken for topic syntax. Existing canonical intent/subject
+identities, reviewed names/base pins, lineage and attributed links are unchanged.
+Naming-policy drift can block remaining writes, but cannot rename or repin an
+issued intent or erase independently verified completed effects. The existing
+develop-only, files-ref and SHA-1 boundaries remain unchanged.
+
+Selected v2 `plan-status` takes the ORIGINAL `ticket`, `requestId`,
+`expectedTicketVersion` and `branch`. Its public guards authenticate the existing
+process, selection and unique registered physical root without probing Git or
+opening a writable registry. Non-observational owners retain physical Git
+reauthentication, including after asynchronous review. Status grants no effects.
+
+After a lost reply, observe those same coordinates before any write. Preserve
+later comments and distinguish absent, partial and complete native history.
+An absent intent plus changed ticket version still needs the original plan
+owner; do not refresh CAS, replace the request, rename an unknown intent, adopt a
+same-name branch or edit raw records. Live HR-005 continuation remains separately
+owned and requires its own admitted native review/effect sequence. Source tests
+and code review do not establish installed qualification or human acceptance.
+
 ## System-default browser: explicit scope disposition
 
 During this continuation, Sinh explicitly approved **a system-default browser
