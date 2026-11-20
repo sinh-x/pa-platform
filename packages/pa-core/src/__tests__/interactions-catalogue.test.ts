@@ -311,6 +311,21 @@ test("conservative source inventory rejects any changed or added dispatch source
   assert.notEqual(createHash("sha256").update(changed).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
 });
 
+test("PAP-324 naming-policy reconciliation tracks pure matching and observation dependencies without adding effects", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  // Existing actions, aliases, request/result schemas and effect categories are
+  // unchanged. Only registered naming-policy admission and read-only recovery
+  // internals changed; renewing this snapshot grants no installed capability.
+  for (const path of ["packages/pa-core/src/documents/handoff-policy.ts", "packages/pa-core/src/config.ts",
+    "packages/pa-core/src/tickets/git-validation.ts", "packages/pi-pa/src/document-session.ts"])
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked policy/observation dependency: ${path}`);
+  assert.equal(operation("handoff.plan-status").effectClass, "read");
+  for (const action of ["plan", "prepare-review", "review", "publish", "complete-branch", "queue"]) {
+    const row = operation(`handoff.${action}`);
+    assert.equal(row.effectClass, "write"); assert.equal(row.nativeBinding, null);
+  }
+});
+
 test("PAP-303 inventory tracks private observation/lifecycle dependencies without advertising peer effects", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   for (const file of ["source-guard-coverage.ts", "herdr-lifecycle.ts", "herdr-peer-admission.ts", "herdr-peer-exchange.ts"]) {

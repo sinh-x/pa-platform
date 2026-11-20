@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { withRepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
-import { getBranchPattern, loadRepoEntry } from "../repos.js";
+import { loadRepoEntry } from "../repos.js";
 import { creationDigest } from "../tickets/create-intent.js";
 import { getDb } from "../registry/db.js";
 import { TicketStore } from "../tickets/store.js";
@@ -14,6 +14,7 @@ import { SHA256, text } from "../workflows/contracts.js";
 import { handoffBranchIntentSha, parseHandoffRequest, type HandoffBranchIntent } from "./handoff-contract.js";
 import { intakeNativeHandoffTicket, type HandoffIntakeCaller, type HandoffIntakeHost } from "./handoff-intake.js";
 import { DocumentPackageError, documentReject } from "./package-contract.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 import { RegistryHandoffGitOwner } from "./handoff-git.js";
 import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
 import { assertLocalHandoffBranchTarget, observeLocalHandoffDevelop, withLocalHandoffRepository } from "./handoff-preflight.js";
@@ -125,12 +126,7 @@ export function planNativeHandoffTicket(store: TicketStore, host: NativeHandoffP
   const initial = structuredClone(host.authenticate());
   text(initial.identitySha256, SHA256);
   if (initial.ticket !== request.ticket) documentReject("DOCUMENT_AUTHORITY");
-  const registered = () => {
-    const repo = loadRepoEntry(initial.repoKey);
-    if (!repo || repo.path !== initial.repoRoot || getBranchPattern(repo) !== "feature/<ticket>-<topic>"
-      || (repo.developBranch ?? "develop") !== "develop") return documentReject("DOCUMENT_AUTHORITY");
-    return repo;
-  };
+  const registered = () => assertRegisteredHandoffPolicy(initial.repoKey, initial.repoRoot, request.ticket, request.branch);
   registered();
   // Same native coordinates after response loss. No caller-chosen scope/root or
   // arbitrary recovery namespace; expectedVersion/branch are checked separately.

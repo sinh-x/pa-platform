@@ -7,6 +7,7 @@ import { ID, integer, text } from "../workflows/contracts.js";
 import { documentReject } from "./package-contract.js";
 import { handoffBranchIntentSha, parseHandoffBranchIntent, parseHandoffReviewSubject, type HandoffBranchIntent, type HandoffReviewSubject, type LocalHandoffReviewSubject, type LocalReviewOutcome, type LocalReviewRequest } from "./handoff-contract.js";
 import { nativeHandoffPlanIdentity, nativeHandoffTicketVersion } from "./handoff-planning.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 import { inspectFullDocumentReader } from "./reader-publication.js";
 import { documentText, validateDocumentBytes } from "./package-tools.js";
 
@@ -82,6 +83,7 @@ export class HandoffReviewService {
   }
   async freeze(rawSubject: HandoffReviewSubject, rawIntent: HandoffBranchIntent, planIdentity: { scope: string; requestId: string }): Promise<string> {
     const subject = parseHandoffReviewSubject(rawSubject), intent = parseHandoffBranchIntent(rawIntent), caller = this.current(subject, intent);
+    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     if (subject.schemaVersion === "pa-handoff-review/v2") {
       if (!this.host.localReview || subject.origin.deploymentId !== caller.deploymentId || subject.origin.sessionId !== caller.sessionId
         || !isDeepStrictEqual(subject.origin.planIdentity, planIdentity) || !isDeepStrictEqual(planIdentity, nativeHandoffPlanIdentity(caller, intent.requestId))) documentReject("DOCUMENT_AUTHORITY");
@@ -91,6 +93,7 @@ export class HandoffReviewService {
     await inspectFullDocumentReader(document, this.host.artifactRoot, sha => this.journal.documents.snapshot(sha), subject.deliverySha256);
     return this.host.tickets.withWorkflowTransaction(() => {
       if (!isDeepStrictEqual(caller, this.current(subject, intent))) documentReject("DOCUMENT_STALE");
+      assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
       this.plan(intent, planIdentity); return this.journal.freeze(subject, intent);
     });
   }
@@ -104,6 +107,7 @@ export class HandoffReviewService {
       return;
     }
     this.current(subject, intent);
+    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     const request = this.journal.approved(subjectSha256, decisionId, effect), caller = this.host.authenticate();
     if (request.deploymentId !== caller.deploymentId || request.sessionId !== caller.sessionId
       || this.journal.evidence(request).principal !== `local-uid:${process.getuid?.()}`) documentReject("DOCUMENT_AUTHORITY");
@@ -111,6 +115,7 @@ export class HandoffReviewService {
   assertEffectCaller(sha: string): void {
     const { subject, intent } = this.journal.subject(sha);
     if (subject.schemaVersion === "pa-handoff-review/v1") { this.current(subject, intent); return; }
+    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     const hooks = this.host.localReview;
     if (!hooks?.assertEffectCaller) documentReject("DOCUMENT_UNAVAILABLE");
     sync(hooks.assertOrigin(subject, intent));
@@ -196,6 +201,7 @@ export class HandoffReviewService {
     };
     if (original?.kind === "requested" && (original.request.deploymentId !== caller.deploymentId || original.request.sessionId !== caller.sessionId)) documentReject("DOCUMENT_AUTHORITY");
     if (original?.kind === "requested" && events.some(e => e.kind === "issued" && e.decision.requestKey === requestKey)) return result(original.request);
+    if (operation === "capture") assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     if (original?.kind === "requested" && !this.journal.capture(requestKey)) documentReject("DOCUMENT_UNCERTAIN");
     if (!original && (events.length !== expectedRevision || events.at(-1)?.kind === "requested")) documentReject("DOCUMENT_CONFLICT");
     const presentation = await inspectFullDocumentReader(document, this.host.artifactRoot, sha => this.journal.documents.snapshot(sha), subject.deliverySha256);
@@ -212,7 +218,11 @@ export class HandoffReviewService {
       request = { schemaVersion: "pa-handoff-native-request/v1", requestKey, decisionId: `decision-${randomUUID()}`, subjectSha256,
         expectedRevision, operation, targetDecisionId, callerIdentitySha256: caller.identitySha256, selectionSha256: caller.selectionSha256,
         deploymentId: caller.deploymentId, sessionId: caller.sessionId, requestedAt: new Date().toISOString() };
-      this.host.tickets.withWorkflowTransaction(() => { same(); this.journal.appendRequest(request); });
+      this.host.tickets.withWorkflowTransaction(() => {
+        same();
+        if (operation === "capture") assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
+        this.journal.appendRequest(request);
+      });
       sync(this.host.afterPersist?.("requested"));
       // No mutation lock spans the live human interaction. A retained request
       // without capture is uncertain; it is NEVER reopened by ordinary replay.
@@ -227,6 +237,7 @@ export class HandoffReviewService {
     this.host.tickets.withWorkflowTransaction(() => {
       same(); events = this.journal.events(subjectSha256);
       if (!events.some(e => e.kind === "issued" && e.decision.requestKey === requestKey)) {
+        if (operation === "capture") assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
         if (events.at(-1)?.kind !== "requested" || (events.at(-1) as Extract<typeof events[number], { kind: "requested" }>).request.requestKey !== requestKey) documentReject("DOCUMENT_CONFLICT");
         this.journal.issue(subjectSha256, request, new Date().toISOString());
       }

@@ -62,6 +62,37 @@ test("distinct native review binds all full documents/intent/effects and origina
   } finally { f.close(); }
 });
 
+test("review preparation rechecks policy after asynchronous reader verification before persisting a subject", async () => {
+  const f = await fixture();
+  try {
+    const authenticate = f.host.authenticate; let checks = 0;
+    f.host.authenticate = () => {
+      if (++checks === 2) writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n    featureBranchPattern: feat/<ticket>-<topic>\n`);
+      return authenticate();
+    };
+    const next = { ...f.handoffSubject, effects: { publish: true, branchRef: true, queue: true } };
+    await assert.rejects(() => f.review.freeze(next, f.intent, f.planIdentity), /DOCUMENT_AUTHORITY/);
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM handoff_review_subjects").get() && (f.db.prepare("SELECT COUNT(*) AS n FROM handoff_review_subjects").get() as { n: number }).n, 1);
+    assert.deepEqual(f.journal.subject(f.sha).subject, f.handoffSubject);
+  } finally { f.close(); }
+});
+
+test("retained v1 issued-result recovery and revocation remain available after naming-policy drift", async () => {
+  const f = await fixture();
+  try {
+    const decision = await f.review.review(f.sha, 0), original = f.journal.events(f.sha);
+    writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n    featureBranchPattern: feat/<ticket>-<topic>\n`);
+    assert.deepEqual(await f.review.review(f.sha, 0), decision);
+    assert.equal(f.captures(), 1);
+    assert.throws(() => f.review.authorize(f.sha, decision.decisionId, "publish"), /DOCUMENT_AUTHORITY/);
+    const revocation = await f.review.review(f.sha, 2, "revoke", decision.decisionId);
+    assert.equal(revocation.operation, "revoke"); assert.equal(revocation.outcome, "approved");
+    assert.equal((await f.review.review(f.sha, 0)).revoked, true); assert.equal(f.captures(), 2);
+    assert.deepEqual(f.journal.events(f.sha).slice(0, 2), original);
+    assert.equal(f.store.get("EX-1")!.linkedBranches[0]!.state, "planned");
+  } finally { f.close(); }
+});
+
 for (const point of ["requested", "captured", "issued"] as const) test(`native decision response loss after ${point} never opens another unchanged review`, async () => {
   const f = await fixture();
   try {

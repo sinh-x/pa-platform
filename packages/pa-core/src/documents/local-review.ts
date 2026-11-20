@@ -14,6 +14,7 @@ import { LocalHandoffReviewService, type LocalHandoffReviewHooks, type LocalRevi
 import { assertLocalHandoffCaller, inspectLocalHandoffEffects, inspectLocalHandoffEligibility, localHandoffEligibility, observeLocalHandoffDevelop, withLocalHandoffRepository } from "./handoff-preflight.js";
 import { handoffReviewSubjectSha } from "./handoff-contract.js";
 import { DocumentPackageError, documentReject } from "./package-contract.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 
 /** Saved native provenance only. It neither authenticates a local process nor
  * represents an ended origin as a running caller. Never consult caller actor,
@@ -78,7 +79,13 @@ export function localHandoffReviewHooks(db: Database.Database, tickets: TicketSt
   return { assertOrigin, inspectEligibility: inspect,
     inspectEffects: (subject, intent, decisionId, presentation) => inspectLocalHandoffEffects(db, tickets, journal, artifactRoot, subject, intent, decisionId, presentation),
     assertEffectCaller(subject, intent, caller) { assertOrigin(subject, intent); assertLocalHandoffCaller(db, subject, intent, caller); },
-    withEffectBoundary(subject, intent, run) { return withLocalHandoffRepository(intent, admission => tickets.withWorkflowTransaction(() => { assertOrigin(subject, intent); return run(admission); })); },
+    withEffectBoundary(subject, intent, run) { return withLocalHandoffRepository(intent, admission => tickets.withWorkflowTransaction(() => {
+      assertOrigin(subject, intent);
+      assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
+      const result = run(admission);
+      assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
+      return result;
+    })); },
     withApprovalBoundary<T>(subject: LocalHandoffReviewSubject, intent: HandoffBranchIntent, run: () => T, presentation: Record<string, unknown>, disposition: "observe" | "settle" = "settle"): LocalReviewBoundaryResult<T> {
       let entered = false;
       try { return withLocalHandoffRepository(intent, admission => { entered = true; return tickets.withWorkflowTransaction(() => journal.transaction(() => {

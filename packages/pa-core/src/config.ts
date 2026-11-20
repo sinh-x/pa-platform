@@ -73,7 +73,9 @@ export function normalizeRepoConfig(repo: RawRepoConfig): RepoConfig {
   const { main_branch, develop_branch, feature_branch_pattern, ...canonical } = repo;
   const mainBranch = repo.mainBranch ?? main_branch;
   const developBranch = repo.developBranch ?? develop_branch;
-  const featureBranchPattern = repo.featureBranchPattern ?? feature_branch_pattern;
+  // Preserve invalid present policy for the admitting owner to reject; only
+  // omission selects an alias/default, never a null canonical value.
+  const featureBranchPattern = repo.featureBranchPattern !== undefined ? repo.featureBranchPattern : feature_branch_pattern;
   return {
     ...canonical,
     path: expandHome(repo.path),

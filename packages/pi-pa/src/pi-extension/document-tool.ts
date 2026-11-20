@@ -9,7 +9,7 @@ import { createWorkspaceTool } from "./workspace-tool.js";
 import { createPublicWebTool } from "./web-read-tool.js";
 import { createTicketStatusTool } from "./ticket-status-tool.js";
 import { createHandoffTool } from "./handoff-tool.js";
-import { confirmationDocumentCaller, DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller, authenticatePiReadonlyDocumentCaller } from "../document-session.js";
+import { confirmationDocumentCaller, DOCUMENT_INTERACTIONS_SESSION_VERSION, DOCUMENT_SESSION_VERSIONS, workspaceDocumentCaller, authenticatePiDocumentCaller, authenticatePiDocumentPlanObserver } from "../document-session.js";
 import { createPaTicketIntakeTool, ticketIntakeFailure } from "./ticket-intake-tool.js";
 import { createPaCapabilitiesTool } from "./capability-tool.js";
 import { isModeCapabilitySession, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
@@ -75,7 +75,7 @@ export function documentToolDeployment(): string | undefined {
 /** Registration of a secured built-in replaces an existing tool; it does NOT
  * grant that tool to a retained document profile or bypass direct-call admission. */
 export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
-  const caller = (call.toolName ?? call.name) === "pa_handoff" ? authenticatePiReadonlyDocumentCaller(context) : authenticatePiDocumentCaller(context);
+  const caller = (call.toolName ?? call.name) === "pa_handoff" ? authenticatePiDocumentPlanObserver(context) : authenticatePiDocumentCaller(context);
   if (caller.deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
   if (caller.capabilities) return assertPolicyDocumentTool(deploymentId, call, context);
   if (!documentSessionToolAllowed(call, caller.repoRoot, workspaceDocumentCaller(caller), caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
@@ -86,7 +86,7 @@ export function policyDocumentDeployment(): string | undefined {
 }
 export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
   const name = call.toolName ?? call.name ?? "";
-  const caller = name === "pa_handoff" ? authenticatePiReadonlyDocumentCaller(context) : authenticatePiDocumentCaller(context);
+  const caller = name === "pa_handoff" ? authenticatePiDocumentPlanObserver(context) : authenticatePiDocumentCaller(context);
   if (caller.deploymentId !== deploymentId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
   if (!capabilityToolSelected(caller.capabilities.policy, name)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
   if (name === "read" && !caller.capabilities.policy.allow.includes("ordinary.read") && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");

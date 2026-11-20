@@ -9,7 +9,7 @@ import { MAX_REPOSITORY_TICKET_SLOT_BYTES, preparedRepositoryTicketReservationPa
 import { assertReservationInventory } from "../deploy/execution-custody.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { parseModeCapabilityBinding, modeCapabilityRouteMatches, isModeCapabilitySession, hasModeResources, modeCapabilitySessionMatches } from "../mode-capabilities.js";
-import { loadRepoEntry, getBranchPattern } from "../repos.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
 import { readTicketWorkflow } from "../workflows/public.js";
 import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
 import type { TicketStore } from "../tickets/store.js";
@@ -44,8 +44,8 @@ function storage(root: string, relative: string): void {
   }
 }
 export function observeLocalHandoffDevelop(intent: HandoffBranchIntent): string {
-  const root = intent.repository.root, repo = loadRepoEntry(intent.repository.key);
-  if (!repo || repo.path !== root || getBranchPattern(repo) !== "feature/<ticket>-<topic>" || (repo.developBranch ?? "develop") !== "develop") documentReject("DOCUMENT_AUTHORITY");
+  const root = intent.repository.root;
+  assertRegisteredHandoffPolicy(intent.repository.key, root, intent.ticket, intent.branch);
   storage(root, "refs/heads/develop"); storage(root, "packed-refs");
   if (git(root, ["rev-parse", "--show-ref-format"]) !== "files" || git(root, ["rev-parse", "--show-object-format"]) !== "sha1"
     || git(root, ["symbolic-ref", "--quiet", "refs/heads/develop"], 1) !== null) documentReject("DOCUMENT_SOURCE");
@@ -187,7 +187,7 @@ export function inspectLocalHandoffEffects(db: Database.Database, tickets: Ticke
     }
   } catch { /* Observation failure is explicit conflict-or-unknown, never absence. */ }
   if (branchRef.completed) {
-    try { withLocalHandoffRepository(intent, admission => new RegistryHandoffGitOwner(db, false).withRepository(intent, branchRef.operationId, port => tickets.withWorkflowTransaction(() => {
+    try { withLocalHandoffRepository(intent, admission => new RegistryHandoffGitOwner(db, false).observeRepository(intent, branchRef.operationId, port => tickets.withWorkflowTransaction(() => {
       const physical = port.observe(), ticket = tickets.get(intent.ticket), link = ticket?.linkedBranches[0];
       const head = intent.action === "reuse" ? intent.lineage!.observedHeadSha : intent.base.sha;
       if (physical.state !== "present" || physical.headSha !== head || !port.isAncestor(intent.base.sha, head)
@@ -200,7 +200,7 @@ export function inspectLocalHandoffEffects(db: Database.Database, tickets: Ticke
         || !isDeepStrictEqual(materialization.record.before.linkedBranches, plan.record.after.linkedBranches) || !isDeepStrictEqual(materialization.record.after.linkedBranches, ticket.linkedBranches)
         : !isDeepStrictEqual(plan.record.after.linkedBranches, ticket.linkedBranches)) documentReject("DOCUMENT_CONFLICT");
       branchRef.verified = true;
-    }), undefined, admission)); }
+    }), admission)); }
     catch { /* Retained custody or changed physical evidence is not completion. */ }
   }
   const ticket = tickets.get(intent.ticket);

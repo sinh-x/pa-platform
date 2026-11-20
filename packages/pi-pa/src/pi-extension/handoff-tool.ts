@@ -11,7 +11,9 @@ export function createHandoffTool(identitySha256: string): PiToolDefinition {
       let result: Record<string, unknown>;
       try {
         const context = rawContext as PiHandoffContext;
-        if (authenticatePiHandoffCaller(context, signal).identitySha256 !== identitySha256) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+        // Binding is observation-only; the parsed finite owner reauthenticates
+        // physical Git identity before every non-observational operation.
+        if (authenticatePiHandoffCaller(context, signal, true).identitySha256 !== identitySha256) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
         if (Object.keys(input).length !== 1 || typeof input.request !== "string" || Buffer.byteLength(input.request) > 65536) throw new DocumentPackageError("DOCUMENT_INPUT");
         result = { schemaVersion: "pa-handoff-result/v1", ok: true, result: await mutatePiHandoff(input.request, context, signal), executionAdmitted: false };
       } catch (error) { result = handoffFailure(error); }

@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { withActiveRepositoryRefAdmission, withRepositoryRefAdmission, type RepositoryRefAdmission } from "../deploy/repository-admission.js";
 import { withRepositoryRefTicketExclusion } from "../deploy/ticket-concurrency.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { getBranchPattern, loadRepoEntry } from "../repos.js";
+import { assertRegisteredHandoffPolicy } from "./handoff-policy.js";
+import { loadRepoEntry } from "../repos.js";
 import { digest, parseWorkflowRequest, SHA256, text } from "../workflows/contracts.js";
 import { documentReject } from "./package-contract.js";
 import { handoffBranchIntentSha, parseHandoffBranchIntent, type HandoffBranchIntent, type HandoffRepository } from "./handoff-contract.js";
@@ -56,12 +57,24 @@ export class RegistryHandoffGitOwner {
   }
   withRepository<T>(rawIntent: HandoffBranchIntent, rawOperationId: string, run: (git: NativeHandoffGit) => T,
     boundary?: (point: HandoffGitBoundary) => void, admission?: RepositoryRefAdmission): T {
+    return this.accessRepository(rawIntent, rawOperationId, run, boundary, admission, false);
+  }
+  /** Physical verification of saved effects, not admission for a remaining
+   * write. The observation port has no create capability and still verifies
+   * registered root, physical identity, storage, correlation and lineage. */
+  observeRepository<T>(intent: HandoffBranchIntent, operationId: string, run: (git: Pick<NativeHandoffGit, "observe" | "isAncestor">) => T,
+    admission?: RepositoryRefAdmission): T {
+    return this.accessRepository(intent, operationId, port => run(Object.freeze({ observe: port.observe, isAncestor: port.isAncestor })), undefined, admission, true);
+  }
+  private accessRepository<T>(rawIntent: HandoffBranchIntent, rawOperationId: string, run: (git: NativeHandoffGit) => T,
+    boundary: ((point: HandoffGitBoundary) => void) | undefined, admission: RepositoryRefAdmission | undefined, observationOnly: boolean): T {
     const intent = parseHandoffBranchIntent(rawIntent), operationId = text(rawOperationId, SHA256);
     const binding = handoffBranchIntentSha(intent), ref = `refs/heads/${intent.branch}`;
     const originId = intent.action === "reuse" ? intent.lineage!.operationSha256 : operationId;
     const registered = () => {
+      if (!observationOnly) return assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
       const repo = loadRepoEntry(intent.repository.key);
-      if (!repo || repo.path !== intent.repository.root || getBranchPattern(repo) !== "feature/<ticket>-<topic>" || (repo.developBranch ?? "develop") !== "develop") documentReject("DOCUMENT_AUTHORITY");
+      if (!repo || repo.path !== intent.repository.root) documentReject("DOCUMENT_AUTHORITY");
     };
     registered();
     const read = (): GitIntent | undefined => {
@@ -162,7 +175,7 @@ export class RegistryHandoffGitOwner {
             try { git("merge-base", "--is-ancestor", base, head); return true; } catch { return false; }
           },
           create: () => {
-            check(); if (intent.action !== "create") documentReject("DOCUMENT_AUTHORITY");
+            check(); if (observationOnly || intent.action !== "create") documentReject("DOCUMENT_AUTHORITY");
             const before = observe();
             if (before.state !== "absent" || before.history !== "never-created") documentReject("DOCUMENT_UNCERTAIN");
             storage();
