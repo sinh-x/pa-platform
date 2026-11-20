@@ -5,10 +5,11 @@ import { digest, ID, integer, object, oneOf, SHA256, strictJson, text } from "..
 import { documentGuard, documentPackageSha, documentReject, type DocumentPackage } from "../documents/package-contract.js";
 import { handoffBranchIntentSha, handoffReviewSubjectSha, parseHandoffBranchIntent, parseHandoffReviewSubject, type HandoffBranchIntent, type HandoffReviewSubject } from "../documents/handoff-contract.js";
 import { documentPending, RegistryDocumentJournal } from "./documents.js";
+import { contentReviewSubjectSha, parseContentReviewSubject, type ContentReviewSubject } from "../documents/content-review-contract.js";
 import { RegistryHandoffBranchJournal, handoffBranchOperationId } from "../documents/handoff-branch.js";
 
 export interface HandoffReviewRequest {
-  schemaVersion: "pa-handoff-native-request/v1" | "pa-handoff-local-request/v2"; requestKey: string; decisionId: string;
+  schemaVersion: "pa-handoff-native-request/v1" | "pa-handoff-local-request/v2" | "pa-content-review-request/v1"; requestKey: string; decisionId: string;
   subjectSha256: string; expectedRevision: number; operation: "capture" | "revoke"; targetDecisionId: string | null;
   callerIdentitySha256: string; selectionSha256: string; deploymentId: string; sessionId: string; requestedAt: string;
 }
@@ -39,7 +40,7 @@ export function handoffReviewRequestKey(subjectSha256: string, expectedRevision:
 }
 function request(value: unknown): HandoffReviewRequest {
   const r = object(value, ["schemaVersion", "requestKey", "decisionId", "subjectSha256", "expectedRevision", "operation", "targetDecisionId", "callerIdentitySha256", "selectionSha256", "deploymentId", "sessionId", "requestedAt"]);
-  oneOf(r.schemaVersion, ["pa-handoff-native-request/v1", "pa-handoff-local-request/v2"]);
+  oneOf(r.schemaVersion, ["pa-handoff-native-request/v1", "pa-handoff-local-request/v2", "pa-content-review-request/v1"]);
   text(r.requestKey, SHA256); text(r.subjectSha256, SHA256); text(r.decisionId, ID); integer(r.expectedRevision, 0, 1021);
   oneOf(r.operation, ["capture", "revoke"]); text(r.callerIdentitySha256, SHA256); text(r.selectionSha256, SHA256);
   text(r.deploymentId, /^d-[a-f0-9]{6}$/); text(r.sessionId, undefined, 256); time(r.requestedAt);
@@ -96,6 +97,36 @@ export class RegistryHandoffReviewJournal {
       || subject.effects.queue && !document.effects.queue) documentReject("DOCUMENT_UNCERTAIN");
     return { subject, intent, document };
   }
+  /** Content-only bindings live in the SAME native subjects/events/captures.
+   * A null intent is mandatory, not a fabricated branch plan with false effects. */
+  freezeContent(raw: ContentReviewSubject): string {
+    const subject = parseContentReviewSubject(raw), sha = contentReviewSubjectSha(subject);
+    this.documents.subject(subject.documentSubjectSha256).members.forEach(m => this.documents.snapshot(m.sha256));
+    return this.transaction(() => {
+      const existing = this.contentSubjects().find(value => value.subject.documentSubjectSha256 === subject.documentSubjectSha256 && value.subject.deliverySha256 === subject.deliverySha256);
+      if (existing) return existing.sha256;
+      this.db.prepare("INSERT INTO handoff_review_subjects(sha256,body,intent) VALUES(?,?,?)").run(sha, JSON.stringify(subject), "null");
+      this.contentSubject(sha); return sha;
+    });
+  }
+  contentSubject(sha256: string): { subject: ContentReviewSubject; document: DocumentPackage } {
+    const row = this.db.prepare<[string], { body: string; intent: string }>("SELECT body,intent FROM handoff_review_subjects WHERE sha256=?").get(text(sha256, SHA256));
+    if (!row) return documentReject("DOCUMENT_SOURCE");
+    const subject = parseContentReviewSubject(strictJson(Buffer.from(row.body), 65536));
+    if (row.intent !== "null" || contentReviewSubjectSha(subject) !== sha256) documentReject("DOCUMENT_UNCERTAIN");
+    return { subject, document: this.documents.subject(subject.documentSubjectSha256) };
+  }
+  contentSubjects(): { sha256: string; subject: ContentReviewSubject; document: DocumentPackage }[] {
+    const rows = this.db.prepare<[], { sha256: string }>("SELECT sha256 FROM handoff_review_subjects WHERE json_extract(body,'$.schemaVersion')='pa-content-review-subject/v1' LIMIT 1025").all();
+    if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
+    return rows.map(row => ({ sha256: row.sha256, ...this.contentSubject(row.sha256) }));
+  }
+  private binding(sha256: string): HandoffReviewSubject | ContentReviewSubject {
+    const row = this.db.prepare<[string], { body: string }>("SELECT body FROM handoff_review_subjects WHERE sha256=?").get(text(sha256, SHA256));
+    if (!row) return documentReject("DOCUMENT_SOURCE");
+    const head = object(strictJson(Buffer.from(row.body), 65536), ["schemaVersion"], ["documentSubjectSha256", "deliverySha256", "purpose", "callerIdentitySha256", "selectionSha256", "deploymentId", "sessionId", "branchIntentSha256", "effects", "origin"]);
+    return head.schemaVersion === "pa-content-review-subject/v1" ? this.contentSubject(sha256).subject : this.subject(sha256).subject;
+  }
   capture(requestKey: string): Buffer | null {
     const row = this.db.prepare("SELECT raw,sha256 FROM handoff_review_captures WHERE request_key=?").get(text(requestKey, SHA256)) as { raw: Buffer; sha256: string } | undefined;
     if (!row) return null;
@@ -115,10 +146,10 @@ export class RegistryHandoffReviewJournal {
   evidence(r: HandoffReviewRequest): Omit<HandoffIssuedDecision, "recordedAt"> {
     const raw = this.capture(r.requestKey); if (!raw) return documentReject("DOCUMENT_UNCERTAIN");
     return documentGuard(() => {
-      const local = this.subject(r.subjectSha256).subject.schemaVersion === "pa-handoff-review/v2";
+      const local = this.binding(r.subjectSha256).schemaVersion !== "pa-handoff-review/v1";
       const e = object(strictJson(raw, 65536), ["schemaVersion", "method", "request", "outcome", "principal", "interactionId", "boundary", ...(local ? ["acceptedAt"] : [])]);
       if (local) {
-        if (r.schemaVersion !== "pa-handoff-local-request/v2" || e.schemaVersion !== "pa-handoff-local-evidence/v2"
+        if (!["pa-handoff-local-request/v2", "pa-content-review-request/v1"].includes(r.schemaVersion) || e.schemaVersion !== "pa-handoff-local-evidence/v2"
           || e.method !== "unauthenticated-local-confirmation" || e.boundary !== "local-unverified-not-authenticated-human-consent") documentReject("DOCUMENT_AUTHORITY");
         time(e.acceptedAt);
       } else if (r.schemaVersion !== "pa-handoff-native-request/v1" || e.schemaVersion !== "pa-handoff-native-evidence/v1" || e.method !== "pi-native-handoff-review"
@@ -129,7 +160,7 @@ export class RegistryHandoffReviewJournal {
     });
   }
   events(subjectSha256: string): HandoffReviewEvent[] {
-    const local = this.subject(subjectSha256).subject.schemaVersion === "pa-handoff-review/v2";
+    const local = this.binding(subjectSha256).schemaVersion !== "pa-handoff-review/v1";
     const rows = this.db.prepare("SELECT revision,sha256,body FROM handoff_review_events WHERE subject_sha=? ORDER BY revision LIMIT 1025").all(subjectSha256) as { revision: number; sha256: string; body: string }[];
     if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
     let predecessor: string | null = null; const events: HandoffReviewEvent[] = [];
@@ -144,10 +175,13 @@ export class RegistryHandoffReviewJournal {
     } return events;
   }
   private transition(sha: string, prior: HandoffReviewEvent[], next: HandoffReviewEvent): void {
-    const last = prior.at(-1), { subject } = this.subject(sha);
+    const last = prior.at(-1), subject = this.binding(sha);
     if (next.kind === "requested") {
       const r = next.request;
-      if (subject.schemaVersion === "pa-handoff-review/v2") {
+      if (subject.schemaVersion === "pa-content-review-subject/v1") {
+        if (prior.length || r.schemaVersion !== "pa-content-review-request/v1" || r.operation !== "capture" || r.targetDecisionId !== null
+          || r.deploymentId !== subject.deploymentId || r.sessionId !== subject.sessionId) documentReject("DOCUMENT_AUTHORITY");
+      } else if (subject.schemaVersion === "pa-handoff-review/v2") {
         if (r.schemaVersion !== "pa-handoff-local-request/v2" || r.deploymentId !== subject.origin.deploymentId || r.sessionId !== subject.origin.sessionId) documentReject("DOCUMENT_AUTHORITY");
       } else if (r.schemaVersion !== "pa-handoff-native-request/v1") documentReject("DOCUMENT_AUTHORITY");
       if (last?.kind === "requested" || prior.some(e => e.kind === "stale") || r.expectedRevision !== prior.length || r.subjectSha256 !== sha || r.callerIdentitySha256 !== subject.callerIdentitySha256
@@ -162,7 +196,7 @@ export class RegistryHandoffReviewJournal {
       if (last?.kind !== "requested" || last.request.requestKey !== next.decision.requestKey) documentReject("DOCUMENT_CONFLICT");
       const { recordedAt: _at, ...d } = next.decision;
       if (!isDeepStrictEqual(d, this.evidence(last.request))) documentReject("DOCUMENT_AUTHORITY");
-      if (subject.schemaVersion === "pa-handoff-review/v2") {
+      if (subject.schemaVersion !== "pa-handoff-review/v1") {
         const capture = object(strictJson(this.capture(last.request.requestKey)!, 65536), ["schemaVersion", "method", "request", "outcome", "principal", "interactionId", "boundary", "acceptedAt"]);
         if (next.decision.recordedAt !== capture.acceptedAt) documentReject("DOCUMENT_UNCERTAIN");
       }
@@ -173,7 +207,7 @@ export class RegistryHandoffReviewJournal {
   private assertNoOtherPending(sha: string, newRequest = false): void {
     const { document } = this.subject(sha);
     if (documentPending(this.documents.events(document.repository.key, document.ticket)).length) documentReject("DOCUMENT_UNCERTAIN");
-    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects LIMIT 1025").all() as { sha256: string }[];
+    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects WHERE json_extract(body,'$.schemaVersion')<>'pa-content-review-subject/v1' LIMIT 1025").all() as { sha256: string }[];
     if (rows.length > 1024) documentReject("DOCUMENT_UNCERTAIN");
     for (const row of rows) {
       if (row.sha256 === sha && !newRequest) continue;
@@ -196,7 +230,7 @@ export class RegistryHandoffReviewJournal {
   appendRequest(raw: HandoffReviewRequest): void {
     const r = request(raw);
     this.transaction(() => {
-      if (r.operation === "capture") this.assertNoOtherPending(r.subjectSha256, true);
+      if (r.operation === "capture" && this.binding(r.subjectSha256).schemaVersion !== "pa-content-review-subject/v1") this.assertNoOtherPending(r.subjectSha256, true);
       this.append(r.subjectSha256, r.expectedRevision, { kind: "requested", request: r });
     });
   }
@@ -211,7 +245,9 @@ export class RegistryHandoffReviewJournal {
     const r = request(rawRequest);
     oneOf(outcome, ["approved", "changes-requested", "rejected", "cancelled"]);
     return this.transaction(() => {
-      if (this.subject(sha).subject.schemaVersion !== "pa-handoff-review/v2" || r.schemaVersion !== "pa-handoff-local-request/v2" || r.subjectSha256 !== sha) documentReject("DOCUMENT_AUTHORITY");
+      const subject = this.binding(sha);
+      if ((subject.schemaVersion === "pa-handoff-review/v2" ? r.schemaVersion !== "pa-handoff-local-request/v2"
+        : subject.schemaVersion === "pa-content-review-subject/v1" ? r.schemaVersion !== "pa-content-review-request/v1" : true) || r.subjectSha256 !== sha) documentReject("DOCUMENT_AUTHORITY");
       const events = this.events(sha), original = events.find(e => e.kind === "requested" && e.request.requestKey === r.requestKey);
       if (original?.kind !== "requested" || !isDeepStrictEqual(original.request, r)) documentReject("DOCUMENT_AUTHORITY");
       const previous = events.find(e => e.kind === "issued" && e.decision.requestKey === r.requestKey);
@@ -279,7 +315,7 @@ export class RegistryHandoffReviewJournal {
    * checked separately before every remaining write. */
   completedPublication(documentSha256: string): { subjectSha256: string; decisionId: string } | undefined {
     text(documentSha256, SHA256);
-    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects LIMIT 1025").all() as { sha256: string }[];
+    const rows = this.db.prepare("SELECT sha256 FROM handoff_review_subjects WHERE json_extract(body,'$.schemaVersion')<>'pa-content-review-subject/v1' LIMIT 1025").all() as { sha256: string }[];
     if (rows.length > 1024) return documentReject("DOCUMENT_UNCERTAIN");
     const matches = rows.flatMap(row => {
       if (this.subject(row.sha256).subject.documentSubjectSha256 !== documentSha256) return [];

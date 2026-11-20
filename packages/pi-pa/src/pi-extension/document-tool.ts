@@ -1,9 +1,10 @@
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { publicationRecoveryGuidance, parseDocumentRequest, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, getConfigDir, getDeploymentEvents, readArtifactFile } from "@pa-platform/pa-core";
+import { publicationRecoveryGuidance, contentReviewGuidance, parseDocumentRequest, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, getConfigDir, getDeploymentEvents, readArtifactFile } from "@pa-platform/pa-core";
 import { mutatePiDocument } from "../document-native.js";
 import { runDocumentConfirmationCommand } from "./document-confirmation-command.js";
+import { runContentReviewCommand } from "./content-review-command.js";
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 import { createWorkspaceTool } from "./workspace-tool.js";
 import { createPublicWebTool } from "./web-read-tool.js";
@@ -17,7 +18,7 @@ import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
 
 /** New requirements capability tools, never arbitrary subprocess/RPC execution. */
-export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile = false, confirmationProfile = false, recoveryProfile = false): PiToolDefinition {
+export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile = false, confirmationProfile = false, recoveryProfile = false, contentSignal?: AbortSignal): PiToolDefinition {
   const workspaceDescription = "Requirements package operations for native workspace-v2. Use capabilities for exact availability. Same strict package/check/freeze/show/read/compare/publish/queue grammar as document-v1; present(sha256) generates full immutable Markdown links, safe static HTML companions and a source/renderer hash manifest. It does not open or observe a viewer. Okular export is unavailable: use an explicit Markdown/browser fallback. capture/revoke are unavailable until the host provides attested human-event provenance; no select-dialog fallback or model-supplied approval. Publication/queue still require existing native-issued authority, exact source checks and owning services. pa_workspace provides separate unsigned investigation tools. No source/Git/builder authority.";
   const confirmationDescription = "Native pa-document-confirmation/v3 supporting operations. Same strict document package/status/read/check/freeze/present/publication tools as workspace-v2. confirm(sha256,expectedRevision,scope=content|publish|publish-and-queue) requests ONE native TUI decision with full immutable document/technical tabs; no page acknowledgements or second final approval. confirm-revoke(sha256,expectedRevision,decisionId) requests append-only revocation. Native UI derives outcome/principal/interaction; no chat attestation, caller outcomes, identities, paths or receipt imports. Exact unchanged retries MUST reuse the ORIGINAL request revision/scope/target: issued decisions reconcile immutable JSON and ticket tracking without a new prompt. Use status/show to recover request coordinates. JSON tracking is not authority; publication/queue verify native scope, source, lifecycle and owners. capture/revoke remain the retained interface, not a fallback here. branch-inspect(ticket) reads existing linkedBranches through native repository/worktree/lease/ownership owners, returns precise observed blockers and never prepares, relinks or launches. Repeat observations are not grants and selection/launch recheck mutable facts. Operator /pa-approve accepts the same strict confirm/confirm-revoke JSON. pa_workspace remains separately bounded. No builder/source/Git authority.";
   return { name: "pa_document", label: "PA Document Package", executionMode: "sequential",
@@ -27,18 +28,24 @@ export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile =
       let result: Record<string, unknown>;
       try {
         if (Object.keys(input).length !== 1 || typeof input.request !== "string" || Buffer.byteLength(input.request) > 65536) throw new DocumentPackageError("DOCUMENT_INPUT");
-        result = await mutate(input.request, context as PiWorkflowContext, signal);
+        result = await mutate(input.request, context as PiWorkflowContext, signal, contentSignal);
       } catch (error) {
         const code = error instanceof DocumentPackageError ? error.code : "DOCUMENT_UNAVAILABLE";
-        let recovery = false;
-        try { const r = parseDocumentRequest(input.request as string); recovery = r.action === "publication-diagnose" || r.action === "publication-retire"; } catch { /* malformed input is not a trusted operation label */ }
-        result = { schemaVersion: "pa-document-result/v1", ok: false, code, ...(recovery ? { guidance: publicationRecoveryGuidance(code) } : {}), scope: "this-operation-only", executionAdmitted: false };
+        let recovery = false, contentReview = false;
+        try {
+          if (typeof input.request === "string") {
+            const r = parseDocumentRequest(input.request);
+            recovery = r.action === "publication-diagnose" || r.action === "publication-retire";
+            contentReview = ["review-prepare", "review-list", "review-show", "review-sign"].includes(String(r.action));
+          }
+        } catch { /* Malformed input is not a trusted operation label. */ }
+        result = { schemaVersion: "pa-document-result/v1", ok: false, code, ...(recovery ? { guidance: publicationRecoveryGuidance(code) } : contentReview ? { guidance: contentReviewGuidance(code) } : {}), scope: "this-operation-only", executionAdmitted: false };
       }
       let output = JSON.stringify(result);
       if (Buffer.byteLength(output) > 50 * 1024 || output.split("\n").length > 2000) {
         // Effects may already be durable: never turn a lost/oversized reply into an absent transaction.
         const data = result.result as Record<string, unknown> | undefined;
-        output = JSON.stringify({ schemaVersion: "pa-document-result/v1", ok: result.ok, action: result.action, output: "bounded-summary-use-show-and-paged-read", sha256: data?.sha256, expectedRevision: data?.expectedRevision, operationId: data?.operationId, originalRequestSha256: data?.originalRequestSha256, observationSha256: data?.observationSha256, eligible: data?.eligible, requestId: data?.requestId, requestKey: data?.requestKey, consentId: data?.consentId, consentRef: data?.consentRef, settlementRef: data?.settlementRef, settled: data?.settled, outcome: data?.outcome, decisionId: data?.decisionId, approval: data?.approval, executionAdmitted: false });
+        output = JSON.stringify({ schemaVersion: "pa-document-result/v1", ok: result.ok, action: result.action, output: "bounded-summary-use-show-and-paged-read", reference: data?.reference, purpose: data?.purpose, sha256: data?.sha256, expectedRevision: data?.expectedRevision, operationId: data?.operationId, originalRequestSha256: data?.originalRequestSha256, observationSha256: data?.observationSha256, eligible: data?.eligible, requestId: data?.requestId, requestKey: data?.requestKey, consentId: data?.consentId, consentRef: data?.consentRef, settlementRef: data?.settlementRef, settled: data?.settled, outcome: data?.outcome, decisionId: data?.decisionId, approval: data?.approval, executionAdmitted: false });
       }
       return { content: [{ type: "text", text: output }], details: {}, ...(result.ok === true ? {} : { isError: true }) };
     },
@@ -92,6 +99,9 @@ export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall,
   if (name === "read" && !caller.capabilities.policy.allow.includes("ordinary.read") && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
 }
 export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
+  const contentLifetime = new AbortController();
+  if (lifecycle) lifecycle.addShutdownStep(() => { contentLifetime.abort(); });
+  else pi.on?.("session_shutdown", () => { contentLifetime.abort(); });
   const policyDeploymentId = policyDocumentDeployment();
   const exposePolicy = (context: unknown) => {
     if (!policyDeploymentId) return;
@@ -109,11 +119,11 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { if (policyDeploymentId) pi.setActiveTools?.([]); return; }
     const confirmationProfile = confirmationDocumentCaller(caller);
     const interactionsProfile = caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION;
-    const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile, isModeCapabilitySession(caller.profile) && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"));
+    const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile, isModeCapabilitySession(caller.profile) && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"), contentLifetime.signal);
     if (interactionsProfile) document.description = "Native document interactions-v4: retains the confirmation-v3 package/workspace behavior described below. Additional requested ticket creation is a SEPARATE pa_ticket_intake port, not an expansion of document ticket-create or retained pa_ticket. " + document.description;
-    if (caller.capabilities) document.description = "Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
+    if (caller.capabilities) document.description = "With document.local-review + document.handoff + document.package selected: review-prepare(sha256) returns an exact content-only reference without a branch plan; review-list(ticket) discovers references; review-show(reference) verifies complete immutable delivery; review-sign(reference) opens the shared sign-only foreground. Manual /pa-review REFERENCE and guided ppa document review REFERENCE use the same canonical decision. Signing grants/invokes no downstream effects. Native config-selected document operations: the following package/confirmation semantics are preserved; tool access is limited to this session's immutable selection. Ticket intake and source discovery are separate selectable tools, not extra document actions. " + document.description;
     const tools = [document, ...(workspaceDocumentCaller(caller) ? [createWorkspaceTool()] : []),
-      ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_handoff") ? [createHandoffTool(caller.handoffIdentitySha256!)] : []),
+      ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_handoff") ? [createHandoffTool(caller.handoffIdentitySha256!, contentLifetime.signal)] : []),
       ...(caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_ticket_status") ? [createTicketStatusTool(caller.identitySha256)] : []),
       ...(caller.capabilities && caller.sessionId && capabilityToolSelected(caller.capabilities.policy, "pa_web_read") ? [createPublicWebTool(caller.deploymentId, caller.sessionId, lifecycle)] : [])];
     if (interactionsProfile || caller.capabilities) {
@@ -126,6 +136,10 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
       }));
     }
     if (confirmationProfile) pi.registerCommand?.("pa-approve", { description: "Request/reconcile one native package decision. Arguments: strict confirm or confirm-revoke JSON (same pa_document grammar).", handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext)) : runDocumentConfirmationCommand(args, context as PiDocumentConfirmationContext) });
+    if (caller.capabilities && ["document.local-review", "document.handoff", "document.package"].every(id => caller.capabilities!.policy.allow.includes(id))) {
+      pi.registerCommand?.("pa-review", { description: "Sign exact content only: /pa-review REFERENCE. Use /pa-review TICKET for reference discovery; a ticket never chooses a revision.",
+        handler: (args, context) => lifecycle ? lifecycle.trackRegistryAccess(() => runContentReviewCommand(args, context as PiDocumentConfirmationContext, contentLifetime.signal)) : runContentReviewCommand(args, context as PiDocumentConfirmationContext, contentLifetime.signal) });
+    }
     for (const tool of tools) {
       if (caller.capabilities && !capabilityToolSelected(caller.capabilities.policy, tool.name)) continue;
       pi.registerTool?.({ ...tool, execute: async (...args) => {

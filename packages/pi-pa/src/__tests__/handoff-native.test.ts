@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
+import { spawn as spawnPty } from "node-pty";
+import { fileURLToPath } from "node:url";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -61,12 +63,13 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     }),
   } };
   const tools = new Map<string, PiToolDefinition>(), handlers = new Map<string, Array<(...args: any[]) => any>>();
-  const runtime: PiRuntime = { registerTool: tool => tools.set(tool.name, tool), setActiveTools() {}, on: ((name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler])) as any };
+  const commands = new Map<string, { handler: (args: string, context: unknown) => unknown }>();
+  const runtime: PiRuntime = { registerCommand: (name, command) => { commands.set(name, command); }, registerTool: tool => tools.set(tool.name, tool), setActiveTools() {}, on: ((name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler])) as any };
   const lifecycle = createPiSessionLifecycle(() => {}), continuations: ReturnType<typeof createPiSessionLifecycle>[] = [];
   registerPiSessionModules(runtime, lifecycle, [registerDocumentModule]);
   for (const handler of handlers.get("session_start") ?? []) handler({}, context);
-  const execute = async (tool: string, request: unknown, ctx: PiHandoffContext = context) => {
-    const result = await tools.get(tool)!.execute("native-fixture", { request: JSON.stringify(request) }, undefined, undefined, ctx);
+  const execute = async (tool: string, request: unknown, ctx: PiHandoffContext = context, signal?: AbortSignal) => {
+    const result = await tools.get(tool)!.execute("native-fixture", { request: JSON.stringify(request) }, signal, undefined, ctx);
     return JSON.parse(result.content[0].text) as { ok: boolean; code?: string; result: Record<string, any> };
   };
   const handoff = (input: Record<string, unknown>) => execute("pa_handoff", { schemaVersion: capabilities.includes("document.local-review") ? "pa-handoff-native/v2" : "pa-handoff-native/v1", ...input });
@@ -91,7 +94,7 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     const result = await execute("pa_document", { action: "freeze", package: subject, expectedRevision: new RegistryDocumentJournal(getDb()).events("example", ticket).length }); assert.equal(result.ok, true, JSON.stringify(result));
     return { subject, sha: documentPackageSha(subject), checks: result.result.checks };
   };
-  return { root, repo, usage, prefix, context, tools, execute, handoff, checked, git, freezeDocument, prompts: () => prompts,
+  return { root, repo, usage, prefix, context, tools, commands, execute, handoff, checked, git, freezeDocument, prompts: () => prompts, shutdown: () => lifecycle.shutdown(),
     async continueInFreshSession(ticketId: string, options: { liveOrigin?: boolean; contender?: boolean } = {}) {
       if (!options.liveOrigin) {
         // Synthetic process-boundary fixture: use a real child incarnation and
@@ -133,6 +136,125 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     async close() { for (const continuation of continuations) await continuation.shutdown(); await lifecycle.shutdown(); closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); } };
   } catch (error) { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); throw error; }
 }
+
+test("registered content-only document/handoff/manual entries sign without plan or effect authority", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const doc = await f.freezeDocument("EX-1", null, 1, true);
+    const ticketBefore = readFileSync(join(f.usage, "tickets/EX-1.json")), refs = f.git("show-ref");
+    const prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    assert.equal(prepared.ok, true, JSON.stringify(prepared));
+    const reference = prepared.result.reference;
+    assert.match(reference, /^review:[a-f0-9]{64}$/);
+    const listed = await f.execute("pa_handoff", { schemaVersion: "pa-content-review/v1", action: "list", ticket: "EX-1" });
+    assert.equal(listed.ok, true); assert.equal(listed.result.reviews[0].reference, reference);
+    const result = await f.execute("pa_handoff", { schemaVersion: "pa-content-review/v1", action: "review", reference });
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.result.outcome, "approved");
+    assert.equal(result.result.publication, "not-published"); assert.equal(f.prompts(), 1);
+    assert.ok(f.commands.has("pa-review"));
+    const manual = await f.commands.get("pa-review")!.handler(reference, f.context);
+    assert.deepEqual(manual, result.result); assert.equal(f.prompts(), 1);
+    const output: string[] = [];
+    assert.equal(await runDocumentCommand(["review", reference], { stdout: text => { output.push(text); }, stderr: text => { output.push(text); } }), 0);
+    assert.match(output.join("\n"), /Approved · Not published/); assert.equal(f.prompts(), 1);
+    for (const action of ["publish", "complete-branch", "queue"]) {
+      const denied = await f.handoff({ action, subjectSha256: reference.slice(7), decisionId: result.result.decisionId });
+      assert.equal(denied.ok, false);
+    }
+    assert.equal(f.git("show-ref"), refs); assert.deepEqual(readFileSync(join(f.usage, "tickets/EX-1.json")), ticketBefore);
+    assert.equal(getDb().prepare("SELECT count(*) n FROM handoff_review_effects").get()?.n, 0);
+    assert.equal(getDb().prepare("SELECT count(*) n FROM handoff_review_subjects WHERE intent <> 'null'").get()?.n, 0);
+  } finally { await f.close(); }
+});
+
+test("separate-terminal source PPA guided approval settles the same pending native Pi adapter", { timeout: 60000 }, async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true), controller = new AbortController();
+  let foreground: ReturnType<typeof f.execute> | undefined;
+  try {
+    const doc = await f.freezeDocument("EX-1");
+    const prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    assert.equal(prepared.ok, true);
+    const reference: string = prepared.result.reference;
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    let prompts = 0;
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui,
+      custom: factory => new Promise(resolve => {
+        prompts++;
+        const component = factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_color: string, text: string) => text }, {}, resolve);
+        assert.match(component.render(120).join("\n"), /Sign only/); entered();
+      }),
+    } };
+    foreground = f.execute("pa_handoff", { schemaVersion: "pa-content-review/v1", action: "review", reference }, context, controller.signal);
+    await Promise.race([waiting, foreground.then(result => { throw Error(`foreground ended before UI: ${JSON.stringify(result)}`); })]);
+    const duplicate = f.execute("pa_document", { action: "review-sign", reference }, context, controller.signal);
+    const cli = fileURLToPath(new URL("../cli.ts", import.meta.url));
+    const child = spawnPty(process.execPath, [`--import=${import.meta.resolve("tsx")}`, cli, "document", "review", reference], { cwd: f.repo, env: { ...process.env, NO_COLOR: "1", TZ: "Asia/Saigon", LANG: "en_US.UTF-8" }, cols: 100, rows: 30 });
+    let output = "", sent = false;
+    const data = child.onData(value => { output += value; if (!sent && output.includes("Choose:")) { sent = true; child.write("a\r"); } });
+    const code = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(Error("source PPA fixture did not settle within 30s")); }, 30000);
+      child.onExit(event => { clearTimeout(timer); resolve(event.exitCode); });
+    });
+    data.dispose();
+    assert.equal(code, 0, output); assert.equal(sent, true); assert.match(output, /Approved · Not published/);
+    const result = await foreground;
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.result.outcome, "approved");
+    assert.deepEqual((await duplicate).result, result.result); assert.equal(prompts, 1);
+    const db = openDurableRegistryDatabase();
+    try {
+      const events = new RegistryHandoffReviewJournal(db, false).events(reference.slice(7));
+      assert.deepEqual(events.map(event => event.kind), ["requested", "issued"]);
+      assert.equal(events[0]?.kind === "requested" && events[0].request.decisionId, result.result.decisionId);
+    } finally { db.close(); }
+    assert.equal(getDb().prepare("SELECT count(*) n FROM handoff_review_effects").get()?.n, 0);
+  } finally { controller.abort(); try { await foreground; } finally { await f.close(); } }
+});
+
+test("manual content review detaches on session shutdown without shared Cancel or stranded registry access", { timeout: 10000 }, async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    assert.equal(prepared.ok, true);
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, custom: factory => new Promise(resolve => {
+      factory({ requestRender() {}, terminal: { rows: 30 } }, { fg: (_color: string, text: string) => text }, {}, resolve); entered();
+    }) } };
+    const review = f.commands.get("pa-review")!.handler(prepared.result.reference, context);
+    await waiting;
+    await f.shutdown();
+    const result = await review;
+    assert.ok(result && typeof result === "object" && "status" in result); assert.equal(result.status, "pending");
+    const db = openDurableRegistryDatabase();
+    try { assert.deepEqual(new RegistryHandoffReviewJournal(db, false).events(prepared.result.reference.slice(7)).map(event => event.kind), ["requested"]); }
+    finally { db.close(); }
+  } finally { await f.close(); }
+});
+
+test("content discovery before a subject stays empty; imported intent, authority and bare-ticket signing are rejected", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const list = await f.execute("pa_handoff", { schemaVersion: "pa-content-review/v1", action: "list", ticket: "EX-1" });
+    assert.equal(list.ok, true); assert.deepEqual(list.result.reviews, []); assert.equal(f.prompts(), 0);
+    for (const request of [
+      { action: "review", reference: "EX-1" },
+      { action: "prepare", sha256: "a".repeat(64), planRequestId: "fake-plan" },
+      { action: "prepare", sha256: "a".repeat(64), effects: { publish: false, branchRef: false, queue: false } },
+      { action: "decide", reference: `review:${"a".repeat(64)}`, outcome: "approved", principal: "human" },
+    ]) assert.equal((await f.execute("pa_handoff", { schemaVersion: "pa-content-review/v1", ...request })).code, "DOCUMENT_INPUT");
+    assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+test("content review cannot activate an omitted immutable local-review capability", async () => {
+  const f = fixture(["document.handoff", "document.package"], true);
+  try {
+    const doc = await f.freezeDocument("EX-1");
+    const result = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    assert.equal(result.code, "DOCUMENT_AUTHORITY"); assert.equal(f.commands.has("pa-review"), false); assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
 
 test("registered public v2 plan and original plan-status accept the selected feat convention", async () => {
   const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
