@@ -1,0 +1,223 @@
+import { workflowObject, workflowSha, workflowText, workflowTimestamp } from "../deploy/prepared-workflow.js";
+import { renderReadingMarkdown } from "../artifacts/render.js";
+import { ArtifactPolicyError } from "../artifacts/policy.js";
+import { DocumentPackageError } from "../documents/package-contract.js";
+import type { TicketStore } from "./store.js";
+import type { Ticket } from "./types.js";
+
+export type UnavailableState = "missing" | "denied" | "integrity-failure" | "conflict" | "unknown" | "checking";
+export interface Unavailable { state: UnavailableState }
+/** Finite native failure facts only. Saved approval never turns unreadable delivery
+ * into verified content; arbitrary exceptions/flags remain unknown and undisclosed. */
+export function plannedActualReadFailure(error: unknown): Unavailable {
+  if (error instanceof ArtifactPolicyError && error.diagnostic === "ARTIFACT_STALE") return { state: "integrity-failure" };
+  if (error instanceof DocumentPackageError && error.code === "DOCUMENT_AUTHORITY") return { state: "denied" };
+  if (error instanceof DocumentPackageError && error.code === "DOCUMENT_CONFLICT") return { state: "conflict" };
+  return { state: "unknown" };
+}
+export interface AcceptanceRow { id: string; expectation: string }
+export interface PlannedRecord {
+  reference: string; repository: { key: string; root: string }; ticket: string; subjectSha256: string; revision: number;
+  manifestSha256: string; deliverySha256: string; state: "approved" | "draft"; entry: string; rows: readonly AcceptanceRow[];
+}
+export interface ComparisonBinding {
+  repository: PlannedRecord["repository"]; ticket: string; subjectSha256: string; revision: number; manifestSha256: string; candidateSha: string;
+}
+export interface ActualObservation {
+  ac: string; observation: string; disposition: "matches" | "deviates" | "unmet" | "unverified";
+  difference: string; impact: string; owner: string;
+}
+export interface ComparisonEvidence {
+  class: "source" | "installed" | "independent" | "browser" | "human-uat";
+  state: "passed" | "failed" | "not-run" | "pending" | "unknown";
+  locator: string | null; observedAt: string | null; coverage: readonly string[]; trust: "native" | "local-unverified" | "not-observed";
+}
+/** Owner-authenticated metadata for the existing immutable report, NOT another report. */
+export interface ActualRecord {
+  locator: string; binding: ComparisonBinding; plannedReference: string; reportId: string; reportSourceSha256: string;
+  reportPath: string; ownerPath: string; outcome: "success" | "partial" | "failed" | "interrupted"; scope: string;
+  observations: readonly ActualObservation[]; actualOnly: readonly string[]; evidence: readonly ComparisonEvidence[];
+}
+/** Trusted owner ports. Tool input cannot implement these ports or import evidence. */
+export interface PlannedActualHost {
+  resolvePlan(reference: string): Promise<PlannedRecord | Unavailable>;
+  resolveActual(locator: string): Promise<ActualRecord | Unavailable>;
+}
+const unavailable = ["missing", "denied", "integrity-failure", "conflict", "unknown", "checking"] as const;
+const classes = ["source", "installed", "independent", "browser", "human-uat"] as const;
+const dispositions = ["matches", "deviates", "unmet", "unverified"] as const;
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+function text(value: unknown): string {
+  const result = workflowText(value);
+  if (result.length > 8192 || /[\u0000-\u001f\u007f]/.test(result)) throw new Error("Invalid comparison text");
+  return result;
+}
+function list<T>(value: unknown, parse: (item: unknown) => T): T[] {
+  if (!Array.isArray(value) || value.length > 128) throw new Error("Invalid comparison list"); return value.map(parse);
+}
+function ac(value: unknown): string { const id = text(value); if (!/^AC-[0-9]{1,4}$/.test(id)) throw new Error("Invalid acceptance identity"); return id; }
+export function parseActualObservations(value: unknown): readonly ActualObservation[] {
+  const result = list(value, item => {
+    const r = workflowObject(item, ["ac", "observation", "disposition", "difference", "impact", "owner"]);
+    const disposition = dispositions.find(d => d === r.disposition); if (!disposition) throw new Error("Invalid disposition");
+    return { ac: ac(r.ac), observation: text(r.observation), disposition, difference: text(r.difference), impact: text(r.impact), owner: text(r.owner) };
+  });
+  if (new Set(result.map(r => r.ac)).size !== result.length) throw new Error("Conflicting acceptance observations"); return result;
+}
+export function parseActualOnly(value: unknown): readonly string[] { return list(value, text); }
+export function parseComparisonBinding(value: unknown): ComparisonBinding {
+  const r = workflowObject(value, ["repository", "ticket", "subjectSha256", "revision", "manifestSha256", "candidateSha"]);
+  const repo = workflowObject(r.repository, ["key", "root"]); const ticket = text(r.ticket);
+  if (!/^[A-Z][A-Z0-9]*-\d+$/.test(ticket) || !Number.isSafeInteger(r.revision) || Number(r.revision) < 1) throw new Error("Invalid comparison binding");
+  return { repository: { key: text(repo.key), root: text(repo.root) }, ticket, subjectSha256: workflowSha(r.subjectSha256), revision: Number(r.revision), manifestSha256: workflowSha(r.manifestSha256), candidateSha: workflowSha(r.candidateSha, 40) };
+}
+export function parseActualRecord(value: unknown): ActualRecord {
+  const r = workflowObject(value, ["locator", "binding", "plannedReference", "reportId", "reportSourceSha256", "reportPath", "ownerPath", "outcome", "scope", "observations", "actualOnly", "evidence"]);
+  const outcome = (["success", "partial", "failed", "interrupted"] as const).find(s => s === r.outcome); if (!outcome) throw new Error("Invalid report outcome");
+  const locator = text(r.locator); parseComparisonLocator(locator);
+  return { locator, binding: parseComparisonBinding(r.binding), plannedReference: text(r.plannedReference), reportId: workflowSha(r.reportId), reportSourceSha256: workflowSha(r.reportSourceSha256), reportPath: text(r.reportPath), ownerPath: text(r.ownerPath), outcome, scope: text(r.scope), observations: parseActualObservations(r.observations), actualOnly: parseActualOnly(r.actualOnly), evidence: list(r.evidence, item => {
+    const e = workflowObject(item, ["class", "state", "locator", "observedAt", "coverage", "trust"]);
+    const kind = classes.find(c => c === e.class), state = (["passed", "failed", "not-run", "pending", "unknown"] as const).find(s => s === e.state), trust = (["native", "local-unverified", "not-observed"] as const).find(t => t === e.trust);
+    if (!kind || !state || !trust || (state === "passed" || state === "failed") && (!e.locator || !e.observedAt || trust === "not-observed")) throw new Error("Invalid comparison evidence");
+    return { class: kind, state, trust, locator: e.locator === null ? null : text(e.locator), observedAt: e.observedAt === null ? null : workflowTimestamp(e.observedAt), coverage: list(e.coverage, ac) };
+  }) };
+}
+/** Exact retained phase-report reading recipe; no rendering or file publication authority. */
+export function verifyPhaseReportReading(source: Buffer, html: Buffer, sourcePath: string): boolean {
+  return renderReadingMarkdown(source, sourcePath, ["report.md", "diff.patch"]).html.equals(html);
+}
+export function parseComparisonLocator(value: string): { deploymentId: string; digest: string } {
+  const m = /^\/(?:[^/\u0000-\u001f]+\/)*planned-actual-(d-[a-f0-9]{6})-([a-f0-9]{64})\.json$/.exec(value);
+  if (!m) throw new Error("Invalid comparison locator"); return { deploymentId: m[1]!, digest: m[2]! };
+}
+/** Verbatim AC bullets/paragraphs from the verified requirements member. No status is inferred. */
+export function extractAcceptanceRows(markdown: string): readonly AcceptanceRow[] {
+  const rows: AcceptanceRow[] = [];
+  const lines = markdown.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const match = /^\s*(?:[-*]\s+)?(AC-\d{1,4}):\s+(.+?)\s*$/.exec(line);
+    const table = /^\|\s*(AC-\d{1,4})\s*\|.+\|\s*$/.exec(line);
+    if (match) {
+      const content = [match[2]!];
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1]!;
+        if (/^\s*(?:#|\||[-*]\s+|AC-\d+:)/.test(next)) break;
+        if (!next.trim() && !/^\s+\S/.test(lines[index + 2] ?? "")) break;
+        content.push(next); index++;
+      }
+      const expectation = content.join("\n").replace(/\n+$/, "");
+      text(expectation.replaceAll("\n", " "));
+      rows.push({ id: ac(match[1]), expectation });
+    } else if (table) rows.push({ id: ac(table[1]), expectation: text(line) });
+  }
+  if (rows.length > 128 || new Set(rows.map(r => r.id)).size !== rows.length) throw new Error("Conflicting acceptance criteria"); return rows;
+}
+function isUnavailable(value: PlannedRecord | ActualRecord | Unavailable): value is Unavailable { return "state" in value && unavailable.some(s => s === value.state); }
+export function bindingForPlan(plan: PlannedRecord, candidateSha: string): ComparisonBinding {
+  return parseComparisonBinding({ repository: plan.repository, ticket: plan.ticket, subjectSha256: plan.subjectSha256, revision: plan.revision, manifestSha256: plan.manifestSha256, candidateSha });
+}
+export interface ActualProjection {
+  locator: string; binding: ComparisonBinding; reportId: string; reportSourceSha256: string; reportPath: string; ownerPath: string; scope: string; outcome: ActualRecord["outcome"];
+  narrativeTrust: "agent-labelled-not-acceptance"; rows: readonly (AcceptanceRow & Omit<ActualObservation, "ac">)[]; actualOnly: readonly string[]; evidence: readonly ComparisonEvidence[];
+}
+export interface PlannedActualProjection {
+  state: UnavailableState | "no-plan" | "selection-required" | "draft" | "no-handback" | "unmatched" | "available";
+  choices?: { reference: string; candidate: string; reportId: string }[];
+  planned?: PlannedRecord; actuals: ActualProjection[]; unmatched: { locator: string; state: "binding-mismatch" }[];
+  issues: { state: UnavailableState }[];
+}
+/** Read-only; never selects a latest plan or candidate and never exposes denied owner data. */
+export async function projectPlannedActual(ticket: Ticket, reference: string | undefined, candidate: string | undefined, host: PlannedActualHost): Promise<PlannedActualProjection> {
+  const result: PlannedActualProjection = { state: "no-plan", actuals: [], unmatched: [], issues: [] };
+  if (reference === undefined) {
+    result.choices = [];
+    try {
+      if (ticket.doc_refs.length > 256) throw new Error("Too many ticket references");
+      for (const ref of comparisonRefs(ticket)) {
+        const actual = await resolveActualSafely(host, ref.path);
+        if (isUnavailable(actual)) { result.issues.push({ state: actual.state }); continue; }
+        if (actual.locator !== ref.path || actual.binding.ticket !== ticket.id || actual.binding.repository.key !== ticket.project) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
+        const plan = await resolvePlanSafely(host, actual.plannedReference);
+        if (isUnavailable(plan)) { result.issues.push({ state: plan.state }); continue; }
+        if (plan.reference !== actual.plannedReference || !same(bindingForPlan(plan, actual.binding.candidateSha), actual.binding)) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
+        const choice = { reference: plan.reference, candidate: actual.binding.candidateSha, reportId: actual.reportId };
+        if (!result.choices.some(c => same(c, choice))) result.choices.push(choice);
+      }
+      result.state = result.issues[0]?.state ?? (result.choices.length ? "selection-required" : result.unmatched.length ? "unmatched" : "no-plan");
+      return result;
+    } catch { return { state: "unknown", actuals: [], unmatched: [], issues: [{ state: "unknown" }] }; }
+  }
+  try {
+    const plan = await host.resolvePlan(text(reference));
+    if (isUnavailable(plan)) return { ...result, state: plan.state };
+    if (plan.reference !== reference || plan.ticket !== ticket.id || plan.repository.key !== ticket.project) return { ...result, state: "conflict" };
+    if (plan.state !== "approved") return { ...result, state: "draft", planned: plan };
+    const binding = bindingForPlan(plan, workflowSha(candidate, 40));
+    if (!plan.rows.length) return { ...result, state: "integrity-failure" };
+    result.planned = plan; result.state = "no-handback";
+    if (ticket.doc_refs.length > 256) throw new Error("Too many ticket references");
+    for (const ref of comparisonRefs(ticket)) {
+      const actual = await resolveActualSafely(host, ref.path);
+      if (isUnavailable(actual)) { result.issues.push({ state: actual.state }); continue; }
+      if (actual.locator !== ref.path || actual.plannedReference !== reference || !same(actual.binding, binding)) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
+      if (actual.observations.some(o => !plan.rows.some(r => r.id === o.ac))) { result.issues.push({ state: "conflict" }); continue; }
+      const previous = result.actuals.find(r => r.reportId === actual.reportId);
+      const baseline: ComparisonEvidence[] = classes.filter(kind => kind === "human-uat" || !actual.evidence.some(e => e.class === kind)).map(kind => ({ class: kind, state: "not-run", locator: null, observedAt: null, coverage: [], trust: "not-observed" }));
+      const evidence = previous?.evidence ?? baseline;
+      const appended = [...evidence, ...actual.evidence.filter(e => !evidence.some(p => same(e, p)))];
+      if (previous) {
+        if (previous.reportSourceSha256 !== actual.reportSourceSha256 || !same(previous.rows, rows(plan, actual)) || !same(previous.actualOnly, actual.actualOnly)) { result.issues.push({ state: "conflict" }); continue; }
+        previous.evidence = appended;
+      } else result.actuals.push({ locator: actual.locator, binding: actual.binding, reportId: actual.reportId, reportSourceSha256: actual.reportSourceSha256, reportPath: actual.reportPath, ownerPath: actual.ownerPath, scope: actual.scope, outcome: actual.outcome, narrativeTrust: "agent-labelled-not-acceptance", rows: rows(plan, actual), actualOnly: actual.actualOnly, evidence: appended });
+    }
+    for (const a of result.actuals) for (const kind of classes) {
+      const observations = a.evidence.filter(e => e.class === kind);
+      if (observations.some(e => e.state === "passed" && observations.some(o => o.state === "failed" && (kind !== "source" || e.locator === o.locator) && (e.coverage.length === 0 || o.coverage.length === 0 || e.coverage.some(id => o.coverage.includes(id)))))) result.issues.push({ state: "conflict" });
+    }
+    for (const a of result.actuals) for (const b of result.actuals) {
+      if (a === b) continue;
+      if (a.rows.some(row => row.disposition === "matches" && b.rows.some(other => other.id === row.id && (other.disposition === "deviates" || other.disposition === "unmet")))) result.issues.push({ state: "conflict" });
+    }
+    result.state = result.issues.some(i => i.state === "conflict") ? "conflict" : result.issues[0]?.state ?? (result.actuals.length ? "available" : result.unmatched.length ? "unmatched" : "no-handback");
+    return result;
+  } catch { return { state: "unknown", actuals: [], unmatched: [], issues: [{ state: "unknown" }] }; }
+}
+async function resolveActualSafely(host: PlannedActualHost, locator: string): Promise<ActualRecord | Unavailable> {
+  let result: ActualRecord | Unavailable;
+  try { result = await host.resolveActual(locator); } catch { return { state: "unknown" }; }
+  try { return isUnavailable(result) ? { state: result.state } : parseActualRecord(result); } catch { return { state: "integrity-failure" }; }
+}
+async function resolvePlanSafely(host: PlannedActualHost, reference: string): Promise<PlannedRecord | Unavailable> {
+  try { return await host.resolvePlan(reference); } catch { return { state: "unknown" }; }
+}
+function comparisonRefs(ticket: Ticket) {
+  return ticket.doc_refs.filter(r => r.type === "attachment" && /\/planned-actual-d-[a-f0-9]{6}-[a-f0-9]{64}\.json$/.test(r.path));
+}
+function rows(plan: PlannedRecord, actual: ActualRecord): ActualProjection["rows"] {
+  return plan.rows.map(row => { const observation = actual.observations.find(o => o.ac === row.id); return { ...row, observation: observation?.observation ?? "No observation recorded.", disposition: observation?.disposition ?? "unverified", difference: observation?.difference ?? "Unverified", impact: observation?.impact ?? "Unknown", owner: observation?.owner ?? "Builder" }; });
+}
+/** Existing ticket mutex and audited ref owner. No primary, status or signed byte mutation. */
+export async function attachPlannedActual(store: TicketStore, ticketId: string, locator: string, host: PlannedActualHost, authorize: () => void): Promise<void> {
+  authorize(); const actual = await host.resolveActual(locator);
+  if (isUnavailable(actual)) throw new Error("Actual attachment unavailable");
+  const parsed = parseActualRecord(actual); if (parsed.locator !== locator) throw new Error("Exact attachment locator required");
+  const plan = await host.resolvePlan(parsed.plannedReference);
+  if (isUnavailable(plan) || plan.state !== "approved" || !same(bindingForPlan(plan, parsed.binding.candidateSha), parsed.binding)) throw new Error("Exact attachment binding required");
+  store.withWorkflowTransaction(() => {
+    authorize(); const ticket = store.get(ticketId);
+    if (!ticket || ticket.id !== parsed.binding.ticket || ticket.project !== parsed.binding.repository.key) throw new Error("Exact ticket required");
+    const refs = [{ type: "orch", path: parsed.ownerPath }, { type: "impl", path: parsed.reportPath }, { type: "attachment", path: parsed.locator }];
+    for (const ref of refs) {
+      const existing = ticket.doc_refs.filter(r => r.path === ref.path);
+      if (existing.length > 1 || existing.some(r => r.type !== ref.type || r.primary)) throw new Error("Conflicting attachment");
+    }
+    const missing = refs.filter(ref => !ticket.doc_refs.some(r => r.path === ref.path));
+    if (missing.length) {
+      authorize(); const addedAt = new Date().toISOString();
+      store.update(ticketId, { doc_refs: [...ticket.doc_refs, ...missing.map(ref => ({ ...ref, primary: false, addedAt, addedBy: "native/planned-actual" }))] }, "native/planned-actual");
+    }
+    const after = store.get(ticketId);
+    if (!after || refs.some(ref => !after.doc_refs.some(r => r.path === ref.path && r.type === ref.type && !r.primary))) throw new Error("Attachment readback failed");
+  });
+}

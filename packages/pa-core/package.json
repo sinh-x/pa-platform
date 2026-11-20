@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./tickets/planned-actual": {
+      "types": "./dist/tickets/planned-actual.d.ts",
+      "import": "./dist/tickets/planned-actual.js"
+    },
     "./runtime-api": {
       "types": "./dist/runtime-api/index.d.ts",
       "import": "./dist/runtime-api/index.js"
