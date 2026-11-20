@@ -64,28 +64,38 @@ locator never reaches the ordinary filesystem fallback. Normal non-locator reads
 retain the existing implementation and schema, under their original permissions.
 This is not hostile-same-UID isolation or a new filesystem sandbox.
 
-## Parent integration (intentionally not wired here)
+## Host registration integration (P3 follow-up)
 
 Core exports already work through the existing wildcard export of
 `mode-capability-selection.ts`; no core index change is needed.
 
-The existing Pi registration hubs and document policy guards were outside P3
-ownership. The parent must:
+`registerPiSessionModules` now binds the final guarded/ordinary read definition,
+including a supplied native-reader replacement, at authenticated `session_start`.
+Only a resource-bearing immutable selection that already selects `read` gets
+`createSelectedResourceReadTool(originalCaller, existingReadDefinition)`. It
+replaces the same registered name in place, preserving the original schema,
+renderers and common direct-call/lifecycle wrappers. There is no additional tool
+or capability. Retained and omitted selections receive no locator description.
 
-1. Wrap the final selected guarded/ordinary read definition with
-   `createSelectedResourceReadTool(caller, existingReadDefinition)`
-   from `pi-extension/selected-resource-read.ts`. Register it only where the
-   immutable policy already selects `read`, using the existing lifecycle and
-   direct/nested execution wrappers. Do not register an additional tool/capability.
-2. In the existing read tool-call path checks, detect `isSelectedResourceRead(input)`
-   and use `assertSelectedResourceRead(originalCaller, input, context)` for
-   this URI only, instead of attempting filesystem path admission. Keep the
-   immutable capability check and every ordinary non-locator path guard. Do not
-   introduce a general path exemption, namespace alias or mutable fallback.
-3. Exercise the normally composed host, nested/direct calls and reload/shutdown
-   after wiring. The module's native authentication tests are not proof that an
-   unwired installed host exposes this route. Existing local result filtering
-   remains active; the source-guard marker is informational, not authority.
+The native direct guard and document `tool_call` guard detect the exact
+`selected-resource:` input before filesystem admission and call
+`assertSelectedResourceRead(originalCaller, input, context)`. The original
+registration/session identity is retained; current environment/config edits do
+not widen it. Immutable tool admission and all non-locator path checks remain.
+Unselected hosts also reserve this exact URI, so even a local file with that
+spelling cannot become a fallback. Namespace aliases do not gain access.
+
+The existing registry lifecycle owns each read. Cancellation/shutdown revokes
+pending delivery and late calls; reload creates a new lifetime without reviving
+the previous one. The registered API's final delivery fence also reauthenticates
+selected locators after asynchronous settlement. Local result filtering remains
+active, and the source-guard marker is informational, not authority.
+
+`selected-resource-host.test.ts` exercises the production module composition,
+the native-reader override and actual Pi SDK loader/runner registration. Its
+nested-shaped calls dispatch real tool-call/result handlers; direct calls invoke
+the registered definition. This is source-host integration, not an installed
+runtime, model-driven end-to-end run, or human qualification.
 
 ## Focused evidence and message review
 
@@ -133,3 +143,31 @@ passed without editing those files. No standalone lint script exists. Full
 aggregate regression, hosted CI, installed registration qualification,
 independent review and human UAT are not claimed. No live database/schema,
 external configuration, installation or push was changed.
+
+The P3 follow-up preserves the existing help/failure text: before, the registered
+read description had only local-file guidance and the selected locator was
+unwired; after, the existing selected-reference guidance is reachable on the
+selected read tool. This is an information/help integration, not a diagnostic
+rewrite. Typed capability/local-content failures and machine result contracts
+remain with their existing owners. Independent human readability review and
+installed verification remain unrun. Follow-up check logs are isolated under
+`/home/sinh/Documents/ai-usage/deployments/d-5ee695/artifacts/pap-327-p3-host-Lt0Hab/`.
+
+Follow-up verification passed: workspace `corepack pnpm build`, workspace
+`corepack pnpm typecheck`, and 38/38 focused source tests (five new host cases,
+including the real Pi loader/runner). The focused command was:
+
+```bash
+NO_COLOR=1 TZ=Asia/Saigon LANG=en_US.UTF-8 corepack pnpm --filter @pa-platform/pi-pa exec tsx --test --test-concurrency=1 \
+  src/__tests__/selected-resource-host.test.ts src/__tests__/selected-resource-read.test.ts \
+  src/__tests__/mode-capability-session.test.ts src/__tests__/local-source-security.test.ts \
+  src/__tests__/readonly-document-profile.test.ts src/__tests__/pi-extension-composition.test.ts
+```
+
+The initial red run exposed the absent registration/URI guard; two cases also
+needed their disposable committed policy rows corrected. Early retries/builds
+encountered incomplete parallel-owned phase-report imports/types; final checks
+passed without edits to those owners. A broader attempt including the expensive
+ordinary-development launch suite timed out at 120 seconds and is not a passing
+aggregate regression. No standalone lint script exists. No installed adoption,
+push, live ticket/database mutation, independent review or human UAT is claimed.

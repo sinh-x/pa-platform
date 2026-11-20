@@ -1,5 +1,7 @@
 import { Type, type TSchema } from "typebox";
-import { BulletinStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, SourceContentSecurityError } from "@pa-platform/pa-core";
+import { BulletinStore, capabilityToolSelected, closeDb, getDeploymentEvents, hasModeResources, ModeCapabilityError, queryDeploymentStatus, queryDeploymentStatuses, SourceContentSecurityError } from "@pa-platform/pa-core";
+import { authenticatePiReadonlyDocumentCaller, type PiDocumentCaller } from "../document-session.js";
+import { assertSelectedResourceRead, createSelectedResourceReadTool, isSelectedResourceRead } from "./selected-resource-read.js";
 import { interceptToolCall } from "./safety.js";
 export { interceptToolCall } from "./safety.js";
 import { auditPiValueFromEnvironment } from "../diagnostics.js";
@@ -159,14 +161,18 @@ export function registerPiSessionModules(
   const guardedRuntime = new Proxy(pi, {
     get(target, property) {
       if (property === "registerTool") return (definition: PiToolDefinition) => {
-        const tool = definition.name === "read" && nativeReadTool ? nativeReadTool : definition;
-        return target.registerTool?.({ ...tool, execute: (...args) => {
+        const base = definition.name === "read" && nativeReadTool ? nativeReadTool : definition;
+        let tool = base, originalReadCaller: PiDocumentCaller | undefined;
+        const registered: PiToolDefinition = { ...tool, execute: (...args) => {
         const access = lifecycle.trackRegistryAccess(async () => {
         // Reject late calls before native authentication can reopen the registry.
         // Policy custom tools retain the existing common guard. Retained custom
         // services keep their own finite failure contracts; only the newly
         // registered built-in replacements need this added direct-call gate.
-        if (deploymentId && (policyDeploymentId || ["read", "bash"].includes(tool.name))) assertNativeDocumentTool(deploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext);
+        if (deploymentId && (policyDeploymentId || ["read", "bash"].includes(tool.name))) assertNativeDocumentTool(deploymentId, { toolName: tool.name, input: args[1] }, args[4] as PiWorkflowContext, originalReadCaller);
+        // Reserve the exact URI even in unselected/retained hosts: never let a
+        // missing immutable route reinterpret it as an ordinary local filename.
+        if (tool.name === "read" && isSelectedResourceRead(args[1]) && !originalReadCaller) throw new ModeCapabilityError("CAPABILITY_BINDING");
         const safety = interceptToolCall({ toolName: tool.name, input: args[1] });
         if (!safety.allowed) throw safeLocalToolError(tool.name, new Error(safety.reason ?? "Shared safety did not admit this tool call."));
         const update = args[3];
@@ -199,9 +205,14 @@ export function registerPiSessionModules(
           return new Promise<PiToolResult>((resolve, reject) => {
             void access.then(result => {
               const checked = filterLocalToolResult("read", result);
-              resolve(readLifetime.signal.aborted || args[2]?.aborted
-                ? localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"))
-                : checked);
+              if (readLifetime.signal.aborted || args[2]?.aborted) {
+                resolve(localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE")));
+                return;
+              }
+              try {
+                if (originalReadCaller && isSelectedResourceRead(args[1])) assertSelectedResourceRead(originalReadCaller, args[1], args[4]);
+                resolve(checked);
+              } catch (error) { reject(safeLocalToolError("read", error)); }
             }, reject);
           });
         }
@@ -211,7 +222,19 @@ export function registerPiSessionModules(
           if (!policyDeploymentId && tool.name === "pa_ticket_intake") return ticketIntakeFailure(error);
           throw error;
         });
-        } });
+        } };
+        target.registerTool?.(registered);
+        if (tool.name === "read" && policyDeploymentId) pi.on?.("session_start", (_event, context) => {
+          // The final native/guarded definition is known now; identity is only
+          // available at session_start. Replace read in place, never add a grant.
+          if (originalReadCaller || readLifetime.signal.aborted) return;
+          const caller = authenticatePiReadonlyDocumentCaller(context as PiWorkflowContext);
+          if (caller.deploymentId !== policyDeploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
+          if (!hasModeResources(caller.capabilities) || !capabilityToolSelected(caller.capabilities.policy, "read")) return;
+          originalReadCaller = caller;
+          tool = createSelectedResourceReadTool(caller, base);
+          target.registerTool?.({ ...tool, execute: registered.execute });
+        });
       };
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;

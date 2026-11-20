@@ -16,6 +16,8 @@ import { createPaCapabilitiesTool } from "./capability-tool.js";
 import { isModeCapabilitySession, ModeCapabilityError, capabilityToolSelected, selectedCapabilityTools } from "@pa-platform/pa-core";
 import type { PiWorkflowContext } from "../workflow-native.js";
 import type { PiExtensionModule, PiToolCall, PiToolDefinition } from "./index.js";
+import type { PiDocumentCaller } from "../document-session.js";
+import { assertSelectedResourceRead, isSelectedResourceRead } from "./selected-resource-read.js";
 
 /** New requirements capability tools, never arbitrary subprocess/RPC execution. */
 export function createDocumentTool(mutate = mutatePiDocument, workspaceProfile = false, confirmationProfile = false, recoveryProfile = false, contentSignal?: AbortSignal): PiToolDefinition {
@@ -81,28 +83,32 @@ export function documentToolDeployment(): string | undefined {
 }
 /** Registration of a secured built-in replaces an existing tool; it does NOT
  * grant that tool to a retained document profile or bypass direct-call admission. */
-export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
+export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext, originalReadCaller?: PiDocumentCaller): void {
   const caller = (call.toolName ?? call.name) === "pa_handoff" ? authenticatePiDocumentPlanObserver(context) : authenticatePiDocumentCaller(context);
   if (caller.deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
-  if (caller.capabilities) return assertPolicyDocumentTool(deploymentId, call, context);
+  if (caller.capabilities) return assertPolicyDocumentTool(deploymentId, call, context, originalReadCaller);
   if (!documentSessionToolAllowed(call, caller.repoRoot, workspaceDocumentCaller(caller), caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
 }
 export function policyDocumentDeployment(): string | undefined {
   const id = process.env.PA_DEPLOYMENT_ID;
   return id && getDeploymentEvents(id).some(event => event.event === "started" && isModeCapabilitySession(event.note)) ? id : undefined;
 }
-export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext): void {
+export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext, originalReadCaller?: PiDocumentCaller): void {
   const name = call.toolName ?? call.name ?? "";
   const caller = name === "pa_handoff" ? authenticatePiDocumentPlanObserver(context) : authenticatePiDocumentCaller(context);
   if (caller.deploymentId !== deploymentId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
   if (!capabilityToolSelected(caller.capabilities.policy, name)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
-  if (name === "read" && !caller.capabilities.policy.allow.includes("ordinary.read") && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
+  if (name === "read" && isSelectedResourceRead(call.input)) {
+    if (!originalReadCaller) throw new ModeCapabilityError("CAPABILITY_BINDING");
+    assertSelectedResourceRead(originalReadCaller, call.input, context);
+  } else if (name === "read" && !caller.capabilities.policy.allow.includes("ordinary.read") && !guardedDocumentReadAllowed(call, caller.repoRoot)) throw new ModeCapabilityError("CAPABILITY_BINDING");
 }
 export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
   const contentLifetime = new AbortController();
   if (lifecycle) lifecycle.addShutdownStep(() => { contentLifetime.abort(); });
   else pi.on?.("session_shutdown", () => { contentLifetime.abort(); });
   const policyDeploymentId = policyDocumentDeployment();
+  let originalReadCaller: PiDocumentCaller | undefined;
   const exposePolicy = (context: unknown) => {
     if (!policyDeploymentId) return;
     try {
@@ -117,6 +123,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     // they cannot authenticate. Register only in a genuine new document route.
     let caller;
     try { caller = authenticatePiDocumentCaller(rawContext as PiWorkflowContext); } catch { if (policyDeploymentId) pi.setActiveTools?.([]); return; }
+    originalReadCaller ??= caller;
     const confirmationProfile = confirmationDocumentCaller(caller);
     const interactionsProfile = caller.profile === DOCUMENT_INTERACTIONS_SESSION_VERSION;
     const document = createDocumentTool(mutatePiDocument, workspaceDocumentCaller(caller), confirmationProfile, isModeCapabilitySession(caller.profile) && !!caller.capabilities && capabilityToolSelected(caller.capabilities.policy, "pa_document"), contentLifetime.signal);
@@ -159,7 +166,7 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
   });
   pi.on?.("tool_call", (event: unknown, rawContext: unknown) => {
     if (policyDeploymentId) {
-      try { assertPolicyDocumentTool(policyDeploymentId, event as PiToolCall, rawContext as PiWorkflowContext); return; }
+      try { assertPolicyDocumentTool(policyDeploymentId, event as PiToolCall, rawContext as PiWorkflowContext, originalReadCaller); return; }
       catch (error) { return { block: true, reason: error instanceof ModeCapabilityError ? error.message : new ModeCapabilityError("CAPABILITY_BINDING").message }; }
     }
     const id = process.env.PA_DEPLOYMENT_ID;
