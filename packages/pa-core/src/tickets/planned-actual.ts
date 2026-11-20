@@ -4,6 +4,48 @@ import { ArtifactPolicyError } from "../artifacts/policy.js";
 import { DocumentPackageError } from "../documents/package-contract.js";
 import type { TicketStore } from "./store.js";
 import type { Ticket } from "./types.js";
+import { ContentReviewService, type ContentReviewHost, type ContentReviewView } from "../documents/content-review.js";
+import type { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
+import { verifyLocalReviewOrigin } from "../documents/local-review.js";
+import type Database from "better-sqlite3";
+import { inspectFullDocumentReader } from "../documents/reader-publication.js";
+import { documentText, validateDocumentBytes } from "../documents/package-tools.js";
+import type { DocumentPackage } from "../documents/package-contract.js";
+
+export interface PlannedApprovalOwner {
+  schemaVersion: "pa-content-review-subject/v1" | "pa-handoff-review/v1" | "pa-handoff-review/v2";
+  subjectSha256: string; decisionId: string | null; scope: "content" | { publish: boolean; branchRef: boolean; queue: boolean };
+}
+export interface PlannedReviewView {
+  reference: string; subject: Pick<ContentReviewView["subject"], "documentSubjectSha256" | "deliverySha256">;
+  document: DocumentPackage; presentation: Record<string, unknown>; documents: ContentReviewView["documents"];
+  history: ContentReviewView["history"]; approvalOwner?: PlannedApprovalOwner;
+}
+/** Existing owners only. Never request, issue, authorize effects, or synthesize a
+ * content-only subject for a retained combined approval. v1's native capture and
+ * v2's original saved origin remain validated by their original journal owners. */
+export async function readPlannedReview(db: Database.Database, journal: RegistryHandoffReviewJournal, tickets: TicketStore, host: ContentReviewHost, reference: string): Promise<PlannedReviewView> {
+  const match = /^(?:review:)?([a-f0-9]{64})$/.exec(reference); if (!match) throw new Error("Invalid Planned reference");
+  const sha = match[1]!, selected = journal.publicationSubject(sha);
+  let view: PlannedReviewView;
+  if (selected.subject.schemaVersion === "pa-content-review-subject/v1") {
+    view = { ...await new ContentReviewService(journal, host).show(`review:${sha}`), reference };
+  } else {
+    if (!selected.intent) throw new Error("Missing original combined intent");
+    host.assertDocument(selected.document);
+    if (selected.subject.schemaVersion === "pa-handoff-review/v2") verifyLocalReviewOrigin(db, tickets, selected.subject, selected.intent);
+    const presentation = await inspectFullDocumentReader(selected.document, host.artifactRoot, digest => journal.documents.snapshot(digest), selected.subject.deliverySha256);
+    const documents = selected.document.members.map(member => {
+      const raw = journal.documents.snapshot(member.sha256); validateDocumentBytes(member, raw);
+      return { id: member.id, mediaType: member.mediaType, sha256: member.sha256, content: member.mediaType.startsWith("text/") ? documentText(raw) : null };
+    });
+    view = { reference, subject: selected.subject, document: selected.document, presentation, documents, history: journal.events(sha) };
+  }
+  const capture = view.history.filter(e => e.kind === "requested" && e.request.operation === "capture").at(-1);
+  view.approvalOwner = { schemaVersion: selected.subject.schemaVersion, subjectSha256: sha, decisionId: capture?.kind === "requested" ? capture.request.decisionId : null,
+    scope: selected.subject.schemaVersion === "pa-content-review-subject/v1" ? "content" : selected.subject.effects };
+  return view;
+}
 
 export type UnavailableState = "missing" | "denied" | "integrity-failure" | "conflict" | "unknown" | "checking";
 export interface Unavailable { state: UnavailableState }
@@ -19,6 +61,7 @@ export interface AcceptanceRow { id: string; expectation: string }
 export interface PlannedRecord {
   reference: string; repository: { key: string; root: string }; ticket: string; subjectSha256: string; revision: number;
   manifestSha256: string; deliverySha256: string; state: "approved" | "draft"; entry: string; rows: readonly AcceptanceRow[];
+  approvalOwner?: PlannedApprovalOwner;
 }
 export interface ComparisonBinding {
   repository: PlannedRecord["repository"]; ticket: string; subjectSha256: string; revision: number; manifestSha256: string; candidateSha: string;

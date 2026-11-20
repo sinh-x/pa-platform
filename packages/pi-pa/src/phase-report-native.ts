@@ -5,10 +5,10 @@ import {
   assertNoSensitiveMatch, captureRepositoryGitSnapshot, findSensitiveMatch, indexPhaseReport, indexPhaseReportDelivery, parsePhaseReport, parseSourceVersion,
   phaseReportDeliverySources, phaseReportIdentity, PhaseReportService, queryReadonlyHelperRegistry, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, readProcessFingerprint, readReviewEvidenceFile,
   resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest, workflowError, workflowObject, workflowText, workflowTimestamp,
-  ContentReviewService, contentReviewLocalHost, RegistryHandoffReviewJournal, openReadonlyRegistryDatabase, TicketStore, getTicketsDir,
-  type ContentReviewView, type ExecutionState, type PhaseReport, type PhaseReportCheck, type PhaseReportDelivery, type PhaseReportHost, type PhaseReportReceipt, type ProcessFingerprint, type SourceVersion,
+  contentReviewLocalHost, RegistryHandoffReviewJournal, openReadonlyRegistryDatabase, TicketStore, getTicketsDir,
+  type ExecutionState, type PhaseReport, type PhaseReportCheck, type PhaseReportDelivery, type PhaseReportHost, type PhaseReportReceipt, type ProcessFingerprint, type SourceVersion,
 } from "@pa-platform/pa-core";
-import { attachPlannedActual, bindingForPlan, extractAcceptanceRows, parseActualObservations, parseActualOnly, parseActualRecord, parseComparisonBinding, parseComparisonLocator, verifyPhaseReportReading, plannedActualReadFailure,
+import { readPlannedReview, type PlannedReviewView, attachPlannedActual, bindingForPlan, extractAcceptanceRows, parseActualObservations, parseActualOnly, parseActualRecord, parseComparisonBinding, parseComparisonLocator, verifyPhaseReportReading, plannedActualReadFailure,
   type PlannedActualHost, type PlannedRecord, type ComparisonEvidence, type Unavailable } from "@pa-platform/pa-core/tickets/planned-actual";
 import { environmentSecrets } from "./diagnostics.js";
 import { PiNativeExecutionAdapter, type NativeExecutionReportFacts } from "./execution-native.js";
@@ -91,7 +91,7 @@ function nativeComparisonSource(digest: string): SourceVersion { return parseSou
 /** show() returns the full reader inspection result only after complete immutable
  * verification. Saved approval history alone instead returns status=unverified;
  * that fallback must never pass this finite verified-presentation discriminator. */
-export function plannedRecordFromContentReview(view: ContentReviewView): PlannedRecord | Unavailable {
+export function plannedRecordFromContentReview(view: PlannedReviewView): PlannedRecord | Unavailable {
   const presentation = view.presentation;
   if (!["pa-document-reader/v1", "pa-document-reader/v2"].includes(String(presentation.schemaVersion))
     || presentation.subjectSha256 !== view.subject.documentSubjectSha256 || presentation.revision !== view.document.revision || presentation.deliverySha256 !== view.subject.deliverySha256
@@ -108,11 +108,13 @@ export function plannedRecordFromContentReview(view: ContentReviewView): Planned
   let rows: PlannedRecord["rows"];
   try { rows = extractAcceptanceRows(body); } catch { return { state: "conflict" }; }
   if (!rows.length) return { state: "integrity-failure" };
-  const last = view.history.filter(e => e.kind === "issued").at(-1);
-  const request = last?.kind === "issued" ? view.history.find(e => e.kind === "requested" && e.request.requestKey === last.decision.requestKey) : undefined;
-  const approved = last?.kind === "issued" && last.decision.outcome === "approved" && request?.kind === "requested" && request.request.operation === "capture";
+  const request = view.history.filter(e => e.kind === "requested" && e.request.operation === "capture").at(-1);
+  const issued = request?.kind === "requested" ? view.history.find(e => e.kind === "issued" && e.decision.requestKey === request.request.requestKey) : undefined;
+  const revoked = request?.kind === "requested" && view.history.some(e => e.kind === "requested" && e.request.operation === "revoke" && e.request.targetDecisionId === request.request.decisionId && view.history.some(d => d.kind === "issued" && d.decision.requestKey === e.request.requestKey && d.decision.outcome === "approved"));
+  const approved = issued?.kind === "issued" && issued.decision.outcome === "approved" && !revoked && !view.history.some(e => e.kind === "content-ineligible");
   return { reference: view.reference, repository: view.document.repository, ticket: view.document.ticket, subjectSha256: view.subject.documentSubjectSha256,
-    revision: view.document.revision, manifestSha256, deliverySha256: view.subject.deliverySha256, state: approved ? "approved" : "draft", entry: workflowText(presentation.entry), rows };
+    revision: view.document.revision, manifestSha256, deliverySha256: view.subject.deliverySha256, state: approved ? "approved" : "draft", entry: workflowText(presentation.entry), rows,
+    ...(view.approvalOwner ? { approvalOwner: view.approvalOwner } : {}) };
 }
 
 /** Read-only normal ticket projection. It opens existing owners only; no report policy,
@@ -124,7 +126,8 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
       try {
         db = openReadonlyRegistryDatabase(true);
         const journal = new RegistryHandoffReviewJournal(db, false);
-        const view = await new ContentReviewService(journal, contentReviewLocalHost(db, new TicketStore(getTicketsDir(), {}, false), journal, authority.aiUsageRoot)).show(reference);
+        const tickets = new TicketStore(getTicketsDir(), {}, false);
+        const view = await readPlannedReview(db, journal, tickets, contentReviewLocalHost(db, tickets, journal, authority.aiUsageRoot), reference);
         return plannedRecordFromContentReview(view);
       } catch (error) {
         return plannedActualReadFailure(error);

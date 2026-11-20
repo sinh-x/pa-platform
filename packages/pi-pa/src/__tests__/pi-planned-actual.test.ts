@@ -1,4 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { HandoffReviewService, LocalHandoffReviewService } from "../../../pa-core/src/documents/handoff-review.js";
+import { handoffBranchIntentSha, type HandoffBranchIntent, type HandoffReviewSubject } from "../../../pa-core/src/documents/handoff-contract.js";
+import { nativeHandoffPlanIdentity } from "../../../pa-core/src/documents/handoff-planning.js";
+import { localHandoffReviewHooks } from "../../../pa-core/src/documents/local-review.js";
+import { creationDigest } from "../../../pa-core/src/tickets/create-intent.js";
+import { MODE_CAPABILITY_SESSION } from "../../../pa-core/src/mode-capabilities.js";
+import { withRepositoryRefAdmission } from "../../../pa-core/src/deploy/repository-admission.js";
+import { withRepositoryRefTicketExclusion } from "../../../pa-core/src/deploy/ticket-concurrency.js";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { documentRuntimeFixture } from "../../../pa-core/src/__tests__/document-runtime-fixture.js";
 import test from "node:test";
 import { ContentReviewService, RegistryHandoffReviewJournal, readDocumentSources, presentFullDocumentReader, documentPackageSha, NativeExecutionEvidence, PHASE_REPORT_SECTIONS, PhaseReportService, TicketStore, indexPhaseReport, parsePhaseReport, workflowDigest, type PhaseReportHost, type SourceVersion } from "@pa-platform/pa-core";
-import { type PlannedRecord, attachPlannedActual, plannedActualReadFailure } from "@pa-platform/pa-core/tickets/planned-actual";
+import { type PlannedRecord, attachPlannedActual, projectPlannedActual, plannedActualReadFailure } from "@pa-platform/pa-core/tickets/planned-actual";
 import { nativePlannedActualHost, plannedRecordFromContentReview } from "../phase-report-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { createPaTicketTool } from "../pi-extension/ticket-tool.js";
@@ -41,6 +50,60 @@ function fixture() {
   writeFileSync(join(tickets, "TEST-1.json"), JSON.stringify({ id: "TEST-1", project: "test", title: "Fixture", doc_refs: [], status: "implementing", assignee: "builder/team-manager" }));
   return { root, authority, evidence, payload, locator, projectionHost, native, ticketStore: new TicketStore(tickets), service, receipt, receiptRef, report, captured, ownerPath };
 }
+
+for (const version of ["v1", "v2"] as const) test(`retained combined ${version} Planned resolves and attaches without a replacement decision`, async () => {
+  const f = documentRuntimeFixture();
+  try {
+    Object.assign(process.env, { PA_REGISTRY_DB: join(f.root, "registry.db"), PA_AI_USAGE_HOME: f.root });
+    f.db.pragma("synchronous = FULL");
+    f.store.update("EX-1", { title: "Stable retained Planned fixture" });
+    const member = f.subject.members.find(m => m.role === "requirements")!;
+    const raw = Buffer.from("# Acceptance\n- AC-01: Preserve the original approval.\n");
+    member.bytes = raw.length; member.sha256 = workflowDigest(raw); writeFileSync(join(f.root, member.source), raw);
+    const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: f.repo, encoding: "utf8", stdio: "pipe" }).trim();
+    git("init", "-b", "develop"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base");
+    const binding = JSON.stringify({ schemaVersion: "pa-mode-capability-binding/v1", configRevision: "a".repeat(40), resourcePath: "teams/requirements.yaml", resourceSha256: "b".repeat(64), profile: "pa-document-policy/v1", policy: { version: "pa-mode-capabilities/v1", allow: ["document.handoff", "document.local-review", "document.package"] } });
+    const caller = { identitySha256: "a".repeat(64), selectionSha256: workflowDigest(binding), deploymentId: "d-314001", sessionId: "retained", repoKey: "example", repoRoot: f.repo, ticket: "EX-1" };
+    const planIdentity = nativeHandoffPlanIdentity(caller, "native-plan"), before = f.store.get("EX-1")!, base = git("rev-parse", "HEAD");
+    const physicalIdentitySha256 = withRepositoryRefTicketExclusion("example", f.repo, exclusion => withRepositoryRefAdmission(f.repo, exclusion, id => id));
+    const intent: HandoffBranchIntent = { schemaVersion: "pa-handoff-branch-intent/v1", requestId: "native-plan", callerIdentitySha256: caller.identitySha256, expectedTicketVersion: creationDigest(before), repository: { key: "example", root: f.repo, physicalIdentitySha256 }, ticket: "EX-1", branch: "feature/EX-1-retained", action: "create", base: { ref: "refs/heads/develop", sha: base, observedDevelopSha: base, observedAt: time, provenance: "local-develop-ref", remoteFreshness: "not-established" }, plannedLinkSha256: creationDigest(null), lineage: null };
+    f.store.applyHandoffWithIntent("EX-1", creationDigest(before), { kind: "plan", intent }, "requirements/analyze", planIdentity, { assertCurrent() {}, assertSnapshot() {} });
+    f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
+    const delivery = await presentFullDocumentReader(f.subject, f.root, hash => f.journal.snapshot(hash));
+    f.db.prepare("INSERT INTO registry_events(deployment_id,team,event,timestamp,mode,runtime,binary,note,repo,repo_root,worktree_root,ticket_id,mode_capability_binding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(caller.deploymentId, "requirements", "started", time, "analyze", "pi", "ppa", MODE_CAPABILITY_SESSION, f.repo, f.repo, f.repo, "EX-1", binding);
+    const effects = { publish: true, branchRef: true, queue: false };
+    const common = { documentSubjectSha256: documentPackageSha(f.subject), branchIntentSha256: handoffBranchIntentSha(intent), deliverySha256: String(delivery.deliverySha256), selectionSha256: caller.selectionSha256, callerIdentitySha256: caller.identitySha256, effects };
+    const subject: HandoffReviewSubject = version === "v1" ? { schemaVersion: "pa-handoff-review/v1", ...common } : { schemaVersion: "pa-handoff-review/v2", ...common, origin: { deploymentId: caller.deploymentId, sessionId: caller.sessionId, planIdentity } };
+    const journal = new RegistryHandoffReviewJournal(f.db), subjectSha = journal.freeze(subject, intent);
+    if (version === "v1") {
+      const review = new HandoffReviewService(journal, { artifactRoot: f.root, tickets: f.store, authenticate: () => caller, assertAvailable() {}, async capture(request) { return Buffer.from(JSON.stringify({ schemaVersion: "pa-handoff-native-evidence/v1", method: "pi-native-handoff-review", request, outcome: "approved", principal: `local-uid:${process.getuid?.()}`, interactionId: "fixture-retained", boundary: "native-foreground-not-hostile-same-uid-isolation" })); } });
+      await review.review(subjectSha, 0);
+    } else {
+      const review = new LocalHandoffReviewService(journal, { artifactRoot: f.root, tickets: f.store, ...localHandoffReviewHooks(f.db, f.store, journal, f.root) });
+      const pending = await review.request(subjectSha, 0); await review.decide(subjectSha, 0, String(pending.requestKey), "approved");
+    }
+    const saved = journal.events(subjectSha), ticketBytes = readFileSync(join(f.root, "tickets/EX-1.json"));
+    const native = nativePlannedActualHost(new PiPreparedNativeAuthority({ root: join(f.root, "protected"), aiUsageRoot: f.root }));
+    for (const reference of [subjectSha, `review:${subjectSha}`]) {
+      const planned = await native.resolvePlan(reference); assert.equal(planned.state, "approved");
+      assert.ok("reference" in planned); if (!("reference" in planned)) continue;
+      assert.equal(planned.reference, reference); assert.equal(planned.subjectSha256, common.documentSubjectSha256);
+      assert.deepEqual(planned.approvalOwner?.scope, effects); assert.equal(planned.approvalOwner?.subjectSha256, subjectSha);
+    }
+    assert.deepEqual(journal.events(subjectSha), saved); assert.deepEqual(readFileSync(join(f.root, "tickets/EX-1.json")), ticketBytes);
+    const presentationPath = fileURLToPath(String(delivery.entry)); const bytes = readFileSync(presentationPath); writeFileSync(presentationPath, "tampered");
+    assert.notEqual((await native.resolvePlan(subjectSha)).state, "approved"); writeFileSync(presentationPath, bytes);
+    const planned = await native.resolvePlan(subjectSha); assert.ok("reference" in planned); if (!("reference" in planned)) return;
+    // Exercise the join/ref owner with a verified retained Planned and a separate
+    // trusted Actual port; native report metadata is covered by the fixture below.
+    const locator = `/reports/planned-actual-d-aaaaaa-${"e".repeat(64)}.json`;
+    const host = { ...native, resolveActual: async () => ({ locator, binding: { repository: planned.repository, ticket: planned.ticket, subjectSha256: planned.subjectSha256, revision: planned.revision, manifestSha256: planned.manifestSha256, candidateSha: sha }, plannedReference: subjectSha, reportId: "1".repeat(64), reportSourceSha256: "2".repeat(64), reportPath: "/reports/report.md", ownerPath: "/reports/owner.md", outcome: "partial" as const, scope: "Fixture join", observations: [], actualOnly: [], evidence: [] }) };
+    await attachPlannedActual(f.store, "EX-1", locator, host, () => undefined);
+    assert.equal((await projectPlannedActual(f.store.get("EX-1")!, undefined, undefined, host)).state, "selection-required");
+    assert.equal((await projectPlannedActual(f.store.get("EX-1")!, subjectSha, sha, host)).state, "available");
+    assert.deepEqual(journal.events(subjectSha), saved);
+  } finally { f.close(); }
+});
 
 test("saved approval cannot bypass complete native Planned entry/raw/member/manifest verification", async () => {
   const f = documentRuntimeFixture();
