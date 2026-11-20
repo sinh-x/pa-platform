@@ -56,19 +56,21 @@ function checkLinks(bundle: DocumentReaderBundle): void {
   }
 }
 
-test("executive entry contains the complete role-selected brief before the unchanged manifest-order full view at every brief position", () => {
+test("Planned entry contains the complete role-selected open brief in manifest order at every brief position", () => {
   const f = fixture(), others = f.subject.members.filter(member => member.role !== "brief");
   for (let position = 0; position <= others.length; position++) {
     const peers = position % 2 ? [...others].reverse() : others;
     f.subject.members = [...peers.slice(0, position), f.brief, ...peers.slice(position)];
     const bundle = f.render(), html = bundle.files.get("index.html")!.toString();
-    const summaryStart = html.indexOf('<section class="member" id="executive-summary"'), completeStart = html.indexOf('<div id="complete-view">');
-    assert.ok(summaryStart > html.indexOf('<main id="documents">'));
-    assert.ok(summaryStart < html.indexOf("EXECUTIVE_START") && html.indexOf("EXECUTIVE_END") < completeStart);
+    const completeStart = html.indexOf('<div id="complete-view">');
+    const briefStart = html.indexOf(`<details class="member member-disclosure" open><summary id="member-${position + 1}-title">`);
+    assert.ok(briefStart > completeStart);
+    assert.ok(briefStart < html.indexOf("EXECUTIVE_START") && html.indexOf("EXECUTIVE_START") < html.indexOf("EXECUTIVE_END"));
     const aliases = new Map([["nested/requirements.md", `#member-${f.subject.members.findIndex(member => member.role === "requirements") + 1}`], ["./overview.md", `#member-${position + 1}`]]);
     const full = html.slice(completeStart), expected = renderPackageMarkdown(f.snapshot(f.brief.sha256), `member-${position + 1}`, aliases).html;
-    assert.ok(html.slice(summaryStart, completeStart).includes(expected.replace(/id="(member-[0-9]+-section-[0-9]+)"/g, 'id="executive-$1"')), "entire brief body, not an excerpt");
-    assert.deepEqual([...full.matchAll(/<article class="member" id="member-([0-9]+)"/g)].map(match => Number(match[1])), [1, 2, 3, 4, 5, 6]);
+    assert.ok(html.slice(briefStart).includes(expected), "entire brief body, not an excerpt");
+    assert.equal((html.match(/EXECUTIVE_START/g) ?? []).length, 1, "brief is not duplicated");
+    assert.deepEqual([...full.matchAll(/<article class="member-body" id="member-([0-9]+)"/g)].map(match => Number(match[1])), [1, 2, 3, 4, 5, 6]);
     assert.deepEqual(bundle.manifest.members.map(member => member.id), f.subject.members.map(member => member.id));
     assert.equal(bundle.manifest.subjectSha256, documentPackageSha(f.subject));
     for (const marker of ["EXECUTIVE_START", "EXECUTIVE_END", "REQUIREMENTS_START", "REQUIREMENTS_END", "PLAIN_START", "PLAIN_END", "UAT_START", "UAT_END"]) assert.ok(full.includes(marker), marker);
@@ -76,10 +78,11 @@ test("executive entry contains the complete role-selected brief before the uncha
   }
 });
 
-test("built worker delivers the summary-first entry with the original arbitrary inventory and complete local links", async () => {
+test("built worker delivers independent disclosures with the original arbitrary inventory and complete local links", async () => {
   const f = fixture(), bundle = await renderDocumentReaderInWorker(f.subject, f.snapshot), html = bundle.files.get("index.html")!.toString();
-  assert.match(html, /<main id="documents"><section class="member" id="executive-summary"/);
-  assert.ok(html.indexOf("EXECUTIVE_END") < html.indexOf('<div id="complete-view">'));
+  assert.match(html, /<main id="documents"><div id="complete-view">/);
+  assert.match(html, /<details class="member member-disclosure" open><summary id="member-6-title">/);
+  assert.ok(html.indexOf("EXECUTIVE_END") > html.indexOf('<div id="complete-view">'));
   assert.deepEqual(bundle.manifest.members.map(member => member.id), f.subject.members.map(member => member.id));
   assert.equal(bundle.manifest.members.at(-1)!.role, "brief");
   checkLinks(bundle);
@@ -88,7 +91,8 @@ test("built worker delivers the summary-first entry with the original arbitrary 
 test("entry inventory explicitly links every complete member page and exact raw source without reordering or renaming outputs", () => {
   const f = fixture(), bundle = f.render(), html = bundle.files.get("index.html")!.toString();
   const toc = html.match(/<nav aria-label="Package contents">(.*?)<\/nav>/s)?.[1]; assert.ok(toc);
-  assert.ok(toc.indexOf('href="#executive-summary"') < toc.indexOf('href="#member-1"'));
+  assert.ok(toc.indexOf('href="#complete-view"') < toc.indexOf('href="#member-1"'));
+  assert.ok(!toc.includes('href="#executive-summary"'));
   for (const [i, member] of bundle.manifest.members.entries()) {
     const source = f.subject.members[i]!;
     assert.deepEqual(member, { id: source.id, role: source.role, mediaType: source.mediaType, description: source.description, bytes: source.bytes, sha256: source.sha256,
@@ -145,14 +149,13 @@ test("canonical full source paths cannot be redirected by relative aliases in an
     const bundle = f.render(), index = bundle.files.get("index.html")!.toString();
     const brief = bundle.manifest.members.find(member => member.id === f.brief.id)!;
     const sections = [
-      index.slice(index.indexOf('id="executive-summary"'), index.indexOf('<div id="complete-view">')),
       index.slice(index.indexOf('<div id="complete-view">')),
       bundle.files.get(brief.companion)!.toString(),
     ];
     for (const [sectionIndex, html] of sections.entries()) {
       for (const [label, intended] of [["Canonical requirements", requirements], ["Relative requirements", requirements], ["Deep specification", deep]] as const) {
         const ordinal = order.findIndex(member => member.id === intended.id) + 1;
-        const href = `${sectionIndex === 2 ? `member-${ordinal}.html` : ""}#member-${ordinal}`;
+        const href = `${sectionIndex === 1 ? `member-${ordinal}.html` : ""}#member-${ordinal}`;
         assert.ok(html.includes(`href="${href}" rel="noreferrer">${label}</a>`), `${label} must target ${intended.id} in ${order.map(member => member.id)}`);
         assert.equal(bundle.manifest.members[ordinal - 1]!.id, intended.id);
         assert.deepEqual(bundle.files.get(bundle.manifest.members[ordinal - 1]!.raw), f.snapshot(intended.sha256));
@@ -211,7 +214,7 @@ test("all HTML keeps inert hashed CSP, escaped metadata, local assets and static
   checkLinks(bundle);
 });
 
-test("untrusted markup and unsupported source aliases stay literal in the executive entry and member pages", () => {
+test("untrusted markup and unsupported source aliases stay literal in the Planned entry and member pages", () => {
   const f = fixture(), bytes = Buffer.from('# Untrusted\n\n[Remote](https://example.invalid) [Protocol relative](//example.invalid) [Encoded](%6aavascript:evil) [Missing](missing.md) [Fragment](#member-1)\n\n<img src=x onerror=alert(1)>\n\n<form action="https://example.invalid"><input></form>\n\n<style>body{background:url(https://example.invalid)}</style>\n');
   f.brief.bytes = bytes.length; f.brief.sha256 = digest(bytes); f.sources.set(f.brief.sha256, bytes);
   const bundle = f.render();
@@ -225,18 +228,18 @@ test("untrusted markup and unsupported source aliases stay literal in the execut
   checkLinks(bundle);
 });
 
-test("text/plain brief is also complete and summary-first without activating literal markup or links", () => {
+test("text/plain brief is also complete and open without activating literal markup or links", () => {
   const f = fixture(), bytes = Buffer.from("PLAIN_BRIEF_START\n<img src=x>\n\n[Not an active link](https://example.invalid)\nPLAIN_BRIEF_END\n");
   Object.assign(f.brief, { mediaType: "text/plain", source: f.brief.source.replace(/\.md$/, ".txt"), bytes: bytes.length, sha256: digest(bytes) });
   f.sources.set(digest(bytes), bytes);
-  const bundle = f.render(), html = bundle.files.get("index.html")!.toString(), summary = html.slice(html.indexOf('id="executive-summary"'), html.indexOf('<div id="complete-view">'));
+  const bundle = f.render(), html = bundle.files.get("index.html")!.toString(), summary = html.slice(html.indexOf('<details class="member member-disclosure" open><summary id="member-6-title">'), html.indexOf('</details>', html.indexOf('<details class="member member-disclosure" open><summary id="member-6-title">')));
   assert.ok(summary.includes("PLAIN_BRIEF_START") && summary.includes("PLAIN_BRIEF_END"));
   assert.match(summary, /&lt;img src=x&gt;/); assert.doesNotMatch(summary, /<img\b|href="https?:/);
   assert.equal(bundle.manifest.members.at(-1)!.raw, "raw/member-6.txt");
   checkLinks(bundle);
 });
 
-test("summary-first output is byte-deterministic and exactly manifest-bound; source and order changes select new identities", () => {
+test("Planned output is byte-deterministic and exactly manifest-bound; source and order changes select new identities", () => {
   const f = fixture(), first = f.render(), second = f.render();
   assert.deepEqual(first, second);
   assert.deepEqual(first.manifest.outputs.map(output => output.path), [...first.files.keys()].filter(path => path !== "manifest.json"));

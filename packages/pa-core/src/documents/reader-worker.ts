@@ -14,7 +14,7 @@ try {
     if (!(bytes instanceof Uint8Array)) throw new Error();
     sources.set(member.sha256, bytes);
   });
-  const bundle = renderDocumentReader(subject, sha => { const bytes = sources.get(sha); if (!bytes) throw new Error(); return bytes; });
+  const bundle = renderDocumentReader(subject, sha => { const bytes = sources.get(sha); if (!bytes) throw new Error(); return bytes; }, workerData.historicalRenderer);
   const files = [...bundle.files].map(([path, bytes]) => ({ path, bytes: Uint8Array.from(bytes) }));
   parentPort.postMessage({ ok: true, deliverySha256: bundle.deliverySha256, manifestSha256: bundle.manifestSha256, manifest: bundle.manifest, files }, files.map(file => file.bytes.buffer));
 } catch (error) {

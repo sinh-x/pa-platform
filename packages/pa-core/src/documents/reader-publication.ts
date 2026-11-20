@@ -4,9 +4,9 @@ import { pathToFileURL } from "node:url";
 import { readArtifactFile } from "../artifacts/manifest.js";
 import { SHA256, text } from "../workflows/contracts.js";
 import { immutableFile } from "./confirmation-record.js";
-import { documentReject, type DocumentPackage } from "./package-contract.js";
-import { DOCUMENT_READER_LIMITS, type DocumentReaderBundle } from "./reader.js";
-import { renderDocumentReaderInWorker, type ReaderWorkerControl } from "./reader-worker-owner.js";
+import { documentPackageSha, documentReject, type DocumentPackage } from "./package-contract.js";
+import { DOCUMENT_READER_LIMITS, DOCUMENT_READER_VERSION, parseHistoricalDocumentRenderer, type DocumentReaderBundle } from "./reader.js";
+import { renderDocumentReaderInWorker, renderHistoricalDocumentReaderInWorker, type ReaderWorkerControl } from "./reader-worker-owner.js";
 
 const exists = (path: string) => {
   try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
@@ -61,7 +61,20 @@ export async function presentFullDocumentReader(subject: DocumentPackage, root: 
 export async function inspectFullDocumentReader(subject: DocumentPackage, root: string, snapshot: (sha256: string) => Uint8Array,
   deliverySha256: string, control: ReaderWorkerControl = {}): Promise<Record<string, unknown>> {
   text(deliverySha256, SHA256);
-  const bundle = await renderDocumentReaderInWorker(subject, snapshot, control);
+  // Select only the exact immutable subject/delivery coordinate, never latest.
+  // Stored metadata selects a retained recipe, not trusted output: the worker
+  // reproduces ALL bytes, then verify() and completion readback fence tampering.
+  // Do not derive v2 first: a historical delivery must retain its own finite
+  // output budget even when the current presentation would exceed that budget.
+  const path = join(root, "agent-teams/requirements/artifacts/presentations", documentPackageSha(subject), deliverySha256, "manifest.json");
+  if (!exists(path)) documentReject("DOCUMENT_STALE");
+  let raw: unknown;
+  try { raw = JSON.parse(readArtifactFile(path, 256 * 1024, "ARTIFACT_STALE").toString("utf8")); }
+  catch { return documentReject("DOCUMENT_CONFLICT"); }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !("schemaVersion" in raw) || !("renderer" in raw)) documentReject("DOCUMENT_STALE");
+  const bundle = raw.schemaVersion === "pa-document-reader/v1"
+    ? await renderHistoricalDocumentReaderInWorker(subject, snapshot, parseHistoricalDocumentRenderer(raw.renderer), control)
+    : raw.schemaVersion === DOCUMENT_READER_VERSION ? await renderDocumentReaderInWorker(subject, snapshot, control) : documentReject("DOCUMENT_STALE");
   if (bundle.deliverySha256 !== deliverySha256) documentReject("DOCUMENT_STALE");
   verify(bundle, root);
   const { resultFolder, resultName, resultBytes } = coordinates(bundle);
