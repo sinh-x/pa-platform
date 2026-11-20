@@ -10,6 +10,7 @@ import {
   type HandoffBranchIntent, type HandoffReviewSubject,
 } from "../documents/handoff-contract.js";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
+import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 
 const sha = (digit: string) => digit.repeat(64);
 function intent(): HandoffBranchIntent {
@@ -64,9 +65,11 @@ test("registered-convention history parsing accepts safe feat/work branches with
   assert.deepEqual(parseHandoffBranchIntent(alphanumeric), alphanumeric);
 });
 
-test("convention-neutral structure keeps exact-ticket, kebab-topic and complete Git-ref safety", () => {
+test("pure ref safety and registered strict-topic matching reject malformed inputs at their respective owners", () => {
   for (const prefix of ["feature", "feat", "work.+"]) {
-    for (const suffix of ["", "-topic", "topic-", "topic--other", "Topic", "topic.lock", "topic/../escape", "topic//escape", "topic@{0}", "topic\\\\escape", "topic.", "topic ", "topic\u007f", "topic?"])
+    for (const suffix of ["", "-topic", "topic-", "topic--other", "Topic"])
+      assert.equal(validateBranchNameForTicket(`${prefix}/EX-1-${suffix}`, "EX-1", `${prefix}/<ticket>-<topic>`, true), false);
+    for (const suffix of ["topic.lock", "topic/../escape", "topic//escape", "topic@{0}", "topic\\\\escape", "topic.", "topic ", "topic\u007f", "topic?"])
       rejects(() => parseHandoffBranchIntent({ ...intent(), branch: `${prefix}/EX-1-${suffix}` }));
   }
   for (const prefix of ["", "/work", "-work", ".work", "work/.hidden", "work.lock", "work//nested", "work..nested", "work@{0}", "work[", "work\\\\nested"])

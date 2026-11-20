@@ -14,13 +14,14 @@ import { handoffBranchIntentSha, type HandoffReviewSubject } from "../documents/
 import type { HandoffBranchIntent } from "../documents/handoff-contract.js";
 import { documentRuntimeFixture } from "./document-runtime-fixture.js";
 const operationId = "d".repeat(64);
-function fixture() {
+function fixture(prefix = "feature") {
   const f = documentRuntimeFixture();
+  if (prefix !== "feature") writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n    featureBranchPattern: ${prefix}/<ticket>-<topic>\n`);
   const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: f.repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 }).trim();
   git("init", "-b", "develop"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base");
   const base = git("rev-parse", "HEAD");
   const physicalIdentitySha256 = withRepositoryRefTicketExclusion("example", f.repo, exclusion => withRepositoryRefAdmission(f.repo, exclusion, id => id));
-  const intent: HandoffBranchIntent = { schemaVersion: "pa-handoff-branch-intent/v1", requestId: "original", callerIdentitySha256: "a".repeat(64), expectedTicketVersion: "b".repeat(64), repository: { key: "example", root: f.repo, physicalIdentitySha256 }, ticket: "EX-1", branch: "feature/EX-1-handoff", action: "create",
+  const intent: HandoffBranchIntent = { schemaVersion: "pa-handoff-branch-intent/v1", requestId: "original", callerIdentitySha256: "a".repeat(64), expectedTicketVersion: "b".repeat(64), repository: { key: "example", root: f.repo, physicalIdentitySha256 }, ticket: "EX-1", branch: `${prefix}/EX-1-handoff`, action: "create",
     base: { ref: "refs/heads/develop", sha: base, observedDevelopSha: base, observedAt: "2026-11-14T16:00:00.000Z", provenance: "local-develop-ref", remoteFreshness: "not-established" }, plannedLinkSha256: "c".repeat(64), lineage: null };
   f.db.pragma("synchronous = FULL"); // New owner requires an explicitly qualified durable connection.
   const owner = new RegistryHandoffGitOwner(f.db);
@@ -49,8 +50,8 @@ test("native owner creates only one pinned ref with durable original correlation
   } finally { f.close(); }
 });
 
-for (const point of ["intent", "ref", "synced"] as const) test(`native Git recovery after ${point} interruption never treats matching SHA or uncertain absence as permission`, () => {
-  const f = fixture();
+for (const prefix of ["feature", "feat"]) for (const point of ["intent", "ref", "synced"] as const) test(`native ${prefix} Git recovery after ${point} interruption never treats matching SHA or uncertain absence as permission`, () => {
+  const f = fixture(prefix);
   try {
     assert.throws(() => f.owner.withRepository(f.intent, operationId, port => port.create(), stage => { if (stage === point) throw Error("reply lost"); }), /reply lost/);
     const result = f.run(port => port.observe());
@@ -60,9 +61,23 @@ for (const point of ["intent", "ref", "synced"] as const) test(`native Git recov
   } finally { f.close(); }
 });
 
+test("policy drift inside an admitted Git handle fences creation without rewriting saved intent", () => {
+  const f = fixture("feat");
+  try {
+    const original = JSON.stringify(f.intent), sha = handoffBranchIntentSha(f.intent);
+    const configure = (prefix: string) => writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n    featureBranchPattern: ${prefix}/<ticket>-<topic>\n`);
+    assert.throws(() => f.run(port => { configure("feature"); port.create(); }), /DOCUMENT_AUTHORITY/);
+    assert.equal(handoffBranchIntentSha(f.intent), sha); assert.equal(JSON.stringify(f.intent), original);
+    assert.equal(f.git("for-each-ref", `refs/heads/${f.intent.branch}`), "");
+    assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM handoff_git_intents").get() as { n: number }).n, 0);
+    configure("feat"); f.run(port => port.create());
+    assert.equal(f.git("rev-parse", f.intent.branch), f.base);
+  } finally { f.close(); }
+});
+
 test("foreign same-name/SHA, symbolic refs, replaced/deleted results and forged reflog fail closed", () => {
-  for (const kind of ["foreign", "symbolic", "deleted", "forged"] as const) {
-    const f = fixture();
+  for (const prefix of ["feature", "feat"]) for (const kind of ["foreign", "symbolic", "deleted", "forged"] as const) {
+    const f = fixture(prefix);
     try {
       if (kind === "foreign") f.git("update-ref", `refs/heads/${f.intent.branch}`, f.base);
       else if (kind === "symbolic") f.git("symbolic-ref", `refs/heads/${f.intent.branch}`, "refs/heads/develop");
@@ -155,8 +170,8 @@ test("actual child-process death after Git create recovers the original marker, 
   } finally { f.close(); }
 });
 
-for (const stop of ["none", "intent", "ticket", "audit"] as const) test(`combined real Git/journal/TicketStore adapter recovers ${stop} ticket boundary without ref/publication/queue replay`, () => {
-  const f = fixture();
+for (const prefix of ["feature", "feat"]) for (const stop of ["none", "intent", "ticket", "audit"] as const) test(`combined real ${prefix} Git/journal/TicketStore adapter recovers ${stop} ticket boundary without ref/publication/queue replay`, () => {
+  const f = fixture(prefix);
   try {
     // Actual source owners, synthetic authority ONLY. Not a human decision,
     // selected native review consumer, installed qualification or product UAT.

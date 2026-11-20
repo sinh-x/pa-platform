@@ -79,12 +79,17 @@ function repository(value: unknown): HandoffRepository {
   return { key: text(row.key, ID), root, physicalIdentitySha256: text(row.physicalIdentitySha256, SHA256) };
 }
 function branchName(value: unknown, ticket: string): string {
-  // Pure historical shape, NOT current naming policy. Keep the exact-ticket /
-  // kebab-topic form, but let the registered owner select the literal prefix.
+  // Pure historical shape, NOT current naming policy. Literal-template
+  // matching (including the actual topic capture) belongs to current owners.
   const branch = text(value, undefined, 256);
-  if (!new RegExp(`^.+/${ticket}-[a-z0-9]+(?:-[a-z0-9]+)*$`).test(branch)
-    || branch.startsWith("-") || /[\s~^:?*\[\\]/.test(branch) || branch.includes("..") || branch.includes("@{")
+  const placement = new RegExp(`(^|[^A-Za-z0-9])${ticket}(?=$|[^A-Za-z0-9])`).exec(branch);
+  if (!placement || branch.startsWith("-") || branch.endsWith(".") || /[\s~^:?*\[\\]/.test(branch)
+    || branch.includes("..") || branch.includes("@{")
     || branch.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"))) documentReject();
+  // A history record has no template field. Do not mistake literal framing
+  // (e.g. -REVIEW or parentheses) for the topic. Current admission uses the
+  // registered template's strict lowercase-kebab topic capture; parsing alone
+  // proves only ref/ticket structure and never a policy match or approval.
   return branch;
 }
 function utc(value: unknown): string {

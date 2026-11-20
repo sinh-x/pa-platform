@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -21,7 +21,7 @@ import { createPiSessionLifecycle, registerPiSessionModules, type PiRuntime, typ
 import { runDocumentCommand } from "../document-cli.js";
 import { startLocalReviewServer } from "../local-review-server.js";
 
-function fixture(capabilities = ["document.handoff", "document.package"], supplied = false, outcome = "approved") {
+function fixture(capabilities = ["document.handoff", "document.package"], supplied = false, outcome = "approved", prefix = "feature") {
   const env = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "pap312-native-"));
   try {
   const repo = join(root, "repo"), usage = join(root, "usage"), config = join(root, "config"); closeDb();
@@ -29,7 +29,7 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
   delete process.env.DISPLAY; delete process.env.WAYLAND_DISPLAY; // never open a real desktop during source tests
   for (const path of [repo, usage, config]) mkdirSync(path);
   Object.assign(process.env, { PA_AI_USAGE_HOME: usage, PA_PLATFORM_CONFIG: config, PA_REGISTRY_DB: join(root, "registry.db") });
-  writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
+  writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n${prefix === "feature" ? "" : `  featureBranchPattern: ${prefix}/<ticket>-<topic>\n`}`);
   const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: repo, encoding: "utf8", stdio: "pipe" }).trim();
   git("init", "-b", "develop"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base");
   process.chdir(repo);
@@ -91,7 +91,7 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
     const result = await execute("pa_document", { action: "freeze", package: subject, expectedRevision: new RegistryDocumentJournal(getDb()).events("example", ticket).length }); assert.equal(result.ok, true, JSON.stringify(result));
     return { subject, sha: documentPackageSha(subject), checks: result.result.checks };
   };
-  return { root, repo, usage, context, tools, execute, handoff, checked, git, freezeDocument, prompts: () => prompts,
+  return { root, repo, usage, prefix, context, tools, execute, handoff, checked, git, freezeDocument, prompts: () => prompts,
     async continueInFreshSession(ticketId: string, options: { liveOrigin?: boolean; contender?: boolean } = {}) {
       if (!options.liveOrigin) {
         // Synthetic process-boundary fixture: use a real child incarnation and
@@ -181,6 +181,8 @@ test("registered plan observation never opens a writable registry or initializes
   try {
     const intake = await f.checked({ action: "intake", ticket: "EX-1" });
     closeDb();
+    // Public authentication and core observation must both avoid Git probes.
+    renameSync(join(f.repo, ".git"), join(f.repo, "disabled-git"));
     const before = readdirSync(f.root).sort(), bytes = readFileSync(join(f.root, "registry.db"));
     const request = { action: "plan-status", ticket: "EX-1", requestId: "readonly-probe", branch: "feature/EX-1-readonly", expectedTicketVersion: intake.ticketVersion };
     assert.equal((await f.checked(request)).disposition, "absent");
@@ -211,8 +213,8 @@ test("registered plan preserves established repository custody cause without ech
   } finally { await f.close(); }
 });
 
-for (const supplied of [false, true]) test(`registered native policy handoff completes ${supplied ? "supplied" : "ticketless"} intake, real plan/publication/ref/link with one synthetic UI and no checkout`, async () => {
-  const f = fixture(undefined, supplied);
+for (const prefix of ["feature", "feat"]) for (const supplied of [false, true]) test(`registered native ${prefix} policy handoff completes ${supplied ? "supplied" : "ticketless"} intake, real plan/publication/ref/link with one synthetic UI and no checkout`, async () => {
+  const f = fixture(undefined, supplied, "approved", prefix);
   try {
     const before = authenticatePiHandoffCaller(f.context), intakeInput = supplied ? { action: "intake", ticket: "EX-1" } : { action: "intake", title: "Native handoff", content: "Synthetic complete requirements intake" };
     const intake = await f.checked(intakeInput), caller = authenticatePiHandoffCaller(f.context);
@@ -222,7 +224,7 @@ for (const supplied of [false, true]) test(`registered native policy handoff com
     if (supplied) {
       const staged = await f.checked({ action: "stage", ticket: intake.ticket.id, requestId: "analysis", expectedTicketVersion: ticketVersion, stage: "analysis" }); ticketVersion = staged.ticketVersion;
     }
-    const planRequest = { action: "plan", ticket: intake.ticket.id, requestId: "native-plan", branch: `feature/${intake.ticket.id}-native`, expectedTicketVersion: ticketVersion };
+    const planRequest = { action: "plan", ticket: intake.ticket.id, requestId: "native-plan", branch: `${prefix}/${intake.ticket.id}-native`, expectedTicketVersion: ticketVersion };
     const planned = await f.checked(planRequest); assert.deepEqual((await f.checked(planRequest)).intent, planned.intent);
     const doc = await f.freezeDocument(intake.ticket.id);
     const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: doc.sha, planRequestId: "native-plan", effects: { publish: true, branchRef: true, queue: false } });
@@ -246,6 +248,32 @@ for (const supplied of [false, true]) test(`registered native policy handoff com
     const alternate = { ...f.context, sessionManager: { getSessionId: () => "other-session" } };
     assert.equal((await f.execute("pa_handoff", { schemaVersion: "pa-handoff-native/v1", action: "status", subjectSha256: prepared.subjectSha256 }, alternate)).code, "DOCUMENT_AUTHORITY");
     assert.equal(f.prompts(), 1);
+  } finally { await f.close(); }
+});
+
+test("retained v1 issuance reauthenticates physical Git binding after the asynchronous review UI", async () => {
+  const f = fixture();
+  try {
+    const intake = await f.checked({ action: "intake", title: "Physical binding", content: "Synthetic review-time repository rebind" });
+    await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "rebind-plan", branch: `feature/${intake.ticket.id}-rebind`, expectedTicketVersion: intake.ticketVersion });
+    const doc = await f.freezeDocument(intake.ticket.id);
+    const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: doc.sha, planRequestId: "rebind-plan", effects: { publish: true, branchRef: true, queue: false } });
+    const other = join(f.root, "other"), linked = join(f.root, "linked"); mkdirSync(other);
+    f.git("-C", other, "init", "-b", "develop");
+    f.git("-C", other, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "foreign base");
+    f.git("-C", other, "worktree", "add", "--detach", linked);
+    const pointer = readFileSync(join(linked, ".git")), custom = f.context.ui.custom;
+    f.context.ui.custom = factory => {
+      const outcome = custom(factory);
+      renameSync(join(f.repo, ".git"), join(f.repo, "original-git"));
+      writeFileSync(join(f.repo, ".git"), pointer);
+      return outcome;
+    };
+    assert.equal((await f.handoff({ action: "review", subjectSha256: prepared.subjectSha256, expectedRevision: 0 })).code, "DOCUMENT_AUTHORITY");
+    const db = openDurableRegistryDatabase();
+    try { assert.equal(new RegistryHandoffReviewJournal(db, false).events(prepared.subjectSha256).some(event => event.kind === "issued"), false); }
+    finally { db.close(); }
+    assert.equal(f.prompts(), 1); assert.equal(new TicketStore().get(intake.ticket.id)!.doc_refs.length, 0);
   } finally { await f.close(); }
 });
 
@@ -359,7 +387,7 @@ test("v2 invocation cannot upgrade an omitted local-review selection", async () 
 const localCapabilities = ["document.handoff", "document.local-review", "document.package"];
 async function prepareLocal(f: ReturnType<typeof fixture>, effects = { publish: true, branchRef: true, queue: true }) {
   const intake = await f.checked({ action: "intake", title: "PAP-314 finite fixture", content: "Complete synthetic local handoff; not human UAT" });
-  const plan = await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "p3-plan", expectedTicketVersion: intake.ticketVersion, branch: `feature/${intake.ticket.id}-local` });
+  const plan = await f.checked({ action: "plan", ticket: intake.ticket.id, requestId: "p3-plan", expectedTicketVersion: intake.ticketVersion, branch: `${f.prefix}/${intake.ticket.id}-local` });
   const document = await f.freezeDocument(intake.ticket.id);
   const prepared = await f.checked({ action: "prepare-review", documentSubjectSha256: document.sha, planRequestId: "p3-plan", effects });
   return { intake, plan, document, prepared, subjectSha256: prepared.subjectSha256 };
@@ -535,8 +563,8 @@ test("PAP-314 P4 inert client uses default CLI/API shared state, stale native re
   } finally { await f.close(); }
 });
 
-test("PAP-314 P3 registered v2 completes actual publication, every attachment, correlated ref/link and queue while preserving canonical dirt", async () => {
-  const f = fixture(localCapabilities);
+for (const prefix of ["feature", "feat"]) test(`PAP-314 P3 registered ${prefix} v2 completes actual publication, every attachment, correlated ref/link and queue while preserving canonical dirt`, async () => {
+  const f = fixture(localCapabilities, false, "approved", prefix);
   try {
     const p = await prepareLocal(f); assert.equal(p.prepared.preflight.status, "eligible");
     writeFileSync(join(f.repo, "staged.txt"), "staged original"); f.git("add", "staged.txt"); writeFileSync(join(f.repo, "staged.txt"), "unstaged original"); writeFileSync(join(f.repo, "untracked.txt"), "untracked original");
@@ -573,6 +601,56 @@ test("PAP-314 P3 registered v2 completes actual publication, every attachment, c
   } finally { await f.close(); }
 });
 
+test("policy drift after completed handoff preserves physically verified effects and original authority", async () => {
+  const f = fixture(localCapabilities, false, "approved", "feat");
+  try {
+    const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates }); await f.checked({ action: "queue", ...a.coordinates });
+    const before = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    const ticket = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), refs = f.git("show-ref");
+    writeFileSync(join(f.root, "config", "config.yaml"), `repos:\n example:\n  path: ${f.repo}\n  prefix: EX\n  featureBranchPattern: feature/<ticket>-<topic>\n`);
+    const after = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.deepEqual(after.effects, before.effects); assert.equal(after.nextOwner, "none");
+    assert.deepEqual(after.intent, before.intent); assert.deepEqual(after.history, before.history);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), ticket); assert.equal(f.git("show-ref"), refs);
+    assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
+for (const boundary of ["prepare", "approval", "publish", "complete-branch", "queue"] as const) test(`registered policy drift at ${boundary} preserves feat history and blocks incompatible new effects`, async () => {
+  const f = fixture(localCapabilities, false, "approved", "feat");
+  try {
+    const p = await prepareLocal(f);
+    let a: Awaited<ReturnType<typeof approveLocal>> | undefined;
+    if (!["prepare", "approval"].includes(boundary)) a = await approveLocal(f, p.subjectSha256);
+    if (boundary === "complete-branch" || boundary === "queue") await f.checked({ action: "publish", ...a!.coordinates });
+    if (boundary === "queue") await f.checked({ action: "complete-branch", ...a!.coordinates });
+    const before = readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`));
+    const refs = f.git("show-ref"), audit = readFileSync(join(f.usage, "tickets/audit.jsonl"));
+    const configure = (prefix: string) => writeFileSync(join(f.root, "config", "config.yaml"), `repos:\n example:\n  path: ${f.repo}\n  prefix: EX\n  featureBranchPattern: ${prefix}/<ticket>-<topic>\n`);
+    configure("feature");
+    const history = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.deepEqual(history.intent, p.plan.intent);
+    assert.equal(history.subject.branchIntentSha256, p.prepared.subject.branchIntentSha256);
+    if (boundary === "prepare") {
+      assert.equal((await f.handoff({ action: "prepare-review", documentSubjectSha256: p.document.sha, planRequestId: "p3-plan", effects: { publish: true, branchRef: true, queue: true } })).code, "DOCUMENT_AUTHORITY");
+    } else if (boundary === "approval") {
+      const result = await f.checked({ action: "request", subjectSha256: p.subjectSha256, expectedRevision: 0 });
+      assert.equal(result.status, "blocked"); assert.equal(result.approval, "not-issued");
+    } else assert.equal((await f.handoff({ action: boundary, ...a!.coordinates })).code, "DOCUMENT_AUTHORITY");
+    assert.deepEqual(readFileSync(join(f.usage, "tickets", `${p.intake.ticket.id}.json`)), before);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets/audit.jsonl")), audit); assert.equal(f.git("show-ref"), refs);
+    configure("feat");
+    const approved = a ?? await approveLocal(f, p.subjectSha256);
+    await f.checked({ action: "publish", ...approved.coordinates });
+    await f.checked({ action: "complete-branch", ...approved.coordinates });
+    await f.checked({ action: "queue", ...approved.coordinates });
+    const complete = await f.checked({ action: "status", subjectSha256: p.subjectSha256 });
+    assert.equal(complete.nextOwner, "none"); assert.deepEqual(complete.intent, p.plan.intent);
+    assert.equal(f.prompts(), 0);
+  } finally { await f.close(); }
+});
+
 test("PAP-314 P3 independent MVM-shaped preflight blocks final review without erasing primary or changing lifecycle", async () => {
   const f = fixture(localCapabilities);
   try {
@@ -592,8 +670,8 @@ test("PAP-314 P3 independent MVM-shaped preflight blocks final review without er
   } finally { await f.close(); }
 });
 
-test("PAP-314 P3 approval drift, stale reply loss, exact refresh replay, repeated drift and postissuance pin", async () => {
-  const f = fixture(localCapabilities);
+for (const prefix of ["feature", "feat"]) test(`PAP-314 P3 ${prefix} approval drift, stale reply loss, exact refresh replay, repeated drift and postissuance pin`, async () => {
+  const f = fixture(localCapabilities, false, "approved", prefix);
   try {
     const p = await prepareLocal(f), oldLink = new TicketStore().get(p.intake.ticket.id)!.linkedBranches;
     const original = await f.checked({ action: "request", subjectSha256: p.subjectSha256, expectedRevision: 0 });
@@ -713,8 +791,8 @@ test("PAP-314 P3 partial publication revocation fences missing writes and preser
   } finally { await f.close(); }
 });
 
-test("PAP-314 P3 created ref and missing audit resume the same link operation after reply loss", async () => {
-  const f = fixture(localCapabilities);
+for (const prefix of ["feature", "feat"]) test(`PAP-314 P3 ${prefix} created ref and missing audit resume the same link operation after reply loss`, async () => {
+  const f = fixture(localCapabilities, false, "approved", prefix);
   try {
     const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256); await f.checked({ action: "publish", ...a.coordinates });
     const apply = TicketStore.prototype.applyHandoffWithIntent;
@@ -732,8 +810,8 @@ test("PAP-314 P3 created ref and missing audit resume the same link operation af
   } finally { await f.close(); }
 });
 
-test("PAP-314 P3 advanced native reuse refreshes observed develop without changing the original base or descendant head", async () => {
-  const f = fixture(localCapabilities);
+for (const prefix of ["feature", "feat"]) test(`PAP-314 P3 ${prefix} advanced native reuse refreshes observed develop without changing the original base or descendant head`, async () => {
+  const f = fixture(localCapabilities, false, "approved", prefix);
   try {
     const p = await prepareLocal(f), a = await approveLocal(f, p.subjectSha256);
     await f.checked({ action: "publish", ...a.coordinates }); await f.checked({ action: "complete-branch", ...a.coordinates }); await f.checked({ action: "queue", ...a.coordinates });

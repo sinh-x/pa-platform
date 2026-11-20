@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { TICKET_INTERACTIONS_PROFILE, DocumentPackageError, getDeployPaths, getDeploymentEvents, processIsWithinFingerprintLineage, queryDeploymentStatus, queryReadonlyDeploymentStatus, queryReadonlyDeploymentEvents, readProcessFingerprint, resolveRepoExecutionPath, workflowDigest } from "@pa-platform/pa-core";
+import { TICKET_INTERACTIONS_PROFILE, DocumentPackageError, getDeployPaths, getDeploymentEvents, processIsWithinFingerprintLineage, queryDeploymentStatus, queryReadonlyDeploymentStatus, queryReadonlyDeploymentEvents, readProcessFingerprint, resolveRepoExecutionPath, listRepos, workflowDigest } from "@pa-platform/pa-core";
 import { READONLY_DOCUMENT_PROFILE, READONLY_DOCUMENT_SESSION, hasModeResources, isModeCapabilitySession, modeCapabilitySessionMatches, MODE_CAPABILITY_SESSION, modeCapabilityActor, modeCapabilityRouteMatches, capabilityToolSelected, resolveTrustedTicketMutationContext, parseModeCapabilityBinding, type ModeCapabilityBinding, type TicketMutationContext } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
 import type { PiPreparationContext } from "./pi-extension/prepared-workflow.js";
@@ -29,7 +29,7 @@ export function selectsDocumentSession(input: { team: string; mode?: string; pin
 }
 export interface DocumentSessionDependencies {
   status: typeof queryDeploymentStatus; events: typeof getDeploymentEvents; physical: typeof realpathSync;
-  repository: typeof resolveRepoExecutionPath; fingerprint: typeof readProcessFingerprint;
+  repository: (...args: Parameters<typeof resolveRepoExecutionPath>) => Pick<ReturnType<typeof resolveRepoExecutionPath>, "repoKey" | "repoRoot" | "worktreeRoot" | "repositoryCwd">; fingerprint: typeof readProcessFingerprint;
   inLineage: typeof processIsWithinFingerprintLineage; anchor: typeof readPiProcessIdentity; cwd: () => string; pid: number;
 }
 /** Native launch event, running registry, process incarnation and session, not an env selector. */
@@ -42,6 +42,22 @@ export function authenticatePiReadonlyDocumentCaller(context: PiPreparationConte
   return authenticateDocumentProcess(context, process.env, {
     status: id => queryReadonlyDeploymentStatus(id, true),
     events: id => queryReadonlyDeploymentEvents(id, true),
+  }, false);
+}
+/** Original-plan observation/binding only, never an effect admission. Preserve
+ * all process/session/selection/physical-path checks without probing Git. */
+export function authenticatePiDocumentPlanObserver(context: PiPreparationContext): PiDocumentCaller {
+  return authenticateDocumentProcess(context, process.env, {
+    status: id => queryReadonlyDeploymentStatus(id, true),
+    events: id => queryReadonlyDeploymentEvents(id, true),
+    repository: (_input, root) => {
+      // Read-only observations authenticate the existing native process/root
+      // and unique registration, not current Git state. Effect owners perform
+      // physical Git admission separately; status must not probe or repair Git.
+      const matches = listRepos().filter(repo => repo.path === root);
+      if (matches.length !== 1 || !root) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+      return { repoKey: matches[0]!.name, repoRoot: root, worktreeRoot: root, repositoryCwd: root };
+    },
   }, false);
 }
 /** CLI status adapter only: process lineage and immutable selection are genuine;
@@ -88,7 +104,9 @@ function authenticateDocumentProcess(context: PiPreparationContext | { cwd: stri
     ticket = event.ticket_id || null;
   }
   if (ticket !== (status.ticket_id || null)) return deny();
-  const repo = d.repository(undefined, root), owner = d.fingerprint(status.pid), current = d.fingerprint(d.pid), sessionId = context.sessionManager?.getSessionId();
+  let repo: ReturnType<DocumentSessionDependencies["repository"]>;
+  try { repo = d.repository(undefined, root); } catch { return deny(); }
+  const owner = d.fingerprint(status.pid), current = d.fingerprint(d.pid), sessionId = context.sessionManager?.getSessionId();
   if (repo.repoRoot !== root || repo.worktreeRoot !== root || repo.repositoryCwd !== root || !owner || !current || !d.inLineage(d.pid, owner) || (!cli && !sessionId) || !isDeepStrictEqual(owner, d.anchor(deploymentId, getDeployPaths(deploymentId).deployDir))) return deny();
   if (hasModeResources(capabilities) && capabilities.repoKey !== repo.repoKey) return deny();
   return { deploymentId, repoKey: repo.repoKey, repoRoot: root, ticket: status.ticket_id || null,

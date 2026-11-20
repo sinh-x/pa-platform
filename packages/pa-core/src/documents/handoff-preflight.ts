@@ -57,7 +57,6 @@ export function observeLocalHandoffDevelop(intent: HandoffBranchIntent): string 
  * observation never reserves, reconciles, fsyncs or reacquires capacity locks. */
 export function assertLocalHandoffRepository(intent: HandoffBranchIntent, admission: RepositoryRefAdmission): void {
   withActiveRepositoryRefAdmission(admission, intent.repository.root, identity => {
-    assertRegisteredHandoffPolicy(intent.repository.key, intent.repository.root, intent.ticket, intent.branch);
     if (identity !== intent.repository.physicalIdentitySha256) documentReject("DOCUMENT_STALE");
     const directory = dirname(preparedRepositoryTicketReservationPath(intent.repository.root, intent.ticket));
     const parent = lstatSync(directory);
@@ -188,7 +187,7 @@ export function inspectLocalHandoffEffects(db: Database.Database, tickets: Ticke
     }
   } catch { /* Observation failure is explicit conflict-or-unknown, never absence. */ }
   if (branchRef.completed) {
-    try { withLocalHandoffRepository(intent, admission => new RegistryHandoffGitOwner(db, false).withRepository(intent, branchRef.operationId, port => tickets.withWorkflowTransaction(() => {
+    try { withLocalHandoffRepository(intent, admission => new RegistryHandoffGitOwner(db, false).observeRepository(intent, branchRef.operationId, port => tickets.withWorkflowTransaction(() => {
       const physical = port.observe(), ticket = tickets.get(intent.ticket), link = ticket?.linkedBranches[0];
       const head = intent.action === "reuse" ? intent.lineage!.observedHeadSha : intent.base.sha;
       if (physical.state !== "present" || physical.headSha !== head || !port.isAncestor(intent.base.sha, head)
@@ -201,7 +200,7 @@ export function inspectLocalHandoffEffects(db: Database.Database, tickets: Ticke
         || !isDeepStrictEqual(materialization.record.before.linkedBranches, plan.record.after.linkedBranches) || !isDeepStrictEqual(materialization.record.after.linkedBranches, ticket.linkedBranches)
         : !isDeepStrictEqual(plan.record.after.linkedBranches, ticket.linkedBranches)) documentReject("DOCUMENT_CONFLICT");
       branchRef.verified = true;
-    }), undefined, admission)); }
+    }), admission)); }
     catch { /* Retained custody or changed physical evidence is not completion. */ }
   }
   const ticket = tickets.get(intent.ticket);

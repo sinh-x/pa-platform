@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,22 +19,22 @@ import { REPOSITORY_MUTATION_LEASE_FILE } from "../deploy/repository-admission.j
 // Synthetic native host/selection; these real Git/store tests are NOT genuine
 // foreground capture, installed selection, independent review or human UAT.
 for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
-function fixture(note = HANDOFF_SESSION_VERSION) {
+function fixture(note = HANDOFF_SESSION_VERSION, prefix = "feature", ticket = "EX-1") {
   const env = { ...process.env }, root = mkdtempSync(join(tmpdir(), "handoff-planning-")), repo = join(root, "repo"), config = join(root, "config");
   mkdirSync(repo); mkdirSync(config); mkdirSync(join(root, "usage", "tickets"), { recursive: true });
-  writeFileSync(join(config, "config.yaml"), `repos:\n  example:\n    path: ${repo}\n    prefix: EX\n`);
+  writeFileSync(join(config, "config.yaml"), `repos:\n  example:\n    path: ${repo}\n    prefix: EX\n${prefix === "feature" ? "" : `    featureBranchPattern: ${prefix}/<ticket>-<topic>\n`}`);
   process.env.PA_AI_USAGE_HOME = join(root, "usage"); process.env.PA_PLATFORM_CONFIG = config; process.env.PA_REGISTRY_DB = join(root, "registry.db");
   closeDb(); getDb();
   const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 }).trim();
   git("init", "-b", "develop"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base");
   const base = git("rev-parse", "HEAD"), dir = join(root, "usage", "tickets"), store = new TicketStore();
-  writeFileSync(join(dir, "EX-1.json"), JSON.stringify({ id: "EX-1", project: "example", title: "Supplied ticket", status: "idea", assignee: "sinh", doc_refs: [], comments: [], createdAt: "2026-11-15T06:00:00.000Z", updatedAt: "2026-11-15T06:00:00.000Z" }));
+  writeFileSync(join(dir, `${ticket}.json`), JSON.stringify({ id: ticket, project: "example", title: "Supplied ticket", status: "idea", assignee: "sinh", doc_refs: [], comments: [], createdAt: "2026-11-15T06:00:00.000Z", updatedAt: "2026-11-15T06:00:00.000Z" }));
   const start = { deployment_id: "d-abcdef", event: "started" as const, team: "requirements", mode: "analyze", runtime: "pi" as const, binary: "ppa" as const,
-    timestamp: "2026-11-15T06:00:00.000Z", repo_root: repo, repo, worktree_root: repo, note, ticket_id: "EX-1" };
+    timestamp: "2026-11-15T06:00:00.000Z", repo_root: repo, repo, worktree_root: repo, note, ticket_id: ticket };
   appendRegistryEvent(start);
-  const caller = { deploymentId: "d-abcdef", sessionId: "synthetic-session", repoKey: "example", repoRoot: repo, selectionSha256: "a".repeat(64), identitySha256: "b".repeat(64), ticket: "EX-1" };
+  const caller = { deploymentId: "d-abcdef", sessionId: "synthetic-session", repoKey: "example", repoRoot: repo, selectionSha256: "a".repeat(64), identitySha256: "b".repeat(64), ticket };
   const host: NativeHandoffPlanningHost = { authenticate: () => structuredClone(caller), assertAvailable() {} };
-  const request = { schemaVersion: "pa-handoff-request/v1", action: "plan", ticket: "EX-1", requestId: "original", branch: "feature/EX-1-handoff", expectedTicketVersion: creationDigest(store.get("EX-1")) };
+  const request = { schemaVersion: "pa-handoff-request/v1", action: "plan", ticket, requestId: "original", branch: `${prefix}/${ticket}-handoff`, expectedTicketVersion: creationDigest(store.get(ticket)) };
   const run = (value = request) => planNativeHandoffTicket(store, host, JSON.stringify(value));
   const advance = () => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "develop moved");
   return { root, repo, config, dir, store, git, base, host, caller, start, request, run, advance,
@@ -56,6 +56,41 @@ for (const prefix of ["feat", "work", "feature"]) test(`actual planner consumes 
     assert.equal(observeNativeHandoffPlan(f.host, JSON.stringify(f.request)).disposition, "complete");
     assert.equal(f.plans().length, 1); assert.equal(f.store.readAudit().length, 1);
     assert.equal(f.git("for-each-ref", `refs/heads/${f.request.branch}`), "");
+  } finally { f.close(); }
+});
+
+for (const [pattern, branch] of [
+  ["work/<ticket>/<topic>", "work/EX-1/safe-topic"],
+  ["work/<ticket>-<topic>-review", "work/EX-1-safe-topic-review"],
+  ["work/<topic>/<ticket>", "work/safe-topic/EX-1"],
+  ["work.+/<ticket>-<topic>.review", "work.+/EX-1-safe-topic.review"],
+  ["<ticket>/<topic>", "EX-1/safe-topic"],
+  ["work/<ticket>-<topic>-REVIEW", "work/EX-1-safe-topic-REVIEW"],
+  ["work/<ticket>-<topic>--review", "work/EX-1-safe-topic--review"],
+  ["work(<ticket>)/<topic>", "work(EX-1)/safe-topic"],
+]) test(`registered literal layout ${pattern} uses strict topic capture without a suffix allowlist`, () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n    featureBranchPattern: ${pattern}\n`);
+    f.request.branch = branch!;
+    assert.equal(f.run().intent.branch, branch);
+    assert.equal(f.run().reused, true);
+    assert.equal(observeNativeHandoffPlan(f.host, JSON.stringify(f.request)).disposition, "complete");
+    assert.equal(f.plans().length, 1); assert.equal(f.store.readAudit().length, 1);
+  } finally { f.close(); }
+});
+
+test("actual registered owner rejects malformed topics without an intent, link, audit or ref effect", () => {
+  const f = fixture(undefined, "feat");
+  try {
+    const before = readFileSync(join(f.dir, "EX-1.json"));
+    for (const topic of ["", "-topic", "topic-", "topic--other", "Topic", "topic_with_underscores"]) {
+      f.request.branch = `feat/EX-1-${topic}`;
+      assert.throws(() => f.run(), /DOCUMENT_AUTHORITY/);
+      assert.deepEqual(readFileSync(join(f.dir, "EX-1.json")), before);
+      assert.equal(f.plans().length, 0); assert.equal(f.store.readAudit().length, 0);
+      assert.equal(f.git("for-each-ref", "refs/heads/feat"), "");
+    }
   } finally { f.close(); }
 });
 
@@ -86,8 +121,8 @@ test("registered policy aliases/defaults, exact literal matching and invalid pre
   } finally { f.close(); }
 });
 
-for (const point of ["pre-intent", "intent", "ticket", "audit"] as const) test(`original ${point} observation and later-comment recovery preserve original coordinates and partial history`, () => {
-  const f = fixture();
+for (const prefix of ["feature", "feat"]) for (const point of ["pre-intent", "intent", "ticket", "audit"] as const) test(`original ${prefix} ${point} observation and later-comment recovery preserve original coordinates and partial history`, () => {
+  const f = fixture(undefined, prefix);
   try {
     if (point !== "pre-intent") {
       f.host.afterPersist = stage => { if (stage === point) throw Error("original reply lost"); };
@@ -112,6 +147,27 @@ for (const point of ["pre-intent", "intent", "ticket", "audit"] as const) test(`
     }
     assert.deepEqual(f.store.readAudit(), audit); assert.equal(observe().disposition, status.disposition);
     assert.equal(f.git("for-each-ref", `refs/heads/${f.request.branch}`), "");
+  } finally { f.close(); }
+});
+
+test("historical HR-005 coordinates can be observed without Git or current policy and never refresh stale original CAS", () => {
+  const f = fixture(undefined, "feat", "HR-005");
+  try {
+    f.request.requestId = "hr-005-d-3c9cf8-branch-plan-r001";
+    f.request.branch = "feat/HR-005-global-meta-recents";
+    f.request.expectedTicketVersion = "3a8f58adbcb4b30ff99c85bbba1014a109a085bc9d7b2cd9a755fdc3f07a2b93";
+    f.store.comment("HR-005", "fixture", "Later comments remain untouched");
+    const before = readFileSync(join(f.dir, "HR-005.json")), files = readdirSync(f.dir).sort();
+    // Pure observation must not need Git storage, locks, DB initialization or
+    // current prefix compatibility. This is synthetic origin, not live recovery.
+    renameSync(join(f.repo, ".git"), join(f.repo, "disabled-git"));
+    writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: HR\n    featureBranchPattern: feature/<ticket>-<topic>\n`);
+    const result = observeNativeHandoffPlan(f.host, JSON.stringify(f.request));
+    assert.equal(result.disposition, "absent"); assert.equal(result.ticketMatchesExpectedVersion, false);
+    assert.deepEqual(result.original, { ticket: "HR-005", requestId: f.request.requestId, branch: f.request.branch, expectedTicketVersion: f.request.expectedTicketVersion });
+    assert.equal(result.nextOwner, "original-plan-owner"); assert.equal(result.authorityGranted, false);
+    assert.deepEqual(readFileSync(join(f.dir, "HR-005.json")), before); assert.deepEqual(readdirSync(f.dir).sort(), files);
+    assert.equal(f.plans().length, 0);
   } finally { f.close(); }
 });
 
@@ -156,15 +212,15 @@ test("actual registered observer pins develop and persists/rereads one SHA-free 
   } finally { f.close(); }
 });
 
-for (const point of ["intent", "ticket", "audit"] as const) test(`actual planner recovers original ${point} response loss and reviewed pin after develop drift`, () => {
-  const f = fixture();
+for (const prefix of ["feature", "feat"]) for (const point of ["intent", "ticket", "audit"] as const) test(`actual ${prefix} planner recovers original ${point} response loss and reviewed pin after develop drift`, () => {
+  const f = fixture(undefined, prefix);
   try {
     f.host.afterPersist = stage => { if (stage === point) { f.advance(); throw Error("synthetic reply lost"); } };
     assert.throws(() => f.run(), /synthetic reply lost/); delete f.host.afterPersist;
     const result = f.run(); assert.equal(result.reused, true); assert.equal(result.intent.base.sha, f.base);
     assert.notEqual(result.currentDevelopSha, f.base); assert.equal(f.plans().length, 1); assert.equal(f.store.readAudit().length, 1);
     assert.equal(f.store.get("EX-1")!.linkedBranches.length, 1); assert.equal(f.git("for-each-ref", `refs/heads/${f.request.branch}`), "");
-    assert.throws(() => f.run({ ...f.request, branch: "feature/EX-1-changed" }), /DOCUMENT_CONFLICT/);
+    assert.throws(() => f.run({ ...f.request, branch: `${prefix}/EX-1-changed` }), /DOCUMENT_CONFLICT/);
     assert.throws(() => f.run({ ...f.request, expectedTicketVersion: "c".repeat(64) }), /DOCUMENT_CONFLICT/);
   } finally { f.close(); }
 });

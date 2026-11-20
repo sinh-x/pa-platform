@@ -3,8 +3,8 @@ import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import { documentReject } from "./package-contract.js";
 
 /** Current registered policy admission, never used by history parsers/digests.
- * The handoff profile retains its exact-ticket/kebab-topic suffix and develop
- * boundary. Prefixes are escaped literals, not regexes or a prefix allowlist. */
+ * The handoff profile retains exact-ticket/kebab-topic and develop boundaries.
+ * Templates are escaped literals, not regexes or a prefix/layout allowlist. */
 export function assertRegisteredHandoffPolicy(key: string, root: string, ticket: string, branch: string): void {
   const repo = loadRepoEntry(key);
   if (!repo || repo.path !== root || (repo.developBranch ?? "develop") !== "develop") documentReject("DOCUMENT_AUTHORITY");
@@ -12,7 +12,7 @@ export function assertRegisteredHandoffPolicy(key: string, root: string, ticket:
   // not inherit it, including null values retained by config normalization.
   if (repo.featureBranchPattern !== undefined && typeof repo.featureBranchPattern !== "string") documentReject("DOCUMENT_AUTHORITY");
   const pattern = getBranchPattern(repo);
-  if (!pattern || pattern.length > 256 || !pattern.endsWith("/<ticket>-<topic>")
-    || /[<>]/.test(pattern.slice(0, -"<ticket>-<topic>".length))
-    || !validateBranchNameForTicket(branch, ticket, pattern)) documentReject("DOCUMENT_AUTHORITY");
+  if (!pattern || pattern.length > 256 || pattern.split("<ticket>").length !== 2 || pattern.split("<topic>").length !== 2
+    || /[<>]/.test(pattern.replace("<ticket>", "").replace("<topic>", ""))
+    || !validateBranchNameForTicket(branch, ticket, pattern, true)) documentReject("DOCUMENT_AUTHORITY");
 }

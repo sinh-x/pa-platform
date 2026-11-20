@@ -12,7 +12,7 @@ import {
   workflowDigest, executeLocalReview, getDeployPaths, assertNativeRestartProcessDead, localHandoffReviewHooks, refreshNativeHandoffTicket, withLocalHandoffRepository, type NativeHandoffPlanningHost, type NativeHandoffReviewHost, type LocalReviewOutcome,
 } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
-import { authenticatePiDocumentCaller, authenticatePiReadonlyDocumentCaller, documentTicketMutationContext } from "./document-session.js";
+import { authenticatePiDocumentCaller, authenticatePiReadonlyDocumentCaller, authenticatePiDocumentPlanObserver, documentTicketMutationContext } from "./document-session.js";
 import { SystemDocumentBrowserFallback } from "./handoff-browser-fallback.js";
 import { showHandoffReview, type HandoffReviewUi } from "./pi-extension/handoff-review-ui.js";
 import type { PiWorkflowContext } from "./workflow-native.js";
@@ -96,17 +96,17 @@ function parse(row: Record<string, unknown>): Request {
   throw new DocumentPackageError("DOCUMENT_INPUT");
 }
 export interface PiHandoffContext extends PiWorkflowContext { readonly ui?: PiWorkflowContext["ui"] & HandoffReviewUi }
-export function authenticatePiHandoffCaller(context: PiHandoffContext, signal?: AbortSignal) {
+export function authenticatePiHandoffCaller(context: PiHandoffContext, signal?: AbortSignal, observationOnly = false) {
   if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
-  const caller = authenticatePiReadonlyDocumentCaller(context);
+  const caller = observationOnly ? authenticatePiDocumentPlanObserver(context) : authenticatePiReadonlyDocumentCaller(context);
   if (!isModeCapabilitySession(caller.profile) || !caller.capabilities || !caller.sessionId || !caller.handoffIdentitySha256 || !capabilityToolSelected(caller.capabilities.policy, "pa_handoff")) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   return Object.freeze({ deploymentId: caller.deploymentId, sessionId: caller.sessionId, repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket,
     identitySha256: caller.handoffIdentitySha256, selectionSha256: workflowDigest(JSON.stringify(caller.capabilities)) });
 }
-function planningHost(context: PiHandoffContext, signal?: AbortSignal): NativeHandoffPlanningHost {
+function planningHost(context: PiHandoffContext, signal?: AbortSignal, observationOnly = false): NativeHandoffPlanningHost {
   const authenticate = () => {
     if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
-    const caller = authenticatePiHandoffCaller(context);
+    const caller = authenticatePiHandoffCaller(context, signal, observationOnly);
     if (!caller.ticket) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
     return caller as ReturnType<NativeHandoffPlanningHost["authenticate"]>;
   };
@@ -195,13 +195,14 @@ export async function mutatePiHandoff(raw: string, context: PiHandoffContext, si
     local = row.schemaVersion === LOCAL_VERSION;
   }
   catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
-  authenticatePiHandoffCaller(context, signal);
+  const observationOnly = request.action === "plan-status";
+  authenticatePiHandoffCaller(context, signal, observationOnly);
   if (local) {
-    const selection = authenticatePiReadonlyDocumentCaller(context).capabilities;
+    const selection = (observationOnly ? authenticatePiDocumentPlanObserver(context) : authenticatePiReadonlyDocumentCaller(context)).capabilities;
     if (!selection || !["document.local-review", "document.handoff", "document.package"].every(id => selection.policy.allow.includes(id))) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
   }
   if (request.action === "plan-status") {
-    return observeNativeHandoffPlan(planningHost(context, signal), JSON.stringify({ schemaVersion: "pa-handoff-request/v1", ...request, action: "plan" }));
+    return observeNativeHandoffPlan(planningHost(context, signal, true), JSON.stringify({ schemaVersion: "pa-handoff-request/v1", ...request, action: "plan" }));
   }
   if (local && (request.action === "show" || request.action === "status")) {
     return executeLocalReview(JSON.stringify({ schemaVersion: "pa-local-review/v1", action: "show", subjectSha256: request.subjectSha256 }));
