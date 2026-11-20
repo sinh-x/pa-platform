@@ -30,6 +30,9 @@ test("P1 candidate intent preserves exact observed base and has deterministic st
   const original = intent();
   assert.deepEqual(parseHandoffBranchIntent(original), original);
   const first = handoffBranchIntentSha(original);
+  // Captured on the unchanged 3d7e95c baseline before PAP-324 product edits.
+  assert.equal(first, "e57f7039b1c4dd65ed81035e9be91bb6554caf5d302e35301e679a81f48568d3");
+  assert.equal(handoffReviewSubjectSha(review()), "b9336bf93d17c6fc753a8ef07c5deeb41c228c4c6d374ae2add5d0af03d49702");
   assert.equal(first, handoffBranchIntentSha(JSON.parse(JSON.stringify(original))));
   assert.equal(first, handoffBranchIntentSha(Object.fromEntries(Object.entries(original).reverse()) as unknown as HandoffBranchIntent));
   for (const mutate of [
@@ -47,6 +50,18 @@ test("P1 candidate intent preserves exact observed base and has deterministic st
     const next = structuredClone(original); mutate(next);
     assert.notEqual(handoffBranchIntentSha(next), first);
   }
+});
+
+test("registered-convention history parsing accepts safe feat/work branches without consulting current policy", () => {
+  for (const prefix of ["feat", "work", "feature"]) {
+    const original = { ...intent(), ticket: "HR-005", branch: `${prefix}/HR-005-global-meta-recents` };
+    assert.deepEqual(parseHandoffBranchIntent(original), original);
+    const request = { schemaVersion: HANDOFF_REQUEST_VERSION, action: "plan", ticket: original.ticket,
+      branch: original.branch, requestId: "hr-005-d-3c9cf8-branch-plan-r001", expectedTicketVersion: original.expectedTicketVersion };
+    assert.deepEqual(parseHandoffRequest(JSON.stringify(request)), request);
+  }
+  const alphanumeric = { ...intent(), ticket: "P2-1", branch: "feat/P2-1-safe-topic" };
+  assert.deepEqual(parseHandoffBranchIntent(alphanumeric), alphanumeric);
 });
 
 test("P1 advanced reuse requires explicit original-base lineage and preserves a distinct observed develop/head", () => {

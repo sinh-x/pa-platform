@@ -134,6 +134,21 @@ function fixture(capabilities = ["document.handoff", "document.package"], suppli
   } catch (error) { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
+test("registered public v2 plan and original plan-status accept the selected feat convention", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    writeFileSync(join(f.root, "config", "config.yaml"), `repos:\n example:\n  path: ${f.repo}\n  prefix: EX\n  featureBranchPattern: feat/<ticket>-<topic>\n`);
+    const intake = await f.checked({ action: "intake", ticket: "EX-1" });
+    const request = { action: "plan", ticket: "EX-1", requestId: "original-feat-plan", branch: "feat/EX-1-global-meta-recents", expectedTicketVersion: intake.ticketVersion };
+    assert.equal((await f.checked({ ...request, action: "plan-status" })).disposition, "absent");
+    const plan = await f.checked(request);
+    assert.equal(plan.intent.branch, request.branch);
+    assert.deepEqual((await f.checked(request)).intent, plan.intent);
+    assert.equal((await f.checked({ ...request, action: "plan-status" })).disposition, "complete");
+    assert.equal(f.prompts(), 0); assert.equal(f.git("for-each-ref", `refs/heads/${request.branch}`), "");
+  } finally { await f.close(); }
+});
+
 test("registered original plan observation is read-only before a subject and preserves stale no-intent coordinates", async () => {
   const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
   try {

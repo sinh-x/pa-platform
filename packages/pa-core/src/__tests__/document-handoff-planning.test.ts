@@ -42,6 +42,23 @@ function fixture(note = HANDOFF_SESSION_VERSION) {
     close() { closeDb(); process.env = env; rmSync(root, { recursive: true, force: true }); } };
 }
 
+for (const prefix of ["feat", "work", "feature"]) test(`actual planner consumes registered ${prefix} convention, not a prefix allowlist`, () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.config, "config.yaml"), `repos:\n  example:\n    path: ${f.repo}\n    prefix: EX\n    featureBranchPattern: ${prefix}/<ticket>-<topic>\n`);
+    f.request.branch = `${prefix}/EX-1-handoff`;
+    const before = observeNativeHandoffPlan(f.host, JSON.stringify(f.request));
+    assert.equal(before.disposition, "absent");
+    const result = f.run();
+    assert.equal(result.intent.branch, f.request.branch);
+    assert.equal(result.intent.base.sha, f.base);
+    assert.deepEqual(f.run(), { ...result, reused: true });
+    assert.equal(observeNativeHandoffPlan(f.host, JSON.stringify(f.request)).disposition, "complete");
+    assert.equal(f.plans().length, 1); assert.equal(f.store.readAudit().length, 1);
+    assert.equal(f.git("for-each-ref", `refs/heads/${f.request.branch}`), "");
+  } finally { f.close(); }
+});
+
 for (const point of ["pre-intent", "intent", "ticket", "audit"] as const) test(`original ${point} observation and later-comment recovery preserve original coordinates and partial history`, () => {
   const f = fixture();
   try {
