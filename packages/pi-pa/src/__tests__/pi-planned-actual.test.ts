@@ -19,6 +19,7 @@ import { type PlannedRecord, attachPlannedActual, projectPlannedActual, plannedA
 import { nativePlannedActualHost, plannedRecordFromContentReview } from "../phase-report-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { createPaTicketTool } from "../pi-extension/ticket-tool.js";
+import { MAX_TOOL_BYTES, MAX_TOOL_LINES } from "../pi-extension/tool-result.js";
 import { createPiPhaseReportModule, type PiPhaseReportBinding } from "../pi-extension/prepared-workflow.js";
 import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 
@@ -91,6 +92,13 @@ for (const version of ["v1", "v2"] as const) test(`retained combined ${version} 
       assert.equal(planned.reference, reference); assert.equal(planned.subjectSha256, common.documentSubjectSha256);
       assert.deepEqual(planned.approvalOwner?.scope, effects); assert.equal(planned.approvalOwner?.subjectSha256, subjectSha);
     }
+    const tool = createPaTicketTool({ store: f.store, plannedActualHost: native });
+    const discovery = await tool.execute("discover-retained", { action: "read", id: "EX-1", plannedActual: true }, undefined, undefined, {});
+    assert.match(JSON.stringify(discovery), /selection-required/);
+    const discoveredText = discovery.content.find(c => c.type === "text"); assert.ok(discoveredText && "text" in discoveredText);
+    assert.deepEqual(JSON.parse(discoveredText.text).choices, [{ reference: subjectSha, state: "approved" }]);
+    const planOnly = await tool.execute("read-retained", { action: "read", id: "EX-1", reference: subjectSha }, undefined, undefined, {});
+    assert.match(JSON.stringify(planOnly), /no-handback/); assert.doesNotMatch(JSON.stringify(planOnly), /candidateSha/);
     assert.deepEqual(journal.events(subjectSha), saved); assert.deepEqual(readFileSync(join(f.root, "tickets/EX-1.json")), ticketBytes);
     const presentationPath = fileURLToPath(String(delivery.entry)); const bytes = readFileSync(presentationPath); writeFileSync(presentationPath, "tampered");
     assert.notEqual((await native.resolvePlan(subjectSha)).state, "approved"); writeFileSync(presentationPath, bytes);
@@ -103,6 +111,53 @@ for (const version of ["v1", "v2"] as const) test(`retained combined ${version} 
     assert.equal((await projectPlannedActual(f.store.get("EX-1")!, undefined, undefined, host)).state, "selection-required");
     assert.equal((await projectPlannedActual(f.store.get("EX-1")!, subjectSha, sha, host)).state, "available");
     assert.deepEqual(journal.events(subjectSha), saved);
+  } finally { f.close(); }
+});
+
+test("normal native ticket discovery reads draft and approved Planned before any Actual exists", async () => {
+  const f = documentRuntimeFixture();
+  try {
+    Object.assign(process.env, { PA_REGISTRY_DB: join(f.root, "registry.db"), PA_AI_USAGE_HOME: f.root });
+    f.db.pragma("synchronous = FULL");
+    const member = f.subject.members.find(m => m.role === "requirements")!;
+    const raw = Buffer.from("# Acceptance\n- AC-01: Discover the exact native Planned without Actual.\n");
+    member.bytes = raw.length; member.sha256 = workflowDigest(raw); writeFileSync(join(f.root, member.source), raw);
+    f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
+    const delivery = await presentFullDocumentReader(f.subject, f.root, hash => f.journal.snapshot(hash));
+    const binding = JSON.stringify({ schemaVersion: "pa-mode-capability-binding/v1", configRevision: "a".repeat(40), resourcePath: "teams/requirements.yaml", resourceSha256: "b".repeat(64), profile: "pa-document-policy/v1", policy: { version: "pa-mode-capabilities/v1", allow: ["document.handoff", "document.local-review", "document.package"] } });
+    f.db.prepare("INSERT INTO registry_events(deployment_id,team,event,timestamp,mode,runtime,binary,note,repo,repo_root,worktree_root,ticket_id,mode_capability_binding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run("d-314001", "requirements", "started", time, "analyze", "pi", "ppa", MODE_CAPABILITY_SESSION, f.repo, f.repo, f.repo, "EX-1", binding);
+    const journal = new RegistryHandoffReviewJournal(f.db);
+    const service = new ContentReviewService(journal, { artifactRoot: f.root, assertOrigin() {}, assertDocument() {} });
+    const reference = await service.prepare(documentPackageSha(f.subject), String(delivery.deliverySha256), { callerIdentitySha256: "a".repeat(64), selectionSha256: workflowDigest(binding), deploymentId: "d-314001", sessionId: "native-discovery" });
+    const native = nativePlannedActualHost(new PiPreparedNativeAuthority({ root: join(f.root, "protected"), aiUsageRoot: f.root }));
+    const tool = createPaTicketTool({ store: f.store, plannedActualHost: native });
+    for (const expected of ["draft", "no-handback"] as const) {
+      const result = await tool.execute("discover", { action: "read", id: "EX-1", plannedActual: true }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      const discovered = JSON.parse(text.text);
+      assert.equal(discovered.state, "selection-required");
+      assert.deepEqual(discovered.choices, [{ reference, state: expected === "draft" ? "draft" : "approved" }]);
+      const read = await tool.execute("read-plan", { action: "show", id: "EX-1", reference }, undefined, undefined, {});
+      const body = read.content.find(c => c.type === "text"); assert.ok(body && "text" in body);
+      const selected = JSON.parse(body.text); assert.equal(selected.state, expected);
+      assert.equal(selected.planned.reference, reference); assert.doesNotMatch(body.text, /candidateSha/);
+      if (expected === "draft") { await service.request(reference); await service.decide(reference, "approved"); }
+    }
+    assert.equal(f.store.get("EX-1")?.doc_refs.length, 0);
+    writeFileSync(join(f.root, "tickets/EX-2.json"), JSON.stringify({ id: "EX-2", project: "example", title: "Other ticket", doc_refs: [], status: "requirement-review", assignee: "requirements/team-manager" }));
+    const other = await tool.execute("other-ticket", { action: "read", id: "EX-2", reference }, undefined, undefined, {});
+    assert.match(JSON.stringify(other), /unmatched/); assert.doesNotMatch(JSON.stringify(other), /Discover the exact native|index.html/);
+    assert.deepEqual(await native.discoverPlans({ id: "EX-2", project: "example" }), { references: [], issues: [] });
+    const configPath = join(f.config, "config.yaml"), config = readFileSync(configPath);
+    writeFileSync(configPath, `repos:\n  example:\n    path: ${f.root}/other-repo\n    prefix: EX\n`);
+    const forbidden = await native.discoverPlans({ id: "EX-1", project: "example" });
+    assert.deepEqual(forbidden, { references: [], issues: [{ state: "denied" }] });
+    assert.doesNotMatch(JSON.stringify(forbidden), /Discover the exact native|index.html/);
+    writeFileSync(configPath, config);
+    writeFileSync(fileURLToPath(String(delivery.entry)), "tampered");
+    const denied = await native.discoverPlans(f.store.get("EX-1")!);
+    assert.deepEqual(denied.references, []); assert.deepEqual(denied.issues, [{ state: "integrity-failure" }]);
+    assert.doesNotMatch(JSON.stringify(denied), /Discover the exact native/);
   } finally { f.close(); }
 });
 
@@ -162,7 +217,9 @@ test("native ticket/report owner exercise: authenticated metadata attachment and
     assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
     const discovered = await tool.execute("discover", { action: "read", id: "TEST-1", plannedActual: true }, undefined, undefined, {});
     assert.match(JSON.stringify(discovered), /selection-required/);
-    await assert.rejects(tool.execute("bad-selector", { action: "read", id: "TEST-1", reference: plan.reference }, undefined, undefined, {}));
+    const planOnly = await tool.execute("plan-only", { action: "read", id: "TEST-1", reference: plan.reference }, undefined, undefined, {});
+    assert.match(JSON.stringify(planOnly), /selection-required/);
+    await assert.rejects(tool.execute("bad-selector", { action: "read", id: "TEST-1", candidate: sha }, undefined, undefined, {}));
     const before = readFileSync(f.ownerPath);
     const human = f.evidence.publish("planned-actual-human", { binding: f.payload.binding, report: f.payload.report, state: "passed", observedAt: "2026-11-21T01:00:00.000Z", coverage: ["AC-01"] });
     const later = f.evidence.publish("planned-actual", { ...f.payload, human: [human] });
@@ -189,6 +246,80 @@ for (const options of [{ dirty: false, current: false }, { dirty: true, current:
     const comparison = await projectPlannedActual(f.ticketStore.get("TEST-1")!, plan.reference, sha, f.projectionHost);
     assert.equal(comparison.actuals[0]?.evidence.some(e => e.class === "source" && e.state === "passed" && e.applicability === "current"), false);
     assert.match(actual.scope, /src\/export.ts/); assert.match(actual.scope, /orchestrator-direct/); assert.match(actual.scope, /Product browser observation not supplied/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("normal ticket projection has finite complete continuation within global output bounds", async () => {
+  const f = fixture();
+  try {
+    const largePlan = { ...plan, rows: Array.from({ length: 12 }, (_, i) => ({ id: `AC-${String(i + 1).padStart(2, "0")}`, expectation: `${i + 1}: ${"界😀\\\"".repeat(1100)}` })) };
+    const deniedLocator = f.locator.replace(/-[a-f0-9]{64}\.json$/, `-${"9".repeat(64)}.json`);
+    const h = { ...f.projectionHost, resolvePlan: async () => largePlan, resolveActual: async (locator: string) => locator === deniedLocator ? { state: "denied" as const } : f.native.resolveActual(locator) };
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, h, () => undefined);
+    const human = f.evidence.publish("planned-actual-human", { binding: f.payload.binding, report: f.payload.report, state: "passed", observedAt: "2026-11-21T01:00:00.000Z", coverage: ["AC-12"] });
+    const later = f.evidence.publish("planned-actual", { ...f.payload, human: [human] });
+    const next = f.service.publishPlannedActualLocator(f.receipt, later);
+    await attachPlannedActual(f.ticketStore, "TEST-1", next, h, () => undefined);
+    const t = f.ticketStore.get("TEST-1")!;
+    f.ticketStore.update(t.id, { doc_refs: [...t.doc_refs, { type: "attachment", path: deniedLocator, primary: false, addedAt: time, addedBy: "fixture" }] });
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: h });
+    const input = { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha };
+    let continuation: { snapshot: string; offset: number } | undefined;
+    let joined = "", pages = 0, snapshot = "";
+    do {
+      const result = await tool.execute("page", { ...input, ...(continuation ? { page: continuation } : {}) }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.ok(Buffer.byteLength(text.text) <= MAX_TOOL_BYTES); assert.ok(text.text.split("\n").length <= MAX_TOOL_LINES);
+      const page = JSON.parse(text.text); assert.equal(page.truncated, undefined);
+      assert.equal(page.state, "denied"); assert.equal(page.selection.reference, plan.reference);
+      assert.deepEqual(page.selection.binding, f.payload.binding);
+      assert.equal(page.summary.issues.denied, 1);
+      assert.ok(page.summary.evidence.some((e: { class: string; state: string; count: number }) => e.class === "human-uat" && e.state === "passed" && e.count === 1));
+      assert.equal(page.content.encoding, "json-fragment"); assert.equal(page.pagination.offset, joined.length);
+      if (snapshot) assert.equal(page.pagination.snapshot, snapshot); else snapshot = page.pagination.snapshot;
+      joined += page.content.text; continuation = page.pagination.next ?? undefined;
+      assert.ok(++pages < 100, "continuation must terminate");
+    } while (continuation);
+    assert.ok(pages > 1);
+    assert.equal(workflowDigest(joined), snapshot);
+    const complete = JSON.parse(joined);
+    assert.equal(complete.actuals[0].rows.length, 12); assert.deepEqual(complete.planned.rows, largePlan.rows);
+    assert.equal(complete.actuals[0].rows[11].expectation, largePlan.rows[11]!.expectation);
+    assert.ok(complete.actuals[0].evidence.some((e: { class: string; state: string }) => e.class === "human-uat" && e.state === "passed"));
+    assert.deepEqual(complete.issues, [{ state: "denied" }]);
+    for (const page of [{ snapshot: "0".repeat(64), offset: 1 }, { snapshot, offset: -1 }, { snapshot, offset: 1.5 }, { snapshot, offset: joined.length + 1 }, { snapshot, offset: joined.indexOf("😀") + 1 }, { snapshot, offset: 0, root: "/protected" }]) await assert.rejects(tool.execute("bad-page", { ...input, page }, undefined, undefined, {}));
+    const replay = await tool.execute("replay", { ...input, page: { snapshot, offset: 0 } }, undefined, undefined, {});
+    assert.doesNotMatch(JSON.stringify(replay), /truncated/);
+    await assert.rejects(tool.execute("different-candidate", { ...input, candidate: "9".repeat(40), page: { snapshot, offset: 10 } }, undefined, undefined, {}));
+    await assert.rejects(tool.execute("page-list", { action: "list", page: { snapshot, offset: 0 } }, undefined, undefined, {}));
+    f.ticketStore.update(t.id, { doc_refs: [] });
+    await assert.rejects(tool.execute("changed", { ...input, page: { snapshot, offset: 10 } }, undefined, undefined, {}));
+    await assert.rejects(tool.execute("candidate-only", { action: "read", id: "TEST-1", candidate: sha }, undefined, undefined, {}));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+for (const mode of ["plan-only", "discovery"] as const) test(`normal ticket continuation also completes ${mode} without an Actual or candidate`, async () => {
+  const f = fixture();
+  try {
+    const references = Array.from({ length: 800 }, (_, i) => `review:${i.toString(16).padStart(64, "0")}`);
+    const largePlan = { ...plan, rows: Array.from({ length: 12 }, (_, i) => ({ id: `AC-${String(i + 1).padStart(2, "0")}`, expectation: "x".repeat(6000) })) };
+    const h = { ...f.projectionHost, discoverPlans: async () => ({ references, issues: [] }), resolvePlan: async (reference: string) => mode === "discovery" ? { ...plan, reference } : largePlan };
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: h });
+    const input = { action: "show", id: "TEST-1", ...(mode === "discovery" ? { plannedActual: true } : { reference: plan.reference }) };
+    let page: { snapshot: string; offset: number } | undefined, joined = "", count = 0;
+    do {
+      const result = await tool.execute("page", { ...input, ...(page ? { page } : {}) }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.ok(Buffer.byteLength(text.text) <= MAX_TOOL_BYTES); assert.ok(text.text.split("\n").length <= MAX_TOOL_LINES);
+      const body = JSON.parse(text.text); assert.equal(body.content.encoding, "json-fragment");
+      assert.doesNotMatch(text.text, /candidateSha|truncated/);
+      joined += body.content.text; page = body.pagination.next ?? undefined;
+      assert.ok(++count < 100);
+    } while (page);
+    assert.ok(count > 1);
+    const complete = JSON.parse(joined); assert.equal(complete.actuals.length, 0);
+    if (mode === "discovery") { assert.equal(complete.choices.length, 800); assert.equal(complete.planned, undefined); }
+    else { assert.equal(complete.state, "no-handback"); assert.deepEqual(complete.planned.rows, largePlan.rows); }
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 

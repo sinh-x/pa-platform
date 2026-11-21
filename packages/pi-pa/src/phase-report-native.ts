@@ -120,7 +120,33 @@ export function plannedRecordFromContentReview(view: PlannedReviewView): Planned
 /** Read-only normal ticket projection. It opens existing owners only; no report policy,
  * session, mutable checkout, arbitrary report path or caller evidence is admitted. */
 export function nativePlannedActualHost(authority = new PiPreparedNativeAuthority()): PlannedActualHost {
-  return {
+  const host: PlannedActualHost = {
+    async discoverPlans(ticket) {
+      let db: ReturnType<typeof openReadonlyRegistryDatabase> | undefined;
+      const references: string[] = [], issues: Unavailable[] = [];
+      try {
+        db = openReadonlyRegistryDatabase(true);
+        // Enumerate only native same-ticket document/review bindings. The join is
+        // a locator, not authority: each result still passes the original owners'
+        // origin, membership, history and complete immutable delivery checks.
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='handoff_review_subjects'").get()) return { references, issues };
+        const rows = db.prepare<[string, string], { sha256: string; schemaVersion: string }>(`SELECT s.sha256,json_extract(s.body,'$.schemaVersion') AS schemaVersion FROM handoff_review_subjects s
+          JOIN document_subjects d ON d.sha256=json_extract(s.body,'$.documentSubjectSha256')
+          WHERE d.repo_key=? AND d.ticket=? ORDER BY s.sha256 LIMIT 1025`).all(ticket.project, ticket.id);
+        if (rows.length > 1024) return { references: [], issues: [{ state: "unknown" }] };
+        for (const row of rows) {
+          if (!/^[a-f0-9]{64}$/.test(row.sha256)) { issues.push({ state: "integrity-failure" }); continue; }
+          const reference = row.schemaVersion === "pa-content-review-subject/v1" ? `review:${row.sha256}` : row.sha256;
+          const plan = await host.resolvePlan(reference);
+          if ("reference" in plan) {
+            if (plan.reference === reference && plan.ticket === ticket.id && plan.repository.key === ticket.project) references.push(reference);
+            else issues.push({ state: "integrity-failure" });
+          } else issues.push({ state: plan.state });
+        }
+        return { references, issues };
+      } catch (error) { return { references, issues: [...issues, plannedActualReadFailure(error)] }; }
+      finally { db?.close(); }
+    },
     async resolvePlan(reference) {
       let db: ReturnType<typeof openReadonlyRegistryDatabase> | undefined;
       try {
@@ -207,6 +233,7 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
       }
     },
   };
+  return host;
 }
 
 function actualScopeSummary(report: PhaseReport, execution: unknown, scopeProven: unknown, omissions: unknown): string {

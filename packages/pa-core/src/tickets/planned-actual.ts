@@ -84,6 +84,8 @@ export interface ActualRecord {
 }
 /** Trusted owner ports. Tool input cannot implement these ports or import evidence. */
 export interface PlannedActualHost {
+  /** Existing native review/document membership only, independent of Actual attachments. */
+  discoverPlans(ticket: Pick<Ticket, "id" | "project">): Promise<{ references: readonly string[]; issues: readonly Unavailable[] }>;
   resolvePlan(reference: string): Promise<PlannedRecord | Unavailable>;
   resolveActual(locator: string): Promise<ActualRecord | Unavailable>;
 }
@@ -169,7 +171,7 @@ export interface ActualProjection {
 }
 export interface PlannedActualProjection {
   state: UnavailableState | "no-plan" | "selection-required" | "draft" | "no-handback" | "unmatched" | "available";
-  choices?: { reference: string; candidate: string; reportId: string }[];
+  choices?: { reference: string; state: PlannedRecord["state"]; candidate?: string; reportId?: string }[];
   planned?: PlannedRecord; actuals: ActualProjection[]; unmatched: { locator: string; state: "binding-mismatch" }[];
   issues: { state: UnavailableState }[];
 }
@@ -178,6 +180,7 @@ export async function projectPlannedActual(ticket: Ticket, reference: string | u
   const result: PlannedActualProjection = { state: "no-plan", actuals: [], unmatched: [], issues: [] };
   if (reference === undefined) {
     result.choices = [];
+    let mismatchedPlan = false;
     try {
       if (ticket.doc_refs.length > 256) throw new Error("Too many ticket references");
       for (const ref of comparisonRefs(ticket)) {
@@ -186,28 +189,47 @@ export async function projectPlannedActual(ticket: Ticket, reference: string | u
         if (actual.locator !== ref.path || actual.binding.ticket !== ticket.id || actual.binding.repository.key !== ticket.project) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
         const plan = await resolvePlanSafely(host, actual.plannedReference);
         if (isUnavailable(plan)) { result.issues.push({ state: plan.state }); continue; }
-        if (plan.reference !== actual.plannedReference || !same(bindingForPlan(plan, actual.binding.candidateSha), actual.binding)) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
-        const choice = { reference: plan.reference, candidate: actual.binding.candidateSha, reportId: actual.reportId };
+        if (!planBelongsToTicket(plan, actual.plannedReference, ticket) || !same(bindingForPlan(plan, actual.binding.candidateSha), actual.binding)) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
+        const choice = { reference: plan.reference, state: plan.state, candidate: actual.binding.candidateSha, reportId: actual.reportId };
         if (!result.choices.some(c => same(c, choice))) result.choices.push(choice);
       }
-      result.state = result.issues[0]?.state ?? (result.choices.length ? "selection-required" : result.unmatched.length ? "unmatched" : "no-plan");
-      return result;
-    } catch { return { state: "unknown", actuals: [], unmatched: [], issues: [{ state: "unknown" }] }; }
+    } catch { result.issues.push({ state: "unknown" }); }
+    // Attachment failure must not suppress independent native Planned discovery.
+    try {
+      const discovered = await host.discoverPlans({ id: ticket.id, project: ticket.project });
+      if (discovered.references.length > 1024 || discovered.issues.length > 1024) throw new Error("Too many Planned references");
+      result.issues.push(...discovered.issues.map(issue => ({ state: issue.state })));
+      for (const reference of new Set(discovered.references)) {
+        const plan = await resolvePlanSafely(host, text(reference));
+        if (isUnavailable(plan)) { result.issues.push({ state: plan.state }); continue; }
+        if (!planBelongsToTicket(plan, reference, ticket)) { mismatchedPlan = true; continue; }
+        if (!result.choices.some(choice => choice.reference === reference)) result.choices.push({ reference, state: plan.state });
+      }
+    } catch { result.issues.push({ state: "unknown" }); }
+    result.state = result.issues[0]?.state ?? (result.choices.length ? "selection-required" : result.unmatched.length || mismatchedPlan ? "unmatched" : "no-plan");
+    return result;
   }
   try {
-    const plan = await host.resolvePlan(text(reference));
+    const plan = await resolvePlanSafely(host, text(reference));
     if (isUnavailable(plan)) return { ...result, state: plan.state };
-    if (plan.reference !== reference || plan.ticket !== ticket.id || plan.repository.key !== ticket.project) return { ...result, state: "conflict" };
+    if (!planBelongsToTicket(plan, reference, ticket)) return { ...result, state: "unmatched" };
     if (plan.state !== "approved") return { ...result, state: "draft", planned: plan };
-    const binding = bindingForPlan(plan, workflowSha(candidate, 40));
+    const binding = candidate === undefined ? undefined : bindingForPlan(plan, workflowSha(candidate, 40));
+    const candidateChoices: NonNullable<PlannedActualProjection["choices"]> = [];
+    if (!binding) result.choices = candidateChoices;
     if (!plan.rows.length) return { ...result, state: "integrity-failure" };
     result.planned = plan; result.state = "no-handback";
     if (ticket.doc_refs.length > 256) throw new Error("Too many ticket references");
     for (const ref of comparisonRefs(ticket)) {
       const actual = await resolveActualSafely(host, ref.path);
       if (isUnavailable(actual)) { result.issues.push({ state: actual.state }); continue; }
-      if (actual.locator !== ref.path || actual.plannedReference !== reference || !same(actual.binding, binding)) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
+      if (actual.locator !== ref.path || actual.plannedReference !== reference || !same(actual.binding, binding ?? bindingForPlan(plan, actual.binding.candidateSha))) { result.unmatched.push({ locator: ref.path, state: "binding-mismatch" }); continue; }
       if (actual.observations.some(o => !plan.rows.some(r => r.id === o.ac))) { result.issues.push({ state: "conflict" }); continue; }
+      if (!binding) {
+        const choice = { reference, state: plan.state, candidate: actual.binding.candidateSha, reportId: actual.reportId };
+        if (!candidateChoices.some(c => same(c, choice))) candidateChoices.push(choice);
+        continue;
+      }
       const previous = result.actuals.find(r => r.reportId === actual.reportId);
       const baseline: ComparisonEvidence[] = classes.filter(kind => kind === "human-uat" || !actual.evidence.some(e => e.class === kind && e.applicability === "current")).map(kind => ({ class: kind, state: "not-run", locator: null, observedAt: null, coverage: [], trust: "not-observed" }));
       const evidence = previous?.evidence ?? baseline;
@@ -225,9 +247,12 @@ export async function projectPlannedActual(ticket: Ticket, reference: string | u
       if (a === b) continue;
       if (a.rows.some(row => row.disposition === "matches" && b.rows.some(other => other.id === row.id && (other.disposition === "deviates" || other.disposition === "unmet")))) result.issues.push({ state: "conflict" });
     }
-    result.state = result.issues.some(i => i.state === "conflict") ? "conflict" : result.issues[0]?.state ?? (result.actuals.length ? "available" : result.unmatched.length ? "unmatched" : "no-handback");
+    result.state = result.issues.some(i => i.state === "conflict") ? "conflict" : result.issues[0]?.state ?? (result.actuals.length ? "available" : result.choices?.length ? "selection-required" : result.unmatched.length ? "unmatched" : "no-handback");
     return result;
   } catch { return { state: "unknown", actuals: [], unmatched: [], issues: [{ state: "unknown" }] }; }
+}
+function planBelongsToTicket(plan: PlannedRecord, reference: string, ticket: Ticket): boolean {
+  return plan.reference === reference && plan.ticket === ticket.id && plan.repository.key === ticket.project;
 }
 async function resolveActualSafely(host: PlannedActualHost, locator: string): Promise<ActualRecord | Unavailable> {
   let result: ActualRecord | Unavailable;

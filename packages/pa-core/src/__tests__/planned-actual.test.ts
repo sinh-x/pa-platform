@@ -12,18 +12,61 @@ const plan: PlannedRecord = { reference: `review:${sha("a")}`, repository: { key
 const locator = `/reports/planned-actual-d-aaaaaa-${sha("e")}.json`;
 const actual: ActualRecord = { locator, binding: { repository: plan.repository, ticket: plan.ticket, subjectSha256: plan.subjectSha256, revision: plan.revision, manifestSha256: plan.manifestSha256, candidateSha: sha("f", 40) }, plannedReference: plan.reference, reportId: sha("1"), reportSourceSha256: sha("2"), reportPath: "/reports/report.md", ownerPath: "/reports/owner.md", outcome: "partial", scope: "Native phase P5", observations: [{ ac: "AC-01", observation: "All content prints.", disposition: "matches", difference: "None", impact: "None", owner: "Builder" }, { ac: "AC-02", observation: "Target stayed closed.", disposition: "deviates", difference: "Fragment does not reveal", impact: "Keyboard access", owner: "Builder" }], actualOnly: ["Extra regression check"], evidence: [{ class: "source", state: "passed", locator: "native:check", observedAt: "2026-11-21T00:00:00.000Z", coverage: ["AC-01"], trust: "native" }] };
 function ticket(refs = [locator]): Ticket { return { id: "TEST-1", project: "test", title: "Fixture", summary: "Fixture", description: "Fixture", status: "implementing", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "M", from: "", to: "", tags: [], blockedBy: [], linkedBranches: [], linkedCommits: [], comments: [], subTickets: [], nextSubTicketCounter: 0, createdAt: "2026-11-21T00:00:00.000Z", updatedAt: "2026-11-21T00:00:00.000Z", resolvedAt: null, doc_refs: refs.map(path => ({ type: "attachment", path, primary: false, addedAt: "2026-11-21", addedBy: "native" })) }; }
-function host(records = [actual]): PlannedActualHost { return { resolvePlan: async () => plan, resolveActual: async key => { const r = records.find(r => r.locator === key); if (!r) throw new Error("missing"); return r; } }; }
+function host(records = [actual]): PlannedActualHost { return { discoverPlans: async () => ({ references: [], issues: [] }), resolvePlan: async () => plan, resolveActual: async key => { const r = records.find(r => r.locator === key); if (!r) throw new Error("missing"); return r; } }; }
 const project = (records = [actual], t = ticket(records.map(r => r.locator))) => projectPlannedActual(t, plan.reference, actual.binding.candidateSha, host(records));
 test("exact binding projects every AC, deviations, actual-only and separate Not run handback evidence", async () => {
   const discovery = await projectPlannedActual(ticket(), undefined, undefined, host());
   assert.equal(discovery.state, "selection-required");
-  assert.deepEqual(discovery.choices, [{ reference: plan.reference, candidate: actual.binding.candidateSha, reportId: actual.reportId }]);
+  assert.deepEqual(discovery.choices, [{ reference: plan.reference, state: "approved", candidate: actual.binding.candidateSha, reportId: actual.reportId }]);
   const r = await project(); assert.equal(r.state, "available");
   assert.deepEqual(r.actuals[0]?.binding, actual.binding);
   assert.equal(r.actuals[0]?.rows[1]?.disposition, "deviates"); assert.equal(r.actuals[0]?.rows[1]?.impact, "Keyboard access");
   assert.equal(r.actuals[0]?.actualOnly[0], "Extra regression check");
   assert.equal(r.actuals[0]?.narrativeTrust, "agent-labelled-not-acceptance");
   for (const kind of ["installed", "independent", "browser", "human-uat"]) assert.deepEqual(r.actuals[0]?.evidence.filter(e => e.class === kind).map(e => e.state), ["not-run"]);
+});
+test("independent Planned discovery includes approved and draft without inventing Actual candidates", async () => {
+  for (const state of ["approved", "draft"] as const) {
+    let discovered = 0, actualReads = 0;
+    const selected = { ...plan, state };
+    const h: PlannedActualHost = { discoverPlans: async t => { assert.equal(t.id, plan.ticket); discovered++; return { references: [plan.reference], issues: [] }; }, resolvePlan: async () => selected, resolveActual: async () => { actualReads++; throw new Error("No Actual exists"); } };
+    const discovery = await projectPlannedActual(ticket([]), undefined, undefined, h);
+    assert.equal(discovery.state, "selection-required");
+    assert.deepEqual(discovery.choices, [{ reference: plan.reference, state }]);
+    assert.equal(discovered, 1); assert.equal(actualReads, 0);
+    const read = await projectPlannedActual(ticket([]), plan.reference, undefined, h);
+    assert.equal(read.state, state === "approved" ? "no-handback" : "draft");
+    assert.deepEqual(read.planned, selected); assert.deepEqual(read.actuals, []);
+    assert.doesNotMatch(JSON.stringify(read), /candidateSha/);
+  }
+  const read = await projectPlannedActual(ticket(), plan.reference, undefined, host());
+  assert.equal(read.state, "selection-required"); assert.equal(read.actuals.length, 0);
+  assert.equal(read.choices?.[0]?.candidate, actual.binding.candidateSha);
+  const older = { ...plan, reference: `review:${sha("7")}`, revision: 1, state: "draft" as const };
+  const many: PlannedActualHost = { ...host(), discoverPlans: async () => ({ references: [plan.reference, older.reference, plan.reference], issues: [] }), resolvePlan: async ref => ref === older.reference ? older : plan };
+  const choices = await projectPlannedActual(ticket([]), undefined, undefined, many);
+  assert.deepEqual(choices.choices, [{ reference: plan.reference, state: "approved" }, { reference: older.reference, state: "draft" }]);
+  assert.equal(choices.planned, undefined); assert.equal(choices.actuals.length, 0);
+});
+test("discovery preserves verified choices alongside denied owners and suppresses mismatched Planned content", async () => {
+  const privateRef = `review:${sha("8")}`;
+  const h: PlannedActualHost = { ...host(), discoverPlans: async () => ({ references: [plan.reference, privateRef], issues: [] }), resolvePlan: async ref => ref === privateRef ? { state: "denied" } : plan };
+  const mixed = await projectPlannedActual(ticket([]), undefined, undefined, h);
+  assert.equal(mixed.state, "denied"); assert.deepEqual(mixed.choices, [{ reference: plan.reference, state: "approved" }]);
+  assert.doesNotMatch(JSON.stringify(mixed), new RegExp(privateRef));
+  for (const changed of [{ ticket: "TEST-2" }, { repository: { key: "other", root: "/private" } }, { reference: privateRef }]) {
+    const wrong: PlannedActualHost = { ...h, discoverPlans: async () => ({ references: [plan.reference], issues: [] }), resolvePlan: async () => ({ ...plan, ...changed, rows: [{ id: "AC-01", expectation: "PRIVATE CONTENT" }] }) };
+    for (const ref of [undefined, plan.reference]) {
+      const result = await projectPlannedActual(ticket([]), ref, undefined, wrong);
+      assert.equal(result.state, "unmatched"); assert.doesNotMatch(JSON.stringify(result), /PRIVATE CONTENT|\/private/);
+    }
+  }
+  const broken = await projectPlannedActual(ticket(), undefined, undefined, { ...host(), discoverPlans: async () => { throw new Error("PRIVATE exception"); } });
+  assert.equal(broken.state, "unknown"); assert.equal(broken.choices?.length, 1);
+  assert.doesNotMatch(JSON.stringify(broken), /PRIVATE/);
+  const overBound = await projectPlannedActual(ticket(Array.from({ length: 257 }, () => locator)), undefined, undefined, { ...h, discoverPlans: async () => ({ references: [plan.reference], issues: [] }) });
+  assert.equal(overBound.state, "unknown");
+  assert.deepEqual(overBound.choices, [{ reference: plan.reference, state: "approved" }]);
 });
 test("wrong repository, ticket, subject, revision, manifest, candidate and reference stay unmatched", async () => {
   for (const binding of [{ repository: { key: "other", root: "/repo" } }, { repository: { key: "test", root: "/other" } }, { ticket: "TEST-2" }, { subjectSha256: sha("9") }, { revision: 4 }, { manifestSha256: sha("9") }, { candidateSha: sha("9", 40) }]) {
