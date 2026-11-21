@@ -169,6 +169,99 @@ test("registered content publication requires a separate finite native confirmat
   } finally { await f.close(); }
 });
 
+test("registered content-supersede alias accepts only its exact successor reference", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    const reference = prepared.result.reference;
+    assert.equal((await f.execute("pa_document", { action: "review-sign", reference })).ok, true);
+    const next = await f.freezeDocument("EX-1", null, 2), successor = await f.execute("pa_document", { action: "review-prepare", sha256: next.sha });
+    const successorReference = successor.result.reference;
+    assert.equal((await f.execute("pa_document", { action: "review-sign", reference: successorReference })).ok, true);
+    let confirmations = 0;
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: async (_title, choices) => { confirmations++; return choices[1]; } } };
+    const before = readFileSync(join(f.usage, "tickets/EX-1.json"));
+    for (const request of [
+      { action: "content-supersede", reference },
+      { action: "content-supersede", reference, successorReference: "EX-1" },
+      { action: "content-revoke", reference, successorReference },
+      { action: "content-supersede", reference, successorReference, authorized: true },
+    ]) assert.equal((await f.execute("pa_document", request, context)).code, "DOCUMENT_INPUT");
+    const result = await f.execute("pa_document", { action: "content-supersede", reference, successorReference }, context);
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.result.eligibility, "superseded");
+    assert.equal(confirmations, 1); assert.equal(f.prompts(), 2);
+    assert.deepEqual(readFileSync(join(f.usage, "tickets/EX-1.json")), before);
+    assert.equal(getDb().prepare("SELECT count(*) n FROM handoff_review_effects").get()?.n, 0);
+  } finally { await f.close(); }
+});
+
+test("registered signing replay and manual/PPA status preserve historical publication truth", async () => {
+  const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+  try {
+    const ticketPath = join(f.usage, "tickets/EX-1.json"), initial = JSON.parse(readFileSync(ticketPath, "utf8"));
+    writeFileSync(ticketPath, JSON.stringify({ ...initial, status: "requirement-review", assignee: "requirements/team-manager" }));
+    const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+    const reference = prepared.result.reference;
+    const signed = await f.execute("pa_document", { action: "review-sign", reference });
+    const context: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: async (_title, choices) => choices[1] } };
+    assert.equal((await f.execute("pa_document", { action: "content-publication-authorize", reference }, context)).ok, true);
+    assert.equal((await f.execute("pa_document", { action: "content-publish", reference }, context)).ok, true);
+    const audit = new TicketStore().readAudit(), notifications: string[] = [], output: string[] = [];
+    // Break a published file: status must not turn saved completion into fresh verification.
+    writeFileSync(join(f.usage, "agent-teams/requirements/artifacts/packages/EX-1/native-fixture/r001/brief.md"), "physical drift");
+    const replay = await f.execute("pa_document", { action: "review-sign", reference });
+    assert.equal(replay.result.publication, "recorded-complete"); assert.equal(replay.result.decisionId, signed.result.decisionId);
+    await f.commands.get("pa-review")!.handler(reference, { ...f.context, ui: { ...f.context.ui, notify: (text: string) => { notifications.push(text); } } });
+    assert.equal(await runDocumentCommand(["review", reference], { stdout: text => { output.push(text); }, stderr: text => { output.push(text); } }), 0);
+    assert.equal(await runDocumentCommand(["review", "show", reference], { stdout: text => { output.push(text); }, stderr: text => { output.push(text); } }), 0);
+    assert.match(notifications.join("\n"), /Publication recorded complete/); assert.match(output.join("\n"), /Publication recorded complete/);
+    assert.doesNotMatch([...notifications, ...output].join("\n"), /Not published|no downstream action was authorized/);
+    assert.match([...notifications, ...output].join("\n"), /not a fresh physical verification/);
+    assert.equal((await f.execute("pa_document", { action: "review-show", reference })).result.publication, "recorded-complete");
+    assert.equal((await f.execute("pa_document", { action: "content-publish", reference }, context)).ok, false);
+    assert.deepEqual(new TicketStore().readAudit(), audit); assert.equal(f.prompts(), 1);
+  } finally { await f.close(); }
+});
+
+for (const action of ["revoke", "supersede"] as const) {
+  for (const order of ["fence-first", "publication-first"] as const) test(`native ${action}/${order} interleaving fences missing writes, not completed truth`, { timeout: 30000 }, async () => {
+    const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
+    try {
+      const ticketPath = join(f.usage, "tickets/EX-1.json"), initial = JSON.parse(readFileSync(ticketPath, "utf8"));
+      writeFileSync(ticketPath, JSON.stringify({ ...initial, status: "requirement-review", assignee: "requirements/team-manager" }));
+      const doc = await f.freezeDocument("EX-1"), prepared = await f.execute("pa_document", { action: "review-prepare", sha256: doc.sha });
+      const reference = prepared.result.reference;
+      assert.equal((await f.execute("pa_document", { action: "review-sign", reference })).ok, true);
+      const confirmed: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: async (_title, choices) => choices[1] } };
+      assert.equal((await f.execute("pa_document", { action: "content-publication-authorize", reference }, confirmed)).ok, true);
+      let successorReference: string | undefined;
+      if (action === "supersede") {
+        const next = await f.freezeDocument("EX-1", null, 2), preparedNext = await f.execute("pa_document", { action: "review-prepare", sha256: next.sha });
+        successorReference = preparedNext.result.reference;
+        assert.equal((await f.execute("pa_document", { action: "review-sign", reference: successorReference })).ok, true);
+      }
+      const request = { schemaVersion: "pa-content-publication/v1", action, reference, ...(successorReference ? { successorReference } : {}) };
+      const before = new TicketStore().readAudit();
+      let release: (() => void) | undefined;
+      const paused: PiHandoffContext = { ...f.context, ui: { ...f.context.ui, select: (_title, choices) => new Promise(resolve => { release = () => resolve(choices[1]); }) } };
+      const fence = f.execute("pa_handoff", request, paused);
+      assert.ok(release, "native lifecycle confirmation is pending outside publication locks");
+      // publish has yielded for full reader verification, before the synchronous write boundary.
+      const publication = f.execute("pa_document", { action: "content-publish", reference }, confirmed);
+      if (order === "fence-first") release();
+      const result = await publication;
+      if (order === "publication-first") { assert.equal(result.ok, true, JSON.stringify(result)); release(); }
+      else assert.equal(result.ok, false, JSON.stringify(result));
+      const fenced = await fence; assert.equal(fenced.ok, true, JSON.stringify(fenced));
+      const audit = new TicketStore().readAudit();
+      assert.equal((await f.execute("pa_document", { action: "content-publish", reference }, confirmed)).ok, order === "publication-first");
+      assert.deepEqual(new TicketStore().readAudit(), audit);
+      if (order === "fence-first") { assert.deepEqual(audit, before); assert.equal(getDb().prepare("SELECT count(*) n FROM handoff_review_effects").get()?.n, 0); }
+      else assert.equal(fenced.result.operation.completed, true);
+    } finally { await f.close(); }
+  });
+}
+
 test("native content publication admits a fresh selected continuation only after the original process ended", async () => {
   const f = fixture(["document.handoff", "document.package", "document.local-review"], true);
   try {

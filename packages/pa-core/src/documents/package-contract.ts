@@ -78,7 +78,7 @@ export function documentInterfaceDescription(): Record<string, unknown> {
     cli: "description-only-no-decision-or-effect-import", availability: "requires-native-authenticated-Pi-requirements-session", preview: "unavailable-use-full-markdown", sourceAuthority: false, installedQualification: "not-asserted" };
 }
 export function parseDocumentRequest(input: string): Record<string, unknown> {
-  return documentGuard(() => object(parseWorkflowRequest(input), ["action"], ["package", "sha256", "expectedRevision", "previousSha256", "decisionId", "path", "content", "expectedSha256", "offset", "title", "intakeId", "ticket", "scope", "operationId", "requestId", "originalRequestSha256", "observationSha256", "reference"]));
+  return documentGuard(() => object(parseWorkflowRequest(input), ["action"], ["package", "sha256", "expectedRevision", "previousSha256", "decisionId", "path", "content", "expectedSha256", "offset", "title", "intakeId", "ticket", "scope", "operationId", "requestId", "originalRequestSha256", "observationSha256", "reference", "successorReference"]));
 }
 export function documentPackageSha(subject: DocumentPackage): string { return digest(JSON.stringify(parseDocumentPackage(subject))); }
 export function documentDestination(subject: DocumentPackage, member: DocumentMember): string {

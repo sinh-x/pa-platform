@@ -17,7 +17,7 @@ export interface ContentReviewView {
   reference: string; subject: ContentReviewSubject; document: DocumentPackage; presentation: Record<string, unknown>;
   documents: { id: string; mediaType: string; sha256: string; content: string | null }[];
   actionable: boolean; trust: "local-unverified"; authentication: "not-provided";
-  approval: string; publication: "not-published" | "recorded-complete"; eligibility: "active" | "revoked" | "superseded"; history: ReturnType<RegistryHandoffReviewJournal["events"]>;
+  approval: string; publication: "not-published" | "recorded-partial" | "recorded-complete"; eligibility: "active" | "revoked" | "superseded"; history: ReturnType<RegistryHandoffReviewJournal["events"]>;
 }
 export function contentReviewGuidance(code: unknown): string {
   const reasons: Record<string, string> = {
@@ -31,6 +31,20 @@ export function contentReviewGuidance(code: unknown): string {
   };
   const reason = typeof code === "string" && Object.hasOwn(reasons, code) ? reasons[code] : reasons.DOCUMENT_UNAVAILABLE;
   return `Content review did not return a verified result.\nCondition: Signing cannot report completion; a prior saved decision may exist.\nSource: Native content-review owner.\nReason: ${reason}\nCorrection: Ask the runtime owner to inspect the original reference and decision history. Impact: read-only. Actor: agent or operator. New approval: not required for inspection. Prerequisite: preserve original delivery and native records; repairs require their owner's authority.\nResume Action: Reopen the same reference after its owner establishes the result or resolves the cause. Saved decisions are reused without another prompt; signing never authorizes publication or other downstream effects.`;
+}
+/** Pure projection of the native owner's saved status; never verifies or invokes publication. */
+export function contentReviewOutcomeMessage(result: { outcome?: unknown; publication?: unknown }): string {
+  if (result.outcome === "approved" && result.publication === "recorded-complete") {
+    return "Approved · Publication recorded complete. The saved publication record is historical evidence, not a fresh physical verification. Signing grants and starts no downstream action. No further signing action is required.";
+  }
+  if (result.outcome === "approved" && result.publication === "recorded-partial") {
+    return "Approved · Publication incomplete. The original publication operation started, but completion is not recorded. Partial effects may remain. Ask the publication owner to inspect the original publication operation before any publication retry. Signing grants and starts no downstream action. No further signing action is required.";
+  }
+  return result.outcome === "approved" ? "Approved · Not published. The exact content decision is saved; signing grants and starts no downstream action. No further signing action is required."
+    : result.outcome === "changes-requested" ? "Changes requested · Not published. The document owner must prepare a revised candidate; this decision is retained."
+    : result.outcome === "rejected" ? "Rejected · Not published. The exact decision is saved."
+    : result.outcome === "cancelled" ? "Review cancelled · Not published. This deliberate Cancel is the shared saved outcome."
+    : "Review detached. The shared request remains pending; reopen the same reference to continue.";
 }
 export type ContentReviewCapture = (request: HandoffReviewRequest, view: ContentReviewView, signal: AbortSignal) => Promise<LocalReviewOutcome | "detached">;
 function synchronous(value: unknown): void {
@@ -80,6 +94,10 @@ export class ContentReviewService {
     const presentation = await inspectFullDocumentReader(selected.document, this.host.artifactRoot, sha => this.journal.documents.snapshot(sha), selected.subject.deliverySha256);
     this.selected(reference); return { ...selected, presentation };
   }
+  private publicationStatus(sha: string, decisionId: string): ContentReviewView["publication"] {
+    const effect = this.journal.effect(sha, decisionId, "publish");
+    return effect.completed ? "recorded-complete" : effect.started ? "recorded-partial" : "not-published";
+  }
   async show(reference: string): Promise<ContentReviewView> {
     const { sha, subject, document } = this.selected(reference);
     let presentation: Record<string, unknown>, verified = false;
@@ -98,13 +116,14 @@ export class ContentReviewService {
     return { reference, subject, document, presentation, documents, history, actionable: verified && !saved && !fence,
       eligibility: fence?.kind === "content-ineligible" ? fence.fence.reason : "active",
       approval: saved?.kind === "issued" ? saved.decision.outcome : history.length ? "pending" : "not-requested",
-      publication: request?.kind === "requested" && this.journal.effect(sha, request.request.decisionId, "publish").completed ? "recorded-complete" : "not-published", trust: "local-unverified", authentication: "not-provided" };
+      publication: request?.kind === "requested" ? this.publicationStatus(sha, request.request.decisionId) : "not-published", trust: "local-unverified", authentication: "not-provided" };
   }
   private recorded(reference: string): Record<string, unknown> | null {
     const { sha } = this.selected(reference), events = this.journal.events(sha), request = events.find(e => e.kind === "requested"), issued = events.find(e => e.kind === "issued");
     if (request?.kind !== "requested" || issued?.kind !== "issued") return null;
     return { schemaVersion: "pa-content-review-decision/v1", reference, documentSubjectSha256: this.journal.contentSubject(sha).subject.documentSubjectSha256,
-      decisionId: request.request.decisionId, ...issued.decision, scope: "content", publication: "not-published", authority: "content-decision-only",
+      decisionId: request.request.decisionId, ...issued.decision, scope: "content",
+      publication: this.publicationStatus(sha, request.request.decisionId), authority: "content-decision-only",
       trust: "local-unverified", authentication: "not-provided", launchReady: false, productUat: "not-asserted" };
   }
   async request(reference: string): Promise<Record<string, unknown>> {

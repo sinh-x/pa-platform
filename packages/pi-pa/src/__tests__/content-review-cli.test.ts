@@ -58,6 +58,40 @@ test("guided external decision closes pending input and converges without compen
   assert.match(f.stdout.join("\n"), /Approved · Not published/);
 });
 
+for (const boundary of ["saved-view", "stale-view", "failed-view"] as const) test(`guided ${boundary} race returns the canonical decision without a second prompt`, async () => {
+  const f = fixture();
+  const handler: LocalReviewHandler = async raw => {
+    const result = await f.handler(raw);
+    if (JSON.parse(raw).action === "show") {
+      f.external("approved");
+      if (boundary === "failed-view") throw Error("fixture delivery failed after external issuance");
+      if (boundary === "saved-view") return { ...result, actionable: false, approval: "approved" };
+    }
+    return result;
+  };
+  assert.equal(await runDocumentCommand(["review", reference], f.io, { contentHandler: handler, prompt: async () => { throw Error("must not prompt"); } }), 0);
+  assert.equal(f.actions.includes("decide"), false); assert.deepEqual(f.stderr, []);
+  assert.match(f.stdout.join("\n"), /Approved/); assert.doesNotMatch(f.stdout.join("\n"), /Choose:/);
+});
+
+for (const publication of ["recorded-complete", "recorded-partial"] as const) test(`guided replay and show describe ${publication} without claiming fresh verification`, async () => {
+  const f = fixture(); f.external("approved");
+  const handler: LocalReviewHandler = async raw => ({ ...await f.handler(raw), publication });
+  const prompt = async () => { throw Error("must not prompt"); };
+  assert.equal(await runDocumentCommand(["review", reference], f.io, { contentHandler: handler, prompt }), 0);
+  assert.equal(await runDocumentCommand(["review", "show", reference], f.io, { contentHandler: handler, prompt }), 0);
+  assert.doesNotMatch(f.stdout.join("\n"), /Not published|no downstream action was authorized/);
+  if (publication === "recorded-complete") {
+    assert.equal(f.stdout.filter(text => /Publication recorded complete/.test(text)).length, 2);
+    assert.match(f.stdout.join("\n"), /not a fresh physical verification/);
+  } else {
+    assert.equal(f.stdout.filter(text => /Publication incomplete/.test(text)).length, 2);
+    assert.match(f.stdout.join("\n"), /Partial effects may remain/);
+    assert.match(f.stdout.join("\n"), /original publication operation/);
+  }
+  assert.equal(f.actions.includes("decide"), false);
+});
+
 test("unverified delivery is nonactionable and hostile exceptions stay private in bounded plain blockers", async () => {
   for (const mode of ["unverified", "exception"]) {
     const f = fixture();

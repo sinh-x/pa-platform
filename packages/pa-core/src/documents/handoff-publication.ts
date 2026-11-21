@@ -125,7 +125,10 @@ export class HandoffPublicationService {
     };
     return host.withPublicationBoundary(document, check => host.tickets.withWorkflowTransaction(() => {
       const predecessor = () => HandoffPublicationService.predecessor(journal, host.tickets, host.artifactRoot, document);
-      const authenticate = () => { check(); host.assertDocument(document); host.assertOrigin(subject, document); host.assertCaller(subject, document, authority); verifyDelivery(); predecessor(); };
+      const authenticate = () => {
+        check(); host.assertDocument(document); host.assertOrigin(subject, document); host.assertCaller(subject, document, authority);
+        host.tickets.assertHandoffSettled(document.ticket); verifyDelivery(); predecessor();
+      };
       const authorize = () => {
         authenticate(); journal.contentAuthority(sha); journal.assertSettled(sha);
         const ticket = host.tickets.get(document.ticket);

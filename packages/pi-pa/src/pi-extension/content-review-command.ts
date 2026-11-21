@@ -1,4 +1,4 @@
-import { DocumentPackageError, contentReviewGuidance } from "@pa-platform/pa-core";
+import { DocumentPackageError, contentReviewGuidance, contentReviewOutcomeMessage } from "@pa-platform/pa-core";
 import { mutatePiContentReview } from "../content-review-native.js";
 import type { PiDocumentConfirmationContext } from "../document-confirmation-native.js";
 
@@ -20,12 +20,7 @@ export async function runContentReviewCommand(args: string, context: PiDocumentC
       context.ui?.notify?.(references.length ? `Exact sign-only references for ${value}:\n${references.slice(0, 10).join("\n")}\nCopy one into /pa-review REFERENCE. No revision was selected.${references.length > 10 ? " More references are available through review-list." : ""}`
         : "No eligible sign-only reference was found. Ask the original document owner to verify and prepare the exact immutable delivery. No review target was guessed.", "info");
     } else {
-      const outcome = result.outcome;
-      context.ui?.notify?.(outcome === "approved" ? "Approved · Not published. The exact content decision is saved; no downstream action was authorized or started. No further signing action is required."
-        : outcome === "changes-requested" ? "Changes requested · Not published. The saved decision is retained; the document owner must prepare a revised candidate."
-        : outcome === "rejected" ? "Rejected · Not published. The saved decision is retained."
-        : outcome === "cancelled" ? "Review cancelled · Not published. This deliberate Cancel is the shared saved outcome."
-        : "Review detached. The shared request remains pending; reopen the same reference to continue.", "info");
+      context.ui?.notify?.(contentReviewOutcomeMessage(result), "info");
     }
     return result;
   } catch (error) {

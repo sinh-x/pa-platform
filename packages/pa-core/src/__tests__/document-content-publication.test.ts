@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { creationDigest } from "../tickets/create-intent.js";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RegistryHandoffReviewJournal } from "../registry/handoff-reviews.js";
@@ -13,6 +14,8 @@ import { documentRuntimeFixture } from "./document-runtime-fixture.js";
 
 async function fixture() {
   const f = documentRuntimeFixture(); f.db.pragma("synchronous = FULL");
+  const ticketPath = join(f.root, "tickets/EX-1.json");
+  writeFileSync(ticketPath, JSON.stringify({ ...f.store.get("EX-1"), createdAt: "2026-11-21T00:00:00.000Z", updatedAt: "2026-11-21T00:00:00.000Z" }));
   f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
   const delivery = await presentFullDocumentReader(f.subject, f.root, sha => f.journal.snapshot(sha));
   const journal = new RegistryHandoffReviewJournal(f.db);
@@ -217,6 +220,100 @@ test("native journal refuses supersession to an inactive successor without damag
     assert.throws(() => f.journal.fenceContent(f.reference.slice(7), "superseded", reference.slice(7)), /DOCUMENT_AUTHORITY/);
     assert.equal((await f.service.status(f.reference)).eligibility, "active");
     assert.equal(f.journal.events(f.reference.slice(7)).length, 2);
+  } finally { f.close(); }
+});
+
+for (const at of ["new-authority", "authority-replay", "remaining-writes"] as const) {
+  for (const corrupt of [false, true]) test(`unfinished ticket handoff blocks ${at}${corrupt ? " with unknown intent" : ""} without repair`, async () => {
+    const f = await fixture(); try {
+      if (at !== "new-authority") await f.service.authorize(f.reference);
+      if (at === "remaining-writes") {
+        f.host.afterPublicationPersist = stage => { if (stage === "tracking") throw Error("fixture partial publication"); };
+        await assert.rejects(() => f.service.publish(f.reference), /fixture partial publication/);
+        delete f.host.afterPublicationPersist;
+      }
+      const current = f.store.get("EX-1")!;
+      assert.throws(() => f.store.applyHandoffWithIntent("EX-1", creationDigest(current), { kind: "stage", stage: "analysis" }, "fixture",
+        { scope: "c".repeat(64), requestId: "retained-handoff" }, { assertCurrent() {}, assertSnapshot() {}, afterPersist(stage) {
+          if (stage === "intent") throw Error("fixture unfinished handoff");
+        } }), /fixture unfinished handoff/);
+      const directory = join(f.root, "tickets"), intent = readdirSync(directory).find(name => name.startsWith(".ticket-handoff-"))!;
+      if (corrupt) writeFileSync(join(directory, intent), "unknown original intent");
+      const retained = readdirSync(directory).map(name => ({ name, bytes: readFileSync(join(directory, name)) }));
+      const events = f.journal.events(f.reference.slice(7)), effect = f.journal.effect(f.reference.slice(7), String(f.decision.decisionId), "publish");
+      const files = current.doc_refs.map(ref => ({ path: ref.path, inode: lstatSync(join(f.root, ref.path)).ino, bytes: readFileSync(join(f.root, ref.path)) }));
+      const confirmations = f.confirmations();
+      await assert.rejects(() => at === "remaining-writes" ? f.service.publish(f.reference) : f.service.authorize(f.reference), /TICKET_HANDOFF_UNCERTAIN/);
+      for (const file of retained) assert.deepEqual(readFileSync(join(directory, file.name)), file.bytes);
+      for (const file of files) { assert.equal(lstatSync(join(f.root, file.path)).ino, file.inode); assert.deepEqual(readFileSync(join(f.root, file.path)), file.bytes); }
+      assert.deepEqual(f.journal.events(f.reference.slice(7)), events);
+      assert.deepEqual(f.journal.effect(f.reference.slice(7), String(f.decision.decisionId), "publish"), effect);
+      assert.equal(f.confirmations(), confirmations, "retained uncertainty must not request another approval");
+    } finally { f.close(); }
+  });
+}
+
+test("authority rechecks settled ticket after UI in repository then ticket lock order", async () => {
+  const f = await fixture(); try {
+    let repositoryLocked = false, ticketLocked = false, checks = 0;
+    const transaction = f.store.withWorkflowTransaction.bind(f.store), settled = f.store.assertHandoffSettled.bind(f.store);
+    f.host.withPublicationBoundary = (_document, run) => {
+      assert.equal(ticketLocked, false); repositoryLocked = true;
+      try { return run(() => { assert.equal(repositoryLocked, true); }); } finally { repositoryLocked = false; }
+    };
+    f.store.withWorkflowTransaction = run => {
+      assert.equal(repositoryLocked, true); ticketLocked = true;
+      try { return transaction(run); } finally { ticketLocked = false; }
+    };
+    f.store.assertHandoffSettled = ticket => { assert.equal(repositoryLocked, true); assert.equal(ticketLocked, true); checks++; settled(ticket); };
+    f.host.confirm = async () => {
+      assert.equal(repositoryLocked, false); assert.equal(ticketLocked, false);
+      const current = f.store.get("EX-1")!;
+      assert.throws(() => f.store.applyHandoffWithIntent("EX-1", creationDigest(current), { kind: "stage", stage: "analysis" }, "fixture",
+        { scope: "c".repeat(64), requestId: "handoff-during-ui" }, { assertCurrent() {}, assertSnapshot() {}, afterPersist(stage) {
+          if (stage === "intent") throw Error("fixture unfinished handoff");
+        } }), /fixture unfinished handoff/);
+      return "confirmed";
+    };
+    await assert.rejects(() => f.service.authorize(f.reference), /TICKET_HANDOFF_UNCERTAIN/);
+    assert.equal(checks, 2); assert.equal(f.journal.events(f.reference.slice(7)).length, 2);
+    assert.equal(f.journal.effect(f.reference.slice(7), String(f.decision.decisionId), "publish").started, false);
+  } finally { f.close(); }
+});
+
+for (const stage of ["intent", "tracking", "publication"] as const) test(`signing replay preserves ${stage} partial publication without effects or another prompt`, async () => {
+  const f = await fixture(); try {
+    await f.service.authorize(f.reference);
+    assert.equal((await f.review.request(f.reference)).publication, "not-published", "authority alone is not publication");
+    f.host.afterPublicationPersist = at => { if (at === stage) throw Error("fixture incomplete publication"); };
+    await assert.rejects(() => f.service.publish(f.reference), /fixture incomplete publication/);
+    delete f.host.afterPublicationPersist;
+    const events = f.journal.events(f.reference.slice(7)), audit = f.store.readAudit();
+    const effect = f.journal.effect(f.reference.slice(7), String(f.decision.decisionId), "publish");
+    assert.equal(effect.started, true); assert.equal(effect.completed, false);
+    const replay = await f.review.request(f.reference);
+    assert.equal(replay.publication, "recorded-partial"); assert.equal(replay.decisionId, f.decision.decisionId);
+    assert.equal((await f.review.decide(f.reference, "approved")).publication, "recorded-partial");
+    assert.equal((await f.review.review(f.reference, async () => { throw Error("must not prompt"); })).publication, "recorded-partial");
+    assert.equal((await f.review.show(f.reference)).publication, "recorded-partial");
+    assert.deepEqual(f.journal.events(f.reference.slice(7)), events); assert.deepEqual(f.store.readAudit(), audit);
+    assert.deepEqual(f.journal.effect(f.reference.slice(7), String(f.decision.decisionId), "publish"), effect);
+  } finally { f.close(); }
+});
+
+test("signing replay projects recorded publication without effects or fresh physical verification", async () => {
+  const f = await fixture(); try {
+    await f.service.authorize(f.reference); await f.service.publish(f.reference);
+    const events = f.journal.events(f.reference.slice(7)), audit = f.store.readAudit();
+    // A saved completion remains historical even if physical publication drifts.
+    writeFileSync(join(f.root, documentDestination(f.subject, f.subject.members[0]!)), "changed after publication");
+    const replay = await f.review.request(f.reference);
+    assert.equal(replay.publication, "recorded-complete"); assert.equal(replay.decisionId, f.decision.decisionId);
+    assert.equal((await f.review.decide(f.reference, "approved")).publication, "recorded-complete");
+    assert.equal((await f.review.review(f.reference, async () => { throw Error("must not prompt"); })).publication, "recorded-complete");
+    assert.equal((await f.review.show(f.reference)).publication, "recorded-complete");
+    await assert.rejects(() => f.service.publish(f.reference), /DOCUMENT_CONFLICT/);
+    assert.deepEqual(f.journal.events(f.reference.slice(7)), events); assert.deepEqual(f.store.readAudit(), audit);
   } finally { f.close(); }
 });
 

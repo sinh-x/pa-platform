@@ -39,8 +39,13 @@ export class ContentPublicationService {
   }
   async authorize(reference: string): Promise<Record<string, unknown>> {
     const { sha, subject, document } = this.selected(reference), decision = this.journal.contentDecision(sha);
-    const existing = this.journal.events(sha).find(e => e.kind === "publication-authorized");
-    if (existing?.kind === "publication-authorized") { this.host.assertCaller(subject, document, existing.authority); return { ...existing.authority }; }
+    const existing = this.host.withPublicationBoundary(document, check => this.host.tickets.withWorkflowTransaction(() => {
+      check(); this.selected(reference); this.host.tickets.assertHandoffSettled(document.ticket);
+      const event = this.journal.events(sha).find(e => e.kind === "publication-authorized");
+      if (event?.kind !== "publication-authorized") return null;
+      this.host.assertCaller(subject, document, event.authority); return event.authority;
+    }));
+    if (existing) return { ...existing };
     await inspectFullDocumentReader(document, this.host.artifactRoot, hash => this.journal.documents.snapshot(hash), subject.deliverySha256);
     const caller = this.host.authenticate();
     if (await this.host.confirm("authorize", { reference, document }) !== "confirmed") return { authority: "not-issued", publication: "not-performed" };
@@ -49,7 +54,8 @@ export class ContentPublicationService {
     const authority: ContentPublicationAuthority = { schemaVersion: "pa-content-publication-authority/v1", contentDecisionId: decision.decisionId,
       caller, scope: "publish-exact-content-only", method: "native-foreground-publication-confirmation", authorizedAt: new Date().toISOString() };
     this.host.withPublicationBoundary(document, check => this.host.tickets.withWorkflowTransaction(() => {
-      check(); this.selected(reference); this.journal.authorizeContentPublication(sha, authority);
+      check(); this.selected(reference); this.host.tickets.assertHandoffSettled(document.ticket);
+      this.journal.authorizeContentPublication(sha, authority);
     }));
     this.host.afterPublicationPersist?.("authority"); return { ...authority };
   }
