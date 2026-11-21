@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatuses, readActivityEvents, releaseRepositoryMutationLease, repositoryMutationLeasePath, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatuses, readActivityEvents, releaseRepositoryMutationLease, repositoryMutationLeasePath, runCoreCommand, withOrdinaryRepositoryStartup, type ExecutionPlan, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { runBackgroundEntry } from "../background-runner.js";
@@ -136,6 +136,67 @@ function writeBuilderTeamConfig(root: string): void {
     "    model: gpt-5.5",
   ].join("\n"));
 }
+
+test("PAP-329 OpenCode shares profile-free interactive startup without Builder workflow authority", () => withOpaEnv(async (root) => {
+  writeBuilderTeamConfig(root);
+  const config = join(root, "teams", "builder.yaml");
+  writeFileSync(config, readFileSync(config, "utf8").replace("mode_type: work", "mode_type: interactive"));
+  delete process.env.PA_TICKET_ID;
+  let spawns = 0;
+  const result = await deployWithOpencode({ team: "builder", mode: "implement", repo: "pa-platform" }, {
+    ...createStubAdapter({ exitCode: 0 }),
+    spawn(options) {
+      spawns++;
+      assert.equal(options.executionPlan?.ticket, undefined);
+      assert.equal(options.executionPlan?.repositoryAdmission.access, "non-locking");
+      assert.equal(options.executionPlan?.modeCapabilityBinding, undefined);
+      assert.doesNotMatch(readFileSync(options.primerPath, "utf8"), /status transitions belong to the parent flow/i);
+      return { sessionId: options.deployId, exitCode: 0 };
+    },
+  });
+  assert.equal(result.status, "success", result.reason);
+  assert.equal(spawns, 1);
+  const start = getDeploymentEvents(result.deploymentId!).find(event => event.event === "started");
+  assert.ok(start);
+  assert.equal(start.note, undefined);
+  assert.equal(start.repository_slot, undefined);
+  const leasePath = repositoryMutationLeasePath(join(root, "repo"));
+  const delayed = await deployWithOpencode({ team: "builder", mode: "implement", repo: "pa-platform" }, {
+    ...createStubAdapter({ exitCode: 0 }),
+    async installHooks() { await Promise.resolve(); writeFileSync(leasePath, "late fixture custody"); },
+    spawn(options) { spawns++; return { sessionId: options.deployId, exitCode: 0 }; },
+  });
+  assert.equal(delayed.status, "failed");
+  assert.match(delayed.reason ?? "", /checkout has retained execution custody/);
+  assert.equal(spawns, 1);
+  assert.equal(readFileSync(leasePath, "utf8"), "late fixture custody");
+}));
+
+test("PAP-329 production foreground OpenCode releases startup mutex while its child is running", () => withOpaEnv(async root => {
+  writeBuilderTeamConfig(root);
+  const config = join(root, "teams", "builder.yaml");
+  writeFileSync(config, readFileSync(config, "utf8").replace("mode_type: work", "mode_type: interactive"));
+  const bin = join(root, "bin"), ready = join(root, "ready"), release = join(root, "release");
+  mkdirSync(bin);
+  const executable = join(bin, "opencode");
+  writeFileSync(executable, `#!${process.execPath}\nconst fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},'ready'); let ticks=0; const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0)}if(++ticks>400){clearInterval(timer);process.exit(1)}},10);\n`);
+  chmodSync(executable, 0o700);
+  const adapter = new OpencodeAdapter({ cwd: join(root, "repo"), env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  let plan!: ExecutionPlan, settled = false;
+  adapter.installHooks = (_target, config) => { plan = config.executionPlan!; };
+  const launch = deployWithOpencode({ team: "builder", mode: "implement", repo: "pa-platform" }, adapter);
+  void launch.then(() => { settled = true; });
+  try {
+    const deadline = Date.now() + 2500;
+    while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(existsSync(ready), "disposable child must reach its foreground wait");
+    assert.equal(settled, false, "foreground wait must not block the event loop until child exit");
+    withOrdinaryRepositoryStartup(plan, () => undefined);
+  } finally { writeFileSync(release, "release"); }
+  const result = await launch;
+  assert.equal(result.status, "success", result.reason);
+  assert.ok(getDeploymentEvents(result.deploymentId!).some(event => event.event === "pid"));
+}));
 
 function writeRogueOneTeamConfig(root: string): void {
   writeFileSync(join(root, "teams", "rogue-one.yaml"), [

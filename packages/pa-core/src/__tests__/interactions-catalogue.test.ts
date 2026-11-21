@@ -238,6 +238,27 @@ test("PAP-316 inventory covers selection, source intake and real bridge ingress 
   }
 });
 
+test("PAP-329 ordinary startup changes admission, not public forms, effects or native authority", () => {
+  const launch = operation("deploy.launch"), resume = operation("deploy.resume");
+  assert.match(launch.reason, /Profile-free interactive modes.*without native workflow, ticket, branch or approval admission/);
+  assert.match(launch.reason, /Sensitive-command\/data safeguards.*retained checkout custody still apply/);
+  assert.match(launch.reason, /no native document or builder tools/);
+  assert.match(resume.reason, /same team, mode, runtime, ticket and physical roots/);
+  assert.match(resume.reason, /cannot reclassify a retained document, builder, review or checkout-bound session/);
+  assert.deepEqual(launch.cliForms, ["deploy <team>", "deploy --background"]);
+  assert.deepEqual(resume.cliForms, ["deploy --resume"]);
+  for (const row of [launch, resume]) {
+    assert.equal(row.effectClass, "launch");
+    assert.deepEqual(row.channels, ["cli"]);
+    assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.delegationBinding, null);
+  }
+  for (const id of ["execution.plan", "execution.report", "phase-report.capture"]) {
+    assert.equal(operation(id).nativeBinding, null, "source inventory does not register protected tools for ordinary sessions");
+  }
+});
+
 test("PAP-318 reconciles bounded transport and explicit v3 profile admission without new public effects", () => {
   assert.match(operation("deploy.launch").reason, /Explicit v3 pa-readonly-document\/v1/);
   assert.match(operation("deploy.launch").reason, /missing mode\/default cannot fall through/);

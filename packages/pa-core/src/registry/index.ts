@@ -861,6 +861,43 @@ export function queryReadonlyRepoSetupLaunch(deployId: string): DeploymentStatus
   finally { db.close(); }
 }
 
+/** Ordinary continuation must prove an entirely unprotected original lineage.
+ * Inspect raw rows: display projections intentionally omit malformed custody.
+ * One read transaction pins ancestry without rewriting or migrating history. */
+export function queryReadonlyOrdinaryResume(deployId: string): DeploymentStatus {
+  const db = openReadonlyRegistryDatabase(true);
+  try {
+    return db.transaction(() => {
+      const absent = ["parent_deployment_id", "builder_authority", "repository_slot", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
+        "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit", "review_checkout", "ticket_worktree_selection", "mode_capability_binding", "note"];
+      const identity = ["team", "mode", "runtime", "binary", "repo", "repo_root", "worktree_root", "ticket_id"];
+      const seen = new Set<string>();
+      let id: unknown = deployId, original: Record<string, unknown> | undefined;
+      while (id !== null && id !== undefined && id !== "") {
+        if (typeof id !== "string" || !/^d-[a-f0-9]{6}$/.test(id) || seen.has(id) || seen.size >= 1024) throw new Error("invalid ordinary resume lineage");
+        seen.add(id);
+        const current = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(id) as Record<string, unknown> | undefined;
+        const events = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id").all(id) as Record<string, unknown>[];
+        const starts = events.filter(row => row.event === "started");
+        if (!current || starts.length !== 1) throw new Error("ordinary resume requires one retained start");
+        original ??= current;
+        for (const key of ["team", "mode", "runtime", "binary", "repo", "repo_root", "worktree_root"]) {
+          if (typeof current[key] !== "string" || current[key] === "") throw new Error("ordinary resume identity is incomplete");
+        }
+        if (identity.some(key => current[key] !== original![key] || starts[0]![key] !== current[key])
+          || current.resumed_from_deployment_id !== starts[0]!.resumed_from_deployment_id) throw new Error("ordinary resume identity changed");
+        for (const row of [current, ...events]) {
+          if (absent.some(key => row[key] !== null && row[key] !== undefined && row[key] !== "")
+            || [row.rogue_one, row.fallback].some(value => value !== null && value !== undefined && value !== 0)) throw new Error("ordinary resume has retained protection evidence");
+        }
+        id = current.resumed_from_deployment_id;
+      }
+      if (!original) throw new Error("ordinary resume lineage is missing");
+      return deploymentFromRow(original);
+    })();
+  } finally { db.close(); }
+}
+
 /** Resume inspection must not allocate, initialize or migrate registry state. */
 export function queryReadonlyDeploymentStatus(deployId: string, existingFilesOnly = false): DeploymentStatus | null {
   if (!existingFilesOnly && !existsSync(getRegistryDbPath())) return null;

@@ -1,7 +1,7 @@
 import { ADVISORY_RUNTIME_VERSION } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentStatus } from "@pa-platform/pa-core";
+import { assertMatchingRuntime, assertSupportedRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, normalizeRogueOneDeployRequest, isRogueOneTeam, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
@@ -142,7 +142,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   try {
     selectedMode = resolveDeployMode(teamConfig, request.mode);
     if (selectedMode?.capability_policy !== undefined) return { status: "failed" as const, team: request.team, mode: selectedMode.id, reason: modeCapabilityDiagnostic("CAPABILITY_PROFILE") };
-    assertDeployResumeMode(teamConfig, request.resume);
+    assertDeployResumeMode(teamConfig, request.resume, selectedMode);
   }
   catch (error) {
     if (error instanceof DeployModeSelectionError) return { status: "failed" as const, team: request.team, mode: null, reason: error.message };
@@ -162,13 +162,14 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const model = runtimeConfig.model!;
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || (isRogueOneTeam(teamConfig.name) ? undefined : process.env["PA_TICKET_ID"]) || undefined;
-  if (!isRogueOneTeam(teamConfig.name) && !ticketId && selectedMode?.require_ticket === true) {
+  const plainInteractive = isPlainInteractiveMode(selectedMode);
+  if (!plainInteractive && !isRogueOneTeam(teamConfig.name) && !ticketId && selectedMode?.require_ticket === true) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: "Hard block: no resolvable ticket id. Provide --ticket <id> or set PA_TICKET_ID before deploying. The opencode adapter refuses to launch without a ticket for traceability." };
   }
   // A missing optional ticket document is not workflow admission. Only actual
   // retained workflow bindings keep this fresh route on historical semantics.
-  const retainedWorkflow = teamConfig.name === "builder" && ticketId ? new TicketStore().get(ticketId)?.doc_refs.some(ref => ref.type === "workflow") : false;
-  const advisoryLaunch = teamConfig.name === "builder" && !request.resume && !retainedWorkflow;
+  const retainedWorkflow = !plainInteractive && teamConfig.name === "builder" && ticketId ? new TicketStore().get(ticketId)?.doc_refs.some(ref => ref.type === "workflow") : false;
+  const advisoryLaunch = !plainInteractive && teamConfig.name === "builder" && !request.resume && !retainedWorkflow;
   let sessionName: string | undefined;
   if (ticketId) {
     try {
@@ -284,10 +285,17 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     } else {
       writePrimer(plan);
     }
-    const onPid = advisoryLaunch ? (pid: number) => emitPidEvent({ deploymentId, team: teamConfig.name, pid }) : undefined;
-    const result = priorSession
-      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, ...(onPid ? { onPid } : {}), sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
+    // The production foreground adapter uses asynchronous child supervision
+    // when a PID observer is present, so ordinary startup never holds its
+    // custody mutex for the lifetime of a synchronous foreground command.
+    const onPid = advisoryLaunch || plainInteractive ? (pid: number) => emitPidEvent({ deploymentId, team: teamConfig.name, pid }) : undefined;
+    const start = () => priorSession
+      ? adapter.resume({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(onPid ? { onPid } : {}), ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
+      : adapter.spawn({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, ...(onPid ? { onPid } : {}), sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
+    const result = await (plainInteractive ? withOrdinaryRepositoryStartup(plan, () => {
+      assertDeployResumeMode(teamConfig, request.resume, selectedMode);
+      return start();
+    }) : start());
     // Only persist a session file when a real opencode session token was captured.
     // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
     // the deploy id as a placeholder, which silently broke `opa deploy --resume`.

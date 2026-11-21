@@ -27,6 +27,18 @@ This page documents the source contract, not a replacement approval or matrix.
 
 ## Selection and compatibility
 
+Ordinary interactive startup is not a document capability selection. Workflow
+instructions can change in PAPC without granting any native document or builder
+privileges. For these modes, `require_ticket` is a PAPC workflow instruction,
+not runtime admission: an optional supplied ticket correlates the session without
+selecting a workflow, branch or approval package. Profile-selected and
+non-interactive routes retain their existing checks. Ordinary continuation must
+match its original team, mode, runtime, ticket and physical roots.
+Keep existing capability bindings and checkout custody with the
+owners that issued them; an ordinary session is not a fallback for a protected
+continuation. See [`isPlainInteractiveMode` and `assertDeployResumeMode`](../packages/pa-core/src/deploy/control.ts)
+and the [launch and compatibility fixtures](../packages/pi-pa/src/__tests__/analyst-identity-launch.test.ts).
+
 Only a fresh foreground, unpinned, non-resumed Pi `requirements/analyze` start can
 select `document_profile: pa-document-policy/v1`. It requires `capability_policy`
 with exactly `version: pa-mode-capabilities/v1` and `allow: [...]`. Selection is

@@ -7,7 +7,7 @@ import {
   loadRepoEntry, materializeTicketBranch, parseExecutionCustody, parseIdlePreparationReservation,
   requireTicketLinkedBranch, TicketStore, withPreparedTicketCapacity, withVacantPreparationWorktree,
   PA_PI_EXECUTION_MODE_ENV, parsePreparationContract, parsePreparedReceipt, preparationIdentity,
-  processIsWithinFingerprintLineage, publishNativePreparationRetry, queryDeploymentStatus,
+  processIsWithinFingerprintLineage, publishNativePreparationRetry, queryDeploymentStatus, queryReadonlyDeploymentStatus,
   readProcessFingerprint, resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest, parseReviewEvidenceJson,
   executionFailure, executionWorkflowError, workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
   type ExecutionHolder, type ExecutionState, type ExecutionCommand, type ExecutionOperationKind, type ExecutionFailure,
@@ -608,10 +608,20 @@ function operationKind(name: string): ExecutionOperationKind {
  * dispatch; only a native exact-call termination record may close the barrier.
  * Notification failures, cancellation/reload and session shutdown never clear it.
  */
+function hasBuilderToolRoute(env: NodeJS.ProcessEnv, fixture: boolean): boolean {
+  if (env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "")) return false;
+  if (fixture) return true;
+  const status = env.PA_DEPLOYMENT_ID && queryReadonlyDeploymentStatus(env.PA_DEPLOYMENT_ID, true);
+  // Names are locators only; ordinary sessions have no native builder route.
+  // Each tool still independently authenticates the live caller and custody.
+  return Boolean(status && status.team === env.PA_TEAM && status.mode === env.PA_MODE && status.builder_authority);
+}
+
 export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExtensionModule {
   return (pi, lifecycle) => {
     const env = { ...(options.env ?? process.env) };
-    const native = options.resolveBinding || env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "") ? null : options.nativeAdapter ?? new PiNativeExecutionAdapter();
+    const builderRoute = hasBuilderToolRoute(env, Boolean(options.env || options.resolveBinding || options.nativeAdapter));
+    const native = builderRoute && !options.resolveBinding ? options.nativeAdapter ?? new PiNativeExecutionAdapter() : null;
     const resolver = options.resolveBinding ?? ((context: unknown, diagnostic = false) => native?.resolve(context, diagnostic)?.binding ?? null);
     const nativeBuiltinsReady = native ? registerNativeExecutionBuiltins(pi, native, lifecycle) : null;
     const pending = new Map<string, { binding: PiExecutionBinding; name: string }>();
@@ -635,7 +645,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         return await (lifecycle ? lifecycle.trackRegistryAccess(action) : action());
       } catch (error) { throw executionWorkflowError(error); }
     };
-    if (env.PA_TEAM === "builder" && ["orchestrator", "implement"].includes(env.PA_MODE ?? "")) {
+    if (builderRoute) {
       pi.registerTool?.({
         name: "pa_execution", label: "PA Execution", description: "Record a scoped local phase and authenticated writer/recovery evidence. Use report for factual native Markdown, observe phase then advance for checked/committed same-scope continuation; plan alone cannot change phases. A recovery rationale is narrative, never evidence or a cap reset. Optional rich-report/preparation automation is separate.",
         parameters: PiExecutionParams, executionMode: "sequential",
@@ -773,7 +783,7 @@ export const PiPhaseReportParams = Type.Union([
 export function createPiPhaseReportModule(options: PiPhaseReportOptions = {}): PiExtensionModule {
   return (pi, lifecycle) => {
     const env = options.env ?? process.env;
-    if (env.PA_TEAM !== "rogue-one" && !(env.PA_TEAM === "builder" && ["implement", "orchestrator"].includes(env.PA_MODE ?? ""))) return;
+    if (env.PA_TEAM !== "rogue-one" && !hasBuilderToolRoute(env, Boolean(options.env || options.resolveBinding || options.nativeAdapter))) return;
     const native = options.resolveBinding ? null : options.nativeAdapter ?? new PiNativePhaseReportAdapter();
     const resolve = options.resolveBinding ?? ((context: unknown) => native!.resolve(context));
     pi.registerTool?.({ name: "pa_phase_report", label: "PA Phase Report", description: "Capture native phase facts plus labelled agent narrative, then publish the returned source; status/settle use the returned report reference. Foreground observe-delivery asks the operator about the exact reading view. attach-actual links an exact reviewed reference to this native report on the same ticket; AC dispositions and actualOnly remain labelled agent narrative, not acceptance. observe-actual asks the foreground operator about human UAT and appends an exact observation. Caller paths, checks, outcomes and passed flags are not authority. Partial/historical reports cannot substitute for current checks; HTML generation is not browser/Obsidian observation or human UAT.", parameters: PiPhaseReportParams, executionMode: "sequential",

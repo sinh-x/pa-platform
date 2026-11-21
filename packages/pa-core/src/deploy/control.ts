@@ -1,7 +1,7 @@
 import type { ReadOnlyHelperCapability } from "../readonly-helper-context.js";
-import type { ApiRuntimeName, AutonomyLevel, DeployMode, TeamConfig } from "../types.js";
+import type { ApiRuntimeName, AutonomyLevel, DeploymentStatus, DeployMode, TeamConfig } from "../types.js";
 import { isRogueOneTeam } from "./rogue-one.js";
-import { queryReadonlyDeploymentStatus } from "../registry/index.js";
+import { queryReadonlyOrdinaryResume, queryReadonlyDeploymentStatus } from "../registry/index.js";
 import { assertSupportedRuntime } from "./runtime-config.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
@@ -88,9 +88,21 @@ export function resolveDeployMode(team: TeamConfig, requestedMode?: string): Dep
   return matches[0];
 }
 
+/** Profile-free interactive modes carry instructions, not native workflow authority. */
+export function isPlainInteractiveMode(mode?: DeployMode): boolean {
+  return mode?.mode_type === "interactive" && mode.document_profile === undefined && mode.capability_policy === undefined;
+}
+
 /** A resume target never converts a retired historical mode into current launch authority. */
-export function assertDeployResumeMode(team: TeamConfig, resume?: string): void {
+export function assertDeployResumeMode(team: TeamConfig, resume?: string, selectedMode?: DeployMode): DeploymentStatus | undefined {
   if (!resume || isRogueOneTeam(team.name)) return;
+  if (isPlainInteractiveMode(selectedMode)) {
+    try {
+      const prior = queryReadonlyOrdinaryResume(resume);
+      if (prior.team === team.name && prior.mode === selectedMode?.id) return prior;
+    } catch { /* Missing, malformed or protected lineage cannot become ordinary. */ }
+    throw new DeployModeSelectionError("execution plan");
+  }
   const prior = queryReadonlyDeploymentStatus(resume);
   if (prior?.mode !== undefined) resolveDeployMode(team, prior.mode);
 }

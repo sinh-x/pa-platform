@@ -12,6 +12,7 @@ import { DEPLOYMENT_ID_PATTERN, MAX_DEPLOYMENT_CORRELATION_PATH_CHARS } from "..
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import { assertSupportedRuntime } from "../deploy/runtime-config.js";
+import { isPlainInteractiveMode } from "../deploy/control.js";
 import type { RepositoryAdmissionEvidence } from "../deploy/repository-admission.js";
 import type { TicketWorktreeSelectionEvidence, TreehouseLaunchEvidence } from "../deploy/plan.js";
 import type { ToolReference } from "../runtime-api/types.js";
@@ -659,6 +660,10 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     "No Bash, generic writers, source/Git edits, child deployments, credentials, approval, execution, ticket mutation or manual lifecycle/registry commands. Never infer execution readiness from staging.",
     "Report the exact candidate reference and blockers to the operator. Credential entry and catalogue approval belong to an independent real operator terminal; never request or handle its password.",
     "On failure, stop and preserve evidence. Session/registry terminal handling belongs to the runtime; exit with the existing Pi controls when finished. Do not write session logs or complete/update registry state yourself.",
+  ].join("\n");
+  if (isPlainInteractiveMode(mode)) return [
+    "## Deployment Instructions",
+    `Use only tools exposed in the current ${runtime === "pi" ? "Pi" : "OpenCode"} session. Follow the selected team instructions for task policy.`,
   ].join("\n");
   const executionStyle = mode?.solo === true ? "solo"
     : mode?.solo === false ? "team"

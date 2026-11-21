@@ -6,7 +6,7 @@ import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type Repo
 import { createHash } from "node:crypto";
 import { ReadOnlyHelperFailure, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readReviewEvidenceFile, type ReadOnlyHelperCapability, type ReadOnlyHelperRole, type RepositoryMutationLease } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
-import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentStatus } from "@pa-platform/pa-core";
+import { assertMatchingRuntime, assertSupportedRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup } from "@pa-platform/pa-core";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -726,11 +726,11 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
         const { report } = (dependencies.reviewPreflight ?? inspectReviewPreflight)({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
         if (report.status !== "compatible") return { reason: formatReviewPreflight(report) };
       }
-      const team = pinnedPiWorkflowConfig(request)?.team ?? loadTeamConfig(request.team);
+      let team: TeamConfig;
       let mode: ReturnType<typeof resolveDeployMode>;
       try {
-        mode = resolveDeployMode(team, request.mode);
-        assertDeployResumeMode(team, request.resume);
+        ({ team, mode } = selectPiTeamConfig(request));
+        assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
       }
       catch (error) {
         if (error instanceof DeployModeSelectionError) return { reason: error.message };
@@ -746,8 +746,23 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
 }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 
+function selectPiTeamConfig(request: DeployRequest) {
+  let configured: TeamConfig | undefined;
+  try {
+    configured = loadTeamConfig(request.team);
+    const mode = resolveDeployMode(configured, request.mode);
+    if (!request.ticketWorktree && isPlainInteractiveMode(mode)) return { team: configured, mode, pinned: null, plainInteractive: true };
+  } catch {
+    // Legacy continuation can still select its retained configuration if the
+    // current configuration is missing or no longer has the requested mode.
+  }
+  const pinned = pinnedPiWorkflowConfig(request);
+  const team = pinned?.team ?? configured ?? loadTeamConfig(request.team);
+  return { team, mode: resolveDeployMode(team, request.mode), pinned, plainInteractive: false };
+}
+
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics, dependencies: PiDeployDependencies = {}): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
-  const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
+  let inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
   let prior: string | undefined;
   try {
     assertMatchingRuntime(adapter.name, "pi");
@@ -779,29 +794,29 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let pinnedConfig: ReturnType<typeof pinnedPiWorkflowConfig> = null;
   let pinnedConfigRoot: string | undefined;
   let mode: ReturnType<typeof resolveDeployMode>;
+  let plainInteractive: boolean;
   try {
-    pinnedConfig = pinnedPiWorkflowConfig(request);
-    team = pinnedConfig?.team ?? loadTeamConfig(request.team);
+    ({ team, mode, pinned: pinnedConfig, plainInteractive } = selectPiTeamConfig(request));
+    if (plainInteractive) inheritedAttempt = undefined;
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
-    mode = resolveDeployMode(team, request.mode);
     // A profile-only team has no generic base route. Missing mode/default must
     // not discard its immutable binding or restore name-based writer privileges.
     if (team.deploy_modes?.some(entry => entry.document_profile === READONLY_DOCUMENT_PROFILE)
       && mode?.document_profile !== READONLY_DOCUMENT_PROFILE) throw new ModeCapabilityError("CAPABILITY_PROFILE");
-    assertDeployResumeMode(team, request.resume);
+    assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
   } catch (error) {
     if (error instanceof ModeCapabilityError) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: error.message };
-    if (request.team === "analyst") return { status: "failed", team: request.team, mode: request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
     if (error instanceof DeployModeSelectionError) return { status: "failed", team: request.team, mode: null, reason: error.message };
+    if (request.team === "analyst") return { status: "failed", team: request.team, mode: request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
     if (!request.ticketWorktree) throw error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
   }
   // Only genuinely fresh, unpinned independent builder launches select the
   // advisory contract. Neither model prose nor an environment flag selects it.
-  let advisoryLaunch = mode?.document_profile !== READONLY_DOCUMENT_PROFILE && !dependencies.autoLaunch && dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
+  let advisoryLaunch = !plainInteractive && mode?.document_profile !== READONLY_DOCUMENT_PROFILE && !dependencies.autoLaunch && dependencies.retainedRuntimeFixture === undefined && team.name === "builder" && mode?.id === "orchestrator" && !team.deploy_modes?.some(entry => entry.id === "implement") && mode.require_ticket === true && Boolean(request.ticket) && !request.resume && !pinnedConfig && !inheritedAttempt;
   const readonlyProfile = mode?.document_profile === READONLY_DOCUMENT_PROFILE;
   const documentLaunch = selectsDocumentSession({ team: team.name, mode: mode?.id, profile: mode?.document_profile, pinned: Boolean(pinnedConfig), resume: Boolean(request.resume), inherited: Boolean(inheritedAttempt), rogue: team.name === "rogue-one", background: Boolean(request.background), ticketWorktree: Boolean(request.ticketWorktree), supportedConfig: documentSessionVersion(mode?.document_profile) !== undefined });
-  const publicAnalyst = request.team === "analyst" || team.name === "analyst";
+  const publicAnalyst = !plainInteractive && (request.team === "analyst" || team.name === "analyst");
   // The staged omitted route and report modes must never fall through to a
   // generic launcher. No deployment ID, registry row or workspace exists yet.
   if ((publicAnalyst || readonlyProfile) && (request.team !== team.name || !documentLaunch || (!readonlyProfile && mode?.document_profile !== MODE_CAPABILITY_PROFILE)
@@ -939,7 +954,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       planningRequest = selection.planningRequest;
       activeReviewReservation = reservePiReviewCandidate({ checkout: reviewCheckout, deploymentId, authorizationId: authorized.authorizationId }, reviewSelectionDependencies);
     }
-    const builderMode = !readonlyProfile && !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
+    const builderMode = !plainInteractive && !readonlyProfile && !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
       ? mode.id
       : undefined;
     if (builderMode === "orchestrator" || builderMode === "implement") {
@@ -1177,7 +1192,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId = staticReviewAuthorizationId): void => {
-    const pinned = !currentPlan.rogue_one && currentPlan.ticket && (structuredBaseline || ((currentPlan.team === "requirements" || publicAnalyst) && currentPlan.mode === "analyze")) ? readTicketWorkflow(currentPlan.ticket) : null;
+    const pinned = !plainInteractive && !currentPlan.rogue_one && currentPlan.ticket && (structuredBaseline || ((currentPlan.team === "requirements" || publicAnalyst) && currentPlan.mode === "analyze")) ? readTicketWorkflow(currentPlan.ticket) : null;
     if (pinned && !pinnedConfig) throw new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "workflow-owner");
     if (pinnedConfig) { pinnedConfig.reread(); pinnedConfigRoot = pinnedConfig.materialize(deployDir); }
     const primer = generatePrimer({ runtime: "pi", requirementsDocument: documentLaunch, ...(modeCapabilities?.resources ? { modeResources: modeCapabilities.resources } : {}), ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\ndeployment_runtime_limit: none\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
@@ -1468,6 +1483,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
     // Slot and physical Git identity admission must reject before Pi preflight,
     // because preflight may launch runtime/native-host probe processes.
+    if (plainInteractive) withOrdinaryRepositoryStartup(plan, () => undefined);
     try { await adapterPreflight(adapter); }
     catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
     try {
@@ -1562,10 +1578,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       observedRuntimeFingerprint = readProcessFingerprint(pid);
       publishedPid = pid;
     };
-    const beforeRuntimeStart = modeCapabilities || dependencies.autoLaunch || retainedResume ? (pid: number): void => {
+    const beforeRuntimeStart = modeCapabilities || dependencies.autoLaunch || retainedResume || (plainInteractive && !request.background) ? (pid: number): void => {
       // The adapter awaits preflight and may await a stopped native child after
       // the earlier check. Reauthenticate synchronously at admission, directly
       // before the production gate releases that child into runtime code.
+      if (plainInteractive) withOrdinaryRepositoryStartup(plan, () => {
+        assertDeployResumeMode(team, request.resume, mode);
+      });
       try { modeCapabilities?.assertCurrent(); }
       catch { throw new ModeCapabilityError("CAPABILITY_BINDING"); }
       if (dependencies.autoLaunch) {
@@ -1590,7 +1609,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     // borrower through existing matching cleanup. After it, absent native exit
     // proof must retain the borrower, including thrown/ambiguous spawn failures.
     runtimeLaunchAttempted = true;
-    const result = prior ? await adapter.resume({ ...spawnOptions, resumedFromDeploymentId: request.resume }) : await adapter.spawn(spawnOptions);
+    const start = () => prior ? adapter.resume({ ...spawnOptions, resumedFromDeploymentId: request.resume }) : adapter.spawn(spawnOptions);
+    const result = await (plainInteractive ? withOrdinaryRepositoryStartup(plan, () => {
+      assertDeployResumeMode(team, request.resume, mode);
+      return start();
+    }) : start());
     if (result.exitCode === 0) retainedResume?.assertCompleted();
     reviewRuntimeTerminated = result.metadata?.["cleanupVerified"] !== false && result.metadata?.["pending"] !== true;
     const rawExitCode = result.metadata?.["rawExitCode"];

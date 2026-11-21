@@ -4,7 +4,7 @@ import { getRegistryDbPath, getSkillsDir } from "../paths.js";
 import { getBranchPattern, loadRepoEntry, resolveRepoExecutionPath } from "../repos.js";
 import { TicketStore } from "../tickets/store.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
-import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, type DeployRequest } from "./control.js";
+import { assertDeployResumeMode, DeployModeSelectionError, isPlainInteractiveMode, resolveDeployMode, type DeployRequest } from "./control.js";
 import { assertMatchingRuntime, assertSupportedRuntime } from "./runtime-config.js";
 import { validateReviewCheckoutCorrelationEvidence, type ReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
@@ -150,20 +150,25 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   if (!rogueOne && options.mode !== undefined && options.mode.id !== mode?.id) {
     throw new DeployModeSelectionError("execution plan");
   }
-  assertDeployResumeMode(options.teamConfig, options.request.resume);
+  const plainPrior = assertDeployResumeMode(options.teamConfig, options.request.resume, options.request.ticketWorktree ? undefined : mode);
   const modeName = rogueOne ? ROGUE_ONE_MODE : mode?.id ?? "default";
   const invocationChannel: DeploymentInvocationChannel = options.request.invocationChannel ?? "cli";
   const capabilityBinding = options.modeCapabilityBinding ? parseModeCapabilityBinding(options.modeCapabilityBinding) : undefined;
   const readonlyProfile = mode?.document_profile === READONLY_DOCUMENT_PROFILE;
+  const plainInteractive = isPlainInteractiveMode(mode) && !options.request.ticketWorktree && !options.treehouse && !options.reviewCheckout && !options.ticketWorktreeSelection;
   if (options.teamConfig.deploy_modes?.some(entry => entry.document_profile === READONLY_DOCUMENT_PROFILE) && !readonlyProfile) throw new ModeCapabilityError("CAPABILITY_PROFILE");
   if (readonlyProfile && (rogueOne || capabilityBinding?.schemaVersion !== "pa-mode-capability-binding/v3" || options.request.force || options.allowDirtyInheritedBorrow
     || options.runtime !== "pi" || !modeCapabilityRouteMatches(capabilityBinding, options.teamConfig.name, modeName))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
-  if (!readonlyProfile && (options.request.team === "analyst" || options.teamConfig.name === "analyst")
+  if (!readonlyProfile && !plainInteractive && (options.request.team === "analyst" || options.teamConfig.name === "analyst")
     && (!capabilityBinding || capabilityBinding.schemaVersion !== "pa-mode-capability-binding/v2" || options.request.team !== "analyst"
       || options.runtime !== "pi" || !modeCapabilityRouteMatches(capabilityBinding, options.teamConfig.name, modeName))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
   const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd(), {
     allowLinkedWorktreeCwd: options.runtime === "pi" && options.request.repo === undefined,
   });
+  if (plainPrior && (plainPrior.runtime !== options.runtime || plainPrior.repo_root !== repository.repoRoot
+    || plainPrior.worktree_root !== repository.worktreeRoot || (plainPrior.ticket_id || undefined) !== options.request.ticket)) {
+    throw new DeployModeSelectionError("execution plan");
+  }
   // Setup is an administrative, ticketless primary-root route. It never
   // borrows builder custody or receives a general source-write role. Actual
   // candidate writes still require native process/registry authentication and
@@ -185,11 +190,11 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     }
     return Object.freeze({ name: skill.name, injectAs: skill["inject-as"], path });
   });
-  const ticketRequired = !rogueOne && mode?.require_ticket === true;
+  const ticketRequired = !rogueOne && !plainInteractive && mode?.require_ticket === true;
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
   }
-  const branchTransitionPolicy = options.runtime === "pi" && options.request.ticket
+  const branchTransitionPolicy = !plainInteractive && options.runtime === "pi" && options.request.ticket
     ? resolveBranchTransitionPolicy(repository.repo, options.request.ticket)
     : undefined;
   const repositoryAdmission = resolveRepositoryAdmissionEvidence({
@@ -199,6 +204,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     canonicalRepoRoot: repository.repoRoot,
     worktreeRoot: repository.worktreeRoot,
     runtime: options.runtime,
+    plainInteractive,
     background: options.request.background,
     dryRun: options.request.dryRun,
     force: options.request.force,

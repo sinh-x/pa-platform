@@ -33,7 +33,7 @@ import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 import { assertSupportedRuntime } from "./runtime-config.js";
 import { authenticateNativeExecutionRestart, assertNativeRestartProcessDead, type NativeExecutionRestartSource } from "./execution-restart.js";
-import type { ReviewCheckoutEvidence } from "./plan.js";
+import type { ExecutionPlan, ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { readAdvisoryStart } from "../operations/runtime.js";
 import { withPreparedRepositoryTicketOwner, withRepositoryRefExclusionOwner, observeReadonlyRepositoryTicketSlot, type RepositoryRefExclusion, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
@@ -186,6 +186,8 @@ export interface ResolveRepositoryAdmissionEvidenceOptions {
   /** Exact execution root; defaults to canonicalRepoRoot for primary-root compatibility. */
   readonly worktreeRoot?: string;
   readonly runtime: RuntimeName;
+  /** From the selected profile, not a request flag. Confers no checkout custody. */
+  readonly plainInteractive?: boolean;
   readonly background?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
@@ -506,6 +508,32 @@ function repositoryPhysicalGitCommonDir(worktreeRoot: string): string {
 
 export function assertRepositoryGitIdentity(worktreeRoot: string, expectedGitDir: string, expectedGitCommonDir: string): void {
   assertExpectedGitIdentity(assertCanonicalRoot(worktreeRoot), expectedGitDir, expectedGitCommonDir);
+}
+
+function assertOrdinaryCheckoutVacant(worktreeRoot: string): void {
+  const gitDir = repositoryPhysicalGitDir(worktreeRoot);
+  if ([REPOSITORY_CHILD_SETTLEMENT_FILE, REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE,
+    REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE].some(file => reviewReservationPresent(join(gitDir, file)))) {
+    throw new Error("Session not started: the checkout has retained execution custody.\n\n" + formatBoundedFiveFieldDiagnostic({
+      condition: "Ordinary startup is blocked on this checkout.", source: "Checkout custody evidence.",
+      reason: "Another operation owns the checkout or has unresolved ownership evidence; an ordinary session cannot take it over.",
+      correction: "Ask the checkout owner to inspect the retained evidence. Impact: none. Actor: operator or agent. New approval: not required to ask. Prerequisite: preserve the checkout and custody records.",
+      resumeAction: "Retry only once the checkout owner confirms custody is clear; startup checks it again.",
+    }));
+  }
+}
+
+/** Serialize the synchronous launch/admission boundary with existing custody
+ * owners. This allocates no custody and promises no exclusive session lifetime;
+ * an asynchronous adapter must recheck again at its actual runtime gate. */
+export function withOrdinaryRepositoryStartup<T>(plan: Pick<ExecutionPlan, "repoRoot" | "worktreeRoot" | "repositoryGitDir" | "repositoryGitCommonDir">, start: () => T): T {
+  const location = repositoryLeaseLocation(plan.repoRoot, plan.worktreeRoot, "orchestrator");
+  return withMutationMutex(location.mutexPath, () => {
+    assertExpectedGitIdentity(location.worktree, plan.repositoryGitDir, plan.repositoryGitCommonDir);
+    assertExpectedGitIdentity(location.root, undefined, plan.repositoryGitCommonDir);
+    assertOrdinaryCheckoutVacant(location.worktree);
+    return start();
+  });
 }
 
 function assertExpectedGitIdentity(worktree: string, expectedGitDir?: string, expectedGitCommonDir?: string): void {
@@ -990,8 +1018,12 @@ export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdm
   assertSupportedRuntime(options.runtime);
   const canonicalRepoRoot = assertCanonicalRoot(options.canonicalRepoRoot);
   const worktreeRoot = assertCanonicalRoot(options.worktreeRoot ?? canonicalRepoRoot);
-  const access = classifyRepositoryAccess(options.team, options.mode);
   const launchMode: RepositoryAdmissionLaunchMode = options.dryRun ? "dry-run" : options.background ? "background" : "foreground";
+  if (options.plainInteractive) {
+    if (launchMode !== "dry-run") assertOrdinaryCheckoutVacant(worktreeRoot);
+    return Object.freeze({ access: "non-locking", launchMode, ownershipIntent: "none", force: Boolean(options.force) });
+  }
+  const access = classifyRepositoryAccess(options.team, options.mode);
   if (access !== "exclusive-builder") {
     return Object.freeze({ access, launchMode, ownershipIntent: "none", force: Boolean(options.force) });
   }

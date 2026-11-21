@@ -1,4 +1,4 @@
-import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
+import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, isPlainInteractiveMode, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile, assertNoSensitiveMatch } from "../../sensitive-patterns.js";
@@ -263,10 +263,12 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
 
   // Validate selected configuration before adapter preflight, Git or ticket initialization.
   // Keep the request (and binaryName) intact: a missing selection is not a default rewrite.
+  let plainInteractive: boolean;
   try {
     const team = loadTeamConfig(resolved.request.team);
-    resolveDeployMode(team, resolved.request.mode);
-    assertDeployResumeMode(team, resolved.request.resume);
+    const mode = resolveDeployMode(team, resolved.request.mode);
+    plainInteractive = !resolved.request.ticketWorktree && isPlainInteractiveMode(mode);
+    assertDeployResumeMode(team, resolved.request.resume, plainInteractive ? mode : undefined);
   }
   catch (error) {
     if (!(error instanceof DeployModeSelectionError)) throw error;
@@ -280,7 +282,7 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   if (preflight) { io.stderr(preflight.reason); return 1; }
 
   const originalCwd = process.cwd();
-  const parentedSelector = isParentedPpaImplementSelector(binaryName, resolved.request);
+  const parentedSelector = !plainInteractive && isParentedPpaImplementSelector(binaryName, resolved.request);
   let repository: ReturnType<typeof resolveRepoExecutionPath>;
   let canonicalRepoRoot: string;
   try {

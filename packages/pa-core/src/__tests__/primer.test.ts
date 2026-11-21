@@ -451,15 +451,20 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   });
 
   assert.match(primer, /Runtime: opencode/);
-  assert.match(primer, /Use `opa` for PA platform workflow commands/);
+  assert.match(primer, /Use `opa` for PA platform deployment and workflow commands/);
   assert.match(primer, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(primer, /`opa` is the default deployment adapter/);
   assert.match(primer, /## Active Bulletins/);
   assert.match(primer, /## Deployment Instructions/);
   assert.match(primer, /## Available Procedures/);
-  assert.match(primer, /- pa-cli:.*Path: `.*skills\/global\/pa-cli\/SKILL\.md`/);
-  if (mode === "implement") assert.match(primer, /- google-workspace:.*Path: `.*skills\/global\/google-workspace\/SKILL\.md`/);
-  else assert.match(primer, /- pa-session-log:.*Path: `.*skills\/global\/pa-session-log\/SKILL\.md`/);
+  for (const skill of builder.deploy_modes?.find(entry => entry.id === mode)?.skills ?? []) {
+    assert.ok(primer.includes(`- ${skill.name}:`), `selected skill ${skill.name} must be projected`);
+    assert.ok(primer.includes(configPath("skills", "global", skill.name, "SKILL.md")));
+  }
+  if (builder.deploy_modes?.find(entry => entry.id === mode)?.mode_type === "interactive") {
+    assert.match(primer, /Follow the selected team instructions for task policy/);
+    assert.doesNotMatch(primer, /status transitions belong to the parent flow/);
+  }
   assert.doesNotMatch(primer, /## Reference Skills/);
   assert.doesNotMatch(primer, /missing skill/);
   assertNoBannedOpencodeOperationalReferences(primer);
