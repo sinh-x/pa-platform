@@ -127,6 +127,27 @@ test("acceptance expectations come verbatim from signed requirements, not report
   const row = "| AC-03 | Expected exact behavior | Automated check |";
   assert.deepEqual(extractAcceptanceRows(`## 10. Acceptance criteria\n${row}\n`), [{ id: "AC-03", expectation: row }]);
 });
+test("acceptance extraction preserves nested obligations and ignores fenced, quoted and nested example identities", () => {
+  const markdown = [
+    "# Acceptance", "- AC-01: Export approved records.", "  - Never include deleted records.",
+    "", "  | Flag | Required behavior |", "  | --- | --- |", "  | Deleted | Excluded |", "",
+    "  ```text", "  AC-99: This is an example inside the criterion.", "  ```", "- AC-02: Complete the export.",
+    "", "# Examples", "```markdown", "- AC-03: Fenced example, not a criterion.", "```",
+    "> AC-04: Quoted example.", "", "- Example:", "  - AC-05: Nested example.", "",
+  ].join("\n");
+  const rows = extractAcceptanceRows(markdown);
+  assert.deepEqual(rows.map(row => row.id), ["AC-01", "AC-02"]);
+  assert.equal(rows[0]?.expectation, [
+    "Export approved records.", "  - Never include deleted records.", "", "  | Flag | Required behavior |",
+    "  | --- | --- |", "  | Deleted | Excluded |", "", "  ```text", "  AC-99: This is an example inside the criterion.", "  ```",
+  ].join("\n"));
+  assert.equal(rows[1]?.expectation, "Complete the export.");
+  assert.deepEqual(extractAcceptanceRows("AC-06: Main obligation.\n\nMore required detail.\n\n- A nested condition.\n\nAC-07: Next obligation.\n"), [
+    { id: "AC-06", expectation: "Main obligation.\n\nMore required detail.\n\n- A nested condition." },
+    { id: "AC-07", expectation: "Next obligation." },
+  ]);
+  assert.deepEqual(extractAcceptanceRows("| AC | Expected behavior |\n| --- | --- |\n| AC-08 | Full **required** behavior |\n"), [{ id: "AC-08", expectation: "| AC-08 | Full **required** behavior |" }]);
+});
 test("exact attachment uses existing mutex/ref/audit owner, no primary/status change or conflicting path overwrite", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap327-p5-"));
   try {

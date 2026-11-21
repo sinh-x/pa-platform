@@ -1,3 +1,4 @@
+import { lexer, type Tokens } from "marked";
 import { workflowObject, workflowSha, workflowText, workflowTimestamp } from "../deploy/prepared-workflow.js";
 import { renderReadingMarkdown } from "../artifacts/render.js";
 import { ArtifactPolicyError } from "../artifacts/policy.js";
@@ -138,26 +139,50 @@ export function parseComparisonLocator(value: string): { deploymentId: string; d
   const m = /^\/(?:[^/\u0000-\u001f]+\/)*planned-actual-(d-[a-f0-9]{6})-([a-f0-9]{64})\.json$/.exec(value);
   if (!m) throw new Error("Invalid comparison locator"); return { deploymentId: m[1]!, digest: m[2]! };
 }
-/** Verbatim AC bullets/paragraphs from the verified requirements member. No status is inferred. */
+/** Preserve complete Markdown blocks, not a regex-selected prefix of an AC.
+ * Only top-level criteria count; fenced/quoted/nested examples cannot mint rows. */
 export function extractAcceptanceRows(markdown: string): readonly AcceptanceRow[] {
   const rows: AcceptanceRow[] = [];
-  const lines = markdown.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!;
-    const match = /^\s*(?:[-*]\s+)?(AC-\d{1,4}):\s+(.+?)\s*$/.exec(line);
-    const table = /^\|\s*(AC-\d{1,4})\s*\|.+\|\s*$/.exec(line);
-    if (match) {
-      const content = [match[2]!];
-      while (index + 1 < lines.length) {
-        const next = lines[index + 1]!;
-        if (/^\s*(?:#|\||[-*]\s+|AC-\d+:)/.test(next)) break;
-        if (!next.trim() && !/^\s+\S/.test(lines[index + 2] ?? "")) break;
-        content.push(next); index++;
+  let paragraph: AcceptanceRow | undefined;
+  const add = (id: string, expectation: string) => {
+    const row = { id: ac(id), expectation }; rows.push(row); return row;
+  };
+  for (const token of lexer(markdown)) {
+    if (token.type === "heading") { paragraph = undefined; continue; }
+    if (token.type === "list") {
+      const criteria = (token as Tokens.List).items.map(item => /^ {0,3}(?:[-+*]|\d+[.)])[ \t]+(AC-\d{1,4}):[ \t]+([^\n]+)([\s\S]*)$/.exec(item.raw));
+      if (criteria.some(Boolean)) {
+        paragraph = undefined;
+        if (criteria.some(match => !match)) throw new Error("Mixed acceptance list requires explicit criterion boundaries");
+        for (const match of criteria) if (match) add(match[1]!, match[2]! + match[3]!);
+        continue;
       }
-      const expectation = content.join("\n").replace(/\n+$/, "");
-      text(expectation.replaceAll("\n", " "));
-      rows.push({ id: ac(match[1]), expectation });
-    } else if (table) rows.push({ id: ac(table[1]), expectation: text(line) });
+    }
+    // Complete raw table rows remain the expectation, including all columns.
+    if (token.type === "table" || token.type === "paragraph") {
+      const lines = token.raw.split("\n");
+      const table = lines.map(line => /^\|[ \t]*(AC-\d{1,4})[ \t]*\|.+\|[ \t]*$/.exec(line));
+      if (table.some(Boolean)) {
+        paragraph = undefined;
+        for (const [index, match] of table.entries()) if (match) add(match[1]!, lines[index]!);
+        continue;
+      }
+      if (token.type === "paragraph" && /^ {0,3}AC-\d{1,4}:[ \t]+/.test(token.raw)) {
+        for (const line of lines) {
+          const match = /^ {0,3}(AC-\d{1,4}):[ \t]+(.+)$/.exec(line);
+          if (match) paragraph = add(match[1]!, match[2]!);
+          else if (paragraph) paragraph.expectation += `\n${line}`;
+        }
+        continue;
+      }
+    }
+    // A paragraph criterion owns subsequent blocks until an explicit heading or
+    // next criterion. Keep nested list/table/code text; never recursively parse it.
+    if (paragraph) paragraph.expectation += token.raw;
+  }
+  for (const row of rows) {
+    row.expectation = row.expectation.replace(/\n+$/, "");
+    text(row.expectation.replace(/[\n\r\t]/g, " "));
   }
   if (rows.length > 128 || new Set(rows.map(r => r.id)).size !== rows.length) throw new Error("Conflicting acceptance criteria"); return rows;
 }
