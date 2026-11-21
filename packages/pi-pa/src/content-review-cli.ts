@@ -77,8 +77,14 @@ export async function runGuidedContentReview(args: string[], io: LocalReviewCliI
         : `Review status: ${safe(String(view.approval))}. ${view.actionable === true ? "Use ppa document review REFERENCE to decide." : "No actionable signing is available from this view; saved decisions remain in history."}`);
       return 0;
     }
+    // Each stream write is asynchronous. Another client may settle while full
+    // content is still draining, so never open input from that earlier view.
+    const afterOutput = await call("request", { reference });
+    if (typeof afterOutput.outcome === "string") { await io.stdout(contentReviewOutcomeMessage(afterOutput)); return 0; }
     if (view.actionable !== true) throw new LocalReviewTransportError("unavailable");
     await io.stdout("Choose: [a] Approve exact content / [c] Request changes / [r] Reject / [Enter] Cancel (default).\nOnly deliberate Cancel records cancellation. Disconnect/Ctrl-C detaches and leaves pending.");
+    const beforeInput = await call("request", { reference });
+    if (typeof beforeInput.outcome === "string") { await io.stdout(contentReviewOutcomeMessage(beforeInput)); return 0; }
     let polling = false;
     const external = new Promise<Record<string, unknown>>((resolve, reject) => {
       timer = setInterval(() => {

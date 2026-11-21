@@ -74,6 +74,22 @@ for (const boundary of ["saved-view", "stale-view", "failed-view"] as const) tes
   assert.match(f.stdout.join("\n"), /Approved/); assert.doesNotMatch(f.stdout.join("\n"), /Choose:/);
 });
 
+for (const boundary of ["member", "delivery", "choices"] as const) test(`guided external issuance during awaited ${boundary} output never opens stale input`, async () => {
+  const f = fixture(); let prompts = 0;
+  const io = { ...f.io, stdout: async (value: string) => {
+    f.io.stdout(value);
+    const reached = boundary === "member" ? value.includes("--- requirements ---")
+      : boundary === "delivery" ? value.startsWith("\nFull reader,") : value.startsWith("Choose:");
+    if (reached) await new Promise<void>(resolve => {
+      queueMicrotask(() => { f.external("approved"); resolve(); });
+    });
+  } };
+  assert.equal(await runDocumentCommand(["review", reference], io, { contentHandler: f.handler, prompt: async () => { prompts++; return "r"; } }), 0);
+  assert.equal(prompts, 0); assert.equal(f.actions.includes("decide"), false);
+  assert.deepEqual(f.stderr, []); assert.match(f.stdout.join("\n"), /Approved · Not published/);
+  if (boundary !== "choices") assert.doesNotMatch(f.stdout.join("\n"), /Choose:/);
+});
+
 for (const publication of ["recorded-complete", "recorded-partial"] as const) test(`guided replay and show describe ${publication} without claiming fresh verification`, async () => {
   const f = fixture(); f.external("approved");
   const handler: LocalReviewHandler = async raw => ({ ...await f.handler(raw), publication });
