@@ -32,11 +32,11 @@ test("full reader contains every ordered semantic member and described image, wi
     assert.equal(bundle.manifest.schemaVersion, DOCUMENT_READER_VERSION);
     assert.equal(bundle.manifest.members.length, f.subject.members.length);
     for (const tag of ["<strong>", "<em>", "<ul>", "<table>", "<pre>", "<code>", "<main", "<aside", "<details"]) assert.ok(html.includes(tag), tag);
-    assert.equal((html.match(/LAST-MEMBER-SENTINEL/g) ?? []).length, 6, "complete brief appears in both the executive entry and manifest-order view");
+    assert.equal((html.match(/LAST-MEMBER-SENTINEL/g) ?? []).length, 5, "every full text member appears once in manifest order");
     assert.match(html, /<img src="raw\/member-6.png" alt="A one-pixel described test diagram">/);
     let position = -1;
     for (const [i, member] of bundle.manifest.members.entries()) {
-      const next = html.indexOf(`<article class="member" id="member-${i + 1}"`); assert.ok(next > position); position = next;
+      const next = html.indexOf(`<article class="member-body" id="member-${i + 1}"`); assert.ok(next > position); position = next;
       assert.deepEqual(bundle.files.get(member.raw), f.snapshot(member.sha256));
       const fallback = bundle.files.get(member.companion)!.toString();
       assert.match(fallback, /Full package reader/); assert.match(fallback, /UNAPPROVED-at-generation/);

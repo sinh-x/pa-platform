@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { openArtifactDirectory, readArtifactFileAt } from "./manifest.js";
 import { ARTIFACT_READING_RENDERER_VERSION, renderReadingMarkdown } from "./render.js";
 import { parseSourceVersion, workflowDigest, workflowError, workflowObject, workflowPath, workflowSha, workflowSynchronous, workflowText, workflowTimestamp, WORKFLOW_OUTPUT_LIMITS, type SourceVersion } from "../deploy/prepared-workflow.js";
@@ -247,6 +247,21 @@ export class PhaseReportService {
         publishAbsent(fd, "report.json", manifest, 65_536);
       });
       this.#verify(receipt); assertNative(() => this.host.index(receipt)); return receipt;
+    } catch { throw workflowError(); }
+  }
+  /** Immutable locator companion only. Canonical comparison metadata remains in
+   * the existing protected native report owner; this creates no report or authority. */
+  publishPlannedActualLocator(input: PhaseReportReceipt, sourceInput: SourceVersion): string {
+    try {
+      const receipt = parseReceipt(input), source = parseSourceVersion(sourceInput);
+      if (source.ref !== `native-execution-evidence:${source.sha256}` || source.version !== "native-execution-evidence/v1") throw workflowError();
+      assertNative(() => this.host.authorize("publish", receipt.identity)); this.#verify(receipt);
+      assertNative(() => this.host.verifyCanonical(receipt));
+      const name = `planned-actual-${receipt.identity.deploymentId}-${source.sha256}.json`;
+      const bytes = Buffer.from(`${JSON.stringify({ schemaVersion: "pa-planned-actual-locator/v1", deploymentId: receipt.identity.deploymentId, evidence: source, reportId: receipt.reportId })}\n`);
+      assertNative(() => this.host.assertPublic(bytes));
+      this.#directory(receipt.identity, false, fd => publishAbsent(fd, name, bytes, 65_536));
+      return join(dirname(this.#source(receipt.identity)), name);
     } catch { throw workflowError(); }
   }
   #links(): readonly string[] { return this.host.resolvePublicDiff ? ["report.md", "diff.patch"] : ["report.md"]; }

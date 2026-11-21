@@ -129,7 +129,12 @@ export function parseReadonlyDocumentPolicy(value: unknown): ModeCapabilityPolic
   return policy;
 }
 /** Captured committed content only. The native launch owner separately rechecks freshness. */
-export interface ModeResourceSnapshot { readonly binding: ResourceModeCapabilityBinding; read(path: string): string }
+export interface ModeResourceSnapshot {
+  readonly binding: ResourceModeCapabilityBinding;
+  /** Fresh native composition only; retained snapshots never opt in by inventory alone. */
+  readonly leanPrimer?: true;
+  read(path: string): string;
+}
 export function modeResourcePath(value: unknown): string {
   if (typeof value !== "string" || value.length > 1024 || !/^[A-Za-z0-9_./-]+$/.test(value) || value.split("/").length > 16 || value.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw new ModeCapabilityError("CAPABILITY_BINDING");
   return value;

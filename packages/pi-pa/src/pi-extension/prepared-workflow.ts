@@ -749,6 +749,8 @@ export interface PiPhaseReportBinding {
   resolveReport(source: SourceVersion): PhaseReport;
   resolveReceipt(source: SourceVersion): PhaseReportReceipt;
   capture?(toolCallId: string, draft: NativeReportDraft): SourceVersion;
+  attachActual?(receipt: PhaseReportReceipt, reference: string, observations: unknown, actualOnly: unknown): Promise<string>;
+  observeActual?(locator: string, context: unknown, signal?: AbortSignal): Promise<string | null>;
   recordReceipt?(receipt: PhaseReportReceipt): SourceVersion;
   readingLocations?(receipt: PhaseReportReceipt): Readonly<Record<string, string>>;
   observeDelivery?(receipt: PhaseReportReceipt, application: "browser" | "obsidian", context: unknown, signal?: AbortSignal): Promise<SourceVersion | null>;
@@ -760,6 +762,8 @@ export interface PiPhaseReportOptions {
   readonly nativeAdapter?: PiNativePhaseReportAdapter;
 }
 export const PiPhaseReportParams = Type.Union([
+  Type.Object({ action: Type.Literal("attach-actual"), report: EvidenceParams, reference: Type.String(), observations: Type.Array(Type.Object({ ac: Type.String(), observation: Type.String(), disposition: Type.Union([Type.Literal("matches"), Type.Literal("deviates"), Type.Literal("unmet"), Type.Literal("unverified")]), difference: Type.String(), impact: Type.String(), owner: Type.String() }, { additionalProperties: false }), { maxItems: 128 }), actualOnly: Type.Array(Type.String(), { maxItems: 128 }) }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("observe-actual"), locator: Type.String() }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("capture"), phaseId: Type.String(), summary: Type.String({ maxLength: 4096 }), nextAction: Type.String({ maxLength: 4096 }), learning: Type.String({ maxLength: 4096 }) }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("observe-delivery"), report: EvidenceParams, application: Type.Union([Type.Literal("browser"), Type.Literal("obsidian")]) }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("publish"), source: EvidenceParams }, { additionalProperties: false }),
@@ -772,12 +776,12 @@ export function createPiPhaseReportModule(options: PiPhaseReportOptions = {}): P
     if (env.PA_TEAM !== "rogue-one" && !(env.PA_TEAM === "builder" && ["implement", "orchestrator"].includes(env.PA_MODE ?? ""))) return;
     const native = options.resolveBinding ? null : options.nativeAdapter ?? new PiNativePhaseReportAdapter();
     const resolve = options.resolveBinding ?? ((context: unknown) => native!.resolve(context));
-    pi.registerTool?.({ name: "pa_phase_report", label: "PA Phase Report", description: "Capture native phase facts plus labelled agent narrative, then publish the returned source; status/settle use the returned report reference. Foreground observe-delivery asks the operator about the exact reading view. Caller paths, checks, outcomes and passed flags are not authority. Partial/historical reports cannot substitute for current checks; HTML generation is not browser/Obsidian observation or human UAT.", parameters: PiPhaseReportParams, executionMode: "sequential",
+    pi.registerTool?.({ name: "pa_phase_report", label: "PA Phase Report", description: "Capture native phase facts plus labelled agent narrative, then publish the returned source; status/settle use the returned report reference. Foreground observe-delivery asks the operator about the exact reading view. attach-actual links an exact reviewed reference to this native report on the same ticket; AC dispositions and actualOnly remain labelled agent narrative, not acceptance. observe-actual asks the foreground operator about human UAT and appends an exact observation. Caller paths, checks, outcomes and passed flags are not authority. Partial/historical reports cannot substitute for current checks; HTML generation is not browser/Obsidian observation or human UAT.", parameters: PiPhaseReportParams, executionMode: "sequential",
       execute: async (id, input, signal, _update, context) => {
         const run = async () => {
           if (signal?.aborted) throw workflowError();
           const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
-          const keys = action === "capture" ? ["action", "phaseId", "summary", "nextAction", "learning"] : action === "observe-delivery" ? ["action", "report", "application"] : action === "publish" ? ["action", "source"] : action === "settle" ? ["action", "report", "deliveries"] : action === "status" ? ["action", ...(Object.hasOwn(input, "report") ? ["report"] : [])] : [];
+          const keys = action === "attach-actual" ? ["action", "report", "reference", "observations", "actualOnly"] : action === "observe-actual" ? ["action", "locator"] : action === "capture" ? ["action", "phaseId", "summary", "nextAction", "learning"] : action === "observe-delivery" ? ["action", "report", "application"] : action === "publish" ? ["action", "source"] : action === "settle" ? ["action", "report", "deliveries"] : action === "status" ? ["action", ...(Object.hasOwn(input, "report") ? ["report"] : [])] : [];
           const row = workflowObject(input, keys); if (!keys.length) throw workflowError();
           const binding = nativeExecutionCall(() => resolve(context));
           if (binding === null) {
@@ -796,7 +800,17 @@ export function createPiPhaseReportModule(options: PiPhaseReportOptions = {}): P
             return executionResult({ ...binding.service.settle(receipt), ...(binding.readingLocations ? { readingLocations: binding.readingLocations(receipt) } : {}), ...(binding.recordReceipt ? { report: nativeExecutionCall(() => binding.recordReceipt!(receipt)) } : {}) });
           }
           if (action === "status" && row.report === undefined) return executionResult({ schemaVersion: "phase-report-tool-status/v1", artifactAuthorityAvailable: true });
+          if (action === "observe-actual") {
+            if (!binding.observeActual) throw workflowError();
+            const locator = await binding.observeActual(workflowText(row.locator), context, signal);
+            return executionResult({ schemaVersion: "planned-actual-attachment/v1", state: locator ? "attached" : "not-observed", locator, humanIdentity: "local-unverified" });
+          }
           const receipt = nativeExecutionCall(() => binding.resolveReceipt(parseEvidence(row.report)));
+          if (action === "attach-actual") {
+            if (!binding.attachActual) throw workflowError();
+            const locator = await binding.attachActual(receipt, workflowText(row.reference), row.observations, row.actualOnly);
+            return executionResult({ schemaVersion: "planned-actual-attachment/v1", state: "attached", locator, acceptanceClaimed: false });
+          }
           if (action === "observe-delivery") {
             if (!binding.observeDelivery || (row.application !== "browser" && row.application !== "obsidian")) throw workflowError();
             const observed = await binding.observeDelivery(receipt, row.application, context, signal);

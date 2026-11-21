@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
+import { composeRuntimeHooks, createAgentApiApp, parseModeCapabilityBinding, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { detectPiRedactionMatches, PiRedactionAudit, StreamingPiRedactionAuditor, type PiRedactionAuditRecord } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
@@ -451,6 +451,21 @@ test("managed foreground and background Pi invocations disable skill discovery b
     assert.equal(args.filter((arg) => arg === "--extension").length, 1);
     assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
     assert.equal(args.filter((arg) => /(?:^|\/)\.pi\/extensions(?:\/|$)/.test(arg)).length, 0);
+  }
+  for (const version of [2, 3]) {
+    const binding = parseModeCapabilityBinding({ schemaVersion: `pa-mode-capability-binding/v${version}`, configRoot: dir, configRevision: "a".repeat(40), resourcePath: "teams/analyst.yaml", resourceSha256: "b".repeat(64),
+      profile: version === 2 ? "pa-document-policy/v1" : "pa-readonly-document/v1", policy: { version: "pa-mode-capabilities/v1", allow: [] }, repoKey: "example",
+      identity: { publicTeam: "analyst", publicMode: "analyze", effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" }, resources: [{ path: "teams/analyst.yaml", sha256: "b".repeat(64) }] });
+    for (const mode of ["foreground", "background"] as const) {
+      const opts = { primerPath: primer, deployId: `d-resource-${version}-${mode}`, mode, executionPlan: { ...executionPlan, modeCapabilityBinding: binding } };
+      assert.equal((await adapter.spawn(opts)).exitCode, 0);
+      assert.equal((await adapter.resume({ ...opts, sessionId: `retained-${version}-${mode}` })).exitCode, 0);
+      for (const args of invocations.slice(-2)) {
+        assert.equal(args.includes("--skill"), false, `V${version} must not reopen captured optional skills`);
+        assert.equal(args.includes("--no-skills"), true);
+        assert.equal(args.includes("--no-extensions"), false);
+      }
+    }
   }
 });
 

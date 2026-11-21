@@ -10,11 +10,20 @@ export const LOCAL_REVIEW_MAX_RESPONSE = 32 * 1024 * 1024;
 export const LOCAL_REVIEW_IO_MS = 5_000;
 export const LOCAL_REVIEW_OVERALL_MS = 30_000;
 
-export const LOCAL_REVIEW_USAGE = `Usage: ppa document review --request-stdin
+export const LOCAL_REVIEW_USAGE = `Usage: ppa document review list TICKET
+       ppa document review REFERENCE
+       ppa document review show REFERENCE
+       ppa document review --request-stdin
        ppa document review serve --port N
        ppa document review --help
 
-Send one ${LOCAL_REVIEW_VERSION} JSON request on stdin, or explicitly start the
+Copy an exact sign-only reference from list TICKET; no ticket selects a revision.
+REFERENCE opens guided full-content review with default Cancel. Disconnect leaves
+pending; saved decisions are reused. Signing stops at Approved · Not published;
+no branch plan, JSON, hashes, revisions or keys are entered by the reviewer.
+Local confirmation provides no authenticated human identity.
+
+Legacy: send one ${LOCAL_REVIEW_VERSION} JSON request on stdin, or explicitly start the
 127.0.0.1-only HTTP server (port 1–65535). POST /v1/review uses the same request;
 GET /v1/health reports version and trust without opening stores.
 Actions: show, request, decide, revoke. Decisions are local-unverified, not
@@ -97,11 +106,14 @@ export function localReviewFailure(error: unknown): { ok: false; code: string; m
 }
 
 /** Lazy loading keeps help, health and rejected HTTP requests away from stores. */
-export const executeCoreLocalReview: LocalReviewHandler = async raw => {
+export const executeCoreLocalReview: LocalReviewHandler = raw => executeCoreReview(raw, false);
+export const executeCoreContentReview: LocalReviewHandler = raw => executeCoreReview(raw, true);
+async function executeCoreReview(raw: string, content: boolean): Promise<Record<string, unknown>> {
   const core = await import("@pa-platform/pa-core");
-  if (!("executeLocalReview" in core) || typeof core.executeLocalReview !== "function") throw new LocalReviewTransportError("unavailable");
+  const execute = content ? core.executeContentReview : core.executeLocalReview;
+  if (typeof execute !== "function") throw new LocalReviewTransportError("unavailable");
   let result: unknown;
-  try { result = await core.executeLocalReview(raw); }
+  try { result = await execute(raw); }
   catch (error) {
     // Native-error detection does not traverse proxies. Exact prototype identity
     // and an own data property trust only the actual imported error type, never
@@ -119,7 +131,7 @@ export const executeCoreLocalReview: LocalReviewHandler = async raw => {
   if (typeof result !== "object" || result === null || Array.isArray(result)) throw new LocalReviewTransportError("internal");
   // Object.entries creates a typed record without assuming the core's result schema.
   return Object.fromEntries(Object.entries(result));
-};
+}
 
 export function serializeLocalReview(result: Record<string, unknown>): string {
   const text = JSON.stringify(result);
@@ -191,8 +203,12 @@ export interface LocalReviewCliIO {
 
 export async function runLocalReviewCommand(
   args: string[], io: LocalReviewCliIO,
-  options: { stdin?: Readable; handler?: LocalReviewHandler } = {},
+  options: { stdin?: Readable; handler?: LocalReviewHandler; contentHandler?: LocalReviewHandler; prompt?: (signal: AbortSignal) => Promise<string | undefined> } = {},
 ): Promise<number> {
+  if (args[0]?.startsWith("review:") || args.length === 2 && (args[0] === "list" || args[0] === "show")) {
+    const { runGuidedContentReview } = await import("./content-review-cli.js");
+    return runGuidedContentReview(args, io, options);
+  }
   let outputStarted = false, outputFailed = false;
   let expiresAt = Infinity;
   const output = async (text: string) => {

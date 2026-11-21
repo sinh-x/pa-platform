@@ -4,16 +4,30 @@ import { basename, dirname, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderPackageMarkdown } from "../artifacts/render.js";
 import { escapeArtifactText } from "../artifacts/policy.js";
-import { digest } from "../workflows/contracts.js";
-import { documentPackageSha, documentReject, parseDocumentPackage, type DocumentPackage } from "./package-contract.js";
+import { digest, object, oneOf, SHA256, text } from "../workflows/contracts.js";
+import { documentGuard, documentPackageSha, documentReject, parseDocumentPackage, type DocumentPackage } from "./package-contract.js";
 import { documentText, validateDocumentBytes } from "./package-tools.js";
 
 /** Deterministic delivery derivation; no filesystem publication, browser launch,
  * decision or capability registration. Changed implementation bytes select a new
  * immutable delivery identity, never a migration of historical output. */
-export const DOCUMENT_READER_VERSION = "pa-document-reader/v1";
+export const DOCUMENT_READER_VERSION = "pa-document-reader/v2";
 export const DOCUMENT_READER_LIMITS = Object.freeze({ outputBytes: 64 * 1024 * 1024, milliseconds: 30_000 });
 const STYLE = `:root{color-scheme:light;font:17px/1.6 system-ui,sans-serif;color:#172b3a;background:#f3f6fa}*{box-sizing:border-box}body{margin:0;overflow-wrap:anywhere}a{color:#17646c;text-underline-offset:.2em}a:visited{color:#654685}a:focus-visible,summary:focus-visible,.local-overflow:focus-visible{outline:3px solid #bd5b00;outline-offset:3px}:target{scroll-margin-top:1rem;outline:2px solid #287f87}.skip{position:absolute;left:-10000px}.skip:focus{left:1rem;top:1rem;background:white;padding:1rem;z-index:2}aside{position:fixed;width:272px;inset:0 auto 0 0;overflow:auto;padding:1rem;background:#123149;color:white}aside a{color:#b7f1f4}aside a:visited{color:#e2cfff}nav ul{list-style:none;padding-left:1rem}nav>ul{padding-left:0}nav li{margin:.35rem 0}header,main,footer{margin-left:272px;padding:1.5rem;max-width:1200px}header h1{line-height:1.2}.member,.technical{background:white;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;min-width:0}.status{font-weight:700;border-left:5px solid #287f87;padding-left:1rem}.metadata{font-size:.88rem}.member-nav{display:flex;gap:1rem;flex-wrap:wrap}.local-overflow{width:100%;max-width:100%;min-width:0;overflow:auto;margin:1rem 0}pre{white-space:pre;tab-size:2;margin:0;padding:1rem;background:#f3f6fa}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;min-width:100%}th,td{border:1px solid #b9c8d2;padding:.5rem;text-align:left;vertical-align:top}img{max-width:100%;height:auto}figure{margin:1rem 0}blockquote{border-left:3px solid #287f87;padding-left:1rem;margin-left:0}.mobile-contents{display:none}@media(max-width:900px){aside{display:none}header,main,footer{margin-left:0;padding:1rem}.member,.technical{padding:1rem}.mobile-contents{display:block;background:white;border-radius:8px;padding:1rem}summary{cursor:pointer;font-weight:700}}@media print{aside,.mobile-contents,.skip,.member-nav{display:none}header,main,footer{margin:0;max-width:none;padding:0}.member,.technical{border-radius:0;padding:0;break-inside:auto}.local-overflow{overflow:visible}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{table-layout:fixed;width:100%}a{color:inherit}body{background:white}}`;
+// Keep STYLE and the v1 branch byte-compatible. A historical implementation
+// digest is an identity input, NOT permission to load code or trust stored HTML.
+// Native <details> ancestor reveal handles fragments without a script. Chromium's
+// closed details-content uses content-visibility; display alone cannot print it.
+const PLANNED_STYLE = `.member-disclosure>summary{cursor:pointer;font-weight:700}.member-disclosure>summary h2{display:inline;font-size:1.2rem;line-height:1.4}.member-disclosure[open]>summary{margin-bottom:1rem}.member-body{min-width:0}.member-body>:last-child{margin-bottom:0}summary:focus-visible{outline:3px solid #bd5b00;outline-offset:3px}@media print{details::details-content{display:block;content-visibility:visible}details> :not(summary){display:block!important}.member-disclosure>summary{break-after:avoid}.member-disclosure>summary h2{display:inline}.member-disclosure{margin-bottom:1.5rem}}`;
+export interface DocumentReaderRenderer { id: string; implementationSha256: string }
+/** Only the retained, locally implemented v1 recipe can be selected. No module,
+ * URL or caller program is loaded, even if a manifest claims another identity. */
+export function parseHistoricalDocumentRenderer(value: unknown): DocumentReaderRenderer {
+  return documentGuard(() => {
+    const row = object(value, ["id", "implementationSha256"]);
+    return { id: oneOf(row.id, ["pa-document-reader/v1"]), implementationSha256: text(row.implementationSha256, SHA256) };
+  });
+}
 const extension = { "text/markdown": "md", "text/plain": "txt", "image/png": "png", "image/jpeg": "jpg" };
 
 /** Hash the actual renderer, shared token/escaping implementation and parser
@@ -37,9 +51,10 @@ export interface DocumentReaderBundle {
 /** Full in-memory derivation. Any failure returns no partial bundle. Native
  * production publication uses reader-worker-owner for an externally enforced
  * deadline; this pure synchronous seam cannot interrupt itself. */
-export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: string) => Uint8Array): DocumentReaderBundle {
+export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: string) => Uint8Array, historicalRenderer?: DocumentReaderRenderer): DocumentReaderBundle {
   const started = performance.now(), subject = parseDocumentPackage(input), subjectSha256 = documentPackageSha(subject);
-  const renderer = { id: DOCUMENT_READER_VERSION, implementationSha256: implementationSha256() };
+  const renderer = historicalRenderer === undefined ? { id: DOCUMENT_READER_VERSION, implementationSha256: implementationSha256() } : parseHistoricalDocumentRenderer(historicalRenderer);
+  const historical = renderer.id === "pa-document-reader/v1", style = historical ? STYLE : STYLE + PLANNED_STYLE;
   const members = subject.members.map((member, i) => ({ id: member.id, role: member.role, mediaType: member.mediaType, description: member.description, bytes: member.bytes,
     sha256: member.sha256, raw: `raw/member-${i + 1}.${extension[member.mediaType]}`, companion: `members/member-${i + 1}.html` }));
   // Read and verify ALL immutable bytes before deriving any advertised output.
@@ -54,8 +69,8 @@ export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: 
     files.set(path, bytes);
   };
   const e = escapeArtifactText;
-  const csp = `default-src 'none'; script-src 'none'; style-src 'sha256-${createHash("sha256").update(STYLE).digest("base64")}'; img-src 'self'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'`;
-  const shell = (title: string, body: string) => `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${e(csp)}"><meta name="referrer" content="no-referrer"><title>${e(title)}</title><style>${STYLE}</style></head><body>${body}</body></html>\n`;
+  const csp = `default-src 'none'; script-src 'none'; style-src 'sha256-${createHash("sha256").update(style).digest("base64")}'; img-src 'self'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'`;
+  const shell = (title: string, body: string) => `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${e(csp)}"><meta name="referrer" content="no-referrer"><title>${e(title)}</title><style>${style}</style></head><body>${body}</body></html>\n`;
   const articles: string[] = [], contents: string[] = [];
   let executive = "";
   const siblings = (i: number, standalone: boolean) => {
@@ -92,8 +107,8 @@ export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: 
     }
     const metadata = (standalone: boolean) => `<p class="metadata">Required ${e(member.role)} · ${e(member.mediaType)} · ${member.bytes} bytes<br>Source SHA-256: <code>${member.sha256}</code><br><a href="${standalone ? "../" : ""}${member.raw}">Exact raw source</a> · <a href="${standalone ? `../index.html#${id}` : member.companion}">${standalone ? "Full package reader" : "Full member page"}</a></p>`;
     const article = (content: string, standalone: boolean) => `<article class="member" id="${id}" aria-labelledby="${id}-title"><h2 id="${id}-title">${index + 1}. ${e(member.description)}</h2>${metadata(standalone)}${siblings(index, standalone)}${content}${siblings(index, standalone)}</article>`;
-    articles.push(article(body, false));
-    if (source.role === "brief") {
+    articles.push(historical ? article(body, false) : `<details class="member member-disclosure"${source.role === "brief" ? " open" : ""}><summary id="${id}-title"><h2>${index + 1}. ${e(member.description)}</h2></summary><article class="member-body" id="${id}" aria-labelledby="${id}-title">${metadata(false)}${siblings(index, false)}${body}${siblings(index, false)}</article></details>`);
+    if (historical && source.role === "brief") {
       // The executive entry is complete, not an excerpt. Keep the full view and
       // its manifest ordinals unchanged; only this duplicate's heading IDs differ.
       const summaryBody = body.replace(/id="(member-[0-9]+-section-[0-9]+)"/g, 'id="executive-$1"');
@@ -118,10 +133,10 @@ export function renderDocumentReader(input: DocumentPackage, snapshot: (sha256: 
         (_match, anchor: string, ordinal: string) => `href="${Number(ordinal) === index + 1 ? "" : `member-${ordinal}.html`}#${anchor}"`);
     save(member.companion, shell(member.description, `<a class="skip" href="#document">Skip to document</a><header><h1>${e(member.description)}</h1><p class="status">UNAPPROVED-at-generation. Opening is not approval.</p><a href="../index.html#${id}">Full package reader</a></header><main id="document">${article(standaloneBody, true)}</main>`));
   });
-  const toc = `<nav aria-label="Package contents"><ul><li><a href="#executive-summary">Executive summary</a></li><li><a href="#complete-view">Complete package view</a></li>${contents.join("")}</ul></nav>`;
+  const toc = `<nav aria-label="Package contents"><ul>${historical ? '<li><a href="#executive-summary">Executive summary</a></li>' : ""}<li><a href="#complete-view">Complete package view</a></li>${contents.join("")}</ul></nav>`;
   const technical = `<section class="technical" aria-labelledby="technical-title"><h2 id="technical-title">Technical identity</h2><p>Subject SHA-256: <code>${subjectSha256}</code><br>Delivery SHA-256: <code>${deliverySha256}</code><br>Renderer: ${renderer.id}<br>Renderer implementation SHA-256: <code>${renderer.implementationSha256}</code></p><p>Proposed effects (not authority): publication ${subject.effects.publish ? "yes" : "no"}, queue ${subject.effects.queue ? "yes" : "no"}. No branch or launch authority is issued by this reader.</p><h3>Informative references — outside required membership</h3><ul>${subject.references.map(ref => `<li>${e(ref.description)}: ${e(ref.locator)} (${e(ref.version)})</li>`).join("")}</ul><a href="manifest.json">Exact output manifest</a></section>`;
-  save("index.html", shell(`${subject.ticket} ${subject.packageId} r${subject.revision}`, `<a class="skip" href="#documents">Skip to documents</a><aside aria-label="Desktop contents">${toc}</aside><header id="contents"><h1>${e(subject.ticket)} — ${e(subject.packageId)} · revision ${subject.revision}</h1><p class="status">UNAPPROVED-at-generation. This immutable snapshot is not live approval, viewing evidence or product acceptance.</p><details class="mobile-contents"><summary>Contents</summary>${toc}</details></header><main id="documents">${executive}<div id="complete-view"><p class="status">Complete package view — every required member in manifest order. Use browser find or print to review all content offline.</p>${articles.join("\n")}</div>${technical}</main><footer>Complete offline reader. Browser find and print cover every required member. No scripts or remote resources.</footer>`));
-  const manifest: DocumentReaderBundle["manifest"] = { schemaVersion: DOCUMENT_READER_VERSION, deliverySha256, subjectSha256, revision: subject.revision, effects: subject.effects, renderer, members,
+  save("index.html", shell(`${subject.ticket} ${subject.packageId} r${subject.revision}`, `<a class="skip" href="#documents">Skip to documents</a><aside aria-label="Desktop contents">${toc}</aside><header id="contents"><h1>${e(subject.ticket)} — ${e(subject.packageId)} · revision ${subject.revision}</h1><p class="status">UNAPPROVED-at-generation. This immutable snapshot is not live approval, viewing evidence or product acceptance.</p><details class="mobile-contents"><summary>Contents</summary>${toc}</details></header><main id="documents">${executive}<div id="complete-view"><p class="status">Complete package view — every required member in manifest order. Use browser find or print to review all content offline.</p>${historical ? "" : '<p>Each member opens independently; the brief starts open. Contents links reveal closed targets. Print includes closed members. Full member pages and exact raw sources are also available.</p>'}${articles.join("\n")}</div>${technical}</main><footer>Complete offline reader. Browser find and print cover every required member. No scripts or remote resources.</footer>`));
+  const manifest: DocumentReaderBundle["manifest"] = { schemaVersion: renderer.id, deliverySha256, subjectSha256, revision: subject.revision, effects: subject.effects, renderer, members,
     outputs: [...files].map(([path, bytes]) => ({ path, sha256: digest(bytes), bytes: bytes.length })), generationState: "UNAPPROVED-at-generation", observation: "not-performed" };
   const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + "\n");
   save("manifest.json", manifestBytes);

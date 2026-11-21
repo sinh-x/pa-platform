@@ -5,8 +5,11 @@ import {
   assertNoSensitiveMatch, captureRepositoryGitSnapshot, findSensitiveMatch, indexPhaseReport, indexPhaseReportDelivery, parsePhaseReport, parseSourceVersion,
   phaseReportDeliverySources, phaseReportIdentity, PhaseReportService, queryReadonlyHelperRegistry, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, readProcessFingerprint, readReviewEvidenceFile,
   resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest, workflowError, workflowObject, workflowText, workflowTimestamp,
+  contentReviewLocalHost, RegistryHandoffReviewJournal, openReadonlyRegistryDatabase, TicketStore, getTicketsDir,
   type ExecutionState, type PhaseReport, type PhaseReportCheck, type PhaseReportDelivery, type PhaseReportHost, type PhaseReportReceipt, type ProcessFingerprint, type SourceVersion,
 } from "@pa-platform/pa-core";
+import { readPlannedReview, type PlannedReviewView, attachPlannedActual, bindingForPlan, extractAcceptanceRows, parseActualObservations, parseActualOnly, parseActualRecord, parseComparisonBinding, parseComparisonLocator, verifyPhaseReportReading, plannedActualReadFailure,
+  type PlannedActualHost, type PlannedRecord, type ActualScopeDetails, type ComparisonEvidence, type Unavailable } from "@pa-platform/pa-core/tickets/planned-actual";
 import { environmentSecrets } from "./diagnostics.js";
 import { PiNativeExecutionAdapter, type NativeExecutionReportFacts } from "./execution-native.js";
 import { NativeExecutionEvidence, nativePublicText, type NativeBlob } from "./native-execution-evidence.js";
@@ -83,6 +86,183 @@ export class PiNativePhaseReportAdapter {
     session.assertCurrent(context); return session.binding;
   }
 }
+function nativeComparisonSource(digest: string): SourceVersion { return parseSourceVersion({ ref: `native-execution-evidence:${digest}`, version: "native-execution-evidence/v1", sha256: digest }); }
+
+/** show() returns the full reader inspection result only after complete immutable
+ * verification. Saved approval history alone instead returns status=unverified;
+ * that fallback must never pass this finite verified-presentation discriminator. */
+export function plannedRecordFromContentReview(view: PlannedReviewView): PlannedRecord | Unavailable {
+  const presentation = view.presentation;
+  if (!["pa-document-reader/v1", "pa-document-reader/v2"].includes(String(presentation.schemaVersion))
+    || presentation.subjectSha256 !== view.subject.documentSubjectSha256 || presentation.revision !== view.document.revision || presentation.deliverySha256 !== view.subject.deliverySha256
+    || !Array.isArray(presentation.members) || presentation.members.length !== view.document.members.length) return { state: "integrity-failure" };
+  for (const [index, member] of view.document.members.entries()) {
+    const output = workflowObject(presentation.members[index], ["id", "role", "mediaType", "description", "bytes", "sha256", "raw", "companion"]);
+    if (output.id !== member.id || output.sha256 !== member.sha256 || output.bytes !== member.bytes || output.role !== member.role) return { state: "integrity-failure" };
+  }
+  const manifestSha256 = workflowText(presentation.manifestSha256);
+  const requirements = view.document.members.filter(member => member.role === "requirements");
+  if (requirements.length !== 1) return { state: "conflict" };
+  const body = view.documents.find(document => document.id === requirements[0]!.id)?.content;
+  if (typeof body !== "string") return { state: "missing" };
+  let rows: PlannedRecord["rows"];
+  try { rows = extractAcceptanceRows(body); } catch { return { state: "conflict" }; }
+  if (!rows.length) return { state: "integrity-failure" };
+  const request = view.history.filter(e => e.kind === "requested" && e.request.operation === "capture").at(-1);
+  const issued = request?.kind === "requested" ? view.history.find(e => e.kind === "issued" && e.decision.requestKey === request.request.requestKey) : undefined;
+  const revoked = request?.kind === "requested" && view.history.some(e => e.kind === "requested" && e.request.operation === "revoke" && e.request.targetDecisionId === request.request.decisionId && view.history.some(d => d.kind === "issued" && d.decision.requestKey === e.request.requestKey && d.decision.outcome === "approved"));
+  const approved = issued?.kind === "issued" && issued.decision.outcome === "approved" && !revoked && !view.history.some(e => e.kind === "content-ineligible");
+  return { reference: view.reference, repository: view.document.repository, ticket: view.document.ticket, subjectSha256: view.subject.documentSubjectSha256,
+    revision: view.document.revision, manifestSha256, deliverySha256: view.subject.deliverySha256, state: approved ? "approved" : "draft", entry: workflowText(presentation.entry), rows,
+    ...(view.approvalOwner ? { approvalOwner: view.approvalOwner } : {}) };
+}
+
+/** Read-only normal ticket projection. It opens existing owners only; no report policy,
+ * session, mutable checkout, arbitrary report path or caller evidence is admitted. */
+export function nativePlannedActualHost(authority = new PiPreparedNativeAuthority()): PlannedActualHost {
+  const host: PlannedActualHost = {
+    async discoverPlans(ticket) {
+      let db: ReturnType<typeof openReadonlyRegistryDatabase> | undefined;
+      const references: string[] = [], issues: Unavailable[] = [];
+      try {
+        db = openReadonlyRegistryDatabase(true);
+        // Enumerate only native same-ticket document/review bindings. The join is
+        // a locator, not authority: each result still passes the original owners'
+        // origin, membership, history and complete immutable delivery checks.
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='handoff_review_subjects'").get()) return { references, issues };
+        const rows = db.prepare<[string, string], { sha256: string; schemaVersion: string }>(`SELECT s.sha256,json_extract(s.body,'$.schemaVersion') AS schemaVersion FROM handoff_review_subjects s
+          JOIN document_subjects d ON d.sha256=json_extract(s.body,'$.documentSubjectSha256')
+          WHERE d.repo_key=? AND d.ticket=? ORDER BY s.sha256 LIMIT 1025`).all(ticket.project, ticket.id);
+        if (rows.length > 1024) return { references: [], issues: [{ state: "unknown" }] };
+        for (const row of rows) {
+          if (!/^[a-f0-9]{64}$/.test(row.sha256)) { issues.push({ state: "integrity-failure" }); continue; }
+          const reference = row.schemaVersion === "pa-content-review-subject/v1" ? `review:${row.sha256}` : row.sha256;
+          const plan = await host.resolvePlan(reference);
+          if ("reference" in plan) {
+            if (plan.reference === reference && plan.ticket === ticket.id && plan.repository.key === ticket.project) references.push(reference);
+            else issues.push({ state: "integrity-failure" });
+          } else issues.push({ state: plan.state });
+        }
+        return { references, issues };
+      } catch (error) { return { references, issues: [...issues, plannedActualReadFailure(error)] }; }
+      finally { db?.close(); }
+    },
+    async resolvePlan(reference) {
+      let db: ReturnType<typeof openReadonlyRegistryDatabase> | undefined;
+      try {
+        db = openReadonlyRegistryDatabase(true);
+        const journal = new RegistryHandoffReviewJournal(db, false);
+        const tickets = new TicketStore(getTicketsDir(), {}, false);
+        const view = await readPlannedReview(db, journal, tickets, contentReviewLocalHost(db, tickets, journal, authority.aiUsageRoot), reference);
+        return plannedRecordFromContentReview(view);
+      } catch (error) {
+        return plannedActualReadFailure(error);
+      } finally { db?.close(); }
+    },
+    async resolveActual(locator) {
+      try {
+        const selected = parseComparisonLocator(locator); const store = authority.reports(false, selected.deploymentId); if (!store) return { state: "missing" };
+        const evidence = new NativeExecutionEvidence(store, authority.reportEvidenceRoot(selected.deploymentId), { repository: run => run(), worktree: run => run() });
+        const payload = workflowObject(evidence.read(nativeComparisonSource(selected.digest), "planned-actual"), ["actor", "report", "plannedReference", "binding", "observations", "actualOnly", "deliveries", "human"]);
+        const receiptRecord = workflowObject(evidence.read(parseSourceVersion(payload.report), "report-receipt"), ["actor", "source", "receipt"]);
+        if (receiptRecord.actor !== payload.actor) throw workflowError();
+        const captured = workflowObject(evidence.read(parseSourceVersion(receiptRecord.source), "phase-report"), ["actor", "facts", "report", "diff", "phaseId", "attempt"]);
+        if (captured.actor !== payload.actor) throw workflowError();
+        const blob = (input: unknown): Buffer => { const b = workflowObject(input, ["name", "bytes", "sha256"]); if (typeof b.bytes !== "number") throw workflowError(); return evidence.blob({ name: workflowText(b.name), bytes: b.bytes, sha256: workflowText(b.sha256) }); };
+        const report = parsePhaseReport(JSON.parse(blob(captured.report).toString("utf8")));
+        if (!equal(report.evidence, captured.facts) || report.identity.team !== "builder" || report.identity.deploymentId !== selected.deploymentId || !report.candidateSha) throw workflowError();
+        const factRecord = workflowObject(evidence.read(parseSourceVersion(captured.facts), "report-facts"), ["actor", "blob"]);
+        const facts = workflowObject(JSON.parse(blob(factRecord.blob).toString("utf8")), ["actor", "snapshot", "checks", "execution", "scopeProven", "operations", "omissions", "sourceFailure", "privateDiff"]);
+        const actor = workflowObject(facts.actor, ["deploymentId", "team", "mode", "ticket", "process", "repoKey", "repoRoot", "worktreeRoot", "gitDir", "startedAt"]);
+        if (factRecord.actor !== payload.actor || workflowDigest(JSON.stringify(facts.actor)) !== payload.actor || actor.ticket !== report.identity.ticket || actor.deploymentId !== selected.deploymentId) throw workflowError();
+        const snapshot = facts.snapshot;
+        if (!snapshot || typeof snapshot !== "object" || !("head" in snapshot) || snapshot.head !== report.candidateSha) throw workflowError();
+        const binding = parseComparisonBinding(payload.binding);
+        if (binding.repository.key !== actor.repoKey || binding.repository.root !== actor.repoRoot || binding.ticket !== actor.ticket || binding.candidateSha !== report.candidateSha) throw workflowError();
+        const receipt = workflowObject(receiptRecord.receipt, ["schemaVersion", "identity", "reportId", "outcome", "sourceSha256", "htmlSha256"]);
+        if (receipt.schemaVersion !== "phase-report-receipt/v1" || !equal(receipt.identity, report.identity) || receipt.reportId !== phaseReportIdentity(report.identity) || receipt.outcome !== report.outcome) throw workflowError();
+        const root = join(authority.aiUsageRoot, "agent-teams", "builder", "artifacts");
+        const folder = join(root, `${report.identity.date}-${report.identity.ticket}-${report.identity.phaseId}-${report.identity.deploymentId}`, `attempt-${report.identity.attempt}`);
+        const reportPath = join(folder, "report.md"), ownerPath = join(root, `${report.identity.date}-${report.identity.ticket}-${report.identity.deploymentId}-owner.md`);
+        if (locator !== join(folder, `planned-actual-${selected.deploymentId}-${selected.digest}.json`)) throw workflowError();
+        const read = (path: string) => Buffer.from(readReviewEvidenceFile(path, 4_194_304, "immutable phase report"));
+        const companion = { schemaVersion: "pa-planned-actual-locator/v1", deploymentId: selected.deploymentId, evidence: nativeComparisonSource(selected.digest), reportId: receipt.reportId };
+        if (!read(locator).equals(Buffer.from(`${JSON.stringify(companion)}\n`))) throw workflowError();
+        const markdown = read(reportPath), html = read(join(folder, "report.html"));
+        if (workflowDigest(markdown) !== receipt.sourceSha256 || workflowDigest(html) !== receipt.htmlSha256 || !read(join(folder, "report.json")).equals(Buffer.from(`${JSON.stringify(receiptRecord.receipt)}\n`))
+          || !verifyPhaseReportReading(markdown, html, reportPath) || !read(join(folder, "diff.patch")).equals(blob(captured.diff))) throw workflowError();
+        const owner = read(ownerPath).toString("utf8");
+        // Existing owner must already index this exact receipt; a ticket label cannot manufacture publication.
+        const parsedReceipt: PhaseReportReceipt = { schemaVersion: "phase-report-receipt/v1", identity: report.identity, reportId: phaseReportIdentity(report.identity), outcome: report.outcome, sourceSha256: workflowText(receipt.sourceSha256), htmlSha256: workflowText(receipt.htmlSha256) };
+        if (indexPhaseReport(owner, workflowDigest(owner), parsedReceipt).changed) throw workflowError();
+        const observations = parseActualObservations(payload.observations), actualOnly = parseActualOnly(payload.actualOnly);
+        const publicText = JSON.stringify([observations, actualOnly]); assertNoSensitiveMatch("content", publicText);
+        if (nativePublicText(publicText, environmentSecrets(process.env)) !== publicText) throw workflowError();
+        const execution = facts.execution;
+        const settled = execution !== null && typeof execution === "object" && "operation" in execution && execution.operation === null
+          && "candidateSha" in execution && execution.candidateSha === binding.candidateSha && "passedChecks" in execution
+          && execution.passedChecks !== null && typeof execution.passedChecks === "object" && !Array.isArray(execution.passedChecks);
+        // A clean tree is bound by HEAD. Dirty comparisons have no content-version
+        // selector in the retained schema, so NEVER apply their green checks.
+        // Status/porcelain digests do not identify changed file bytes.
+        const passedChecks = execution !== null && typeof execution === "object" && "passedChecks" in execution ? execution.passedChecks : null;
+        const current = settled && facts.scopeProven === true && facts.sourceFailure === false && "dirty" in snapshot && snapshot.dirty === false;
+        const currentOutputs = current && passedChecks !== null && typeof passedChecks === "object" ? Object.values(passedChecks) : [];
+        const originalFailure = execution !== null && typeof execution === "object" && "originalFailure" in execution ? execution.originalFailure : null;
+        const failure = originalFailure == null ? null : workflowObject(originalFailure, ["check", "command", "exitCode", "candidateSha", "output"]);
+        // The producer removes a failed check from passedChecks, but retains its
+        // original failure until resolution. A later pass supersedes that failure
+        // even before the explicit resolve event clears it.
+        const currentFailure = current && failure && typeof failure.check === "string" && passedChecks !== null && typeof passedChecks === "object" && !Object.hasOwn(passedChecks, failure.check) ? failure : null;
+        const observed: ComparisonEvidence[] = report.checks.map(c => ({ class: "source", state: c.state, ...(c.candidateSha ? { candidateSha: c.candidateSha } : {}),
+          applicability: c.candidateSha === binding.candidateSha && c.output && (c.state === "passed" && currentOutputs.some(output => equal(output, c.output))
+            || c.state === "failed" && currentFailure?.candidateSha === binding.candidateSha && currentFailure.exitCode === c.exitCode && equal(currentFailure.output, c.output)) ? "current" : "historical",
+          locator: c.output ? c.output.ref : null, observedAt: c.output ? report.finishedAt : null, coverage: [], trust: c.output ? "native" : "not-observed" }));
+        if (!Array.isArray(payload.deliveries) || payload.deliveries.length > 2 || !Array.isArray(payload.human) || payload.human.length > 128) throw workflowError();
+        for (const input of payload.deliveries) {
+          const source = parseSourceVersion(input); const delivery = workflowObject(evidence.read(source, "report-delivery"), ["application", "kind", "reportId", "sourceSha256", "htmlSha256", "observedAt"]);
+          if (delivery.reportId !== receipt.reportId || delivery.sourceSha256 !== receipt.sourceSha256 || delivery.htmlSha256 !== receipt.htmlSha256 || delivery.kind !== "native-operator") throw workflowError();
+          // A report-reading observation is not product/browser qualification.
+          // It remains available through the retained report delivery owner.
+        }
+        for (const input of payload.human) {
+          const source = parseSourceVersion(input);
+          const human = workflowObject(evidence.read(source, "planned-actual-human"), ["binding", "report", "state", "observedAt", "coverage"]);
+          if (!equal(human.binding, payload.binding) || !equal(human.report, payload.report)) throw workflowError();
+          const state = (["passed", "failed", "pending", "not-run"] as const).find(s => s === human.state); if (!state || !Array.isArray(human.coverage)) throw workflowError();
+          observed.push({ class: "human-uat", state, locator: source.ref, observedAt: workflowTimestamp(human.observedAt), coverage: human.coverage.map(workflowText), trust: "local-unverified" });
+        }
+        const scopeDetails = actualScopeDetails(report, execution, facts.scopeProven, facts.omissions);
+        return parseActualRecord({ locator, binding, plannedReference: payload.plannedReference, reportId: receipt.reportId, reportSourceSha256: receipt.sourceSha256, reportPath, ownerPath, outcome: report.outcome,
+          scope: actualScopeSummary(report, scopeDetails), scopeDetails, observations, actualOnly, evidence: observed });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        return { state: code === "EACCES" || code === "EPERM" ? "denied" : code === "ENOENT" ? "missing" : "integrity-failure" };
+      }
+    },
+  };
+  return host;
+}
+
+function actualScopeDetails(report: PhaseReport, execution: unknown, scopeProven: unknown, omissions: unknown): ActualScopeDetails {
+  const publicText = (value: string) => nativePublicText(value, environmentSecrets(process.env));
+  let admitted: ActualScopeDetails["admitted"] = null;
+  if (execution !== null && typeof execution === "object" && "plan" in execution && execution.plan !== null && typeof execution.plan === "object") {
+    const plan = execution.plan;
+    if (!("scope" in plan) || typeof plan.scope !== "string" || !("paths" in plan) || !Array.isArray(plan.paths) || plan.paths.some(path => typeof path !== "string")) throw workflowError();
+    const paths = plan.paths.map((path: string) => findSensitiveMatch("path", path) || findSensitiveMatch("filename", path) ? `[omitted path SHA-256 ${workflowDigest(path)}]` : publicText(path));
+    admitted = { scope: publicText(plan.scope), paths };
+  }
+  const custody = execution !== null && typeof execution === "object" && "custody" in execution && execution.custody !== null && typeof execution.custody === "object" && "state" in execution.custody && typeof execution.custody.state === "string" ? publicText(execution.custody.state) : "unproven";
+  if (!Array.isArray(omissions) || omissions.some(value => typeof value !== "string")) throw workflowError();
+  return { admitted, scopeProven: scopeProven === true, custody: { state: custody, observation: publicText(report.sections.custody) }, omissions: omissions.map(value => publicText(String(value))) };
+}
+function actualScopeSummary(report: PhaseReport, details: ActualScopeDetails): string {
+  // Only finite identity/count/status fields enter this <=4096-character summary.
+  // Full sanitized facts remain in scopeDetails, including across ticket pages.
+  return `Native phase ${report.identity.phaseId}; attempt ${report.identity.attempt}. ${details.admitted ? `Admitted plan: ${details.admitted.paths.length} paths.` : "No admitted native phase plan available."} Scope proof: ${details.scopeProven ? "proven by native producer" : "unproven"}. Full admitted scope/paths, custody observation and ${details.omissions.length} recorded omissions are in scopeDetails; absence of omissions is not acceptance.`;
+}
+
 class NativeReportSession {
   readonly binding: PiPhaseReportBinding;
   readonly #authority: PiPreparedNativeAuthority;
@@ -152,7 +332,9 @@ class NativeReportSession {
         if (row.actor !== this.#identity) throw workflowError(); const report = this.#readReport(parseSourceVersion(row.source)).report;
         const receipt = row.receipt as PhaseReportReceipt;
         if (receipt.reportId !== phaseReportIdentity(report.identity) || receipt.outcome !== report.outcome) throw workflowError(); return receipt;
-      }, observeDelivery: (receipt, application, ctx, signal) => this.#observeDelivery(receipt, application, ctx, signal) };
+      }, observeDelivery: (receipt, application, ctx, signal) => this.#observeDelivery(receipt, application, ctx, signal),
+      attachActual: (receipt, reference, observations, actualOnly) => this.#attachActual(receipt, reference, observations, actualOnly),
+      observeActual: (locator, ctx, signal) => this.#observeActual(locator, ctx, signal) };
   }
   assertCurrent(context: unknown): void {
     if (!equal(actor(context, this.#authority), this.#actor)) throw workflowError();
@@ -248,6 +430,55 @@ class NativeReportSession {
     const source = this.#evidence.publish("phase-report", { actor: this.#identity, facts: factSource, report: this.#blob("report-body", Buffer.from(JSON.stringify(report))), diff, phaseId, attempt: report.identity.attempt } satisfies CapturedReport);
     withPreparedWorkflowLocks(this.#evidence.locks, (scope) => this.#evidence.store.publish(scope, key, { schemaVersion: "native-report-capture/v1", draftSha256: workflowDigest(JSON.stringify(draft)), source }));
     return source;
+  }
+  async #attachActual(receipt: PhaseReportReceipt, reference: string, observations: unknown, actualOnly: unknown): Promise<string> {
+    this.assertCurrent({ cwd: process.cwd() });
+    if (this.#actor.team !== "builder" || !this.#actor.ticket) throw workflowError();
+    this.#service.settle(receipt);
+    const host = nativePlannedActualHost(this.#authority);
+    const plan = await host.resolvePlan(reference); if (!("reference" in plan) || plan.state !== "approved") throw workflowError();
+    const candidate = this.#findReceipt(receipt).report.candidateSha; if (!candidate) throw workflowError();
+    const binding = bindingForPlan(plan, candidate);
+    if (!equal(binding.repository, { key: this.#actor.repoKey, root: this.#actor.repoRoot }) || binding.ticket !== this.#actor.ticket) throw workflowError();
+    const parsed = parseActualObservations(observations); const work = parseActualOnly(actualOnly);
+    if (parsed.some(row => !plan.rows.some(ac => ac.id === row.ac))) throw workflowError();
+    this.#assertPublic(Buffer.from(JSON.stringify([parsed, work])));
+    const report = this.binding.recordReceipt!(receipt);
+    const source = this.#evidence.publish("planned-actual", { actor: this.#identity, report, plannedReference: reference, binding, observations: parsed, actualOnly: work,
+      deliveries: phaseReportDeliverySources(this.#ownerRead(), receipt), human: [] });
+    const locator = this.#service.publishPlannedActualLocator(receipt, source);
+    await attachPlannedActual(new TicketStore(), this.#actor.ticket, locator, host, () => this.assertCurrent({ cwd: process.cwd() }));
+    return locator;
+  }
+  async #observeActual(locator: string, context: unknown, signal?: AbortSignal): Promise<string | null> {
+    this.assertCurrent(context); const ctx = context as PiPreparationContext;
+    if (ctx.mode !== "tui" || process.env.PA_PI_EXECUTION_MODE !== "foreground" || !ctx.ui?.select || signal?.aborted) throw workflowError();
+    const selected = parseComparisonLocator(locator); if (selected.deploymentId !== this.#actor.deploymentId || !this.#actor.ticket) throw workflowError();
+    const previous = workflowObject(this.#evidence.read(nativeComparisonSource(selected.digest), "planned-actual"), ["actor", "report", "plannedReference", "binding", "observations", "actualOnly", "deliveries", "human"]);
+    if (previous.actor !== this.#identity || !Array.isArray(previous.human)) throw workflowError();
+    const receipt = this.binding.resolveReceipt(parseSourceVersion(previous.report));
+    this.#service.settle(receipt);
+    const host = nativePlannedActualHost(this.#authority); const actual = await host.resolveActual(locator);
+    if (!("binding" in actual) || actual.binding.ticket !== this.#actor.ticket || actual.reportId !== receipt.reportId
+      || !equal(actual.binding.repository, { key: this.#actor.repoKey, root: this.#actor.repoRoot }) || actual.binding.candidateSha !== this.#findReceipt(receipt).report.candidateSha) throw workflowError();
+    const plan = await host.resolvePlan(actual.plannedReference);
+    if (!("rows" in plan) || plan.state !== "approved" || !equal(actual.binding, bindingForPlan(plan, actual.binding.candidateSha)) || actual.plannedReference !== plan.reference) throw workflowError();
+    const all = "All listed acceptance criteria";
+    const coverage = await ctx.ui.select(`Select human UAT coverage for ticket ${actual.binding.ticket}, revision ${actual.binding.revision}, candidate ${actual.binding.candidateSha}. Plan ${plan.reference}; manifest ${plan.manifestSha256}; read ${plan.entry}. Report ${actual.reportId}; source ${actual.reportSourceSha256}. Local confirmation; identity not verified.`, [all, ...plan.rows.map(r => r.id)], { signal });
+    if (signal?.aborted || coverage === undefined) return null;
+    if (coverage !== all && !plan.rows.some(r => r.id === coverage)) throw workflowError();
+    const covered = coverage === all ? plan.rows.map(r => r.id) : [coverage];
+    const choices = ["Not run", "Pending: observation is incomplete", "Failed: selected criteria failed", "Passed: I observed the selected criteria"];
+    const choice = await ctx.ui.select("Human UAT result for the selected exact criteria. Source checks and report generation are not human UAT.", choices, { signal });
+    if (signal?.aborted || choice === undefined) return null;
+    const index = choices.indexOf(choice); if (index < 0) throw workflowError();
+    this.assertCurrent(context);
+    this.#service.settle(receipt);
+    const state = (["not-run", "pending", "failed", "passed"] as const)[index]!;
+    const human = this.#evidence.publish("planned-actual-human", { binding: previous.binding, report: previous.report, state, observedAt: new Date().toISOString(), coverage: covered });
+    const source = this.#evidence.publish("planned-actual", { ...previous, human: [...previous.human, human] });
+    const next = this.#service.publishPlannedActualLocator(receipt, source);
+    await attachPlannedActual(new TicketStore(), this.#actor.ticket, next, host, () => this.assertCurrent(context)); return next;
   }
   #publicPath(path: string): string { return findSensitiveMatch("path", path) || findSensitiveMatch("filename", path) ? `[omitted path SHA-256 ${workflowDigest(path)}]` : this.#safe(path); }
   #reportDirectory(identity: PhaseReport["identity"]): string { return join(this.#root, `${identity.date}-${identity.ticket ?? "ticketless"}-${identity.phaseId}-${identity.deploymentId}`, `attempt-${identity.attempt}`); }

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mutatePiContentReview } from "./content-review-native.js";
+import { mutatePiContentPublication } from "./content-publication-native.js";
 import { isDeepStrictEqual } from "node:util";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -187,7 +189,12 @@ function verifyPublishedReader(root: string, subjectSha256: string, deliverySha2
   if (workflowDigest(manifest) !== sha(presentation.manifestSha256)) throw new DocumentPackageError("DOCUMENT_STALE");
   return folder;
 }
-export async function mutatePiHandoff(raw: string, context: PiHandoffContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
+export async function mutatePiHandoff(raw: string, context: PiHandoffContext, signal?: AbortSignal, contentSignal?: AbortSignal): Promise<Record<string, unknown>> {
+  let envelope: Record<string, unknown>;
+  try { envelope = record(parseWorkflowRequest(raw)); }
+  catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
+  if (envelope.schemaVersion === "pa-content-publication/v1") return mutatePiContentPublication(raw, context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal);
+  if (envelope.schemaVersion === "pa-content-review/v1") return mutatePiContentReview(raw, context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal);
   let request: Request, local: boolean;
   try {
     const row = record(parseWorkflowRequest(raw));

@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { StringDecoder } from "node:string_decoder";
 import { PiStartupPresentation, validPiStartupContext, type PiStartupContext } from "./startup-diagnostics.js";
 import { spawn as spawnPty, type IPty } from "node-pty";
-import { TEMPLATE_TOOL_REFERENCE, appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { hasModeResources, TEMPLATE_TOOL_REFERENCE, appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { axiRuntimeEnvironment } from "./axi-policy.js";
@@ -302,10 +302,9 @@ export class PiAdapter implements RuntimeAdapter {
       // Protected review keeps its explicit-only extension boundary.
       args.push("--no-skills");
       if (plan.reviewCheckout || protectedValidationLaunch) args.push("--no-extensions");
-      // V2's complete skill closure is already hash-bound in the primer,
-      // including reference-only bodies. Never reopen mutable config paths or
-      // promote those references through Pi's independent native skill loader.
-      if (plan.modeCapabilityBinding?.schemaVersion !== "pa-mode-capability-binding/v2") {
+      // V2/V3 resources are already hash-bound. Never reopen mutable skill
+      // paths or promote reference-only methods through Pi's native loader.
+      if (!hasModeResources(plan.modeCapabilityBinding)) {
         for (const skill of plan.skills) args.push("--skill", skill.path);
       }
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
@@ -872,7 +871,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     ...(input.model ? { model: input.model } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
     managed: plan !== undefined,
-    skills: plan?.skills.map((skill) => skill.path) ?? [],
+    skills: hasModeResources(plan?.modeCapabilityBinding) ? [] : plan?.skills.map((skill) => skill.path) ?? [],
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(repositoryHandoff ? { repositoryHandoffPath: handoffPath } : {}),
     ...(input.protectedValidationLaunch ? { validationHandoffPath } : {}),

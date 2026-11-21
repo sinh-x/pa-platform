@@ -292,7 +292,12 @@ test("managed Pi skills and protected-review extensions retain independent launc
   assert.match(adapter, /if \(plan\.reviewCheckout \|\| protectedValidationLaunch\) args\.push\("--no-extensions"\);/);
   assert.match(adapter, /if \(config\.managed \|\| config\.validationHandoffPath \|\| reviewerContext\) args\.push\("--no-skills"\);/);
   assert.match(adapter, /if \(config\.validationHandoffPath \|\| reviewerContext\) args\.push\("--no-extensions"\);/);
-  assert.match(adapter, /if \(plan\.modeCapabilityBinding\?\.schemaVersion !== "pa-mode-capability-binding\/v2"\) \{\s*for \(const skill of plan\.skills\) args\.push\("--skill", skill\.path\);/);
+  // Both resource-bound versions suppress the independent mutable skill loader;
+  // unbound/retained plans keep explicit skills. Background must do the same.
+  assert.match(adapter, /if \(!hasModeResources\(plan\.modeCapabilityBinding\)\) \{\s*for \(const skill of plan\.skills\) args\.push\("--skill", skill\.path\);/);
+  assert.match(adapter, /skills: hasModeResources\(plan\?\.modeCapabilityBinding\) \? \[\] : plan\?\.skills\.map\(\(skill\) => skill\.path\) \?\? \[\]/);
+  const capabilities = readFileSync(resolve(root, "packages/pa-core/src/mode-capabilities.ts"), "utf8");
+  assert.match(capabilities, /return binding\?\.schemaVersion === "pa-mode-capability-binding\/v2" \|\| binding\?\.schemaVersion === "pa-mode-capability-binding\/v3";/);
 });
 
 test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {
@@ -300,15 +305,13 @@ test("conservative source inventory rejects any changed or added dispatch source
   const commandDir = "packages/pa-core/src/cli/commands";
   const files = readdirSync(resolve(root, commandDir)).filter(name => name.endsWith(".ts")).map(name => `${commandDir}/${name}`);
   for (const path of files) assert.ok(Object.hasOwn(manifest.sources, path), `unreviewed command source: ${path}`);
-  for (const [path, sha256] of Object.entries(manifest.sources)) {
-    assert.equal(createHash("sha256").update(readFileSync(resolve(root, path))).digest("hex"), sha256,
-      `${path} changed: reconcile operations/aliases/effect variants before renewing the source snapshot`);
-  }
+  const changed = Object.entries(manifest.sources).filter(([path, sha256]) => createHash("sha256").update(readFileSync(resolve(root, path))).digest("hex") !== sha256).map(([path]) => path);
+  assert.deepEqual(changed, [], "Changed sources require operations/aliases/effect reconciliation before renewing exact hashes");
   for (const row of interactionCatalogue) assert.ok(Object.hasOwn(manifest.sources, row.sourceHandler.split("#")[0]!), `untracked handler ${row.sourceHandler}`);
   // A source guard is deliberately conservative, not a parser-based completeness proof.
   const baseline = readFileSync(resolve(root, "packages/pa-core/src/cli/core-command.ts"));
-  const changed = Buffer.concat([baseline, Buffer.from('\n// fixture: new unlisted dispatch\n')]);
-  assert.notEqual(createHash("sha256").update(changed).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
+  const mutated = Buffer.concat([baseline, Buffer.from('\n// fixture: new unlisted dispatch\n')]);
+  assert.notEqual(createHash("sha256").update(mutated).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
 });
 
 test("PAP-324 naming-policy reconciliation tracks pure matching and observation dependencies without adding effects", () => {

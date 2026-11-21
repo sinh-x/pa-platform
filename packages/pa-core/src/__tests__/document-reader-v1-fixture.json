@@ -1,0 +1,213 @@
+{
+  "subject": {
+    "schemaVersion": "pa-document-package/v1",
+    "packageId": "example",
+    "revision": 1,
+    "repository": {
+      "key": "example",
+      "root": "/tmp/pap-327-v1-repository"
+    },
+    "ticket": "EX-1",
+    "predecessor": null,
+    "members": [
+      {
+        "id": "brief",
+        "role": "brief",
+        "mediaType": "text/markdown",
+        "source": "agent-teams/requirements/artifacts/reviews/EX-1/r001/brief.md",
+        "description": "brief",
+        "bytes": 25,
+        "sha256": "72ac43a75c55cbde5b6ac87de4f50b907971f6f27a51d68382d5f00cf2805d22"
+      },
+      {
+        "id": "requirements",
+        "role": "requirements",
+        "mediaType": "text/markdown",
+        "source": "agent-teams/requirements/artifacts/reviews/EX-1/r001/requirements.md",
+        "description": "requirements",
+        "bytes": 48,
+        "sha256": "fd833f7c83c8a5fdf81c1c11957d68cdd2c7e215149146417227e717f8c5c3db"
+      },
+      {
+        "id": "uat",
+        "role": "uat",
+        "mediaType": "text/markdown",
+        "source": "agent-teams/requirements/artifacts/reviews/EX-1/r001/uat.md",
+        "description": "uat",
+        "bytes": 37,
+        "sha256": "fe104914e6f198a643eb7096246b4b72a262f9122b30a72b33034c568ce365bc"
+      },
+      {
+        "id": "mockup",
+        "role": "specification",
+        "mediaType": "text/markdown",
+        "source": "agent-teams/requirements/artifacts/reviews/EX-1/r001/mockup.md",
+        "description": "mockup",
+        "bytes": 37,
+        "sha256": "00bf821e0f1654d9e147c7018f4060dece4dbc4a0256d14bc6b416c4a411380e"
+      },
+      {
+        "id": "contract",
+        "role": "specification",
+        "mediaType": "text/markdown",
+        "source": "agent-teams/requirements/artifacts/reviews/EX-1/r001/contract.md",
+        "description": "contract",
+        "bytes": 39,
+        "sha256": "0c02d1d6c72b725ab4d85d78f3429c56b4d36f1f08cbe5e68cb8691613978892"
+      }
+    ],
+    "references": [
+      {
+        "locator": "https://example.invalid/informative",
+        "version": "dated observation",
+        "description": "Never fetched or approved as specification"
+      }
+    ],
+    "effects": {
+      "publish": true,
+      "queue": true,
+      "route": {
+        "team": "builder",
+        "mode": "orchestrator"
+      }
+    }
+  },
+  "sources": {
+    "72ac43a75c55cbde5b6ac87de4f50b907971f6f27a51d68382d5f00cf2805d22": "QSBjb25jaXNlIGRlY2lzaW9uIGJyaWVmLg==",
+    "fd833f7c83c8a5fdf81c1c11957d68cdd2c7e215149146417227e717f8c5c3db": "IyBGUi0xIOKAlCB0ZXN0CgojIEFDLTEg4oCUIHRlc3QKQ292ZXJhZ2U6IFRTLTEK",
+    "fe104914e6f198a643eb7096246b4b72a262f9122b30a72b33034c568ce365bc": "IyBUUy0xIOKAlCB0ZXN0CkNvdmVyYWdlOiBGUi0xLCBBQy0xCg==",
+    "00bf821e0f1654d9e147c7018f4060dece4dbc4a0256d14bc6b416c4a411380e": "IyBtb2NrdXAKQSBzdXBwb3J0aW5nIHNwZWNpZmljYXRpb24uCg==",
+    "0c02d1d6c72b725ab4d85d78f3429c56b4d36f1f08cbe5e68cb8691613978892": "IyBjb250cmFjdApBIHN1cHBvcnRpbmcgc3BlY2lmaWNhdGlvbi4K"
+  },
+  "deliverySha256": "1961a767f9e01592953af5b649148014b98074084760dba0f05b34321ad3bb25",
+  "manifestSha256": "a1ae12a5800f7f29ad43fe21de24f30b4708573c4a8f5c277f1b4182e6111edf",
+  "manifest": {
+    "schemaVersion": "pa-document-reader/v1",
+    "deliverySha256": "1961a767f9e01592953af5b649148014b98074084760dba0f05b34321ad3bb25",
+    "subjectSha256": "57d80be32f2c7e19fd46245fe1c9543b1d0bee9452e43614aafa6668fc21d0eb",
+    "revision": 1,
+    "effects": {
+      "publish": true,
+      "queue": true,
+      "route": {
+        "team": "builder",
+        "mode": "orchestrator"
+      }
+    },
+    "renderer": {
+      "id": "pa-document-reader/v1",
+      "implementationSha256": "8578573ea0f87a18a137b7c95a3d28acbd6f71c7857346778ca5e7eb6a54bc7e"
+    },
+    "members": [
+      {
+        "id": "brief",
+        "role": "brief",
+        "mediaType": "text/markdown",
+        "description": "brief",
+        "bytes": 25,
+        "sha256": "72ac43a75c55cbde5b6ac87de4f50b907971f6f27a51d68382d5f00cf2805d22",
+        "raw": "raw/member-1.md",
+        "companion": "members/member-1.html"
+      },
+      {
+        "id": "requirements",
+        "role": "requirements",
+        "mediaType": "text/markdown",
+        "description": "requirements",
+        "bytes": 48,
+        "sha256": "fd833f7c83c8a5fdf81c1c11957d68cdd2c7e215149146417227e717f8c5c3db",
+        "raw": "raw/member-2.md",
+        "companion": "members/member-2.html"
+      },
+      {
+        "id": "uat",
+        "role": "uat",
+        "mediaType": "text/markdown",
+        "description": "uat",
+        "bytes": 37,
+        "sha256": "fe104914e6f198a643eb7096246b4b72a262f9122b30a72b33034c568ce365bc",
+        "raw": "raw/member-3.md",
+        "companion": "members/member-3.html"
+      },
+      {
+        "id": "mockup",
+        "role": "specification",
+        "mediaType": "text/markdown",
+        "description": "mockup",
+        "bytes": 37,
+        "sha256": "00bf821e0f1654d9e147c7018f4060dece4dbc4a0256d14bc6b416c4a411380e",
+        "raw": "raw/member-4.md",
+        "companion": "members/member-4.html"
+      },
+      {
+        "id": "contract",
+        "role": "specification",
+        "mediaType": "text/markdown",
+        "description": "contract",
+        "bytes": 39,
+        "sha256": "0c02d1d6c72b725ab4d85d78f3429c56b4d36f1f08cbe5e68cb8691613978892",
+        "raw": "raw/member-5.md",
+        "companion": "members/member-5.html"
+      }
+    ],
+    "outputs": [
+      {
+        "path": "raw/member-1.md",
+        "sha256": "72ac43a75c55cbde5b6ac87de4f50b907971f6f27a51d68382d5f00cf2805d22",
+        "bytes": 25
+      },
+      {
+        "path": "members/member-1.html",
+        "sha256": "682ace73dcabc8e9942a2ddaed9e359ee2dab8d56f8e95cf6ca41361471d97dc",
+        "bytes": 3774
+      },
+      {
+        "path": "raw/member-2.md",
+        "sha256": "fd833f7c83c8a5fdf81c1c11957d68cdd2c7e215149146417227e717f8c5c3db",
+        "bytes": 48
+      },
+      {
+        "path": "members/member-2.html",
+        "sha256": "52605855052225035163632ac012023b07f0d508b4805d28ce34ed5a3c95b106",
+        "bytes": 3972
+      },
+      {
+        "path": "raw/member-3.md",
+        "sha256": "fe104914e6f198a643eb7096246b4b72a262f9122b30a72b33034c568ce365bc",
+        "bytes": 37
+      },
+      {
+        "path": "members/member-3.html",
+        "sha256": "a70368126b6d21230cadfb739425e3ea7b49c72e7fdb03df901d21e83f6522f0",
+        "bytes": 3914
+      },
+      {
+        "path": "raw/member-4.md",
+        "sha256": "00bf821e0f1654d9e147c7018f4060dece4dbc4a0256d14bc6b416c4a411380e",
+        "bytes": 37
+      },
+      {
+        "path": "members/member-4.html",
+        "sha256": "e61d8d30f5fa4a688872d8bd5b190f37df32bccbd28cc65dd0e19367dbd6a78f",
+        "bytes": 3919
+      },
+      {
+        "path": "raw/member-5.md",
+        "sha256": "0c02d1d6c72b725ab4d85d78f3429c56b4d36f1f08cbe5e68cb8691613978892",
+        "bytes": 39
+      },
+      {
+        "path": "members/member-5.html",
+        "sha256": "0e65ffd0962a3f3fbd994709b17424c3367b4fbe4523a2cba16b7f66543a8c45",
+        "bytes": 3831
+      },
+      {
+        "path": "index.html",
+        "sha256": "787bd6d3f247b76af1e3aa900bf86ab372ec98a039dc23c09d7ffd20d3b8d7dc",
+        "bytes": 11241
+      }
+    ],
+    "generationState": "UNAPPROVED-at-generation",
+    "observation": "not-performed"
+  }
+}

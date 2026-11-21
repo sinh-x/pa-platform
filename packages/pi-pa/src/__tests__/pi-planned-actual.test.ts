@@ -1,0 +1,453 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { HandoffReviewService, LocalHandoffReviewService } from "../../../pa-core/src/documents/handoff-review.js";
+import { handoffBranchIntentSha, type HandoffBranchIntent, type HandoffReviewSubject } from "../../../pa-core/src/documents/handoff-contract.js";
+import { nativeHandoffPlanIdentity } from "../../../pa-core/src/documents/handoff-planning.js";
+import { localHandoffReviewHooks } from "../../../pa-core/src/documents/local-review.js";
+import { creationDigest } from "../../../pa-core/src/tickets/create-intent.js";
+import { MODE_CAPABILITY_SESSION } from "../../../pa-core/src/mode-capabilities.js";
+import { withRepositoryRefAdmission } from "../../../pa-core/src/deploy/repository-admission.js";
+import { withRepositoryRefTicketExclusion } from "../../../pa-core/src/deploy/ticket-concurrency.js";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { documentRuntimeFixture } from "../../../pa-core/src/__tests__/document-runtime-fixture.js";
+import test from "node:test";
+import { ContentReviewService, RegistryHandoffReviewJournal, readDocumentSources, presentFullDocumentReader, documentPackageSha, NativeExecutionEvidence, PHASE_REPORT_SECTIONS, PhaseReportService, TicketStore, indexPhaseReport, parsePhaseReport, parseExecutionPlan, workflowDigest, type PhaseReportCheck, type PhaseReportHost, type SourceVersion } from "@pa-platform/pa-core";
+import { type PlannedRecord, attachPlannedActual, projectPlannedActual, plannedActualReadFailure } from "@pa-platform/pa-core/tickets/planned-actual";
+import { nativePlannedActualHost, plannedRecordFromContentReview } from "../phase-report-native.js";
+import { PiPreparedNativeAuthority } from "../prepared-native.js";
+import { createPaTicketTool } from "../pi-extension/ticket-tool.js";
+import { MAX_TOOL_BYTES, MAX_TOOL_LINES } from "../pi-extension/tool-result.js";
+import { createPiPhaseReportModule, type PiPhaseReportBinding } from "../pi-extension/prepared-workflow.js";
+import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
+
+const sha = "a".repeat(40), time = "2026-11-21T00:00:00.000Z";
+const source = (ref: string): SourceVersion => ({ ref, version: "v1", sha256: workflowDigest(ref) });
+const plan: PlannedRecord = { reference: `review:${"b".repeat(64)}`, repository: { key: "test", root: "/test" }, ticket: "TEST-1", subjectSha256: "c".repeat(64), revision: 3, manifestSha256: "d".repeat(64), deliverySha256: "e".repeat(64), state: "approved", entry: "file:///planned/index.html", rows: [{ id: "AC-01", expectation: "Print every member." }] };
+interface NativeActualFixtureOptions {
+  dirty?: boolean; current?: boolean; scope?: string; paths?: readonly string[]; omissions?: readonly string[]; custodyObservation?: string; noPlan?: boolean;
+  failure?: "unresolved" | "resolved" | "superseded" | "different-output" | "different-candidate" | "absent" | "unrelated-pass";
+  executionCandidate?: string; checkCandidate?: string; inFlight?: boolean; scopeProven?: boolean; sourceFailure?: boolean;
+}
+function fixture(options: NativeActualFixtureOptions = {}) {
+  const root = mkdtempSync(join(tmpdir(), "pap327-native-actual-"));
+  const authority = new PiPreparedNativeAuthority({ root: join(root, "protected"), aiUsageRoot: join(root, "artifacts") });
+  const store = authority.reports(true, "d-aaaaaa")!;
+  const evidence = new NativeExecutionEvidence(store, authority.reportEvidenceRoot("d-aaaaaa"), { repository: run => run(), worktree: run => run() });
+  const blob = (bytes: Buffer) => { const id = workflowDigest(bytes); const sink = evidence.sink(id, "stdout"); assert.equal(sink.write(bytes), true); return sink.close(); };
+  const actor = { deploymentId: "d-aaaaaa", team: "builder", mode: "orchestrator", ticket: "TEST-1", process: null, repoKey: "test", repoRoot: "/test", worktreeRoot: "/test", gitDir: "/test/.git", startedAt: time };
+  const actorId = workflowDigest(JSON.stringify(actor));
+  const diff = blob(Buffer.from("Native fixture diff.\n"));
+  const failed = options.failure !== undefined;
+  const output = evidence.publish("fixture-check", { exitCode: failed ? 1 : 0, candidateSha: options.checkCandidate ?? sha });
+  const checks: PhaseReportCheck[] = [{ command: "fixture-source-check", candidateSha: options.checkCandidate ?? sha, state: failed ? "failed" : "passed", exitCode: failed ? 1 : 0, output }];
+  const laterPass = ["resolved", "superseded", "unrelated-pass"].includes(options.failure ?? "") ? evidence.publish("fixture-check", { exitCode: 0, candidateSha: sha, later: true }) : null;
+  if (laterPass) checks.push({ command: options.failure === "unrelated-pass" ? "other-check" : "fixture-source-check", candidateSha: sha, state: "passed", exitCode: 0, output: laterPass });
+  const admittedPlan = parseExecutionPlan({ phaseId: "phase-5", scope: options.scope ?? "Ticket export behavior", paths: options.paths ?? ["src/export.ts"], requirements: ["AC-01"], prerequisites: [], checks: ["source"], size: "M", complexity: "bounded", rationale: "Native fixture" });
+  const originalFailure = failed && options.failure !== "resolved" && options.failure !== "absent" ? { check: "source", command: "fixture-source-check", exitCode: 1, candidateSha: options.failure === "different-candidate" ? "9".repeat(40) : sha, output: options.failure === "different-output" ? evidence.publish("fixture-check", { exitCode: 1, different: true }) : output } : null;
+  const execution = { candidateSha: options.executionCandidate ?? sha, operation: options.inFlight ? { id: "pending" } : null, plan: options.noPlan ? null : admittedPlan, custody: { state: "orchestrator-direct" }, originalFailure,
+    passedChecks: options.current === false ? {} : laterPass ? { [options.failure === "unrelated-pass" ? "other" : "source"]: laterPass } : failed ? {} : { source: output } };
+  const omissions = options.omissions ?? ["Product browser observation not supplied."];
+  const facts = evidence.publish("report-facts", { actor: actorId, blob: blob(Buffer.from(JSON.stringify({ actor, snapshot: { head: sha, dirty: options.dirty ?? false }, checks, execution, scopeProven: options.scopeProven ?? true, operations: [], omissions, sourceFailure: options.sourceFailure ?? false, privateDiff: diff }))) });
+  const report = parsePhaseReport({ schemaVersion: "phase-report/v1", identity: { date: "2026-11-21", team: "builder", ticket: "TEST-1", deploymentId: "d-aaaaaa", phaseId: "phase-5", attempt: 1, executor: "orchestrator-direct" }, outcome: failed ? "failed" : "partial", startedAt: time, finishedAt: time, baseSha: sha, candidateSha: sha, commitState: "no-commit", sections: Object.fromEntries(PHASE_REPORT_SECTIONS.map(k => [k, k === "custody" ? options.custodyObservation ?? "Native fixture; no acceptance claimed." : k === "omissions" && omissions.length ? omissions.join("\n") : "Native fixture; no acceptance claimed."])), checks, previousAttempts: [], evidence: facts });
+  const captured = evidence.publish("phase-report", { actor: actorId, facts, report: blob(Buffer.from(JSON.stringify(report))), diff, phaseId: "phase-5", attempt: 1 });
+  const publicRoot = join(authority.aiUsageRoot, "agent-teams/builder/artifacts"); mkdirSync(publicRoot, { recursive: true, mode: 0o700 });
+  const ownerPath = join(publicRoot, "2026-11-21-TEST-1-d-aaaaaa-owner.md"); let owner = "# Existing orchestration owner\n";
+  const host: PhaseReportHost = { authorize() {}, verifyReport() {}, sanitize: s => s, assertPublic() {}, verifyCanonical() {}, index(r) { owner = indexPhaseReport(owner, workflowDigest(owner), r).markdown; writeFileSync(ownerPath, owner, { mode: 0o600 }); }, resolvePublicDiff: () => evidence.blob(diff), resolveDelivery() { throw new Error("missing"); }, loadDeliverySources: () => [], recordDelivery() {} };
+  const service = new PhaseReportService(publicRoot, host); const receipt = service.publish(report);
+  const receiptRef = evidence.publish("report-receipt", { actor: actorId, source: captured, receipt });
+  const payload = { actor: actorId, report: receiptRef, plannedReference: plan.reference, binding: { repository: plan.repository, ticket: plan.ticket, subjectSha256: plan.subjectSha256, revision: 3, manifestSha256: plan.manifestSha256, candidateSha: sha }, observations: [{ ac: "AC-01", observation: "Print not checked.", disposition: "unverified", difference: "Unverified", impact: "Unknown", owner: "Builder" }], actualOnly: [], deliveries: [], human: [] };
+  const index = evidence.publish("planned-actual", payload); const locator = service.publishPlannedActualLocator(receipt, index);
+  const native = nativePlannedActualHost(authority); const projectionHost = { ...native, resolvePlan: async () => plan };
+  const tickets = join(root, "tickets"); mkdirSync(tickets);
+  writeFileSync(join(tickets, "TEST-1.json"), JSON.stringify({ id: "TEST-1", project: "test", title: "Fixture", doc_refs: [], status: "implementing", assignee: "builder/team-manager" }));
+  return { root, authority, evidence, payload, locator, projectionHost, native, ticketStore: new TicketStore(tickets), service, receipt, receiptRef, report, captured, ownerPath };
+}
+
+for (const version of ["v1", "v2"] as const) test(`retained combined ${version} Planned resolves and attaches without a replacement decision`, async () => {
+  const f = documentRuntimeFixture();
+  try {
+    Object.assign(process.env, { PA_REGISTRY_DB: join(f.root, "registry.db"), PA_AI_USAGE_HOME: f.root });
+    f.db.pragma("synchronous = FULL");
+    f.store.update("EX-1", { title: "Stable retained Planned fixture" });
+    const member = f.subject.members.find(m => m.role === "requirements")!;
+    const raw = Buffer.from("# Acceptance\n- AC-01: Preserve the original approval.\n");
+    member.bytes = raw.length; member.sha256 = workflowDigest(raw); writeFileSync(join(f.root, member.source), raw);
+    const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: f.repo, encoding: "utf8", stdio: "pipe" }).trim();
+    git("init", "-b", "develop"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base");
+    const binding = JSON.stringify({ schemaVersion: "pa-mode-capability-binding/v1", configRevision: "a".repeat(40), resourcePath: "teams/requirements.yaml", resourceSha256: "b".repeat(64), profile: "pa-document-policy/v1", policy: { version: "pa-mode-capabilities/v1", allow: ["document.handoff", "document.local-review", "document.package"] } });
+    const caller = { identitySha256: "a".repeat(64), selectionSha256: workflowDigest(binding), deploymentId: "d-314001", sessionId: "retained", repoKey: "example", repoRoot: f.repo, ticket: "EX-1" };
+    const planIdentity = nativeHandoffPlanIdentity(caller, "native-plan"), before = f.store.get("EX-1")!, base = git("rev-parse", "HEAD");
+    const physicalIdentitySha256 = withRepositoryRefTicketExclusion("example", f.repo, exclusion => withRepositoryRefAdmission(f.repo, exclusion, id => id));
+    const intent: HandoffBranchIntent = { schemaVersion: "pa-handoff-branch-intent/v1", requestId: "native-plan", callerIdentitySha256: caller.identitySha256, expectedTicketVersion: creationDigest(before), repository: { key: "example", root: f.repo, physicalIdentitySha256 }, ticket: "EX-1", branch: "feature/EX-1-retained", action: "create", base: { ref: "refs/heads/develop", sha: base, observedDevelopSha: base, observedAt: time, provenance: "local-develop-ref", remoteFreshness: "not-established" }, plannedLinkSha256: creationDigest(null), lineage: null };
+    f.store.applyHandoffWithIntent("EX-1", creationDigest(before), { kind: "plan", intent }, "requirements/analyze", planIdentity, { assertCurrent() {}, assertSnapshot() {} });
+    f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
+    const delivery = await presentFullDocumentReader(f.subject, f.root, hash => f.journal.snapshot(hash));
+    f.db.prepare("INSERT INTO registry_events(deployment_id,team,event,timestamp,mode,runtime,binary,note,repo,repo_root,worktree_root,ticket_id,mode_capability_binding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(caller.deploymentId, "requirements", "started", time, "analyze", "pi", "ppa", MODE_CAPABILITY_SESSION, f.repo, f.repo, f.repo, "EX-1", binding);
+    const effects = { publish: true, branchRef: true, queue: false };
+    const common = { documentSubjectSha256: documentPackageSha(f.subject), branchIntentSha256: handoffBranchIntentSha(intent), deliverySha256: String(delivery.deliverySha256), selectionSha256: caller.selectionSha256, callerIdentitySha256: caller.identitySha256, effects };
+    const subject: HandoffReviewSubject = version === "v1" ? { schemaVersion: "pa-handoff-review/v1", ...common } : { schemaVersion: "pa-handoff-review/v2", ...common, origin: { deploymentId: caller.deploymentId, sessionId: caller.sessionId, planIdentity } };
+    const journal = new RegistryHandoffReviewJournal(f.db), subjectSha = journal.freeze(subject, intent);
+    if (version === "v1") {
+      const review = new HandoffReviewService(journal, { artifactRoot: f.root, tickets: f.store, authenticate: () => caller, assertAvailable() {}, async capture(request) { return Buffer.from(JSON.stringify({ schemaVersion: "pa-handoff-native-evidence/v1", method: "pi-native-handoff-review", request, outcome: "approved", principal: `local-uid:${process.getuid?.()}`, interactionId: "fixture-retained", boundary: "native-foreground-not-hostile-same-uid-isolation" })); } });
+      await review.review(subjectSha, 0);
+    } else {
+      const review = new LocalHandoffReviewService(journal, { artifactRoot: f.root, tickets: f.store, ...localHandoffReviewHooks(f.db, f.store, journal, f.root) });
+      const pending = await review.request(subjectSha, 0); await review.decide(subjectSha, 0, String(pending.requestKey), "approved");
+    }
+    const saved = journal.events(subjectSha), ticketBytes = readFileSync(join(f.root, "tickets/EX-1.json"));
+    const native = nativePlannedActualHost(new PiPreparedNativeAuthority({ root: join(f.root, "protected"), aiUsageRoot: f.root }));
+    for (const reference of [subjectSha, `review:${subjectSha}`]) {
+      const planned = await native.resolvePlan(reference); assert.equal(planned.state, "approved");
+      assert.ok("reference" in planned); if (!("reference" in planned)) continue;
+      assert.equal(planned.reference, reference); assert.equal(planned.subjectSha256, common.documentSubjectSha256);
+      assert.deepEqual(planned.approvalOwner?.scope, effects); assert.equal(planned.approvalOwner?.subjectSha256, subjectSha);
+    }
+    const tool = createPaTicketTool({ store: f.store, plannedActualHost: native });
+    const discovery = await tool.execute("discover-retained", { action: "read", id: "EX-1", plannedActual: true }, undefined, undefined, {});
+    assert.match(JSON.stringify(discovery), /selection-required/);
+    const discoveredText = discovery.content.find(c => c.type === "text"); assert.ok(discoveredText && "text" in discoveredText);
+    assert.deepEqual(JSON.parse(discoveredText.text).choices, [{ reference: subjectSha, state: "approved" }]);
+    const planOnly = await tool.execute("read-retained", { action: "read", id: "EX-1", reference: subjectSha }, undefined, undefined, {});
+    assert.match(JSON.stringify(planOnly), /no-handback/); assert.doesNotMatch(JSON.stringify(planOnly), /candidateSha/);
+    assert.deepEqual(journal.events(subjectSha), saved); assert.deepEqual(readFileSync(join(f.root, "tickets/EX-1.json")), ticketBytes);
+    const presentationPath = fileURLToPath(String(delivery.entry)); const bytes = readFileSync(presentationPath); writeFileSync(presentationPath, "tampered");
+    assert.notEqual((await native.resolvePlan(subjectSha)).state, "approved"); writeFileSync(presentationPath, bytes);
+    const planned = await native.resolvePlan(subjectSha); assert.ok("reference" in planned); if (!("reference" in planned)) return;
+    // Exercise the join/ref owner with a verified retained Planned and a separate
+    // trusted Actual port; native report metadata is covered by the fixture below.
+    const locator = `/reports/planned-actual-d-aaaaaa-${"e".repeat(64)}.json`;
+    const host = { ...native, resolveActual: async () => ({ locator, binding: { repository: planned.repository, ticket: planned.ticket, subjectSha256: planned.subjectSha256, revision: planned.revision, manifestSha256: planned.manifestSha256, candidateSha: sha }, plannedReference: subjectSha, reportId: "1".repeat(64), reportSourceSha256: "2".repeat(64), reportPath: "/reports/report.md", ownerPath: "/reports/owner.md", outcome: "partial" as const, scope: "Fixture join", observations: [], actualOnly: [], evidence: [] }) };
+    await attachPlannedActual(f.store, "EX-1", locator, host, () => undefined);
+    assert.equal((await projectPlannedActual(f.store.get("EX-1")!, undefined, undefined, host)).state, "selection-required");
+    assert.equal((await projectPlannedActual(f.store.get("EX-1")!, subjectSha, sha, host)).state, "available");
+    assert.deepEqual(journal.events(subjectSha), saved);
+  } finally { f.close(); }
+});
+
+test("normal native ticket discovery reads draft and approved Planned before any Actual exists", async () => {
+  const f = documentRuntimeFixture();
+  try {
+    Object.assign(process.env, { PA_REGISTRY_DB: join(f.root, "registry.db"), PA_AI_USAGE_HOME: f.root });
+    f.db.pragma("synchronous = FULL");
+    const member = f.subject.members.find(m => m.role === "requirements")!;
+    const raw = Buffer.from("# Acceptance\n- AC-01: Discover the exact native Planned without Actual.\n");
+    member.bytes = raw.length; member.sha256 = workflowDigest(raw); writeFileSync(join(f.root, member.source), raw);
+    f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
+    const delivery = await presentFullDocumentReader(f.subject, f.root, hash => f.journal.snapshot(hash));
+    const binding = JSON.stringify({ schemaVersion: "pa-mode-capability-binding/v1", configRevision: "a".repeat(40), resourcePath: "teams/requirements.yaml", resourceSha256: "b".repeat(64), profile: "pa-document-policy/v1", policy: { version: "pa-mode-capabilities/v1", allow: ["document.handoff", "document.local-review", "document.package"] } });
+    f.db.prepare("INSERT INTO registry_events(deployment_id,team,event,timestamp,mode,runtime,binary,note,repo,repo_root,worktree_root,ticket_id,mode_capability_binding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run("d-314001", "requirements", "started", time, "analyze", "pi", "ppa", MODE_CAPABILITY_SESSION, f.repo, f.repo, f.repo, "EX-1", binding);
+    const journal = new RegistryHandoffReviewJournal(f.db);
+    const service = new ContentReviewService(journal, { artifactRoot: f.root, assertOrigin() {}, assertDocument() {} });
+    const reference = await service.prepare(documentPackageSha(f.subject), String(delivery.deliverySha256), { callerIdentitySha256: "a".repeat(64), selectionSha256: workflowDigest(binding), deploymentId: "d-314001", sessionId: "native-discovery" });
+    const native = nativePlannedActualHost(new PiPreparedNativeAuthority({ root: join(f.root, "protected"), aiUsageRoot: f.root }));
+    const tool = createPaTicketTool({ store: f.store, plannedActualHost: native });
+    for (const expected of ["draft", "no-handback"] as const) {
+      const result = await tool.execute("discover", { action: "read", id: "EX-1", plannedActual: true }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      const discovered = JSON.parse(text.text);
+      assert.equal(discovered.state, "selection-required");
+      assert.deepEqual(discovered.choices, [{ reference, state: expected === "draft" ? "draft" : "approved" }]);
+      const read = await tool.execute("read-plan", { action: "show", id: "EX-1", reference }, undefined, undefined, {});
+      const body = read.content.find(c => c.type === "text"); assert.ok(body && "text" in body);
+      const selected = JSON.parse(body.text); assert.equal(selected.state, expected);
+      assert.equal(selected.planned.reference, reference); assert.doesNotMatch(body.text, /candidateSha/);
+      if (expected === "draft") { await service.request(reference); await service.decide(reference, "approved"); }
+    }
+    assert.equal(f.store.get("EX-1")?.doc_refs.length, 0);
+    writeFileSync(join(f.root, "tickets/EX-2.json"), JSON.stringify({ id: "EX-2", project: "example", title: "Other ticket", doc_refs: [], status: "requirement-review", assignee: "requirements/team-manager" }));
+    const other = await tool.execute("other-ticket", { action: "read", id: "EX-2", reference }, undefined, undefined, {});
+    assert.match(JSON.stringify(other), /unmatched/); assert.doesNotMatch(JSON.stringify(other), /Discover the exact native|index.html/);
+    assert.deepEqual(await native.discoverPlans({ id: "EX-2", project: "example" }), { references: [], issues: [] });
+    const configPath = join(f.config, "config.yaml"), config = readFileSync(configPath);
+    writeFileSync(configPath, `repos:\n  example:\n    path: ${f.root}/other-repo\n    prefix: EX\n`);
+    const forbidden = await native.discoverPlans({ id: "EX-1", project: "example" });
+    assert.deepEqual(forbidden, { references: [], issues: [{ state: "denied" }] });
+    assert.doesNotMatch(JSON.stringify(forbidden), /Discover the exact native|index.html/);
+    writeFileSync(configPath, config);
+    writeFileSync(fileURLToPath(String(delivery.entry)), "tampered");
+    const denied = await native.discoverPlans(f.store.get("EX-1")!);
+    assert.deepEqual(denied.references, []); assert.deepEqual(denied.issues, [{ state: "integrity-failure" }]);
+    assert.doesNotMatch(JSON.stringify(denied), /Discover the exact native/);
+  } finally { f.close(); }
+});
+
+test("saved approval cannot bypass complete native Planned entry/raw/member/manifest verification", async () => {
+  const f = documentRuntimeFixture();
+  try {
+    f.db.pragma("synchronous = FULL"); // New disposable database only; retained registries are never opened writable.
+    const member = f.subject.members.find(m => m.role === "requirements")!;
+    const raw = Buffer.from("# FR-1\n\n- AC-01: Print every required member.\n  Include closed content.\n");
+    member.bytes = raw.length; member.sha256 = workflowDigest(raw); writeFileSync(join(f.root, member.source), raw);
+    f.journal.freeze(f.subject, 0, readDocumentSources(f.subject, f.root));
+    const delivery = await presentFullDocumentReader(f.subject, f.root, sha => f.journal.snapshot(sha));
+    const journal = new RegistryHandoffReviewJournal(f.db);
+    const service = new ContentReviewService(journal, { artifactRoot: f.root, assertOrigin() {}, assertDocument(document) { assert.equal(document.repository.root, f.repo); } });
+    const reference = await service.prepare(documentPackageSha(f.subject), String(delivery.deliverySha256), { callerIdentitySha256: "a".repeat(64), selectionSha256: "b".repeat(64), deploymentId: "d-aaaaaa", sessionId: "disposable-p5" });
+    await service.request(reference);
+    await service.decide(reference, "approved");
+    const view = await service.show(reference); const planned = plannedRecordFromContentReview(view);
+    assert.equal(planned.state, "approved");
+    if (typeof view.presentation.entry !== "string" || typeof view.presentation.manifest !== "string") throw new Error("Missing verified delivery");
+    const entry = fileURLToPath(view.presentation.entry), manifest = fileURLToPath(view.presentation.manifest);
+    const paths = [entry, manifest, join(dirname(entry), "raw/member-2.md"), join(dirname(entry), "members/member-2.html")];
+    for (const path of paths) {
+      const before = readFileSync(path); writeFileSync(path, "tampered fixture");
+      const saved = await service.show(reference); assert.equal(saved.approval, "approved");
+      assert.deepEqual(plannedRecordFromContentReview(saved), { state: "integrity-failure" });
+      writeFileSync(path, before);
+      unlinkSync(path);
+      // Exercise the same finite resolver discriminator/classifier as production:
+      // missing-file throws and unverified saved history both fail integrity, without
+      // altering the existing reader/review owner or trusting exception prose.
+      const missing = await service.show(reference).then(plannedRecordFromContentReview, plannedActualReadFailure);
+      assert.deepEqual(missing, { state: "integrity-failure" });
+      writeFileSync(path, before, { mode: 0o600 });
+    }
+    assert.equal(plannedRecordFromContentReview(await service.show(reference)).state, "approved");
+  } finally { f.close(); }
+});
+
+test("native ticket/report owner exercise: authenticated metadata attachment and normal pa_ticket dispatch", async () => {
+  const f = fixture();
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.binding.candidateSha, sha); assert.equal(actual.reportId, f.receipt.reportId);
+    assert.equal(actual.evidence[0]?.applicability, "current");
+    assert.deepEqual(actual.evidence.map(e => [e.class, e.state, e.coverage]), [["source", "passed", []]]);
+    const companion = readFileSync(f.locator);
+    await assert.rejects(attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => { throw new Error("fixture admission denied"); }));
+    assert.equal(f.ticketStore.get("TEST-1")?.doc_refs.length, 0);
+    assert.deepEqual(readFileSync(f.locator), companion);
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    assert.ok(f.ticketStore.get("TEST-1")?.doc_refs.every(ref => existsSync(ref.path) && !ref.primary));
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+    const result = await tool.execute("read", { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha }, undefined, undefined, {});
+    const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+    const projected = JSON.parse(text.text); assert.equal(projected.state, "available"); assert.equal(projected.actuals[0].rows[0].disposition, "unverified"); assert.equal(projected.actuals[0].evidence.find((e: { class: string }) => e.class === "human-uat").state, "not-run");
+    assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
+    const discovered = await tool.execute("discover", { action: "read", id: "TEST-1", plannedActual: true }, undefined, undefined, {});
+    assert.match(JSON.stringify(discovered), /selection-required/);
+    const planOnly = await tool.execute("plan-only", { action: "read", id: "TEST-1", reference: plan.reference }, undefined, undefined, {});
+    assert.match(JSON.stringify(planOnly), /selection-required/);
+    await assert.rejects(tool.execute("bad-selector", { action: "read", id: "TEST-1", candidate: sha }, undefined, undefined, {}));
+    const before = readFileSync(f.ownerPath);
+    const human = f.evidence.publish("planned-actual-human", { binding: f.payload.binding, report: f.payload.report, state: "passed", observedAt: "2026-11-21T01:00:00.000Z", coverage: ["AC-01"] });
+    const later = f.evidence.publish("planned-actual", { ...f.payload, human: [human] });
+    const next = f.service.publishPlannedActualLocator(f.receipt, later);
+    await attachPlannedActual(f.ticketStore, "TEST-1", next, f.projectionHost, () => undefined);
+    const appended = await tool.execute("read2", { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha }, undefined, undefined, {});
+    assert.match(JSON.stringify(appended), /local-unverified/); assert.deepEqual(readFileSync(f.ownerPath), before);
+    writeFileSync(f.locator, "tampered locator");
+    assert.deepEqual(await f.native.resolveActual(f.locator), { state: "integrity-failure" });
+    writeFileSync(f.locator, companion);
+    assert.deepEqual(await f.native.resolveActual(join(f.root, "relocated", f.locator.split("/").at(-1)!)), { state: "integrity-failure" });
+    writeFileSync(actual.reportPath, "tampered");
+    const bad = await f.native.resolveActual(f.locator); assert.deepEqual(bad, { state: "integrity-failure" });
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+for (const options of [{ dirty: false, current: false }, { dirty: true, current: false }, { dirty: true, current: true }]) test(`native checks are not current from HEAD/status alone: ${JSON.stringify(options)}`, async () => {
+  const f = fixture(options);
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.evidence[0]?.state, "passed", "the historical observation is preserved");
+    assert.equal(actual.evidence[0]?.applicability, "historical");
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    const comparison = await projectPlannedActual(f.ticketStore.get("TEST-1")!, plan.reference, sha, f.projectionHost);
+    assert.equal(comparison.actuals[0]?.evidence.some(e => e.class === "source" && e.state === "passed" && e.applicability === "current"), false);
+    assert.deepEqual(actual.scopeDetails?.admitted?.paths, ["src/export.ts"]);
+    assert.equal(actual.scopeDetails?.custody.state, "orchestrator-direct");
+    assert.deepEqual(actual.scopeDetails?.omissions, ["Product browser observation not supplied."]);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+const maximumScope = "s".repeat(4096);
+const manyPaths = Array.from({ length: 64 }, (_, i) => `src/${String(i).padStart(3, "0")}-${"p".repeat(79)}.ts`);
+const manyOmissions = Array.from({ length: 64 }, (_, i) => `Omission ${i}: product observation not supplied.`.padEnd(90, "x"));
+for (const options of [
+  { scope: maximumScope },
+  { paths: manyPaths, omissions: manyOmissions },
+  { scope: maximumScope, paths: manyPaths, omissions: manyOmissions, custodyObservation: `Native custody observation\n${"c".repeat(65_536 - "Native custody observation\n".length)}` },
+]) test(`native maximum admitted scope survives attachment and complete ticket dispatch: ${options.scope ? "4096 scope" : "64 paths"}${options.custodyObservation ? " with paged custody" : ""}`, async () => {
+  const f = fixture(options);
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    const expected = { admitted: { scope: options.scope ?? "Ticket export behavior", paths: options.paths ?? ["src/export.ts"] }, scopeProven: true,
+      custody: { state: "orchestrator-direct", observation: options.custodyObservation ?? "Native fixture; no acceptance claimed." }, omissions: options.omissions ?? ["Product browser observation not supplied."] };
+    assert.deepEqual(actual.scopeDetails, expected); assert.ok(actual.scope.length <= 4096); assert.match(actual.scope, /scopeDetails/);
+    const originalReport = readFileSync(actual.reportPath), originalOwner = readFileSync(actual.ownerPath), companion = readFileSync(f.locator);
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+    let page: { snapshot: string; offset: number } | undefined, joined = "", count = 0;
+    do {
+      const result = await tool.execute("scope-page", { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha, ...(page ? { page } : {}) }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.ok(Buffer.byteLength(text.text) <= MAX_TOOL_BYTES); assert.ok(text.text.split("\n").length <= MAX_TOOL_LINES);
+      const body = JSON.parse(text.text); assert.equal(body.state, "available"); assert.equal(body.truncated, undefined);
+      if (body.content) joined += body.content.text;
+      else { assert.deepEqual(body.actuals[0].scopeDetails, expected); assert.ok(body.actuals[0].scope.length <= 4096); }
+      page = body.pagination.next ?? undefined; assert.ok(++count < 20, "scope continuation terminates");
+    } while (page);
+    if (options.custodyObservation) assert.ok(count > 1, "full scope facts use existing pagination");
+    if (joined) assert.deepEqual(JSON.parse(joined).actuals[0].scopeDetails, expected);
+    assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
+    assert.deepEqual(readFileSync(actual.reportPath), originalReport); assert.deepEqual(readFileSync(actual.ownerPath), originalOwner); assert.deepEqual(readFileSync(f.locator), companion);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("native structured scope preserves sanitization and explicit absent-plan facts", async () => {
+  const previous = process.env.PA_PAP327_TEST_TOKEN;
+  process.env.PA_PAP327_TEST_TOKEN = "synthval"; // Synthetic redaction fixture, not a credential.
+  try {
+    const f = fixture({ scope: "synthval".repeat(512), paths: [".env", "src/synthval.ts"], omissions: ["Omitted synthval observation."] });
+    try {
+      const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+      const expected = { admitted: { scope: "[REDACTED]".repeat(512), paths: [`[omitted path SHA-256 ${workflowDigest(".env")}]`, "src/[REDACTED].ts"] }, scopeProven: true,
+        custody: { state: "orchestrator-direct", observation: "Native fixture; no acceptance claimed." }, omissions: ["Omitted [REDACTED] observation."] };
+      assert.deepEqual(actual.scopeDetails, expected); assert.ok(actual.scope.length <= 4096);
+      await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+      const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+      const result = await tool.execute("safe-scope", { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.equal(JSON.parse(text.text).state, "available"); assert.deepEqual(JSON.parse(text.text).actuals[0].scopeDetails, expected);
+      assert.doesNotMatch(text.text, /synthval|protected|config\/\.env/);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  } finally {
+    if (previous === undefined) delete process.env.PA_PAP327_TEST_TOKEN; else process.env.PA_PAP327_TEST_TOKEN = previous;
+  }
+  const f = fixture({ noPlan: true, scopeProven: false, omissions: [] });
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.scopeDetails?.admitted, null); assert.equal(actual.scopeDetails?.scopeProven, false); assert.deepEqual(actual.scopeDetails?.omissions, []);
+    assert.match(actual.scope, /No admitted native phase plan available/); assert.match(actual.scope, /absence of omissions is not acceptance/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+const failureCases: { name: string; options: NativeActualFixtureOptions; currentFailure: boolean; currentPass?: boolean }[] = [
+  { name: "clean unresolved exact failure", options: { failure: "unresolved" }, currentFailure: true },
+  { name: "unrelated later pass does not resolve this check", options: { failure: "unrelated-pass" }, currentFailure: true, currentPass: true },
+  { name: "resolved failure", options: { failure: "resolved" }, currentFailure: false, currentPass: true },
+  { name: "later same-check pass before resolve", options: { failure: "superseded" }, currentFailure: false, currentPass: true },
+  { name: "no retained unresolved failure", options: { failure: "absent" }, currentFailure: false },
+  { name: "dirty candidate", options: { failure: "unresolved", dirty: true }, currentFailure: false },
+  { name: "different failure candidate", options: { failure: "different-candidate" }, currentFailure: false },
+  { name: "different failure output", options: { failure: "different-output" }, currentFailure: false },
+  { name: "stale execution candidate", options: { failure: "unresolved", executionCandidate: "9".repeat(40) }, currentFailure: false },
+  { name: "stale report check candidate", options: { failure: "unresolved", checkCandidate: "9".repeat(40) }, currentFailure: false },
+  { name: "in-flight operation", options: { failure: "unresolved", inFlight: true }, currentFailure: false },
+  { name: "unproven scope", options: { failure: "unresolved", scopeProven: false }, currentFailure: false },
+  { name: "source authentication failure", options: { failure: "unresolved", sourceFailure: true }, currentFailure: false },
+];
+for (const scenario of failureCases) test(`native failure applicability and ticket dispatch: ${scenario.name}`, async () => {
+  const f = fixture(scenario.options);
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.outcome, "failed"); assert.equal(actual.evidence[0]?.state, "failed");
+    assert.equal(actual.evidence[0]?.applicability, scenario.currentFailure ? "current" : "historical");
+    assert.equal(actual.evidence[0]?.locator, f.report.checks[0]?.output?.ref);
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+    const result = await tool.execute("failure-read", { action: "show", id: "TEST-1", reference: plan.reference, candidate: sha }, undefined, undefined, {});
+    const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+    const comparison = JSON.parse(text.text); assert.equal(comparison.state, "available"); assert.equal(comparison.actuals[0].outcome, "failed");
+    const sourceRows = comparison.actuals[0].evidence.filter((e: { class: string }) => e.class === "source");
+    assert.equal(sourceRows.some((e: { state: string; applicability: string }) => e.state === "failed" && e.applicability === "current"), scenario.currentFailure);
+    assert.equal(sourceRows.some((e: { state: string; applicability: string }) => e.state === "passed" && e.applicability === "current"), scenario.currentPass ?? false);
+    assert.equal(sourceRows.some((e: { state: string }) => e.state === "not-run"), !scenario.currentFailure && !scenario.currentPass);
+    assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("normal ticket projection has finite complete continuation within global output bounds", async () => {
+  const f = fixture();
+  try {
+    const largePlan = { ...plan, rows: Array.from({ length: 12 }, (_, i) => ({ id: `AC-${String(i + 1).padStart(2, "0")}`, expectation: `${i + 1}: ${"界😀\\\"".repeat(1100)}` })) };
+    const deniedLocator = f.locator.replace(/-[a-f0-9]{64}\.json$/, `-${"9".repeat(64)}.json`);
+    const h = { ...f.projectionHost, resolvePlan: async () => largePlan, resolveActual: async (locator: string) => locator === deniedLocator ? { state: "denied" as const } : f.native.resolveActual(locator) };
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, h, () => undefined);
+    const human = f.evidence.publish("planned-actual-human", { binding: f.payload.binding, report: f.payload.report, state: "passed", observedAt: "2026-11-21T01:00:00.000Z", coverage: ["AC-12"] });
+    const later = f.evidence.publish("planned-actual", { ...f.payload, human: [human] });
+    const next = f.service.publishPlannedActualLocator(f.receipt, later);
+    await attachPlannedActual(f.ticketStore, "TEST-1", next, h, () => undefined);
+    const t = f.ticketStore.get("TEST-1")!;
+    f.ticketStore.update(t.id, { doc_refs: [...t.doc_refs, { type: "attachment", path: deniedLocator, primary: false, addedAt: time, addedBy: "fixture" }] });
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: h });
+    const input = { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha };
+    let continuation: { snapshot: string; offset: number } | undefined;
+    let joined = "", pages = 0, snapshot = "";
+    do {
+      const result = await tool.execute("page", { ...input, ...(continuation ? { page: continuation } : {}) }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.ok(Buffer.byteLength(text.text) <= MAX_TOOL_BYTES); assert.ok(text.text.split("\n").length <= MAX_TOOL_LINES);
+      const page = JSON.parse(text.text); assert.equal(page.truncated, undefined);
+      assert.equal(page.state, "denied"); assert.equal(page.selection.reference, plan.reference);
+      assert.deepEqual(page.selection.binding, f.payload.binding);
+      assert.equal(page.summary.issues.denied, 1);
+      assert.ok(page.summary.evidence.some((e: { class: string; state: string; count: number }) => e.class === "human-uat" && e.state === "passed" && e.count === 1));
+      assert.equal(page.content.encoding, "json-fragment"); assert.equal(page.pagination.offset, joined.length);
+      if (snapshot) assert.equal(page.pagination.snapshot, snapshot); else snapshot = page.pagination.snapshot;
+      joined += page.content.text; continuation = page.pagination.next ?? undefined;
+      assert.ok(++pages < 100, "continuation must terminate");
+    } while (continuation);
+    assert.ok(pages > 1);
+    assert.equal(workflowDigest(joined), snapshot);
+    const complete = JSON.parse(joined);
+    assert.equal(complete.actuals[0].rows.length, 12); assert.deepEqual(complete.planned.rows, largePlan.rows);
+    assert.equal(complete.actuals[0].rows[11].expectation, largePlan.rows[11]!.expectation);
+    assert.ok(complete.actuals[0].evidence.some((e: { class: string; state: string }) => e.class === "human-uat" && e.state === "passed"));
+    assert.deepEqual(complete.issues, [{ state: "denied" }]);
+    for (const page of [{ snapshot: "0".repeat(64), offset: 1 }, { snapshot, offset: -1 }, { snapshot, offset: 1.5 }, { snapshot, offset: joined.length + 1 }, { snapshot, offset: joined.indexOf("😀") + 1 }, { snapshot, offset: 0, root: "/protected" }]) await assert.rejects(tool.execute("bad-page", { ...input, page }, undefined, undefined, {}));
+    const replay = await tool.execute("replay", { ...input, page: { snapshot, offset: 0 } }, undefined, undefined, {});
+    assert.doesNotMatch(JSON.stringify(replay), /truncated/);
+    await assert.rejects(tool.execute("different-candidate", { ...input, candidate: "9".repeat(40), page: { snapshot, offset: 10 } }, undefined, undefined, {}));
+    await assert.rejects(tool.execute("page-list", { action: "list", page: { snapshot, offset: 0 } }, undefined, undefined, {}));
+    f.ticketStore.update(t.id, { doc_refs: [] });
+    await assert.rejects(tool.execute("changed", { ...input, page: { snapshot, offset: 10 } }, undefined, undefined, {}));
+    await assert.rejects(tool.execute("candidate-only", { action: "read", id: "TEST-1", candidate: sha }, undefined, undefined, {}));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+for (const mode of ["plan-only", "discovery"] as const) test(`normal ticket continuation also completes ${mode} without an Actual or candidate`, async () => {
+  const f = fixture();
+  try {
+    const references = Array.from({ length: 800 }, (_, i) => `review:${i.toString(16).padStart(64, "0")}`);
+    const largePlan = { ...plan, rows: Array.from({ length: 12 }, (_, i) => ({ id: `AC-${String(i + 1).padStart(2, "0")}`, expectation: "x".repeat(6000) })) };
+    const h = { ...f.projectionHost, discoverPlans: async () => ({ references, issues: [] }), resolvePlan: async (reference: string) => mode === "discovery" ? { ...plan, reference } : largePlan };
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: h });
+    const input = { action: "show", id: "TEST-1", ...(mode === "discovery" ? { plannedActual: true } : { reference: plan.reference }) };
+    let page: { snapshot: string; offset: number } | undefined, joined = "", count = 0;
+    do {
+      const result = await tool.execute("page", { ...input, ...(page ? { page } : {}) }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.ok(Buffer.byteLength(text.text) <= MAX_TOOL_BYTES); assert.ok(text.text.split("\n").length <= MAX_TOOL_LINES);
+      const body = JSON.parse(text.text); assert.equal(body.content.encoding, "json-fragment");
+      assert.doesNotMatch(text.text, /candidateSha|truncated/);
+      joined += body.content.text; page = body.pagination.next ?? undefined;
+      assert.ok(++count < 100);
+    } while (page);
+    assert.ok(count > 1);
+    const complete = JSON.parse(joined); assert.equal(complete.actuals.length, 0);
+    if (mode === "discovery") { assert.equal(complete.choices.length, 800); assert.equal(complete.planned, undefined); }
+    else { assert.equal(complete.state, "no-handback"); assert.deepEqual(complete.planned.rows, largePlan.rows); }
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("normal phase-report dispatch exposes only native join and foreground observation, rejects imported authority", async () => {
+  const f = fixture();
+  try {
+    const calls: string[] = []; const tools: PiToolDefinition[] = [];
+    const binding: PiPhaseReportBinding = { service: f.service, resolveReport: () => f.report, resolveReceipt(ref) { assert.deepEqual(ref, f.receiptRef); return f.receipt; }, async attachActual(receipt, reference, observations, work) { assert.deepEqual(receipt, f.receipt); assert.equal(reference, plan.reference); assert.deepEqual(observations, f.payload.observations); assert.deepEqual(work, []); calls.push("attach"); return f.locator; }, async observeActual(locator) { assert.equal(locator, f.locator); calls.push("observe"); return null; } };
+    const runtime = { registerTool(tool: PiToolDefinition) { tools.push(tool); } };
+    // Registration uses only the runtime's tool port; the composed editor graph is intentionally absent.
+    createPiPhaseReportModule({ env: { PA_TEAM: "builder", PA_MODE: "orchestrator" }, resolveBinding: () => binding })(runtime as PiRuntime);
+    const run = (input: Record<string, unknown>) => tools[0]!.execute("call", input, undefined, undefined, {});
+    assert.equal((await run({ action: "attach-actual", report: f.receiptRef, reference: plan.reference, observations: f.payload.observations, actualOnly: [] })).details.acceptanceClaimed, false);
+    assert.equal((await run({ action: "observe-actual", locator: f.locator })).details.state, "not-observed");
+    await assert.rejects(run({ action: "observe-actual", locator: f.locator, state: "passed" }));
+    for (const extra of [{ evidence: source("arbitrary") }, { passed: true }, { outcome: "approved" }, { candidateSha: sha }, { root: "/other" }]) await assert.rejects(run({ action: "attach-actual", report: f.receiptRef, reference: plan.reference, observations: [], actualOnly: [], ...extra }));
+    assert.deepEqual(calls, ["attach", "observe"]);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});

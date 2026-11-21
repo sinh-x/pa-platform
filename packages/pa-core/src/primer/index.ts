@@ -7,6 +7,7 @@ import type { WorkflowPrimerView } from "../workflows/public.js";
 import { TEMPLATE_TOOL_REFERENCE } from "../templates/reference.js";
 import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_PROFILE, ModeCapabilityError, modeCapabilityRouteMatches, parseModeCapabilityPolicy, selectedCapabilityTools, type ModeResourceSnapshot } from "../mode-capabilities.js";
 import { getDeploymentDir, getPlatformHomeDir, getSkillsDir } from "../paths.js";
+import { selectedPrimerBudget, SELECTED_PRIMER_BUDGET_PATH, SELECTED_RESOURCE_PREFIX } from "../selected-mode-resources.js";
 import { DEPLOYMENT_ID_PATTERN, MAX_DEPLOYMENT_CORRELATION_PATH_CHARS } from "../deploy/correlation.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
@@ -65,6 +66,8 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       || !isDeepStrictEqual(parseTeamYamlContent(resources.read(binding.resourcePath)), options.teamConfig)
       || !isDeepStrictEqual(mode?.capability_policy, binding.policy)) throw new ModeCapabilityError("CAPABILITY_BINDING");
   }
+  const budget = options.modeResources ? selectedPrimerBudget(options.modeResources) : undefined;
+  const emitted = budget === undefined ? undefined : new Set<string>([mode?.objective ?? options.teamConfig.objective]);
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
   const skillsDir = options.modeResources ? resolve(options.modeResources.binding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
@@ -133,22 +136,22 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     demoteAuthoritativeAdditionalInstructionsHeading(options.teamConfig.description),
     ``,
     `## Agents`,
-    renderAgents(agents, options, options.runtime),
+    renderAgents(agents, options, options.runtime, emitted),
     ``,
-    renderAvailableProcedures(skills, skillsDir, options.runtime, options.modeResources),
+    renderAvailableProcedures(skills, skillsDir, options.runtime, options.modeResources, budget !== undefined),
     ``,
-    renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime, options.modeResources, options.templateVars),
+    renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime, options.modeResources, options.templateVars, emitted),
     ``,
     renderDeploymentInstructions(options.teamConfig, mode, options.runtime, document, options),
     ``,
     `## Skills`,
-    renderSkills(skills, skillsDir, options.runtime, options.modeResources),
-    renderCapturedReferences(options, mode),
+    renderSkills(skills, skillsDir, options.runtime, options.modeResources, emitted),
+    renderCapturedReferences(options, mode, budget !== undefined),
   ].filter((part) => part !== "").join("\n");
   if (countAuthoritativeAdditionalInstructionsHeadings(body) !== 1) {
     throw new Error("Primer generation requires exactly one authoritative Additional Instructions heading.");
   }
-  return `${body}\n${renderSizeSignal(body, mode?.id)}`;
+  return `${body}\n${renderSizeSignal(body, mode?.id, budget)}`;
 }
 
 function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
@@ -438,11 +441,12 @@ function collectGlobalDocs(teamConfig: TeamConfig, mode: DeployMode | undefined,
   ];
 }
 
-function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptions, runtime: RuntimeName): string {
+function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptions, runtime: RuntimeName, emitted?: Set<string>): string {
   return agents.map((agent) => {
     const lines = [`### Agent: ${agent.name}`, `Role: ${agent.role}`];
     if (agent.model) lines.push(`Model: ${agent.model}`);
-    if (agent.instruction) {
+    if (agent.instruction && !emitted?.has(agent.instruction)) {
+      emitted?.add(agent.instruction);
       const content = resolveInstruction(options, agent.instruction);
       lines.push("", `<instruction-file name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(content, runtime)), `</instruction-file>`);
     }
@@ -457,8 +461,12 @@ function resolveInstruction(options: GeneratePrimerOptions, instruction: string)
   return applyTemplateVars(readFileSync(resolved, "utf-8"), options.templateVars ?? {});
 }
 
-function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName, resources?: ModeResourceSnapshot): string {
-  const inlined = skills.filter((skill) => skill["inject-as"] !== "reference");
+function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName, resources?: ModeResourceSnapshot, emitted?: Set<string>): string {
+  const inlined = skills.filter((skill) => {
+    const path = `skills/global/${skill.name}/SKILL.md`;
+    if (skill["inject-as"] === "reference" || emitted?.has(path)) return false;
+    emitted?.add(path); return true;
+  });
   if (inlined.length === 0) return "(none)";
   return inlined.map((skill) => {
     const resource = `skills/global/${skill.name}/SKILL.md`, path = resources ? resolve(resources.binding.configRoot, resource) : resolve(skillsDir, skill.name, "SKILL.md");
@@ -467,14 +475,21 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
   }).join("\n\n");
 }
 
-function renderCapturedReferences(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
+function renderCapturedReferences(options: GeneratePrimerOptions, mode: DeployMode | undefined, lean = false): string {
   const resources = options.modeResources;
   if (!resources) return "";
-  const active = new Set([resources.binding.resourcePath, mode?.objective,
+  const active = new Set([resources.binding.resourcePath, ...(lean ? [SELECTED_PRIMER_BUDGET_PATH] : []), mode?.objective,
     ...selectAgents(options.teamConfig, mode).map(agent => agent.instruction),
     ...collectGlobalDocs(options.teamConfig, mode, resources.binding.repoKey),
     ...collectSkills(options.teamConfig, mode).filter(skill => skill["inject-as"] !== "reference").map(skill => `skills/global/${skill.name}/SKILL.md`)]);
-  return resources.binding.resources.filter(resource => !active.has(resource.path)).map(resource =>
+  const references = resources.binding.resources.filter(resource => !active.has(resource.path));
+  if (lean) return [
+    "## Selected reference-only resources",
+    "Active obligations are included above. These optional references are not active instructions or new capabilities. Read only task-relevant bodies with the selected read tool using the exact selected-resource: locator (and offset/limit for continuation). Reading does not activate obligations, select tools or extend the immutable inventory. Never substitute mutable checkout paths; unavailable or denied reads block only the dependent task.",
+    `Config revision: ${resources.binding.configRevision}. Reference resources: ${references.length}.`,
+    ...references.map(resource => `- ${resource.path} (reference-only). Read: ${SELECTED_RESOURCE_PREFIX}${resource.path}; SHA-256: ${resource.sha256}`),
+  ].join("\n");
+  return references.map(resource =>
     `### Captured reference-only resource: ${resource.path}\nSHA-256: ${resource.sha256}\n${demoteHeadings(adaptContentForRuntime(resources.read(resource.path), options.runtime))}`
   ).join("\n\n");
 }
@@ -514,7 +529,7 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
   ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
 ];
 
-function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName, resources?: ModeResourceSnapshot): string {
+function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName, resources?: ModeResourceSnapshot, lean = false): string {
   assertSupportedRuntime(runtime);
   const intro = "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external skill folders.";
   const lines = ["## Available Procedures", intro];
@@ -531,9 +546,9 @@ function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runt
     const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
       ? " Start by reading pa-cli for CLI reference."
       : "";
-    lines.push(resources ? "Reference-only methods are captured below with their transitive resources; they are not active instructions or new capabilities:" : `Reference skills (use the Read tool to load any skill below when you need it)${paCliHint}:`);
+    lines.push(resources ? (lean ? "Reference-only methods are listed below with their selected transitive resources; load task-relevant bodies through the selected read tool, not the native skill loader. Reading does not activate instructions or capabilities:" : "Reference-only methods are captured below with their transitive resources; they are not active instructions or new capabilities:") : `Reference skills (use the Read tool to load any skill below when you need it)${paCliHint}:`);
     for (const skill of referenceSkills) {
-      const path = resolve(resources?.binding.configRoot ?? skillsDir, ...(resources ? ["skills/global"] : []), skill.name, "SKILL.md");
+      const path = lean ? `${SELECTED_RESOURCE_PREFIX}skills/global/${skill.name}/SKILL.md` : resolve(resources?.binding.configRoot ?? skillsDir, ...(resources ? ["skills/global"] : []), skill.name, "SKILL.md");
       const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
       lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
     }
@@ -544,18 +559,20 @@ function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runt
   return lines.join("\n");
 }
 
-function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativePath: string) => string | undefined) | undefined, runtime: RuntimeName, resources?: ModeResourceSnapshot, vars?: Record<string, string>): string {
+function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativePath: string) => string | undefined) | undefined, runtime: RuntimeName, resources?: ModeResourceSnapshot, vars?: Record<string, string>, emitted?: Set<string>): string {
   assertSupportedRuntime(runtime);
   if (globalDocs.length === 0) return "";
   const lines = ["## Project Agent Guides"];
   for (const doc of globalDocs) {
+    if (emitted?.has(doc)) continue;
+    emitted?.add(doc);
     const resolved = resources ? undefined : resolveFile?.(doc) ?? resolve(getPlatformHomeDir(), doc);
     if (!resources && (!resolved || !existsSync(resolved))) {
       lines.push(`- ${doc} (missing: ${resolved})`);
       continue;
     }
     const raw = resources ? applyTemplateVars(resources.read(doc), { ...vars, RUNTIME_ADAPTER: "ppa" }) : readFileSync(resolved!, "utf-8");
-    if (isPlaceholderTemplate(raw)) {
+    if (!emitted && isPlaceholderTemplate(raw)) {
       lines.push(`- ${doc} (skipped: placeholder-only template)`);
       continue;
     }
@@ -815,13 +832,13 @@ const PRIMER_LINE_BUDGET: Readonly<Record<string, number>> = {
   default: 1200,
 };
 
-function renderSizeSignal(primerBody: string, modeId: string | undefined): string {
+function renderSizeSignal(primerBody: string, modeId: string | undefined, selectedBudget?: number): string {
   // The final primer is `${body}\n${sizeLine}` — one extra line beyond the body.
   // Report the real line count (body lines + 1 for the size line) so downstream
   // tooling comparing `lines=N` to the file's real line count is not off by one (MIN-2).
   const bodyLines = primerBody.split("\n").length;
   const lines = bodyLines + 1;
-  const budget = PRIMER_LINE_BUDGET[modeId ?? "default"] ?? PRIMER_LINE_BUDGET["default"]!;
+  const budget = selectedBudget ?? PRIMER_LINE_BUDGET[modeId ?? "default"] ?? PRIMER_LINE_BUDGET["default"]!;
   const over = lines > budget;
   // MIN-A: compute chars from the FINAL size line length, not the placeholder.
   // The final size line embeds `chars=${chars}` whose digit count depends on chars

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { digest } from "../workflows/contracts.js";
 import { DocumentPackageError, documentPackageSha, documentReject, parseDocumentPackage, type DocumentPackage } from "./package-contract.js";
 import { validateDocumentBytes } from "./package-tools.js";
-import { DOCUMENT_READER_LIMITS, DOCUMENT_READER_VERSION, type DocumentReaderBundle } from "./reader.js";
+import { DOCUMENT_READER_LIMITS, DOCUMENT_READER_VERSION, parseHistoricalDocumentRenderer, type DocumentReaderBundle, type DocumentReaderRenderer } from "./reader.js";
 
 /** Trusted native controls can only REDUCE the published finite ceilings.
  * These are not tool/request fields, effect grants or an arbitrary worker port. */
@@ -18,7 +18,7 @@ const extensions = { "text/markdown": "md", "text/plain": "txt", "image/png": "p
 
 /** Validate complete worker inventory before the publisher can see ANY output.
  * Worker input/output is private data, never native authority. */
-function checkedBundle(value: unknown, subject: DocumentPackage, maximumBytes: number): DocumentReaderBundle {
+function checkedBundle(value: unknown, subject: DocumentPackage, maximumBytes: number, historicalRenderer?: DocumentReaderRenderer): DocumentReaderBundle {
   if (!value || typeof value !== "object") return documentReject("DOCUMENT_UNCERTAIN");
   const row = value as Record<string, unknown>;
   if (row.ok === false) {
@@ -39,10 +39,12 @@ function checkedBundle(value: unknown, subject: DocumentPackage, maximumBytes: n
     if (total > maximumBytes) return documentReject("DOCUMENT_UNAVAILABLE");
     files.set(item.path, Buffer.from(item.bytes));
   }
-  if (manifest.schemaVersion !== DOCUMENT_READER_VERSION || manifest.subjectSha256 !== documentPackageSha(subject)
+  const version = historicalRenderer?.id ?? DOCUMENT_READER_VERSION;
+  if (manifest.schemaVersion !== version || manifest.subjectSha256 !== documentPackageSha(subject)
     || manifest.deliverySha256 !== row.deliverySha256 || manifest.revision !== subject.revision || manifest.generationState !== "UNAPPROVED-at-generation"
     || manifest.observation !== "not-performed" || JSON.stringify(manifest.effects) !== JSON.stringify(subject.effects)
-    || JSON.stringify(manifest.members) !== JSON.stringify(members) || manifest.renderer?.id !== DOCUMENT_READER_VERSION || !sha(manifest.renderer.implementationSha256)
+    || JSON.stringify(manifest.members) !== JSON.stringify(members) || manifest.renderer?.id !== version || !sha(manifest.renderer.implementationSha256)
+    || historicalRenderer !== undefined && JSON.stringify(manifest.renderer) !== JSON.stringify(historicalRenderer)
     || !Array.isArray(manifest.outputs) || manifest.outputs.length !== files.size - 1) return documentReject("DOCUMENT_UNCERTAIN");
   const identity = digest(JSON.stringify({ schemaVersion: "pa-document-reader-identity/v1", subjectSha256: manifest.subjectSha256, revision: subject.revision, effects: subject.effects, members, renderer: manifest.renderer }));
   if (identity !== row.deliverySha256 || digest(files.get("manifest.json")!) !== row.manifestSha256
@@ -65,6 +67,17 @@ function checkedBundle(value: unknown, subject: DocumentPackage, maximumBytes: n
  * A parent process crash terminates its worker threads, not an external browser. */
 export async function renderDocumentReaderInWorker(input: DocumentPackage, snapshot: (sha256: string) => Uint8Array,
   control: ReaderWorkerControl = {}): Promise<DocumentReaderBundle> {
+  return deriveInWorker(input, snapshot, control);
+}
+/** Read-only compatibility derivation. The historical digest binds the retained
+ * v1 recipe, never a module path or stored unverified HTML. Same finite worker,
+ * source validation, output checks and exit/cleanup fence as current delivery. */
+export async function renderHistoricalDocumentReaderInWorker(input: DocumentPackage, snapshot: (sha256: string) => Uint8Array,
+  renderer: DocumentReaderRenderer, control: ReaderWorkerControl = {}): Promise<DocumentReaderBundle> {
+  return deriveInWorker(input, snapshot, control, parseHistoricalDocumentRenderer(renderer));
+}
+async function deriveInWorker(input: DocumentPackage, snapshot: (sha256: string) => Uint8Array,
+  control: ReaderWorkerControl, historicalRenderer?: DocumentReaderRenderer): Promise<DocumentReaderBundle> {
   const started = performance.now(), milliseconds = control.milliseconds ?? DOCUMENT_READER_LIMITS.milliseconds,
     maximumBytes = control.outputBytes ?? DOCUMENT_READER_LIMITS.outputBytes;
   if (!Number.isSafeInteger(milliseconds) || milliseconds < 1 || milliseconds > DOCUMENT_READER_LIMITS.milliseconds
@@ -82,7 +95,7 @@ export async function renderDocumentReaderInWorker(input: DocumentPackage, snaps
   // Production resolves the literal sibling in the shipped immutable closure.
   const workerFile = new URL(import.meta.url.endsWith(".ts") ? "../../dist/documents/reader-worker.js" : "./reader-worker.js", import.meta.url);
   let worker: Worker;
-  try { worker = new Worker(fileURLToPath(workerFile), { workerData: { subject, sources }, transferList: sources.map(bytes => bytes.buffer),
+  try { worker = new Worker(fileURLToPath(workerFile), { workerData: { subject, sources, historicalRenderer }, transferList: sources.map(bytes => bytes.buffer),
     env: {}, execArgv: [], resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32, stackSizeMb: 8 }, stdout: true, stderr: true }); }
   catch { return documentReject("DOCUMENT_UNAVAILABLE"); }
   active.add(worker);
@@ -115,7 +128,7 @@ export async function renderDocumentReaderInWorker(input: DocumentPackage, snaps
       if (code !== 0 || !received) return finish(new DocumentPackageError("DOCUMENT_UNAVAILABLE"));
       if (performance.now() - started > milliseconds) return finish(new DocumentPackageError("DOCUMENT_UNAVAILABLE"));
       try {
-        const bundle = checkedBundle(packet, subject, maximumBytes);
+        const bundle = checkedBundle(packet, subject, maximumBytes, historicalRenderer);
         if (performance.now() - started > milliseconds) return finish(new DocumentPackageError("DOCUMENT_UNAVAILABLE"));
         finish(undefined, bundle);
       } catch (error) { finish(error instanceof DocumentPackageError ? error : new DocumentPackageError("DOCUMENT_UNCERTAIN")); }

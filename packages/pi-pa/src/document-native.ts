@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mutatePiContentReview } from "./content-review-native.js";
+import { mutatePiContentPublication } from "./content-publication-native.js";
 import { inspectPiDocumentBranch } from "./document-branch.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -62,9 +64,27 @@ export function createPiDocumentCapture(context: PiWorkflowContext, authenticate
   };
 }
 const activeConfirmations = new Map<string, { requestSha256: string; result: Promise<Record<string, unknown>> }>();
-export async function mutatePiDocument(request: string, context: PiWorkflowContext, signal?: AbortSignal): Promise<Record<string, unknown>> {
+export async function mutatePiDocument(request: string, context: PiWorkflowContext, signal?: AbortSignal, contentSignal?: AbortSignal): Promise<Record<string, unknown>> {
   const authenticate = () => { if (signal?.aborted) throw new DocumentPackageError("DOCUMENT_AUTHORITY"); return authenticatePiDocumentCaller(context); };
   const caller = authenticate(), artifactRoot = getAiUsageDir();
+  const contentRequest = parseDocumentRequest(request);
+  const publicationAction: Readonly<Record<string, string>> = { "content-publication-authorize": "authorize", "content-publication-status": "status", "content-publish": "publish", "content-revoke": "revoke", "content-supersede": "supersede" };
+  if (Object.hasOwn(publicationAction, String(contentRequest.action))) {
+    try { workflowObject(contentRequest, ["action", ...DOCUMENT_ACTION_FIELDS[String(contentRequest.action)]!]); }
+    catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
+    const action = publicationAction[String(contentRequest.action)];
+    const { action: _action, ...coordinates } = contentRequest;
+    return { schemaVersion: "pa-document-result/v1", ok: true, action: contentRequest.action,
+      result: await mutatePiContentPublication(JSON.stringify({ schemaVersion: "pa-content-publication/v1", action, ...coordinates }), context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal), executionAdmitted: false };
+  }
+  if (["review-prepare", "review-list", "review-show", "review-sign"].includes(String(contentRequest.action))) {
+    try { workflowObject(contentRequest, ["action", ...DOCUMENT_ACTION_FIELDS[String(contentRequest.action)]!]); }
+    catch { throw new DocumentPackageError("DOCUMENT_INPUT"); }
+    const action = { "review-prepare": "prepare", "review-list": "list", "review-show": "show", "review-sign": "review" }[String(contentRequest.action)];
+    const { action: _action, ...coordinates } = contentRequest;
+    return { schemaVersion: "pa-document-result/v1", ok: true, action: contentRequest.action,
+      result: await mutatePiContentReview(JSON.stringify({ schemaVersion: "pa-content-review/v1", action, ...coordinates }), context, signal && contentSignal ? AbortSignal.any([signal, contentSignal]) : signal ?? contentSignal), executionAdmitted: false };
+  }
   const artifactBase = join(artifactRoot, "agent-teams/requirements/artifacts");
   const inside = (root: string, path: string) => { const r = relative(root, path); return r === "" || (!r.startsWith("../") && r !== ".." && !isAbsolute(r)); };
   if (realpathSync(artifactRoot) !== artifactRoot || inside(caller.repoRoot, artifactRoot) || inside(artifactBase, caller.repoRoot)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");

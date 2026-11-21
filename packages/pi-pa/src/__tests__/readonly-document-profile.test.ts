@@ -60,7 +60,7 @@ async function fixture(run: (f: Fixture) => Promise<void>) {
   const config = join(root, "config"), repo = join(root, "repo"), usage = join(root, "usage"), bin = join(root, "bin"), result = join(root, "result.json");
   const input = new ReadStream(openSync("/dev/ptmx", "r+"));
   try {
-    for (const path of [join(config, "teams"), join(config, "docs"), join(config, "skills/global/method"), repo, usage, bin]) mkdirSync(path, { recursive: true });
+    for (const path of [join(config, "teams"), join(config, "primers"), join(config, "docs"), join(config, "skills/global/method"), repo, usage, bin]) mkdirSync(path, { recursive: true });
     writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
     for (const [path, body] of Object.entries({ "docs/agent.md": "Selected agent instructions.", "docs/edited.md": "Config-only edited agent.", "docs/common.md": "[Policy](policy.md)", "docs/policy.md": "Selected transitive policy.", "docs/project.md": "Exact selected project guide.", "skills/global/method/SKILL.md": "Reference-only method." })) writeFileSync(join(config, path), body);
     const git = (...args: string[]) => execFileSync("git", args, { cwd: config, stdio: "pipe" });
@@ -70,6 +70,7 @@ async function fixture(run: (f: Fixture) => Promise<void>) {
       writeFileSync(join(config, `teams/${team}.yaml`), JSON.stringify(definition(team, modes, edited)));
       for (const mode of modes) writeFileSync(join(config, `docs/${mode}.md`), `${mode}: ${mode === "investigate" ? "Evidence-backed diagnosis and repair direction without implementation; feed analyze." : mode === "research" ? "Sourced comparison and recommendation; feed analyze." : "Config-defined document objective."}\n${"x".repeat(635831)}\n`);
     };
+    writeFileSync(join(config, "primers/budgets.yaml"), JSON.stringify({ $schema: "contracts/schemas/primer-budgets.schema.json", kind: "pa-primer-budgets", contractVersion: "1.0.0", unit: "lines", defaultMax: 1200, modes: ["analyze", "investigate", "research"].map(mode => ({ team: "analyst", mode, max: 9000 })) }));
     author("analyst", ["analyze", "investigate", "research"]); commit();
     execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "pipe" });
     execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Inert repository"], { cwd: repo, stdio: "pipe" });
@@ -98,7 +99,7 @@ test("PAP-318 same production runtime admits three modes and PAPC-only team/mode
     const events = getDeploymentEvents(result.deploymentId!), start = events.find(event => event.event === "started")!, binding = parseModeCapabilityBinding(JSON.parse(start.mode_capability_binding!));
     assert.equal(binding.schemaVersion, "pa-mode-capability-binding/v3"); assert.ok(hasModeResources(binding)); assert.equal(start.note, READONLY_DOCUMENT_SESSION);
     const edited = binding.policy.allow.includes("human.question");
-    assert.deepEqual(binding.resources.map(file => file.path).sort(), [`teams/${team}.yaml`, `docs/${mode}.md`, edited ? "docs/edited.md" : "docs/agent.md", "docs/common.md", "docs/policy.md", "docs/project.md", "skills/global/method/SKILL.md"].sort());
+    assert.deepEqual(binding.resources.map(file => file.path).sort(), [...(team === "analyst" ? ["primers/budgets.yaml"] : []), `teams/${team}.yaml`, `docs/${mode}.md`, edited ? "docs/edited.md" : "docs/agent.md", "docs/common.md", "docs/policy.md", "docs/project.md", "skills/global/method/SKILL.md"].sort());
     assert.deepEqual(start.agents, [edited ? "editor" : "reader"]);
     assert.equal(start.team, team); assert.equal(start.mode, mode); assert.deepEqual(observed.caller.capabilities, binding);
     assert.equal(observed.caller.ticket, supplied ? "EX-900" : null);
@@ -107,7 +108,10 @@ test("PAP-318 same production runtime admits three modes and PAPC-only team/mode
     assert.equal(events.filter(event => event.event === "ticket-associated").length, 0, "intake never reassociates the primary");
     const primer = readFileSync(join(getDeployPaths(result.deploymentId!).deployDir, "primer.md"), "utf8");
     assert.ok(observed.bytes > 635831); assert.equal(observed.bytes, Buffer.byteLength(primer)); assert.equal(observed.sha256, sha(primer)); assert.ok(observed.maxArg < 128 * 1024);
-    assert.match(primer, new RegExp(`Public identity: ${team}/${mode}`)); assert.match(primer, /Selected transitive policy/); assert.doesNotMatch(primer, /docs\/absent|not-selected/);
+    assert.match(primer, new RegExp(`Public identity: ${team}/${mode}`));
+    if (team === "analyst") { assert.match(primer, /budget=9000/); assert.match(primer, /selected-resource:docs\/policy.md/); assert.doesNotMatch(primer, /Selected transitive policy/); }
+    else assert.match(primer, /Selected transitive policy/);
+    assert.doesNotMatch(primer, /docs\/absent|not-selected/);
     assert.equal(readPiProcessIdentity(result.deploymentId!, getDeployPaths(result.deploymentId!).deployDir).pid, observed.pid);
     assert.equal(events.find(event => event.event === "pid")!.pid, observed.pid);
     return binding;
