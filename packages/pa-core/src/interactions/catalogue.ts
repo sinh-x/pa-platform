@@ -194,13 +194,52 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ...["show", "verify"].map(action => entry(`decision.${action}`, [`decision ${action}`], "read", "native", `${core}workflow.ts`, "native decision")),
   entry("document.describe", ["document describe --format json"], "read", "native", `${pi}document-cli.ts`, "document interface"),
   ...[
-    entry("document.review.help", ["document review", "document review --help", "document review serve --help"], "read", "native", `${pi}local-review-cli.ts`, "local review interface metadata", { reason: "Store-free help only; describes unauthenticated local-unverified confirmation, not installed/default selection or effect authority." }),
+    entry("document.review.help", ["document review", "document review --help", "document review serve --help"], "read", "native", `${pi}local-review-cli.ts`, "local review interface metadata", { reason: "Store-free help describes guided sign-content-only review and retained stdin/listener forms. Local confirmation is unauthenticated and local-unverified; help establishes neither installed/default selection nor effect authority." }),
     entry("document.review.stdin", ["document review --request-stdin"], "write", "owner", `${pi}local-review-cli.ts`, "shared local v2 review journal", { reason: "One strict pa-local-review/v1 JSON request on stdin: show reads; request/revoke persist pending requests; decide issues or replays local-unverified outcomes. No authentication, human identity evidence, publication, ref/link, queue or shell effects." }),
     entry("document.review.serve", ["document review serve --port"], "resource", "owner", `${pi}local-review-server.ts`, "explicit dedicated loopback review listener", { reason: "Starting a 127.0.0.1-only listener allocates a server resource and exposes eligible v2 review contents/decisions to other local processes. GET /v1/health is store-free; POST /v1/review uses the shared journal. No authentication/CORS, general agent API or CLI/API effect parity." }),
   ].map(row => Object.freeze({ ...row,
-    supportedNextStep: "Inspect ppa document review --help before an explicit local invocation; retain original v2 request coordinates. No CLI/API effect parity or authenticated human consent is implied.",
-    requiredContext: Object.freeze(["explicit local operator invocation; no caller authentication", "persisted v2 subject and verified original immutable selection for review actions", "original request/revision coordinates; discovery grants no authority"]),
+    supportedNextStep: "Inspect ppa document review --help before an explicit local invocation; retain original request coordinates for the selected version. No CLI/API effect parity or authenticated human consent is implied.",
+    requiredContext: Object.freeze(["explicit local operator invocation; no caller authentication", ...(row.operationId === "document.review.help" ? ["store-free interface metadata only"] : ["persisted v2 subject and verified original immutable selection for review actions", "original request/revision coordinates; discovery grants no authority"])]),
   })),
+  ...([
+    ["list", "document review list TICKET", "read", "Lists eligible exact sign-content-only references without choosing a revision; a ticket is not a signing target. No request or decision is persisted."],
+    ["show", "document review show REFERENCE", "read", "Reads the exact full content and delivery state without creating a pending request or decision. Unverified delivery is nonactionable; historical decisions are not effect authority."],
+    ["sign", "document review REFERENCE", "write", "Requests or reconciles one canonical sign-content-only decision; default Cancel is deliberate, detach leaves pending and a saved decision does not prompt again. No publication, branch/ref/link, queue/status, resource or launch effect is authorized or invoked."],
+  ] as const).map(([action, form, effect, reason]) => Object.freeze({
+    ...entry(`document.review.${action}`, [form], effect, "owner", `${pi}content-review-cli.ts`, "shared exact content-review journal", { reason }),
+    supportedNextStep: "Inspect ppa document review --help; list eligible references, then explicitly select one exact reference. Preserve that reference after reply loss; do not guess a revision or repeat a saved signature.",
+    requiredContext: Object.freeze(["explicit local operator invocation; no caller authentication", "native-issued exact content-only reference and original immutable selection; a ticket only discovers references", "complete verified delivery before actionable signing; local-unverified outcome, not authenticated human consent"]),
+  })),
+  ...([
+    ["prepare", "write", ["pa_document:review-prepare"], "Derives full immutable delivery and persists an exact branch-independent reference for an already frozen associated document; it issues no decision."],
+    ["list", "read", ["pa_document:review-list", "/pa-review TICKET"], "Lists eligible exact references without choosing latest, persisting a request or guessing a pre-subject target."],
+    ["show", "read", ["pa_document:review-show"], "Reads full exact content, delivery verification and canonical decision history; an unverified delivery is not actionable."],
+    ["review", "write", ["pa_document:review-sign", "/pa-review REFERENCE"], "Requests or reconciles one shared native foreground decision; default Cancel is deliberate, detach leaves pending and a saved outcome does not prompt again."],
+    ["request", "write", [], "Persists or reconciles the single canonical pending request without a foreground prompt; saved decisions are returned unchanged."],
+    ["decide", "write", [], "Issues or identically replays a local-unverified content outcome; competing outcomes cannot overwrite the canonical decision."],
+  ] as const).map(([action, effect, aliases, detail]) => Object.freeze({
+    ...nativeEntry(`document.content-review.${action}`, "pa_handoff", `pa-content-review/v1:${action}`, effect, `${pi}content-review-native.ts`, "shared content-review journal and verified delivery owner",
+      `${detail} Purpose is sign-content-only with immutable document.local-review + document.handoff + document.package selection and current native caller checks. Local confirmation is not authenticated human consent. No publication, branch/ref/link, queue/status, resource or launch authority or invocation; retained combined-effect scopes are not converted.`),
+    nativeForms: Object.freeze([`pa_handoff:pa-content-review/v1:${action}`, ...aliases]),
+  })),
+  ...([
+    ["authorize", "write", "content-publication-authorize", "Persists separate native finite publication authority for the same exact active content approval; it does not publish or sign content again."],
+    ["status", "read", "content-publication-status", "Reads retained separate publication authority, lifecycle fence and original operation state; completed readback is not permission for missing effects."],
+    ["publish", "write", "content-publish", "Consumes separate finite publication authority under fresh caller/custody/lifecycle/source/delivery/target/predecessor checks. The existing publisher persists intent before files/structured refs/tracking, verifies complete readback before sole requirements primary, and recovers only the original operation."],
+    ["revoke", "write", "content-revoke", "Native lifecycle confirmation fences missing effects while preserving completed effects and decision history; no rollback or new signature."],
+    ["supersede", "write", "content-supersede", "Native lifecycle confirmation binds an exact approved same-package successor and fences missing effects while preserving completed effects and history; no implicit retarget or new signature."],
+  ] as const).map(([action, effect, alias, detail]) => Object.freeze({
+    ...nativeEntry(`document.content-publication.${action}`, "pa_handoff", `pa-content-publication/v1:${action}`, effect, `${pi}content-publication-native.ts`, "separate content-publication authority and existing publication owner",
+      `${detail} Separate publication authority is never inferred from signing or discovery. Immutable document.local-review + document.handoff + document.package and current caller admission remain required. No authority/outcome import, branch/link, queue/status, resource or launch grant; retained publication routes are unchanged.`),
+    nativeForms: Object.freeze([`pa_handoff:pa-content-publication/v1:${action}`, `pa_document:${alias}`]),
+  })),
+  Object.freeze({
+    ...nativeEntry("ticket.planned-actual", "pa_ticket", "read:plannedActual", "read", `${pi}pi-extension/ticket-tool.ts`, "existing ticket references and immutable report/read projection owners",
+      "Existing ticket read/show independently discovers accessible draft/approved Planned references and candidate choices. An explicit reference reads Planned without inventing a candidate; adding a candidate selects its exact comparison. Complete snapshot-bound page continuation preserves selection, issues and evidence summaries without protected-store access. Repository, ticket, reviewed subject/revision/manifest and candidate must match; mismatches remain unmatched, missing/denied/integrity states remain explicit. Labelled narrative and separate evidence classes are not acceptance or permission. No latest selection, report policy/session allocation, attachment write or primary/lifecycle change."),
+    nativeForms: Object.freeze(["pa_ticket:read:plannedActual", "pa_ticket:show:plannedActual", "pa_ticket:read:reference", "pa_ticket:show:reference", "pa_ticket:read:reference+candidate", "pa_ticket:show:reference+candidate", "pa_ticket:read:page", "pa_ticket:show:page"]),
+  }),
+  nativeEntry("resource.selected.read", "read", "selected-resource:<selected path>", "read", `${pi}pi-extension/selected-resource-read.ts`, "existing selected read and immutable mode-resource owner",
+    "Uses the existing selected guarded/ordinary read tool only for an exact member of the original authenticated session resource inventory, including already admitted transitive resources. Pinned committed bytes and digest are checked with no mutable checkout fallback, arbitrary path or selection extension. Output remains reference-only, never instruction/tool activation. Retained/unselected sessions gain no selected-resource route; ordinary reads retain their existing guards."),
   entry("auto.policy.read", ["auto policy", "auto policy status", "auto policy status --json", "auto policy --json", "auto policy --help"], "read", "native", `${pi}auto-policy-cli.ts`, "PPA native document policy inspection", { reason: "Existing-only current/last native policy decisions, full scope and unresolved-review IDs. No initialization, material eligibility check, authority grant, provider, selection or launch." }),
   entry("auto.policy.review", ["auto policy adopt", "auto policy revoke", "auto policy withdraw"], "write", "operator", `${pi}auto-policy-cli.ts`, "PPA native document global policy decision owner", { reason: "Exact native unmanaged foreground review, default Cancel. Original permission request/capture/issuance are distinct and durable. Withdrawal is explicit exceptional original-review fencing, not an old approval import. No ticket selection, provider/worker, effect enablement, qualification, installation or activation. Old manual/content/publish/queue/start scopes are unchanged." }),
   entry("auto.shortlist.read", ["auto shortlist --json", "auto shortlist --help", "auto shortlist --view", "auto shortlist --section", "auto shortlist --page"], "read", "native", `${pi}auto-shortlist-cli.ts`, "PPA retained shortlist/report inventory", { reason: "Existing-only inspection of immutable native report/view/source pages and original cycle/choice/item state. No migration, scan, provider, policy, selection or launch occurs; time-current is not material admission." }),
@@ -265,12 +304,26 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   ...["status", "activate", "bind", "deactivate"].map(action => nativeEntry(`workflow-policy.${action}`, "pa_workflow_policy", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "native optional workflow policy")),
   ...["status", "report", "observe", "plan", "advance", "select", "settle", "attempt", "resolve", "candidate", "accept"].map(action => nativeEntry(`execution.${action}`, "pa_execution", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "retained execution custody")),
   ...["capture", "observe-delivery", "publish", "status", "settle"].map(action => nativeEntry(`phase-report.${action}`, "pa_phase_report", action, action === "status" ? "read" : "write", `${pi}pi-extension/prepared-workflow.ts`, "native phase report")),
+  nativeEntry("phase-report.attach-actual", "pa_phase_report", "attach-actual", "write", `${pi}pi-extension/prepared-workflow.ts`, "existing native phase report and audited ticket-reference owners",
+    "Persists an exact reviewed plan + native report/candidate comparison and immutable locator, then adds nonprimary orch/impl/attachment refs through the existing ticket owner. AC dispositions and actual-only scope remain labelled narrative, not acceptance. No reviewed plan rewrite, primary/status change, new report store or execution grant."),
+  nativeEntry("phase-report.observe-actual", "pa_phase_report", "observe-actual", "write", `${pi}pi-extension/prepared-workflow.ts`, "existing native report foreground observation and attachment owners",
+    "Appends exact-bound local-unverified human UAT evidence and its comparison attachment after an explicit foreground observation; preserves earlier Not run/Pending evidence. It is not a read, authenticated identity, source/installed/browser evidence or automatic acceptance. No plan/primary/lifecycle rewrite or execution grant."),
   nativeEntry("feature.update", "pa_feature_update", "update", "write", `${pi}pi-extension/prepared-workflow.ts`, "expected-remote feature update"),
   nativeEntry("borrow.approval", "pa_dirty_borrow_approval", "request", "write", `${pi}pi-extension/dirty-borrow-approval.ts`, "native foreground dirty borrow decision"),
 ]);
 
 /** Independent high-risk invariants complement (not replace) semantic source review. */
 const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "evaluate.preview", "pi.reconcile-child.apply", "pi.ticket-worktree.refresh-head", "operation.run", "serve.status", "serve.start", "serve.restart", "auto.scan", "auto.foreground", "auto.tick", "auto.shortlist.foreground", "auto.policy.review", "document.review.stdin", "document.review.serve", "handoff.request", "handoff.decide", "handoff.refresh"]);
+// Exact closure for PAP-327's new finite variants, including reads. This is an
+// independent semantic guard, not an executable admission/dispatch table.
+const finiteEffects: Readonly<Record<string, InteractionEffect>> = Object.freeze({
+  "document.content-review.prepare": "write", "document.content-review.list": "read", "document.content-review.show": "read",
+  "document.content-review.review": "write", "document.content-review.request": "write", "document.content-review.decide": "write",
+  "document.content-publication.authorize": "write", "document.content-publication.status": "read", "document.content-publication.publish": "write",
+  "document.content-publication.revoke": "write", "document.content-publication.supersede": "write",
+  "document.review.list": "read", "document.review.show": "read", "document.review.sign": "write",
+  "phase-report.attach-actual": "write", "phase-report.observe-actual": "write", "ticket.planned-actual": "read", "resource.selected.read": "read",
+});
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
 const operatorOperations = new Set(["serve.start", "serve.restart"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
@@ -291,10 +344,14 @@ export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): s
     if (!row.owner || !row.reason || !row.supportedNextStep || row.requiredContext.length === 0) issues.add("missing-owner-guidance");
     if (row.nativeBinding && (!row.requestSchemaRef || !row.resultSchemaRef)) issues.add("unbound-schema");
     if (mustNotRead.has(row.operationId) && row.effectClass === "read") issues.add("effect-regression");
+    if (Object.hasOwn(finiteEffects, row.operationId)) {
+      if (row.effectClass !== finiteEffects[row.operationId]) issues.add("effect-regression");
+      if (row.nativeBinding !== null || row.delegationBinding !== null || row.requestSchemaRef !== null || row.resultSchemaRef !== null) issues.add("source-binding-regression");
+    }
     if ((operatorFamilies.has(row.family) || operatorOperations.has(row.operationId)) && row.targetDisposition !== "operator-only") issues.add("operator-boundary");
     if (row.targetDisposition === "deprecated" && !row.replacementId) issues.add("missing-replacement");
   }
-  for (const id of mustNotRead) if (!ids.has(id)) issues.add("missing-effect-variant");
+  for (const id of [...mustNotRead, ...Object.keys(finiteEffects)]) if (!ids.has(id)) issues.add("missing-effect-variant");
   for (const row of rows) {
     if (row.replacementId) {
       const target = rows.find(candidate => candidate.operationId === row.replacementId);
