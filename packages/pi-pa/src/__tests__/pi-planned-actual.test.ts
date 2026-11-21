@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { documentRuntimeFixture } from "../../../pa-core/src/__tests__/document-runtime-fixture.js";
 import test from "node:test";
-import { ContentReviewService, RegistryHandoffReviewJournal, readDocumentSources, presentFullDocumentReader, documentPackageSha, NativeExecutionEvidence, PHASE_REPORT_SECTIONS, PhaseReportService, TicketStore, indexPhaseReport, parsePhaseReport, workflowDigest, type PhaseReportHost, type SourceVersion } from "@pa-platform/pa-core";
+import { ContentReviewService, RegistryHandoffReviewJournal, readDocumentSources, presentFullDocumentReader, documentPackageSha, NativeExecutionEvidence, PHASE_REPORT_SECTIONS, PhaseReportService, TicketStore, indexPhaseReport, parsePhaseReport, parseExecutionPlan, workflowDigest, type PhaseReportCheck, type PhaseReportHost, type SourceVersion } from "@pa-platform/pa-core";
 import { type PlannedRecord, attachPlannedActual, projectPlannedActual, plannedActualReadFailure } from "@pa-platform/pa-core/tickets/planned-actual";
 import { nativePlannedActualHost, plannedRecordFromContentReview } from "../phase-report-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
@@ -26,7 +26,12 @@ import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 const sha = "a".repeat(40), time = "2026-11-21T00:00:00.000Z";
 const source = (ref: string): SourceVersion => ({ ref, version: "v1", sha256: workflowDigest(ref) });
 const plan: PlannedRecord = { reference: `review:${"b".repeat(64)}`, repository: { key: "test", root: "/test" }, ticket: "TEST-1", subjectSha256: "c".repeat(64), revision: 3, manifestSha256: "d".repeat(64), deliverySha256: "e".repeat(64), state: "approved", entry: "file:///planned/index.html", rows: [{ id: "AC-01", expectation: "Print every member." }] };
-function fixture(options: { dirty?: boolean; current?: boolean } = {}) {
+interface NativeActualFixtureOptions {
+  dirty?: boolean; current?: boolean; scope?: string; paths?: readonly string[]; omissions?: readonly string[]; custodyObservation?: string; noPlan?: boolean;
+  failure?: "unresolved" | "resolved" | "superseded" | "different-output" | "different-candidate" | "absent" | "unrelated-pass";
+  executionCandidate?: string; checkCandidate?: string; inFlight?: boolean; scopeProven?: boolean; sourceFailure?: boolean;
+}
+function fixture(options: NativeActualFixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "pap327-native-actual-"));
   const authority = new PiPreparedNativeAuthority({ root: join(root, "protected"), aiUsageRoot: join(root, "artifacts") });
   const store = authority.reports(true, "d-aaaaaa")!;
@@ -35,10 +40,18 @@ function fixture(options: { dirty?: boolean; current?: boolean } = {}) {
   const actor = { deploymentId: "d-aaaaaa", team: "builder", mode: "orchestrator", ticket: "TEST-1", process: null, repoKey: "test", repoRoot: "/test", worktreeRoot: "/test", gitDir: "/test/.git", startedAt: time };
   const actorId = workflowDigest(JSON.stringify(actor));
   const diff = blob(Buffer.from("Native fixture diff.\n"));
-  const checks = [{ command: "fixture-source-check", candidateSha: sha, state: "passed", exitCode: 0, output: evidence.publish("fixture-check", { exitCode: 0, candidateSha: sha }) }];
-  const execution = { candidateSha: sha, operation: null, plan: { scope: "Ticket export behavior", paths: ["src/export.ts"] }, custody: { state: "orchestrator-direct" }, passedChecks: options.current === false ? {} : { source: checks[0]!.output } };
-  const facts = evidence.publish("report-facts", { actor: actorId, blob: blob(Buffer.from(JSON.stringify({ actor, snapshot: { head: sha, dirty: options.dirty ?? false }, checks, execution, scopeProven: true, operations: [], omissions: ["Product browser observation not supplied."], sourceFailure: false, privateDiff: diff }))) });
-  const report = parsePhaseReport({ schemaVersion: "phase-report/v1", identity: { date: "2026-11-21", team: "builder", ticket: "TEST-1", deploymentId: "d-aaaaaa", phaseId: "phase-5", attempt: 1, executor: "orchestrator-direct" }, outcome: "partial", startedAt: time, finishedAt: time, baseSha: sha, candidateSha: sha, commitState: "no-commit", sections: Object.fromEntries(PHASE_REPORT_SECTIONS.map(k => [k, "Native fixture; no acceptance claimed."])), checks, previousAttempts: [], evidence: facts });
+  const failed = options.failure !== undefined;
+  const output = evidence.publish("fixture-check", { exitCode: failed ? 1 : 0, candidateSha: options.checkCandidate ?? sha });
+  const checks: PhaseReportCheck[] = [{ command: "fixture-source-check", candidateSha: options.checkCandidate ?? sha, state: failed ? "failed" : "passed", exitCode: failed ? 1 : 0, output }];
+  const laterPass = ["resolved", "superseded", "unrelated-pass"].includes(options.failure ?? "") ? evidence.publish("fixture-check", { exitCode: 0, candidateSha: sha, later: true }) : null;
+  if (laterPass) checks.push({ command: options.failure === "unrelated-pass" ? "other-check" : "fixture-source-check", candidateSha: sha, state: "passed", exitCode: 0, output: laterPass });
+  const admittedPlan = parseExecutionPlan({ phaseId: "phase-5", scope: options.scope ?? "Ticket export behavior", paths: options.paths ?? ["src/export.ts"], requirements: ["AC-01"], prerequisites: [], checks: ["source"], size: "M", complexity: "bounded", rationale: "Native fixture" });
+  const originalFailure = failed && options.failure !== "resolved" && options.failure !== "absent" ? { check: "source", command: "fixture-source-check", exitCode: 1, candidateSha: options.failure === "different-candidate" ? "9".repeat(40) : sha, output: options.failure === "different-output" ? evidence.publish("fixture-check", { exitCode: 1, different: true }) : output } : null;
+  const execution = { candidateSha: options.executionCandidate ?? sha, operation: options.inFlight ? { id: "pending" } : null, plan: options.noPlan ? null : admittedPlan, custody: { state: "orchestrator-direct" }, originalFailure,
+    passedChecks: options.current === false ? {} : laterPass ? { [options.failure === "unrelated-pass" ? "other" : "source"]: laterPass } : failed ? {} : { source: output } };
+  const omissions = options.omissions ?? ["Product browser observation not supplied."];
+  const facts = evidence.publish("report-facts", { actor: actorId, blob: blob(Buffer.from(JSON.stringify({ actor, snapshot: { head: sha, dirty: options.dirty ?? false }, checks, execution, scopeProven: options.scopeProven ?? true, operations: [], omissions, sourceFailure: options.sourceFailure ?? false, privateDiff: diff }))) });
+  const report = parsePhaseReport({ schemaVersion: "phase-report/v1", identity: { date: "2026-11-21", team: "builder", ticket: "TEST-1", deploymentId: "d-aaaaaa", phaseId: "phase-5", attempt: 1, executor: "orchestrator-direct" }, outcome: failed ? "failed" : "partial", startedAt: time, finishedAt: time, baseSha: sha, candidateSha: sha, commitState: "no-commit", sections: Object.fromEntries(PHASE_REPORT_SECTIONS.map(k => [k, k === "custody" ? options.custodyObservation ?? "Native fixture; no acceptance claimed." : k === "omissions" && omissions.length ? omissions.join("\n") : "Native fixture; no acceptance claimed."])), checks, previousAttempts: [], evidence: facts });
   const captured = evidence.publish("phase-report", { actor: actorId, facts, report: blob(Buffer.from(JSON.stringify(report))), diff, phaseId: "phase-5", attempt: 1 });
   const publicRoot = join(authority.aiUsageRoot, "agent-teams/builder/artifacts"); mkdirSync(publicRoot, { recursive: true, mode: 0o700 });
   const ownerPath = join(publicRoot, "2026-11-21-TEST-1-d-aaaaaa-owner.md"); let owner = "# Existing orchestration owner\n";
@@ -245,7 +258,106 @@ for (const options of [{ dirty: false, current: false }, { dirty: true, current:
     await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
     const comparison = await projectPlannedActual(f.ticketStore.get("TEST-1")!, plan.reference, sha, f.projectionHost);
     assert.equal(comparison.actuals[0]?.evidence.some(e => e.class === "source" && e.state === "passed" && e.applicability === "current"), false);
-    assert.match(actual.scope, /src\/export.ts/); assert.match(actual.scope, /orchestrator-direct/); assert.match(actual.scope, /Product browser observation not supplied/);
+    assert.deepEqual(actual.scopeDetails?.admitted?.paths, ["src/export.ts"]);
+    assert.equal(actual.scopeDetails?.custody.state, "orchestrator-direct");
+    assert.deepEqual(actual.scopeDetails?.omissions, ["Product browser observation not supplied."]);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+const maximumScope = "s".repeat(4096);
+const manyPaths = Array.from({ length: 64 }, (_, i) => `src/${String(i).padStart(3, "0")}-${"p".repeat(79)}.ts`);
+const manyOmissions = Array.from({ length: 64 }, (_, i) => `Omission ${i}: product observation not supplied.`.padEnd(90, "x"));
+for (const options of [
+  { scope: maximumScope },
+  { paths: manyPaths, omissions: manyOmissions },
+  { scope: maximumScope, paths: manyPaths, omissions: manyOmissions, custodyObservation: `Native custody observation\n${"c".repeat(65_536 - "Native custody observation\n".length)}` },
+]) test(`native maximum admitted scope survives attachment and complete ticket dispatch: ${options.scope ? "4096 scope" : "64 paths"}${options.custodyObservation ? " with paged custody" : ""}`, async () => {
+  const f = fixture(options);
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    const expected = { admitted: { scope: options.scope ?? "Ticket export behavior", paths: options.paths ?? ["src/export.ts"] }, scopeProven: true,
+      custody: { state: "orchestrator-direct", observation: options.custodyObservation ?? "Native fixture; no acceptance claimed." }, omissions: options.omissions ?? ["Product browser observation not supplied."] };
+    assert.deepEqual(actual.scopeDetails, expected); assert.ok(actual.scope.length <= 4096); assert.match(actual.scope, /scopeDetails/);
+    const originalReport = readFileSync(actual.reportPath), originalOwner = readFileSync(actual.ownerPath), companion = readFileSync(f.locator);
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+    let page: { snapshot: string; offset: number } | undefined, joined = "", count = 0;
+    do {
+      const result = await tool.execute("scope-page", { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha, ...(page ? { page } : {}) }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.ok(Buffer.byteLength(text.text) <= MAX_TOOL_BYTES); assert.ok(text.text.split("\n").length <= MAX_TOOL_LINES);
+      const body = JSON.parse(text.text); assert.equal(body.state, "available"); assert.equal(body.truncated, undefined);
+      if (body.content) joined += body.content.text;
+      else { assert.deepEqual(body.actuals[0].scopeDetails, expected); assert.ok(body.actuals[0].scope.length <= 4096); }
+      page = body.pagination.next ?? undefined; assert.ok(++count < 20, "scope continuation terminates");
+    } while (page);
+    if (options.custodyObservation) assert.ok(count > 1, "full scope facts use existing pagination");
+    if (joined) assert.deepEqual(JSON.parse(joined).actuals[0].scopeDetails, expected);
+    assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
+    assert.deepEqual(readFileSync(actual.reportPath), originalReport); assert.deepEqual(readFileSync(actual.ownerPath), originalOwner); assert.deepEqual(readFileSync(f.locator), companion);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("native structured scope preserves sanitization and explicit absent-plan facts", async () => {
+  const previous = process.env.PA_PAP327_TEST_TOKEN;
+  process.env.PA_PAP327_TEST_TOKEN = "synthval"; // Synthetic redaction fixture, not a credential.
+  try {
+    const f = fixture({ scope: "synthval".repeat(512), paths: [".env", "src/synthval.ts"], omissions: ["Omitted synthval observation."] });
+    try {
+      const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+      const expected = { admitted: { scope: "[REDACTED]".repeat(512), paths: [`[omitted path SHA-256 ${workflowDigest(".env")}]`, "src/[REDACTED].ts"] }, scopeProven: true,
+        custody: { state: "orchestrator-direct", observation: "Native fixture; no acceptance claimed." }, omissions: ["Omitted [REDACTED] observation."] };
+      assert.deepEqual(actual.scopeDetails, expected); assert.ok(actual.scope.length <= 4096);
+      await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+      const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+      const result = await tool.execute("safe-scope", { action: "read", id: "TEST-1", reference: plan.reference, candidate: sha }, undefined, undefined, {});
+      const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+      assert.equal(JSON.parse(text.text).state, "available"); assert.deepEqual(JSON.parse(text.text).actuals[0].scopeDetails, expected);
+      assert.doesNotMatch(text.text, /synthval|protected|config\/\.env/);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  } finally {
+    if (previous === undefined) delete process.env.PA_PAP327_TEST_TOKEN; else process.env.PA_PAP327_TEST_TOKEN = previous;
+  }
+  const f = fixture({ noPlan: true, scopeProven: false, omissions: [] });
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.scopeDetails?.admitted, null); assert.equal(actual.scopeDetails?.scopeProven, false); assert.deepEqual(actual.scopeDetails?.omissions, []);
+    assert.match(actual.scope, /No admitted native phase plan available/); assert.match(actual.scope, /absence of omissions is not acceptance/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+const failureCases: { name: string; options: NativeActualFixtureOptions; currentFailure: boolean; currentPass?: boolean }[] = [
+  { name: "clean unresolved exact failure", options: { failure: "unresolved" }, currentFailure: true },
+  { name: "unrelated later pass does not resolve this check", options: { failure: "unrelated-pass" }, currentFailure: true, currentPass: true },
+  { name: "resolved failure", options: { failure: "resolved" }, currentFailure: false, currentPass: true },
+  { name: "later same-check pass before resolve", options: { failure: "superseded" }, currentFailure: false, currentPass: true },
+  { name: "no retained unresolved failure", options: { failure: "absent" }, currentFailure: false },
+  { name: "dirty candidate", options: { failure: "unresolved", dirty: true }, currentFailure: false },
+  { name: "different failure candidate", options: { failure: "different-candidate" }, currentFailure: false },
+  { name: "different failure output", options: { failure: "different-output" }, currentFailure: false },
+  { name: "stale execution candidate", options: { failure: "unresolved", executionCandidate: "9".repeat(40) }, currentFailure: false },
+  { name: "stale report check candidate", options: { failure: "unresolved", checkCandidate: "9".repeat(40) }, currentFailure: false },
+  { name: "in-flight operation", options: { failure: "unresolved", inFlight: true }, currentFailure: false },
+  { name: "unproven scope", options: { failure: "unresolved", scopeProven: false }, currentFailure: false },
+  { name: "source authentication failure", options: { failure: "unresolved", sourceFailure: true }, currentFailure: false },
+];
+for (const scenario of failureCases) test(`native failure applicability and ticket dispatch: ${scenario.name}`, async () => {
+  const f = fixture(scenario.options);
+  try {
+    const actual = await f.native.resolveActual(f.locator); assert.ok("binding" in actual); if (!("binding" in actual)) return;
+    assert.equal(actual.outcome, "failed"); assert.equal(actual.evidence[0]?.state, "failed");
+    assert.equal(actual.evidence[0]?.applicability, scenario.currentFailure ? "current" : "historical");
+    assert.equal(actual.evidence[0]?.locator, f.report.checks[0]?.output?.ref);
+    await attachPlannedActual(f.ticketStore, "TEST-1", f.locator, f.projectionHost, () => undefined);
+    const tool = createPaTicketTool({ store: f.ticketStore, plannedActualHost: f.projectionHost });
+    const result = await tool.execute("failure-read", { action: "show", id: "TEST-1", reference: plan.reference, candidate: sha }, undefined, undefined, {});
+    const text = result.content.find(c => c.type === "text"); assert.ok(text && "text" in text);
+    const comparison = JSON.parse(text.text); assert.equal(comparison.state, "available"); assert.equal(comparison.actuals[0].outcome, "failed");
+    const sourceRows = comparison.actuals[0].evidence.filter((e: { class: string }) => e.class === "source");
+    assert.equal(sourceRows.some((e: { state: string; applicability: string }) => e.state === "failed" && e.applicability === "current"), scenario.currentFailure);
+    assert.equal(sourceRows.some((e: { state: string; applicability: string }) => e.state === "passed" && e.applicability === "current"), scenario.currentPass ?? false);
+    assert.equal(sourceRows.some((e: { state: string }) => e.state === "not-run"), !scenario.currentFailure && !scenario.currentPass);
+    assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 

@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectPlannedActual, attachPlannedActual, extractAcceptanceRows, plannedActualReadFailure, type PlannedActualHost, type PlannedRecord, type ActualRecord } from "../tickets/planned-actual.js";
+import { projectPlannedActual, attachPlannedActual, extractAcceptanceRows, plannedActualReadFailure, parseActualRecord, type ActualScopeDetails, type PlannedActualHost, type PlannedRecord, type ActualRecord } from "../tickets/planned-actual.js";
 import { ArtifactPolicyError } from "../artifacts/policy.js";
 import { TicketStore } from "../tickets/store.js";
 import type { Ticket } from "../tickets/types.js";
@@ -25,6 +25,40 @@ test("exact binding projects every AC, deviations, actual-only and separate Not 
   assert.equal(r.actuals[0]?.narrativeTrust, "agent-labelled-not-acceptance");
   for (const kind of ["installed", "independent", "browser", "human-uat"]) assert.deepEqual(r.actuals[0]?.evidence.filter(e => e.class === kind).map(e => e.state), ["not-run"]);
 });
+test("optional structured scope retains all admitted facts while legacy records remain readable", async () => {
+  const legacy = parseActualRecord(actual);
+  assert.equal(Object.hasOwn(legacy, "scopeDetails"), false);
+  assert.equal(Object.hasOwn((await project()).actuals[0]!, "scopeDetails"), false);
+  const scopeDetails: ActualScopeDetails = { admitted: { scope: "s".repeat(4096), paths: Array.from({ length: 64 }, (_, i) => `src/${i}-${"p".repeat(90)}.ts`) }, scopeProven: true,
+    custody: { state: "orchestrator-direct", observation: `Native custody observation\n${"c".repeat(65_510)}` }, omissions: Array.from({ length: 64 }, (_, i) => `Omission ${i}: ${"o".repeat(90)}`) };
+  const record = { ...actual, scope: "Full sanitized scope facts are in scopeDetails.", scopeDetails };
+  assert.deepEqual(parseActualRecord(record).scopeDetails, scopeDetails);
+  const projected = await project([record]); assert.equal(projected.state, "available");
+  assert.deepEqual(projected.actuals[0]?.scopeDetails, scopeDetails); assert.equal(projected.actuals[0]?.scope, record.scope);
+  assert.throws(() => parseActualRecord({ ...actual, scope: "s".repeat(4097) }), "the summary limit does not grow");
+  const noPlan = { ...scopeDetails, admitted: null, scopeProven: false, omissions: [] };
+  assert.deepEqual(parseActualRecord({ ...record, scopeDetails: noPlan }).scopeDetails, noPlan);
+});
+test("structured scope has finite producer-compatible bounds and rejects malformed facts without truncation", () => {
+  const details: ActualScopeDetails = { admitted: { scope: "s".repeat(40_960), paths: ["p".repeat(40_960)] }, scopeProven: true,
+    custody: { state: "c".repeat(40_960), observation: "c".repeat(655_360) }, omissions: ["o".repeat(655_360)] };
+  assert.deepEqual(parseActualRecord({ ...actual, scopeDetails: details }).scopeDetails, details);
+  assert.equal(parseActualRecord({ ...actual, scopeDetails: { ...details, omissions: Array.from({ length: 128 }, () => "Omission") } }).scopeDetails?.omissions.length, 128);
+  for (const scopeDetails of [
+    null, { ...details, extra: true }, { ...details, scopeProven: "true" },
+    { ...details, admitted: { scope: "s".repeat(40_961), paths: ["p"] } },
+    { ...details, admitted: { scope: "scope", paths: ["p".repeat(40_961)] } },
+    { ...details, admitted: { scope: "scope", paths: Array.from({ length: 65 }, () => "p") } },
+    { ...details, admitted: { scope: "scope", paths: [] } },
+    { ...details, admitted: { scope: "scope", paths: [7] } },
+    { ...details, custody: { ...details.custody, observation: "c".repeat(655_361) } },
+    { ...details, custody: { ...details.custody, state: "c".repeat(40_961) } },
+    { ...details, omissions: ["o".repeat(655_360), "one too many"] },
+    { ...details, omissions: Array.from({ length: 129 }, () => "Omission") },
+    { ...details, omissions: ["Unsafe\u001b[0m"] },
+  ]) assert.throws(() => parseActualRecord({ ...actual, scopeDetails }));
+});
+
 test("independent Planned discovery includes approved and draft without inventing Actual candidates", async () => {
   for (const state of ["approved", "draft"] as const) {
     let discovered = 0, actualReads = 0;

@@ -77,10 +77,18 @@ export interface ComparisonEvidence {
   locator: string | null; observedAt: string | null; coverage: readonly string[]; trust: "native" | "local-unverified" | "not-observed";
   applicability?: "current" | "historical" | "unverified"; candidateSha?: string;
 }
+/** Sanitized facts derived from the retained native producer, not caller narrative. */
+export interface ActualScopeDetails {
+  admitted: { scope: string; paths: readonly string[] } | null;
+  scopeProven: boolean;
+  custody: { state: string; observation: string };
+  omissions: readonly string[];
+}
 /** Owner-authenticated metadata for the existing immutable report, NOT another report. */
 export interface ActualRecord {
   locator: string; binding: ComparisonBinding; plannedReference: string; reportId: string; reportSourceSha256: string;
   reportPath: string; ownerPath: string; outcome: "success" | "partial" | "failed" | "interrupted"; scope: string;
+  scopeDetails?: ActualScopeDetails;
   observations: readonly ActualObservation[]; actualOnly: readonly string[]; evidence: readonly ComparisonEvidence[];
 }
 /** Trusted owner ports. Tool input cannot implement these ports or import evidence. */
@@ -118,11 +126,32 @@ export function parseComparisonBinding(value: unknown): ComparisonBinding {
   if (!/^[A-Z][A-Z0-9]*-\d+$/.test(ticket) || !Number.isSafeInteger(r.revision) || Number(r.revision) < 1) throw new Error("Invalid comparison binding");
   return { repository: { key: text(repo.key), root: text(repo.root) }, ticket, subjectSha256: workflowSha(r.subjectSha256), revision: Number(r.revision), manifestSha256: workflowSha(r.manifestSha256), candidateSha: workflowSha(r.candidateSha, 40) };
 }
+function parseScopeDetails(value: unknown): ActualScopeDetails {
+  const r = workflowObject(value, ["admitted", "scopeProven", "custody", "omissions"]);
+  // Native plans admit 4096 code units per scope/path and 64 paths. Report
+  // sections admit 65536 bytes. Give sanitized text finite headroom for literal
+  // [REDACTED] markers without changing workflowText's global limit.
+  const detailText = (input: unknown, maximum: number): string => {
+    if (typeof input !== "string" || !input.trim() || input.length > maximum || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(input)) throw new Error("Invalid scope detail text");
+    return input;
+  };
+  let admitted: ActualScopeDetails["admitted"] = null;
+  if (r.admitted !== null) {
+    const plan = workflowObject(r.admitted, ["scope", "paths"]);
+    if (!Array.isArray(plan.paths) || plan.paths.length < 1 || plan.paths.length > 64) throw new Error("Invalid admitted paths");
+    admitted = { scope: detailText(plan.scope, 40_960), paths: plan.paths.map(path => detailText(path, 40_960)) };
+  }
+  if (typeof r.scopeProven !== "boolean") throw new Error("Invalid scope proof");
+  const custody = workflowObject(r.custody, ["state", "observation"]);
+  const omissions = list(r.omissions, omission => detailText(omission, 655_360));
+  if (omissions.reduce((total, omission) => total + omission.length, 0) > 655_360) throw new Error("Invalid scope omissions");
+  return { admitted, scopeProven: r.scopeProven, custody: { state: detailText(custody.state, 40_960), observation: detailText(custody.observation, 655_360) }, omissions };
+}
 export function parseActualRecord(value: unknown): ActualRecord {
-  const r = workflowObject(value, ["locator", "binding", "plannedReference", "reportId", "reportSourceSha256", "reportPath", "ownerPath", "outcome", "scope", "observations", "actualOnly", "evidence"]);
+  const r = workflowObject(value, ["locator", "binding", "plannedReference", "reportId", "reportSourceSha256", "reportPath", "ownerPath", "outcome", "scope", "observations", "actualOnly", "evidence", ...["scopeDetails"].filter(key => value !== null && typeof value === "object" && Object.hasOwn(value, key))]);
   const outcome = (["success", "partial", "failed", "interrupted"] as const).find(s => s === r.outcome); if (!outcome) throw new Error("Invalid report outcome");
   const locator = text(r.locator); parseComparisonLocator(locator);
-  return { locator, binding: parseComparisonBinding(r.binding), plannedReference: text(r.plannedReference), reportId: workflowSha(r.reportId), reportSourceSha256: workflowSha(r.reportSourceSha256), reportPath: text(r.reportPath), ownerPath: text(r.ownerPath), outcome, scope: text(r.scope), observations: parseActualObservations(r.observations), actualOnly: parseActualOnly(r.actualOnly), evidence: list(r.evidence, item => {
+  return { locator, binding: parseComparisonBinding(r.binding), plannedReference: text(r.plannedReference), reportId: workflowSha(r.reportId), reportSourceSha256: workflowSha(r.reportSourceSha256), reportPath: text(r.reportPath), ownerPath: text(r.ownerPath), outcome, scope: text(r.scope), ...(r.scopeDetails === undefined ? {} : { scopeDetails: parseScopeDetails(r.scopeDetails) }), observations: parseActualObservations(r.observations), actualOnly: parseActualOnly(r.actualOnly), evidence: list(r.evidence, item => {
     const e = workflowObject(item, ["class", "state", "locator", "observedAt", "coverage", "trust", ...["applicability", "candidateSha"].filter(key => item !== null && typeof item === "object" && Object.hasOwn(item, key))]);
     const kind = classes.find(c => c === e.class), state = (["passed", "failed", "not-run", "pending", "unknown"] as const).find(s => s === e.state), trust = (["native", "local-unverified", "not-observed"] as const).find(t => t === e.trust);
     if (!kind || !state || !trust || (state === "passed" || state === "failed") && (!e.locator || !e.observedAt || trust === "not-observed")) throw new Error("Invalid comparison evidence");
@@ -192,6 +221,7 @@ export function bindingForPlan(plan: PlannedRecord, candidateSha: string): Compa
 }
 export interface ActualProjection {
   locator: string; binding: ComparisonBinding; reportId: string; reportSourceSha256: string; reportPath: string; ownerPath: string; scope: string; outcome: ActualRecord["outcome"];
+  scopeDetails?: ActualScopeDetails;
   narrativeTrust: "agent-labelled-not-acceptance"; rows: readonly (AcceptanceRow & Omit<ActualObservation, "ac">)[]; actualOnly: readonly string[]; evidence: readonly ComparisonEvidence[];
 }
 export interface PlannedActualProjection {
@@ -262,7 +292,7 @@ export async function projectPlannedActual(ticket: Ticket, reference: string | u
       if (previous) {
         if (previous.reportSourceSha256 !== actual.reportSourceSha256 || !same(previous.rows, rows(plan, actual)) || !same(previous.actualOnly, actual.actualOnly)) { result.issues.push({ state: "conflict" }); continue; }
         previous.evidence = appended;
-      } else result.actuals.push({ locator: actual.locator, binding: actual.binding, reportId: actual.reportId, reportSourceSha256: actual.reportSourceSha256, reportPath: actual.reportPath, ownerPath: actual.ownerPath, scope: actual.scope, outcome: actual.outcome, narrativeTrust: "agent-labelled-not-acceptance", rows: rows(plan, actual), actualOnly: actual.actualOnly, evidence: appended });
+      } else result.actuals.push({ locator: actual.locator, binding: actual.binding, reportId: actual.reportId, reportSourceSha256: actual.reportSourceSha256, reportPath: actual.reportPath, ownerPath: actual.ownerPath, scope: actual.scope, ...(actual.scopeDetails === undefined ? {} : { scopeDetails: actual.scopeDetails }), outcome: actual.outcome, narrativeTrust: "agent-labelled-not-acceptance", rows: rows(plan, actual), actualOnly: actual.actualOnly, evidence: appended });
     }
     for (const a of result.actuals) for (const kind of classes) {
       const observations = a.evidence.filter(e => e.class === kind && e.applicability === "current");

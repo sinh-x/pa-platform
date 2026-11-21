@@ -9,7 +9,7 @@ import {
   type ExecutionState, type PhaseReport, type PhaseReportCheck, type PhaseReportDelivery, type PhaseReportHost, type PhaseReportReceipt, type ProcessFingerprint, type SourceVersion,
 } from "@pa-platform/pa-core";
 import { readPlannedReview, type PlannedReviewView, attachPlannedActual, bindingForPlan, extractAcceptanceRows, parseActualObservations, parseActualOnly, parseActualRecord, parseComparisonBinding, parseComparisonLocator, verifyPhaseReportReading, plannedActualReadFailure,
-  type PlannedActualHost, type PlannedRecord, type ComparisonEvidence, type Unavailable } from "@pa-platform/pa-core/tickets/planned-actual";
+  type PlannedActualHost, type PlannedRecord, type ActualScopeDetails, type ComparisonEvidence, type Unavailable } from "@pa-platform/pa-core/tickets/planned-actual";
 import { environmentSecrets } from "./diagnostics.js";
 import { PiNativeExecutionAdapter, type NativeExecutionReportFacts } from "./execution-native.js";
 import { NativeExecutionEvidence, nativePublicText, type NativeBlob } from "./native-execution-evidence.js";
@@ -206,10 +206,17 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
         // selector in the retained schema, so NEVER apply their green checks.
         // Status/porcelain digests do not identify changed file bytes.
         const passedChecks = execution !== null && typeof execution === "object" && "passedChecks" in execution ? execution.passedChecks : null;
-        const currentOutputs = settled && passedChecks !== null && typeof passedChecks === "object" && facts.scopeProven === true && facts.sourceFailure === false && "dirty" in snapshot && snapshot.dirty === false
-          ? Object.values(passedChecks) : [];
+        const current = settled && facts.scopeProven === true && facts.sourceFailure === false && "dirty" in snapshot && snapshot.dirty === false;
+        const currentOutputs = current && passedChecks !== null && typeof passedChecks === "object" ? Object.values(passedChecks) : [];
+        const originalFailure = execution !== null && typeof execution === "object" && "originalFailure" in execution ? execution.originalFailure : null;
+        const failure = originalFailure == null ? null : workflowObject(originalFailure, ["check", "command", "exitCode", "candidateSha", "output"]);
+        // The producer removes a failed check from passedChecks, but retains its
+        // original failure until resolution. A later pass supersedes that failure
+        // even before the explicit resolve event clears it.
+        const currentFailure = current && failure && typeof failure.check === "string" && passedChecks !== null && typeof passedChecks === "object" && !Object.hasOwn(passedChecks, failure.check) ? failure : null;
         const observed: ComparisonEvidence[] = report.checks.map(c => ({ class: "source", state: c.state, ...(c.candidateSha ? { candidateSha: c.candidateSha } : {}),
-          applicability: c.candidateSha === binding.candidateSha && c.state === "passed" && c.output && currentOutputs.some(output => equal(output, c.output)) ? "current" : "historical",
+          applicability: c.candidateSha === binding.candidateSha && c.output && (c.state === "passed" && currentOutputs.some(output => equal(output, c.output))
+            || c.state === "failed" && currentFailure?.candidateSha === binding.candidateSha && currentFailure.exitCode === c.exitCode && equal(currentFailure.output, c.output)) ? "current" : "historical",
           locator: c.output ? c.output.ref : null, observedAt: c.output ? report.finishedAt : null, coverage: [], trust: c.output ? "native" : "not-observed" }));
         if (!Array.isArray(payload.deliveries) || payload.deliveries.length > 2 || !Array.isArray(payload.human) || payload.human.length > 128) throw workflowError();
         for (const input of payload.deliveries) {
@@ -225,8 +232,9 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
           const state = (["passed", "failed", "pending", "not-run"] as const).find(s => s === human.state); if (!state || !Array.isArray(human.coverage)) throw workflowError();
           observed.push({ class: "human-uat", state, locator: source.ref, observedAt: workflowTimestamp(human.observedAt), coverage: human.coverage.map(workflowText), trust: "local-unverified" });
         }
+        const scopeDetails = actualScopeDetails(report, execution, facts.scopeProven, facts.omissions);
         return parseActualRecord({ locator, binding, plannedReference: payload.plannedReference, reportId: receipt.reportId, reportSourceSha256: receipt.sourceSha256, reportPath, ownerPath, outcome: report.outcome,
-          scope: actualScopeSummary(report, execution, facts.scopeProven, facts.omissions), observations, actualOnly, evidence: observed });
+          scope: actualScopeSummary(report, scopeDetails), scopeDetails, observations, actualOnly, evidence: observed });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         return { state: code === "EACCES" || code === "EPERM" ? "denied" : code === "ENOENT" ? "missing" : "integrity-failure" };
@@ -236,18 +244,23 @@ export function nativePlannedActualHost(authority = new PiPreparedNativeAuthorit
   return host;
 }
 
-function actualScopeSummary(report: PhaseReport, execution: unknown, scopeProven: unknown, omissions: unknown): string {
+function actualScopeDetails(report: PhaseReport, execution: unknown, scopeProven: unknown, omissions: unknown): ActualScopeDetails {
   const publicText = (value: string) => nativePublicText(value, environmentSecrets(process.env));
-  let admitted = "No admitted native phase plan available.";
+  let admitted: ActualScopeDetails["admitted"] = null;
   if (execution !== null && typeof execution === "object" && "plan" in execution && execution.plan !== null && typeof execution.plan === "object") {
     const plan = execution.plan;
     if (!("scope" in plan) || typeof plan.scope !== "string" || !("paths" in plan) || !Array.isArray(plan.paths) || plan.paths.some(path => typeof path !== "string")) throw workflowError();
     const paths = plan.paths.map((path: string) => findSensitiveMatch("path", path) || findSensitiveMatch("filename", path) ? `[omitted path SHA-256 ${workflowDigest(path)}]` : publicText(path));
-    admitted = `Admitted scope: ${publicText(plan.scope)}; paths: ${paths.join(", ")}.`;
+    admitted = { scope: publicText(plan.scope), paths };
   }
   const custody = execution !== null && typeof execution === "object" && "custody" in execution && execution.custody !== null && typeof execution.custody === "object" && "state" in execution.custody && typeof execution.custody.state === "string" ? publicText(execution.custody.state) : "unproven";
   if (!Array.isArray(omissions) || omissions.some(value => typeof value !== "string")) throw workflowError();
-  return `Native phase ${report.identity.phaseId}; attempt ${report.identity.attempt}. ${admitted} Scope proof: ${scopeProven === true ? "proven by native producer" : "unproven"}. Custody: ${custody}; ${publicText(report.sections.custody)}. Omissions: ${omissions.length ? omissions.map(value => publicText(String(value))).join("; ") : "None recorded; absence is not acceptance."}`.replace(/[\r\n\t]/g, " ");
+  return { admitted, scopeProven: scopeProven === true, custody: { state: custody, observation: publicText(report.sections.custody) }, omissions: omissions.map(value => publicText(String(value))) };
+}
+function actualScopeSummary(report: PhaseReport, details: ActualScopeDetails): string {
+  // Only finite identity/count/status fields enter this <=4096-character summary.
+  // Full sanitized facts remain in scopeDetails, including across ticket pages.
+  return `Native phase ${report.identity.phaseId}; attempt ${report.identity.attempt}. ${details.admitted ? `Admitted plan: ${details.admitted.paths.length} paths.` : "No admitted native phase plan available."} Scope proof: ${details.scopeProven ? "proven by native producer" : "unproven"}. Full admitted scope/paths, custody observation and ${details.omissions.length} recorded omissions are in scopeDetails; absence of omissions is not acceptance.`;
 }
 
 class NativeReportSession {
