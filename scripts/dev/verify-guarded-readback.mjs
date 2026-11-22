@@ -22,9 +22,11 @@ assert.ok(selectedPi, "Select the actual Pi package for this test lane.");
 const moduleUrl = (built, source) => selectedPpa
   ? pathToFileURL(join(selectedPpa, "share/pa-platform/packages", built)).href
   : new URL(source, import.meta.url).href;
-const core = await import(moduleUrl("pa-core/dist/index.js", "../../packages/pa-core/src/index.ts"));
-const { bindLocalReadTool } = await import(moduleUrl("pi-pa/dist/pi-extension/bound-local-read.js", "../../packages/pi-pa/src/pi-extension/bound-local-read.ts"));
-const { ReadPublicationOwner } = await import(moduleUrl("pi-pa/dist/pi-extension/read-publication.js", "../../packages/pi-pa/src/pi-extension/read-publication.ts"));
+// Keep one compiled pa-core module identity across the acquirer and adapter.
+// Build the worktree before this lane; a source/build test is not adoption.
+const core = await import(moduleUrl("pa-core/dist/index.js", "../../packages/pa-core/dist/index.js"));
+const { bindLocalReadTool } = await import(moduleUrl("pi-pa/dist/pi-extension/bound-local-read.js", "../../packages/pi-pa/dist/pi-extension/bound-local-read.js"));
+const { ReadPublicationOwner } = await import(moduleUrl("pi-pa/dist/pi-extension/read-publication.js", "../../packages/pi-pa/dist/pi-extension/read-publication.js"));
 const host = await import(pathToFileURL(join(selectedPi, "lib/node_modules/pi-monorepo/dist/bundle/index.js")).href);
 const sha256 = text => createHash("sha256").update(text).digest("hex");
 const text = result => result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
@@ -71,7 +73,7 @@ for (const input of [{ path: file }, { path: file, offset: 100, limit: 43 }, { p
 }
 assert.deepEqual(metadata(), before, "The read must not mutate the inert source.");
 const evidence = { schema: "pap332-guarded-readback/v1", candidate, node: process.version, pi: host.VERSION,
-  ppa: selectedPpa ?? "worktree-source", piRoot: selectedPi,
+  ppa: selectedPpa ?? "worktree-build", piRoot: selectedPi,
   fixture: { path: file, sha256: sha256(content), bytes: Buffer.byteLength(content), lines: content.split("\n").length, metadata: before },
   writeResult, observations, unchanged: true,
   limitations: ["Definition/publication mechanics, not an authenticated installed foreground launch.", "No original package content was accessed; no policy, installation or session was changed."] };

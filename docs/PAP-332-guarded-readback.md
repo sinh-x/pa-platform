@@ -131,6 +131,58 @@ review found no guard weakening, but identified cancellation-class loss and miss
 range race cases; both were corrected and included in that 77-test final run.
 This is code/structural review, not human readability review or installed adoption.
 
+## Phase 3 — candidate qualification and unchanged installation
+
+Runtime candidate: `f98d992593e7f096f37510044d0b7d2afdd5c896`.
+The reproduction driver now uses one compiled pa-core identity with the compiled
+adapter, after the successful worktree build. Its record includes HEAD and the
+tracked diff digest (the phase-3 driver refinement is separate from runtime code).
+Both comparison lanes used the actual installed Pi 1.4.0 definitions and the same
+inert 27,237-byte/607-line fixture content/hash, in separate new artifact directories.
+
+| Lane | Full read | offset 100/limit 43 | Beyond EOF |
+| --- | --- | --- | --- |
+| Built worktree candidate | Exact roundtrip | Delivered | `LOCAL_SOURCE_UNAVAILABLE`, `failureClass: read-range` |
+| Unchanged installed PPA 0.1.179 | Exact roundtrip | Delivered | Generic `LOCAL_SOURCE_UNAVAILABLE`, no class |
+
+Each source was acquired once, remained unchanged, and closed once. The candidate
+performs an additional source stability assertion before classifying the range.
+Literal results are under this deployment's
+`artifacts/checks/{source-candidate,installed-after}/observations.json`. These are
+actual definition/publication-owner observations, **not** qualification of an
+installed repaired foreground session. No installation, restart or policy change
+was performed; adoption and installed-change verification remain unrun.
+
+Additional results:
+
+- Source/security/catalogue/readback/publication focused lane: 77 pass, no skips.
+- Immutable-document/safety/capability/selected-resource/source-composition/Pi
+  composition/parity lane: 47 pass, no skips. Exact command/output:
+  `artifacts/checks/phase-three/compatibility.json`.
+- Workspace typecheck and build: exit 0 (`checks/phase-two`).
+- Completions: exit 0, no generated tracked diff (`checks/phase-three/completions.json`).
+- Full `corepack pnpm test`: **INCOMPLETE**, six-minute subprocess timeout
+  (`spawnSync bash ETIMEDOUT`). The subprocess result also reported status 0, which
+  must not be mistaken for success when `error` is present. Root verifier tests
+  finished 43/43; the pa-core run had reached test 612 without a final summary.
+  Eight external configuration fixture skips were observed. Later workspace
+  packages did not establish completion. Evidence is preserved in
+  `checks/phase-three/workspace-test.json`; no full-suite pass is claimed.
+- Independent agent code review identified two issues subsequently covered by the
+  final tests. Human readability review, human UAT and installed repaired-candidate
+  verification were not performed. Structural/software checks do not replace them.
+
+### Commit lock reconciliation
+
+An existing empty Git index lock blocked phase-2 staging. Same-user native handle
+inspection was incomplete because Linux denied `/proc/1999/fd/0`; it was not proof
+of no owner. The foreground repository owner then explicitly confirmed no Git
+operation owned the lock and authorized preserving it. Only that unchanged empty
+lock was moved to `artifacts/checks/commit-lock/preserved-index.lock`; the Git index
+was unchanged during the move. Owner confirmation and the native inspection limit
+are recorded in `owner-reconciliation.json`. No PA ownership record, source file or
+original incident evidence was removed. The original commit was then completed.
+
 ## Outstanding owner work
 
 The runtime/security owner must establish the historical failure class and permit
