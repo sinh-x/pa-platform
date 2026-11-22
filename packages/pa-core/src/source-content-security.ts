@@ -12,8 +12,23 @@ export const LOCAL_CONTENT_REDACTED = "[REDACTED local sensitive content]";
 export const MAX_LOCAL_SECURITY_BYTES = 16 * 1024 * 1024;
 const MAX_MATCHES = 10_000;
 export type SourceContentCode = "LOCAL_SOURCE_UNAVAILABLE" | "LOCAL_SOURCE_UNSUPPORTED_FILE" | "LOCAL_SOURCE_BLOCKED" | "LOCAL_CONTENT_LIMIT" | "LOCAL_CONTENT_POLICY" | "CONTENT_SOURCE_INVALID";
+/** Bounded observations from native read owners, never raw errno/exception text. */
+const localSourceFailureReasons = {
+  "source-open": "The source could not be opened or its path resolved. Its existence and readable state are not established; no content is delivered.",
+  "source-stat": "Required source or directory metadata could not be inspected. A stable source association is not established; no content is delivered.",
+  "source-read": "The pinned source read did not complete. No partial or unexamined content is delivered.",
+  "source-changed": "The source identity, metadata, path association or complete byte count did not remain stable. No content is delivered.",
+  "source-close": "The owned source descriptors could not all be released successfully. Content is withheld after the cleanup failure.",
+  "cancelled": "The read was cancelled or its owning lifetime ended before delivery. No unpublished content is delivered.",
+  "unsupported-platform": "The descriptor-pinned local reader is unavailable on this platform. No content is delivered.",
+  "read-range": "The requested starting line is beyond the completely checked text projection. Source acquisition succeeded, but this range has no content; this is not evidence of a missing source or policy denial.",
+  "read-processing": "The read tool could not resolve, format or paginate the request. The underlying cause is unproven; this is not an established source-stability or policy failure.",
+  "read-publication": "The runtime could not establish current read-result custody at delivery. Source, host or result association may have changed; the exact cause is unproven and content is withheld.",
+} as const;
+export type LocalSourceFailureClass = keyof typeof localSourceFailureReasons;
 export class SourceContentSecurityError extends Error {
-  constructor(readonly code: SourceContentCode) {
+  readonly failureClass?: LocalSourceFailureClass;
+  constructor(readonly code: SourceContentCode, failureClass?: LocalSourceFailureClass) {
     const reasons: Record<SourceContentCode, string> = {
       LOCAL_SOURCE_UNAVAILABLE: "A complete stable local read could not be established; the source may be absent or changed, or the read interrupted. No unexamined content is delivered.",
       LOCAL_SOURCE_UNSUPPORTED_FILE: "The source is not a supported regular file or qualified selected-Pi document. Ordinary reads require a regular file with exactly one link. Multi-link text is limited to finite selected-Pi documentation with its native selected-host binding and immutable-file checks. No content is delivered.",
@@ -22,7 +37,17 @@ export class SourceContentSecurityError extends Error {
       LOCAL_CONTENT_POLICY: "The local sensitive-content policy could not be evaluated. Raw content is withheld, not allowed by default.",
       CONTENT_SOURCE_INVALID: "The implementation did not establish a supported source and content pair. Caller-supplied origin labels are not exemptions.",
     };
-    super(`Local content is unavailable through this check.\nCondition: The requested local content cannot be delivered.\nSource: Source-aware local content security (${code}).\nReason: ${reasons[code]}\nCorrection: Ask the security/runtime owner to inspect the source classification and configured rules. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve source and original operation coordinates without copying sensitive bytes or bypassing the denial.\nResume Action: Retry only after the owner establishes permitted source access and a working policy. If the underlying tool may already have changed state, inspect that same operation first; withholding output is not proof that its effect was absent.`);
+    const observed = code === "LOCAL_SOURCE_UNAVAILABLE" && typeof failureClass === "string"
+      && Object.hasOwn(localSourceFailureReasons, failureClass) ? failureClass : undefined;
+    const range = observed === "read-range";
+    const correction = range
+      ? "Request an earlier starting line through the same guarded reader. Impact: read-only. Actor: agent or operator. New approval: not required for an already permitted read. Prerequisite: existing source access; do not use an alternate reader to bypass safeguards."
+      : "Ask the security/runtime owner to inspect the source classification and configured rules. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve source and original operation coordinates without copying sensitive bytes or bypassing the denial.";
+    const resume = range
+      ? "Request a valid line range; source admission, stability and complete content checks run again. No source or policy change is needed solely to correct the range."
+      : "Retry only after the owner establishes permitted source access and a working policy. If the underlying tool may already have changed state, inspect that same operation first; withholding output is not proof that its effect was absent.";
+    super(`${range ? "The requested lines were not returned." : "Local content is unavailable through this check."}\nCondition: The requested local content cannot be delivered.\nSource: Source-aware local content security (${code}${observed ? `; ${observed}` : ""}).\nReason: ${observed ? localSourceFailureReasons[observed] : reasons[code]}\nCorrection: ${correction}\nResume Action: ${resume}`);
+    this.failureClass = observed;
   }
 }
 const fail = (code: SourceContentCode): never => { throw new SourceContentSecurityError(code); };

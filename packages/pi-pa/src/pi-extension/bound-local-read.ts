@@ -24,7 +24,7 @@ export function bindLocalReadTool(
           let patterns: SensitivePatternSet;
           try { patterns = loadSensitivePatterns(); }
           catch { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY"); }
-          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
+          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
           const admittedPaths = admitLocalReadPaths(input.path, context.cwd, patterns);
           let projection: "allow" | "redact" | "withhold" = "allow";
           let prepared: { path: string; mime: string | null; bytes: Buffer } | undefined;
@@ -46,7 +46,16 @@ export function bindLocalReadTool(
           const guarded = createDefinition(context.cwd, { operations: {
             access: async path => { prepare(path); },
             detectImageMimeType: async path => prepare(path).mime,
-            readFile: async path => prepare(path).bytes,
+            readFile: async path => {
+              const ready = prepare(path);
+              // Classify from the fully scanned projection, never exception prose
+              // or a separate source read. Images retain Pi's existing semantics.
+              if (!ready.mime && Number.isSafeInteger(input.offset) && (input.offset as number) > ready.bytes.toString("utf8").split("\n").length) {
+                source!.assertStable();
+                throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "read-range");
+              }
+              return ready.bytes;
+            },
           } });
           const result = await guarded.execute(id, input as any, signal, update as any, rawContext as any) as unknown as PiToolResult;
           if (projection !== "allow") {
@@ -55,10 +64,10 @@ export function bindLocalReadTool(
           }
           const filtered = filterLocalToolResult("read", result, patterns);
           source?.assertStable();
-          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE");
+          if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
           return markSourceGuardResult(filtered);
         } finally { source?.close(); }
-      } catch (error) { return markSourceGuardResult(localContentFailure(error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"))); }
+      } catch (error) { return markSourceGuardResult(localContentFailure(error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "read-processing"))); }
     },
   } as unknown as PiToolDefinition;
 }

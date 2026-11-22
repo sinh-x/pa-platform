@@ -79,6 +79,58 @@ cannot distinguish a successful acquisition followed by a formatter failure from
 open/stat/read failures. A safely classified diagnostic correction is justified;
 assuming the original package was out of range is not.
 
+## Phase 2 — scoped correction
+
+The ordinary acquisition owner now labels unavailable failures with finite native
+observations: `source-open`, `source-stat`, `source-read`, `source-changed`,
+`source-close`, `cancelled` or `unsupported-platform`. The adapter additionally
+separates `read-range`, `read-processing` and `read-publication`. Unclassified
+historical errors remain unclassified; arbitrary exceptions/errno/path bodies
+are never copied into diagnostics. These labels are observations, not permission.
+
+The existing `LOCAL_SOURCE_UNAVAILABLE` code, error/withholding flags and effect
+uncertainty remain. An optional `details.failureClass` refines classified failures;
+success results and the other policy/content/budget codes keep their contracts.
+No CLI forms, role capabilities, admission decisions, source grants, exit/stream
+routing or private-output owners were added or changed. Six existing source
+inventory hashes were renewed after this reconciliation, not as security approval.
+
+A range error is computed only from the completely scanned/redacted projection,
+with a final source check. It never uses an alternate reader or trusts arbitrary
+Pi exception prose. Images retain Pi's behavior. Later mutation, cancellation,
+cleanup failure or lost publication custody supersedes the range observation.
+Registration's existing cancellation fences remain and retain their class.
+
+### Changed failure messages
+
+Affected paths are pa-core acquisition/security diagnostics, Pi's bound reader,
+local-result envelope, registration cancellation fences and publication owner.
+Only failures/blockers change; routine success/help/progress categories do not.
+
+- Before, an inert beyond-EOF request said: “A complete stable local read could
+  not be established; the source may be absent or changed, or the read interrupted.”
+- After, it says: “The requested lines were not returned.” The reason establishes
+  successful acquisition and an out-of-range checked projection. The first action
+  requests an earlier line using the same guarded reader (read-only; agent or
+  operator; no new approval for an already permitted read; existing access needed).
+  Admission, stability and complete content checks run again.
+- Native open/stat/read failures instead explain which observation failed, with
+  owner inspection rather than an unsupported repair or policy bypass.
+
+Every finite message is plain text with exactly one five-field envelope and at
+most 2,000 UTF-16 units. Tests verify fixed safe context, hostile class rejection,
+zero formatter-triggered filesystem probes, distinct native failures, original
+byte/metadata preservation, real Pi write/read, full and offset/limit delivery,
+EOF boundaries, collapsed projections, complete key-body redaction, registered
+cancellation and range/publication races. Existing negative safety coverage stays.
+
+Focused checks: **77 passed, 0 failed/skipped**; workspace typecheck and build both
+exited 0. Exact commands/output are in this deployment's
+`artifacts/checks/phase-two/{focused,typecheck,build}.json`. An independent agent
+review found no guard weakening, but identified cancellation-class loss and missing
+range race cases; both were corrected and included in that 77-test final run.
+This is code/structural review, not human readability review or installed adoption.
+
 ## Outstanding owner work
 
 The runtime/security owner must establish the historical failure class and permit

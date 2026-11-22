@@ -3,14 +3,18 @@
 // Run with node --import=tsx; selected roots are test-driver inputs, not grants.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const output = resolve(process.argv[2] ?? "");
 assert.ok(process.argv[2], "Supply a new directory under the current deployment artifact root.");
+assert.ok(process.env.PA_DEPLOYMENT_DIR, "Current deployment routing is required.");
 const artifactRoot = resolve(process.env.PA_DEPLOYMENT_DIR, "artifacts");
 assert.ok(output.startsWith(`${artifactRoot}/checks/`), "Evidence belongs to this deployment's checks directory.");
+assert.equal(fs.realpathSync(artifactRoot), artifactRoot, "Artifact routing must not be redirected.");
+assert.equal(fs.realpathSync(dirname(output)), dirname(output), "Evidence parents must not be redirected.");
 fs.mkdirSync(output); // Deliberately no recursive/existing-directory fallback.
 const selectedPpa = process.env.PA_TEST_SELECTED_PPA_ROOT;
 const selectedPi = process.env.PA_TEST_SELECTED_PI;
@@ -24,6 +28,8 @@ const { ReadPublicationOwner } = await import(moduleUrl("pi-pa/dist/pi-extension
 const host = await import(pathToFileURL(join(selectedPi, "lib/node_modules/pi-monorepo/dist/bundle/index.js")).href);
 const sha256 = text => createHash("sha256").update(text).digest("hex");
 const text = result => result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
+const candidate = { head: git("rev-parse", "HEAD").trim(), trackedDiffSha256: sha256(git("diff", "HEAD", "--", "packages", "scripts/dev/verify-guarded-readback.mjs")) };
 const payload = {
   fixture: "PAP-332 inert JSON; no incident content",
   rows: Array.from({ length: 150 }, (_, index) => ({ line: index + 1, note: "ordinary readback fixture ".repeat(4) })),
@@ -64,7 +70,7 @@ for (const input of [{ path: file }, { path: file, offset: 100, limit: 43 }, { p
   });
 }
 assert.deepEqual(metadata(), before, "The read must not mutate the inert source.");
-const evidence = { schema: "pap332-guarded-readback/v1", node: process.version, pi: host.VERSION,
+const evidence = { schema: "pap332-guarded-readback/v1", candidate, node: process.version, pi: host.VERSION,
   ppa: selectedPpa ?? "worktree-source", piRoot: selectedPi,
   fixture: { path: file, sha256: sha256(content), bytes: Buffer.byteLength(content), lines: content.split("\n").length, metadata: before },
   writeResult, observations, unchanged: true,
@@ -72,5 +78,6 @@ const evidence = { schema: "pap332-guarded-readback/v1", node: process.version, 
 fs.writeFileSync(join(output, "observations.json"), JSON.stringify(evidence, null, 2) + "\n", { flag: "wx" });
 console.log(JSON.stringify({ evidence: join(output, "observations.json"), fixture: evidence.fixture,
   outcomes: observations.map(({ input, acquisition, direct, published, exactRoundtrip }) => ({ offset: input.offset ?? 1, acquisition,
-    direct: direct.details?.code ?? "delivered", published: published.details?.code ?? "delivered", exactRoundtrip })) }, null, 2));
+    direct: direct.details?.code ?? "delivered", directFailureClass: direct.details?.failureClass,
+    published: published.details?.code ?? "delivered", publishedFailureClass: published.details?.failureClass, exactRoundtrip })) }, null, 2));
 core.closeDb();

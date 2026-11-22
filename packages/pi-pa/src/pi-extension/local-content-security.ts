@@ -11,7 +11,7 @@ export const localProgressResult = (): PiToolResult => ({ content: [{ type: "tex
 
 export function localContentFailure(error: unknown): PiToolResult {
   const safe = error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_CONTENT_POLICY");
-  return { content: [{ type: "text", text: safe.message }], details: { code: safe.code, outputWithheld: true, effectState: "not-established" }, isError: true };
+  return { content: [{ type: "text", text: safe.message }], details: { code: safe.code, outputWithheld: true, effectState: "not-established", ...(safe.failureClass ? { failureClass: safe.failureClass } : {}) }, isError: true };
 }
 /** Check presentation strings AND structured/rendering details. Never change an
  * owner's backing state, approval subject or original evidence bytes. */
