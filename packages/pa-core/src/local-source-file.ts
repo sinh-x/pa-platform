@@ -1,7 +1,7 @@
 import fs, { type BigIntStats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { assertImmutableDocumentText, assertSelectedPiDocumentPath, type SelectedPiDocumentBinding } from "./immutable-document-policy.js";
-import { assertLocalFileSource, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError } from "./source-content-security.js";
+import { assertLocalFileSource, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError, type LocalSourceFailureClass } from "./source-content-security.js";
 import type { SensitivePatternSet } from "./sensitive-patterns.js";
 
 /** Owned acquisition, not artifact adoption or permission to publish raw bytes.
@@ -12,8 +12,8 @@ export interface LocalSourceFile {
   assertStable(): void;
   close(): void;
 }
-const fail = (code: "LOCAL_SOURCE_UNAVAILABLE" | "LOCAL_SOURCE_UNSUPPORTED_FILE" | "LOCAL_CONTENT_LIMIT"): never => {
-  throw new SourceContentSecurityError(code);
+const fail = (code: "LOCAL_SOURCE_UNAVAILABLE" | "LOCAL_SOURCE_UNSUPPORTED_FILE" | "LOCAL_CONTENT_LIMIT", failureClass: LocalSourceFailureClass = "source-changed"): never => {
+  throw new SourceContentSecurityError(code, failureClass);
 };
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.size === b.size
@@ -26,9 +26,9 @@ function sameDirectory(a: BigIntStats, b: BigIntStats): boolean {
   return b.isDirectory() && a.dev === b.dev && a.ino === b.ino
     && a.uid === b.uid && a.gid === b.gid && a.mode === b.mode;
 }
-function unavailable(error: unknown): never {
+function unavailable(error: unknown, failureClass: LocalSourceFailureClass): never {
   if (error instanceof SourceContentSecurityError) throw error;
-  return fail("LOCAL_SOURCE_UNAVAILABLE");
+  return fail("LOCAL_SOURCE_UNAVAILABLE", failureClass);
 }
 
 /** Linux descriptor-pinned, bounded, regular/single-link ordinary ingress.
@@ -50,6 +50,7 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
   const directories: Array<{ fd: number; path: string; name: string; stat: BigIntStats }> = [];
   const ownedDirectories: number[] = [];
   let fd: number | undefined, closed = false;
+  let failureClass: LocalSourceFailureClass = "source-open";
   const close = () => {
     if (closed) return;
     closed = true;
@@ -59,11 +60,15 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     for (let index = ownedDirectories.length - 1; index >= 0; index--) {
       try { fs.closeSync(ownedDirectories[index]!); } catch { failed = true; }
     }
-    if (failed) fail("LOCAL_SOURCE_UNAVAILABLE");
+    if (failed) fail("LOCAL_SOURCE_UNAVAILABLE", "source-close");
   };
   try {
-    if (signal?.aborted || process.platform !== "linux") fail("LOCAL_SOURCE_UNAVAILABLE");
-    if (binding) { binding.assertStable(); assertSelectedPiDocumentPath(path, binding.packageRoot); }
+    if (signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
+    if (process.platform !== "linux") fail("LOCAL_SOURCE_UNAVAILABLE", "unsupported-platform");
+    if (binding) {
+      try { binding.assertStable(); } catch (error) { unavailable(error, "read-publication"); }
+      assertSelectedPiDocumentPath(path, binding.packageRoot);
+    }
     assertLocalFileSource(path, patterns);
     const physical = fs.realpathSync(path);
     assertLocalFileSource(physical, patterns);
@@ -78,16 +83,21 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     };
     const root = fs.openSync("/", fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
     ownedDirectories.push(root);
+    failureClass = "source-stat";
     directories.push({ fd: root, path: "/", name: "", stat: fs.fstatSync(root, { bigint: true }) });
     let parent = root, current = "";
     for (const name of dirname(physical).split("/").filter(Boolean)) {
+      failureClass = "source-open";
       const next = fs.openSync(`/proc/self/fd/${parent}/${name}`, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
       // Register ownership before any observation that can fail.
       ownedDirectories.push(next);
+      failureClass = "source-stat";
       directories.push({ fd: next, path: current += `/${name}`, name, stat: fs.fstatSync(next, { bigint: true }) });
       parent = next;
     }
+    failureClass = "source-open";
     fd = fs.openSync(`/proc/self/fd/${parent}/${basename(physical)}`, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    failureClass = "source-stat";
     const before = fs.fstatSync(fd, { bigint: true });
     if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
@@ -102,8 +112,12 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     if (before.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
     const assertStable = () => {
       try {
-        if (closed || signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE");
-        if (binding) { binding.assertStable(); assertSelectedPiDocumentPath(path, binding.packageRoot); }
+        if (signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
+        if (closed) fail("LOCAL_SOURCE_UNAVAILABLE");
+        if (binding) {
+          try { binding.assertStable(); } catch (error) { unavailable(error, "read-publication"); }
+          assertSelectedPiDocumentPath(path, binding.packageRoot);
+        }
         assertLocalFileSource(path, patterns);
         assertLocalFileSource(physical, patterns);
         if (fs.realpathSync(path) !== physical) fail("LOCAL_SOURCE_UNAVAILABLE");
@@ -116,14 +130,15 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
         const after = fs.fstatSync(fd!, { bigint: true });
         if (after.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
         if (!sameFile(before, after) || !sameFile(before, fs.lstatSync(`/proc/self/fd/${parent}/${basename(physical)}`, { bigint: true }))) fail("LOCAL_SOURCE_UNAVAILABLE");
-      } catch (error) { unavailable(error); }
+      } catch (error) { unavailable(error, "source-stat"); }
     };
     // Validate path association before reading, not only before publication.
     assertStable();
     const bytes = Buffer.alloc(Number(before.size) + 1);
     let length = 0;
+    failureClass = "source-read";
     while (length < bytes.length) {
-      if (signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE");
+      if (signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
       const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
       if (count === 0) break;
       length += count;
@@ -136,6 +151,6 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     return { bytes: complete, assertStable, close };
   } catch (error) {
     close();
-    return unavailable(error);
+    return unavailable(error, failureClass);
   }
 }

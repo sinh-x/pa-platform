@@ -189,11 +189,11 @@ export function registerPiSessionModules(
           // Defense in depth for a delegated reader that ignores its signal.
           // Checked bytes are still withheld after revocation/cancellation.
           if (tool.name === "read" && checkedArgs[2]?.aborted)
-            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "cancelled"));
           return result;
         } catch (error) {
           if (tool.name === "read" && checkedArgs[2]?.aborted)
-            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+            return localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "cancelled"));
           throw safeLocalToolError(tool.name, error);
         }
         });
@@ -206,7 +206,7 @@ export function registerPiSessionModules(
             void access.then(result => {
               const checked = filterLocalToolResult("read", result);
               if (readLifetime.signal.aborted || args[2]?.aborted) {
-                resolve(localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE")));
+                resolve(localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "cancelled")));
                 return;
               }
               try {

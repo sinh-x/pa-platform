@@ -14,7 +14,7 @@ interface PendingRead {
   cleanupFailed: boolean;
 }
 
-const unavailable = () => localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE"));
+const unavailable = (failureClass: "read-publication" | "cancelled" = "read-publication") => localContentFailure(new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", failureClass));
 
 /** Private transport custody, NOT source provenance. Only the fixed native host
  * composes this owner with its authenticated acquirer and actual synchronous
@@ -29,7 +29,7 @@ export class ReadPublicationOwner {
   createTool(factory: ReadFactory, acquire: AcquireSource): PiToolDefinition {
     const definition = bindLocalReadTool(factory, acquire);
     return { ...definition, execute: async (id, input, signal, update, context) => {
-      if (this.#lifetime.signal.aborted) return unavailable();
+      if (this.#lifetime.signal.aborted) return unavailable("cancelled");
       const combined = signal ? AbortSignal.any([signal, this.#lifetime.signal]) : this.#lifetime.signal;
       const pending: PendingRead = { id, signal: combined, sources: [], released: false, cleanupFailed: false };
       if (this.#ids.has(id)) return unavailable();
@@ -96,7 +96,8 @@ export class ReadPublicationOwner {
       }
       this.#release(pending);
       try { assertCurrentHost?.(); } catch { failed = true; }
-      pending.published = failed || pending.cleanupFailed || pending.signal.aborted || this.#lifetime.signal.aborted ? unavailable() : checked;
+      pending.published = failed || pending.cleanupFailed || pending.signal.aborted || this.#lifetime.signal.aborted
+        ? unavailable(pending.signal.aborted || this.#lifetime.signal.aborted ? "cancelled" : "read-publication") : checked;
       this.#pending.delete(pending);
       this.#ids.delete(pending.id);
     }
