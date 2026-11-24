@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcessFingerprint } from "@pa-platform/pa-core";
 import { captureHerdrLocations } from "../session-herdr.js";
-import { parseHerdrForeground, parseHerdrSnapshot, readHerdrSocket, type HerdrEndpoint, type HerdrPane, type HerdrSource } from "../session-herdr-source.js";
+import { herdrStoppedEntryUncertain, parseHerdrForeground, parseHerdrSnapshot, readHerdrSocket, type HerdrEndpoint, type HerdrPane, type HerdrSource } from "../session-herdr-source.js";
 import type { ProcessReader } from "../session-process.js";
 const fp = (pid: number): ProcessFingerprint => ({ pid, startTimeTicks: String(pid), bootId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" });
-const read: ProcessReader = pid => ({ kind: "present", fingerprint: fp(pid), parentPid: pid === 42 ? 20 : pid === 20 ? 1 : 0, state: "S" });
+const read: ProcessReader = pid => ({ kind: "present", fingerprint: fp(pid), parentPid: pid === 42 ? 20 : pid === 20 ? 1 : 0, state: "S", jobControl: { group: 20, session: 20, tty: 1, foregroundGroup: 20 } });
 const pane: HerdrPane = { workspaceId: "w1", workspaceLabel: "Project", tabId: "w1:t1", tabLabel: "Task", paneId: "w1:p1", terminalId: "term_1" };
 const endpoint = (name = "one"): HerdrEndpoint => ({ name, socketPath: `/inert/${name}.sock`, identity: name });
 function fixture(endpoints = [endpoint()]): HerdrSource {
@@ -20,6 +20,17 @@ test("indirect foreground ancestry maps scoped pane, with labels; duplicate pane
   const result = await capture(fixture());
   assert.equal(result.complete, true); assert.deepEqual(result.mappings.get("d-000001"), { state: "mapped", location: { session: "one", ...pane } });
   assert.equal((await capture(fixture([endpoint(), endpoint("two")]))).mappings.get("d-000001")!.state, "ambiguous");
+});
+test("nested-shell background and detached descendants never inherit the foreground ancestor location", async () => {
+  for (const tty of [0, 1]) {
+    const process: ProcessReader = pid => {
+      const value = read(pid);
+      return pid === 42 && value.kind === "present" ? { ...value, jobControl: { group: 42, session: 20, tty, foregroundGroup: 20 } } : value;
+    };
+    assert.equal((await capture(fixture(), process)).mappings.get("d-000001")!.state, "unmatched");
+  }
+  assert.equal(herdrStoppedEntryUncertain({ running: false, connection_error: "permission denied private path" }), true);
+  assert.equal(herdrStoppedEntryUncertain({ running: false }), false);
 });
 test("partial lone stable hit is qualified, complete no hit unmatched, incomplete no hit unknown; recovery is fresh", async () => {
   const source = fixture([endpoint(), endpoint("offline")]);

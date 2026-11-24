@@ -37,7 +37,7 @@ test("procfs observes only stat/boot; denied and hidden absence never prove exit
   const stat = `42 (name with ) paren) S 1 ${Array(17).fill("0").join(" ")} 123`;
   const reads: string[] = [];
   const result = observeSessionProcess(42, path => { reads.push(path); return path.endsWith("/stat") ? stat : fp.bootId; });
-  assert.deepEqual(result, present); assert.equal(reads.length, 2);
+  assert.deepEqual(result, { ...present, jobControl: { group: 0, session: 0, tty: 0, foregroundGroup: 0 } }); assert.equal(reads.length, 2);
   for (const code of ["EACCES", "EPERM", "ENOENT", "ESRCH"]) {
     const read = (path: string) => { if (path === "/proc/mounts") return "proc /proc proc rw,hidepid=2 0 0"; throw Object.assign(new Error("private"), { code }); };
     assert.equal(observeSessionProcess(42, read).kind, "unverified");

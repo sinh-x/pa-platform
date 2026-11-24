@@ -87,6 +87,9 @@ export function parseHerdrForeground(value: unknown, paneId: string): number[] {
     if (!Number.isSafeInteger(pid) || Number(pid) <= 0) throw new Error("herdr-malformed"); return Number(pid);
   }).filter(pid => pid !== info.shell_pid); // A foreground shell is not attribution for its background jobs.
 }
+export function herdrStoppedEntryUncertain(row: Record<string, unknown>): boolean {
+  return row.running === false && row.connection_error !== undefined && row.connection_error !== null;
+}
 export function defaultHerdrSource(): HerdrSource {
   return {
     roster: deadline => new Promise(resolve => {
@@ -98,7 +101,10 @@ export function defaultHerdrSource(): HerdrSource {
           for (const raw of array(object(JSON.parse(stdout)).sessions, 64)) {
             const row = object(raw);
             if (typeof row.running !== "boolean") throw new Error();
-            if (!row.running) continue;
+            if (!row.running) {
+              if (herdrStoppedEntryUncertain(row)) complete = false;
+              continue;
+            }
             if (typeof row.name !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(row.name) || seen.has(row.name)) throw new Error();
             seen.add(row.name);
             try {

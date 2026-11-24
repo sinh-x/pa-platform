@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { ProcessFingerprint } from "@pa-platform/pa-core";
 
 export type ProcessObservation =
-  | { kind: "present"; fingerprint: ProcessFingerprint; parentPid: number; state: string }
+  | { kind: "present"; fingerprint: ProcessFingerprint; parentPid: number; state: string; jobControl?: { group: number; session: number; tty: number; foregroundGroup: number } }
   | { kind: "exited" }
   | { kind: "unverified"; reason: "process-inaccessible" | "process-malformed" | "unsupported-host" };
 export type ProcessReader = (pid: number) => ProcessObservation;
@@ -31,10 +31,13 @@ export function observeSessionProcess(pid: number, read: (path: string) => strin
     const fields = stat.slice(close + 2).trim().split(/\s+/);
     const state = fields[0], parentPid = Number(fields[1]), startTimeTicks = fields[19];
     const bootId = read("/proc/sys/kernel/random/boot_id").trim();
-    if (close < 0 || Number(stat.slice(0, stat.indexOf(" "))) !== pid || !state || !/^[A-Za-z]$/.test(state)
+    if (close < 0 || Number(stat.slice(0, stat.indexOf(" "))) !== pid || !state || !/^[RSDZTtXxKWPI]$/.test(state)
       || !Number.isSafeInteger(parentPid) || parentPid < 0 || !startTimeTicks || !/^\d{1,30}$/.test(startTimeTicks)
       || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(bootId)) return { kind: "unverified", reason: "process-malformed" };
-    return { kind: "present", fingerprint: { pid, startTimeTicks, bootId }, parentPid, state };
+    const [group, session, tty, foregroundGroup] = fields.slice(2, 6).map(Number);
+    if (![group, session, tty, foregroundGroup].every(Number.isSafeInteger)) return { kind: "unverified", reason: "process-malformed" };
+    return { kind: "present", fingerprint: { pid, startTimeTicks, bootId }, parentPid, state,
+      jobControl: { group: group!, session: session!, tty: tty!, foregroundGroup: foregroundGroup! } };
   } catch { return { kind: "unverified", reason: "process-inaccessible" }; }
 }
 

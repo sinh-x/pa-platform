@@ -1,4 +1,4 @@
-import { findSensitiveMatch, getDeploymentDir, loadReposYaml, readSessionCandidates, type ProcessFingerprint, type SessionCandidate } from "@pa-platform/pa-core";
+import { findSensitiveMatch, maskSecrets, getDeploymentDir, loadReposYaml, readSessionCandidates, type ProcessFingerprint, type SessionCandidate } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
 import { classifySessionProcess, observeSessionProcess, sameFingerprint, type ProcessReader, type SessionProcess } from "./session-process.js";
 
@@ -22,7 +22,7 @@ export function defaultInventoryHost(): InventoryHost {
 export function sessionDisplayText(value: unknown): string | null {
   if (typeof value !== "string" || !value || value.length > 256) return null;
   const plain = value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "?");
-  try { return findSensitiveMatch("content", plain) ? "[withheld]" : plain; } catch { return "[withheld]"; }
+  try { return /[/\\\\]/.test(plain) || maskSecrets(plain) !== plain || findSensitiveMatch("content", plain) ? "[withheld]" : plain; } catch { return "[withheld]"; }
 }
 export interface ProcessCapture {
   rows: SessionRow[]; complete: boolean; reasons: string[];
@@ -58,10 +58,16 @@ export function captureSessionProcesses(filters: SessionFilters, host: Inventory
   return { rows, anchors, complete: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 /** Re-read both launch evidence and current incarnation after optional topology collection. */
-export function recheckSessionProcesses(capture: ProcessCapture, host: InventoryHost): void {
+export function recheckSessionProcesses(capture: ProcessCapture, host: InventoryHost, deadline = Infinity): void {
   for (const row of capture.rows) {
     const anchor = capture.anchors.get(row.deploymentId);
     if (!anchor) continue;
+    if (host.clock() >= deadline) {
+      row.process = { state: "unverified", reason: "process-recheck-budget-exhausted" };
+      capture.anchors.delete(row.deploymentId); capture.complete = false;
+      if (!capture.reasons.includes("process-recheck-budget-exhausted")) capture.reasons.push("process-recheck-budget-exhausted");
+      continue;
+    }
     try {
       const current = host.anchor(row.deploymentId);
       row.process = sameFingerprint(anchor, current) ? classifySessionProcess(anchor, row.candidatePid, host.process(anchor.pid))

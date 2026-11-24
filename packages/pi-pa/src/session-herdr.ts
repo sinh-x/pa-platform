@@ -7,19 +7,26 @@ export type SessionMapping =
   | { state: "mapped" | "qualified"; location: SessionLocation }
   | { state: "ambiguous" | "unmatched" | "unknown"; reason: string };
 export interface HerdrCapture { mappings: Map<string, SessionMapping>; complete: boolean; reasons: string[] }
-interface Lineage { members: ProcessFingerprint[]; complete: boolean }
+interface Lineage { members: ProcessFingerprint[]; complete: boolean; jobControl: unknown[] }
 function lineage(anchor: ProcessFingerprint, read: ProcessReader): Lineage {
-  const members: ProcessFingerprint[] = [], seen = new Set<number>(); let pid = anchor.pid;
+  const members: ProcessFingerprint[] = [], seen = new Set<number>(), jobControl: unknown[] = []; let pid = anchor.pid;
+  let childTty: number | undefined;
   for (let depth = 0; pid > 0 && depth < 64 && !seen.has(pid); depth++) {
     seen.add(pid); const observation = read(pid);
     if (observation.kind !== "present" || ["Z", "X", "x"].includes(observation.state)
-      || (depth === 0 && !sameFingerprint(anchor, observation.fingerprint))) return { members: [], complete: false };
+      || (depth === 0 && !sameFingerprint(anchor, observation.fingerprint))) return { members: [], complete: false, jobControl };
+    const control = observation.jobControl;
+    if (!control) return { members: [], complete: false, jobControl };
+    // Do not cross a background job-control boundary or attribute detached work
+    // to an interactive ancestor. A separate foreground PTY remains supported.
+    if ((control.tty !== 0 && control.group !== control.foregroundGroup) || (childTty === 0 && control.tty !== 0)) return { members, complete: true, jobControl };
+    jobControl.push(control); childTty = control.tty;
     members.push(observation.fingerprint); pid = observation.parentPid;
   }
-  return { members, complete: pid === 0 };
+  return { members, complete: pid === 0, jobControl };
 }
 function sameLineage(a: Lineage, b: Lineage): boolean {
-  return a.members.length === b.members.length && a.members.every((fp, i) => sameFingerprint(fp, b.members[i]!));
+  return JSON.stringify(a.jobControl) === JSON.stringify(b.jobControl) && a.members.length === b.members.length && a.members.every((fp, i) => sameFingerprint(fp, b.members[i]!));
 }
 const scope = (endpoint: HerdrEndpoint) => JSON.stringify([endpoint.name, endpoint.socketPath, endpoint.identity]);
 interface Hit { endpoint: HerdrEndpoint; pane: HerdrPane; foreground: ProcessFingerprint }
