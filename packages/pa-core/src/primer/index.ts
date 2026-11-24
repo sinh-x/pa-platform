@@ -155,6 +155,14 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   return `${body}\n${renderSizeSignal(body, mode?.id, budget)}`;
 }
 
+// Bare launches share only these platform-owned guides. Do not select team,
+// mode, or repository guides for the bare profile.
+const rogueOneSharedGuides = [
+  "docs/workflow/pi-task-tracking.md",
+  "docs/workflow/design-charter.md",
+  "docs/workflow/html-reporting.md",
+];
+
 function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
   const userObjective = adaptContentForRuntime(
     applyTemplateVars(options.objective?.trim() || "No user objective was provided.", options.templateVars ?? {}),
@@ -170,6 +178,7 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
   const context = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
   const channel = options.invocationChannel ?? "cli";
   const artifactRouting = renderAdministrativeArtifactRouting(options);
+  const sharedGuides = renderProjectAgentGuides(rogueOneSharedGuides, options.resolveFile, options.runtime);
   const body = [
     "# PA Deployment Primer",
     "",
@@ -187,6 +196,8 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
     ...(artifactRouting ? [artifactRouting, ""] : []),
     "## Runtime Tools",
     toolReference,
+    "",
+    sharedGuides,
     "",
     "## Rogue-One Audit Notice",
     rogueOneAuditNotice(channel),

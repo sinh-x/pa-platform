@@ -97,7 +97,7 @@ test("rogue-one execution plan is fixed, immutable, ticket-free, and performs ze
   });
 });
 
-test("rogue-one primer contains only bare objective, context, tools, and audit evidence", () => {
+test("rogue-one primer preserves the bare objective, context, tools, and audit evidence", () => {
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: rogueTeam,
@@ -122,3 +122,30 @@ test("rogue-one primer contains only bare objective, context, tools, and audit e
     assert.equal(primer.includes(excluded), false, `primer leaked excluded content: ${excluded}`);
   }
 });
+
+for (const runtime of ["pi", "opencode"] as const) {
+  test(`${runtime}: bare Rogue-One loads only the common guide allowlist, once, without opt-in`, () => {
+    withRegisteredRepo((root, repo) => {
+      const fixtures = new Map([
+        ["docs/workflow/pi-task-tracking.md", "# Task Guide Fixture"],
+        ["docs/workflow/design-charter.md", "# Charter Fixture"],
+        ["docs/workflow/html-reporting.md", "# Report Guide Fixture"],
+      ]);
+      const paths: string[] = [];
+      for (const [index, text] of [...fixtures.values()].entries()) writeFileSync(join(root, `${index}.md`), text);
+      const primer = generatePrimer({
+        runtime, teamConfig: rogueTeam, rogueOne: true, repository: { repoKey: "registered", repoRoot: repo },
+        resolveFile(path) {
+          assert.ok(fixtures.has(path), `unexpected guide selection: ${path}`);
+          paths.push(path);
+          return join(root, `${[...fixtures.keys()].indexOf(path)}.md`);
+        },
+      });
+      assert.deepEqual(paths, [...fixtures.keys()]);
+      for (const text of fixtures.values()) assert.equal(primer.split(text).length, 2, text);
+      assert.match(primer, /No user objective was provided/);
+      assert.match(primer, /ROGUE-ONE ACTIVE/);
+      assert.doesNotMatch(primer, /CONFIGURED OBJECTIVE|CONFIGURED AGENT|GLOBAL GUIDE|MODE GUIDE/);
+    });
+  });
+}
