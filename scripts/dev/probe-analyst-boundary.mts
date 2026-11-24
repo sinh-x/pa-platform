@@ -1,6 +1,8 @@
 // PAP-334 P1 disposable-fixture investigation. NOT a qualified Analyst launcher.
 // --characterize observes current behavior; --expect-protected fails on actual
-// boundary violations. Setup/import failures are never behavioral reds.
+// boundary violations. --expect-ticket-administration asserts ONLY the seven
+// generic status fixtures, never filesystem enforcement or installed availability.
+// Setup/import failures are never behavioral reds.
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +13,7 @@ import { appendRegistryEvent, closeDb, resolveTrustedTicketMutationContext, Tick
 import { createSecureLocalBashTool } from "../../packages/pi-pa/src/pi-extension/local-source-tools.js";
 
 const mode = process.argv[2];
-if (!["--characterize", "--expect-protected"].includes(mode ?? "")) throw new Error("Use --characterize or --expect-protected");
+if (!["--characterize", "--expect-protected", "--expect-ticket-administration"].includes(mode ?? "")) throw new Error("Use --characterize, --expect-protected or --expect-ticket-administration");
 const originalEnvironment = { ...process.env };
 const root = mkdtempSync(join(tmpdir(), "pap334-boundary-"));
 const shared = join(root, "usage"), repoA = join(root, "repo-a"), repoB = join(shared, "repo-b");
@@ -113,8 +115,14 @@ try {
     results.push({ case: "bubblewrap-pathname-host-bridge", exit: bridge.code, before: delegatedBefore, after: digest(delegated), boundaryViolation: digest(delegated) !== delegatedBefore });
   } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   const violations = results.filter(row => row.boundaryViolation === true).length;
-  console.log(JSON.stringify({ schemaVersion: "pap334-investigation/v1", mode, state: violations ? "behavioral-red" : "no-observed-violation", fixtureOnly: true, foregroundJourney: "not-run", results, violations }, null, 2));
-  if (mode === "--expect-protected" && violations > 0) process.exitCode = 1;
+  const statusCases = results.filter(row => row.case === "generic-cross-project-status");
+  const ticketAssertion = statusCases.length === 7 && statusCases.every(row => row.persisted === true);
+  const assertion = mode === "--expect-ticket-administration" ? { scope: "seven-generic-status-fixtures-only", passed: ticketAssertion }
+    : mode === "--expect-protected" ? { scope: "observed-boundary-cases-only", passed: violations === 0 }
+      : { scope: "observation-only", passed: null };
+  console.log(JSON.stringify({ schemaVersion: "pap334-investigation/v1", mode, state: violations ? "behavioral-red" : "no-observed-violation", fixtureOnly: true,
+    overallQualification: "not-qualified", foregroundJourney: "not-run", assertion, results, violations }, null, 2));
+  if (assertion.passed === false) process.exitCode = 1;
 } catch (error) {
   console.log(JSON.stringify({ state: "setup-blocked", behavioralRed: false, reason: error instanceof Error ? error.message : "Unknown setup failure", completedResults: results }, null, 2));
   process.exitCode = 2;
