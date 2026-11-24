@@ -400,6 +400,9 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     "deploy_modes:",
     "  - id: analyze",
     "    label: Analyze",
+    // Generic startup/custody coverage is independent of unsupported analyze.
+    "  - id: consult",
+    "    label: Consult",
     "  - id: review-auto",
     "    label: Review Auto",
   ].join("\n") + "\n");
@@ -913,15 +916,17 @@ test("Pi rejects opaque unsupported resume files before allocation, hooks or pre
     writeFileSync(path, original);
     let effects = 0;
     const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; }, onDescribe: () => { effects++; } });
-    const result = await deployWithPi({ team: "requirements", mode: "analyze", resume: id }, adapter);
+    appendRegistryEvent({ deployment_id: id, team: "requirements", mode: "consult", runtime: "unsupported-synthetic", event: "started", timestamp: "2026-11-24T00:00:00Z" });
+    const history = getDeploymentEvents(id);
+    const result = await deployWithPi({ team: "requirements", mode: "consult", resume: id }, adapter);
     assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
     assert.match(result.reason ?? "", /unsupported runtime/);
     assert.doesNotMatch(result.reason ?? "", /\buse ['`]?\S+ deploy --resume/);
     assert.equal(effects, 0);
     assert.deepEqual(readFileSync(path), original);
     assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
-    assert.equal(existsSync(join(root, "registry.db")), false, "rejected resume must not initialize the registry");
-    assert.equal(queryDeploymentStatuses().length, 0);
+    assert.deepEqual(getDeploymentEvents(id), history, "runtime rejection preserves the qualifying native record");
+    assert.equal(queryDeploymentStatuses().length, 1);
   });
 });
 
@@ -1774,7 +1779,7 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
       writeFileSync(join(root, "tickets/PAP-191.json"), JSON.stringify({ id: "PAP-191", project: "pa-platform", title: "Requirements startup fixture" }));
       let requirementsSpawns = 0;
       const requirements = await deployWithPi(
-        { team: "requirements", mode: "analyze", ticket: "PAP-191", background: true },
+        { team: "requirements", mode: "consult", ticket: "PAP-191", background: true },
         stubAdapter({ onSpawn: () => { requirementsSpawns += 1; } }),
       );
       assert.equal(requirements.status, "success", requirements.reason);
@@ -2055,7 +2060,7 @@ test("PPA foreground builders own the exact repository through every adapter ter
   });
 });
 
-test("PPA dirty background rejects pre-spawn while requirements bypass status and lease admission", async () => {
+test("PPA dirty background rejects pre-spawn while nonAnalyst requirements consult bypasses status and lease admission", async () => {
   await withPiEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     const leasePath = repositoryMutationLeasePath(repo);
@@ -2072,7 +2077,7 @@ test("PPA dirty background rejects pre-spawn while requirements bypass status an
     const before = readFileSync(leasePath, "utf8");
     const commandOffset = gitState.readCommands().length;
     let requirementsSpawns = 0;
-    const launched = await deployWithPi({ team: "requirements", mode: "analyze", background: true }, stubAdapter({ onSpawn: (opts) => {
+    const launched = await deployWithPi({ team: "requirements", mode: "consult", background: true }, stubAdapter({ onSpawn: (opts) => {
       requirementsSpawns += 1;
       assert.equal(opts.executionPlan?.repositoryAdmission.access, "read-only");
       assert.equal(opts.repositoryLease, undefined);
@@ -2713,7 +2718,7 @@ async function withSelectionAliasFixture(holder: "owner" | "borrower" | "absent"
     const head = git(["rev-parse", "HEAD"], selected);
     const ticketPath = join(root, "tickets", "PAP-234.json");
     writeFileSync(ticketPath, JSON.stringify({ id: "PAP-234", project: "pa-platform", title: "alias", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] }));
-    const setTeam = (name: string, filename = "requirements") => writeFileSync(join(root, "teams", `${filename}.yaml`), `name: ${name}\ndescription: Alias fixture\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: analyze\n    label: Analyze\n    require_ticket: true\n`);
+    const setTeam = (name: string, filename = "requirements") => writeFileSync(join(root, "teams", `${filename}.yaml`), `name: ${name}\ndescription: Alias fixture\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: consult\n    label: Consult\n    require_ticket: true\n`);
     setTeam("requirements"); setTeam("learner", "learner");
     const snapshot = captureRepositoryGitSnapshot(selected);
     const fingerprint = readProcessFingerprint(process.pid)!;
@@ -2760,7 +2765,7 @@ async function withSelectionAliasFixture(holder: "owner" | "borrower" | "absent"
 
 for (const holder of ["owner", "borrower"] as const) test(`ticket-worktree resolved non-locking alias rejects alongside live builder ${holder}`, async () => {
   await withSelectionAliasFixture(holder, async ({ selected, dependencies, setTeam, statusCalls }) => {
-    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    const request = { team: "requirements", mode: "consult", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
     let preflights = 0; const spawned: SpawnOpts[] = []; const resumed: SpawnOpts[] = [];
     const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts), onResume: (opts) => resumed.push(opts) });
     const allowed = await deployWithPi(request, adapter, undefined, dependencies);
@@ -2792,7 +2797,7 @@ for (const holder of ["owner", "borrower"] as const) test(`ticket-worktree resol
 
 test("ticket-worktree alias plan/access consistency and resolved-identity rereads reject drift", async () => {
   await withSelectionAliasFixture("absent", async ({ canonical, selected, dependencies, setTeam }) => {
-    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    const request = { team: "requirements", mode: "consult", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
     setTeam("learner");
     const spawned: SpawnOpts[] = []; let preflights = 0;
     const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
@@ -2801,10 +2806,10 @@ test("ticket-worktree alias plan/access consistency and resolved-identity reread
     assert.equal(spawned[0]?.executionPlan?.team, "learner"); assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "non-locking");
     assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
     // Same access classification is insufficient: bind the resolved team name.
-    const authentication = authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies);
+    const authentication = authenticateTicketWorktreeSelection(request, "consult", canonical, dependencies);
     setTeam("planner");
     assert.throws(() => authentication.reread(), /changed after selection/);
-    assert.throws(() => authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies, "learner"), /resolved team identity changed/);
+    assert.throws(() => authenticateTicketWorktreeSelection(request, "consult", canonical, dependencies, "learner"), /resolved team identity changed/);
     for (const dryRun of [false, true]) {
       setTeam("learner");
       const changed = await deployWithPi({ ...request, dryRun }, stubAdapter({
@@ -2846,7 +2851,7 @@ test("explicit ticket selection projects foreground/background/dry-run roots wit
     let preflights = 0;
     const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
     for (const background of [false, true]) {
-      const result = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, repo: "pa-platform", background }, adapter, undefined, { treehouse, observeOperation: (op) => operations.push(op) });
+      const result = await deployWithPi({ team: "requirements", mode: "consult", ticket: "PAP-234", ticketWorktree: true, repo: "pa-platform", background }, adapter, undefined, { treehouse, observeOperation: (op) => operations.push(op) });
       assert.equal(result.status, "success", result.reason);
       const opts = spawned.at(-1)!; const plan = opts.executionPlan!;
       assert.equal(plan.repositoryCwd, selected); assert.equal(opts.mode, background ? "background" : "foreground");
@@ -2884,7 +2889,7 @@ test("explicit ticket selection projects foreground/background/dry-run roots wit
       },
     });
     for (const background of [false, true]) {
-      const runtime = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, background }, realAdapter, undefined, { treehouse });
+      const runtime = await deployWithPi({ team: "requirements", mode: "consult", ticket: "PAP-234", ticketWorktree: true, background }, realAdapter, undefined, { treehouse });
       assert.equal(runtime.status, "success", runtime.reason);
     }
     assert.equal(runtimeRoots.length, 6); assert.ok(runtimeRoots.every((path) => path === selected));
@@ -2904,7 +2909,7 @@ test("ticket-selection resume reauthenticates the same canonical/ticket/physical
     const treehouse = new TreehouseClient({ run() { return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: leasePath, status: "leased", lease_id: leaseId, lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) }; } });
     let preflights = 0; const resumed: SpawnOpts[] = [];
     const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onResume: (opts) => resumed.push(opts) });
-    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true };
+    const request = { team: "requirements", mode: "consult", ticket: "PAP-234", ticketWorktree: true };
     const initial = await deployWithPi(request, adapter, undefined, { treehouse });
     assert.equal(initial.status, "success", initial.reason);
     const resume = { ...request, resume: initial.deploymentId! };
@@ -3140,7 +3145,7 @@ test("ordinary requirements CWD inference keeps canonical and authenticated link
 
     const observations: SpawnOpts[] = [];
     const stderr: string[] = [];
-    const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-198"], {
+    const code = await runCoreCommand(["deploy", "requirements", "--mode", "consult", "--ticket", "PAP-198"], {
       binaryName: "ppa",
       io: { stdout: () => {}, stderr: (line) => stderr.push(line) },
       hooks: createPiHooks(stubAdapter({ onSpawn: (opts) => observations.push(opts) })),
@@ -3179,7 +3184,7 @@ test("ordinary requirements CWD inference keeps canonical and authenticated link
     process.chdir(untrustedWorktree);
     let rejectedSpawns = 0;
     const untrustedStderr: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-198"], {
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "consult", "--ticket", "PAP-198"], {
       binaryName: "ppa",
       io: { stdout: () => {}, stderr: (line) => untrustedStderr.push(line) },
       hooks: createPiHooks(stubAdapter({ onSpawn: () => { rejectedSpawns += 1; } })),
@@ -3190,7 +3195,7 @@ test("ordinary requirements CWD inference keeps canonical and authenticated link
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${untrustedPrimary}\n    description: Mismatched canonical identity\n    prefix: PAP\n`);
     process.chdir(worktree);
     const canonicalMismatchStderr: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-198"], {
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "consult", "--ticket", "PAP-198"], {
       binaryName: "ppa",
       io: { stdout: () => {}, stderr: (line) => canonicalMismatchStderr.push(line) },
       hooks: createPiHooks(stubAdapter({ onSpawn: () => { rejectedSpawns += 1; } })),
@@ -4471,7 +4476,7 @@ test("ticketed, standalone, resume, and evaluator foreground routes share deferr
 
 test("PAP-267 AC-3/5/6: shared requirements/builder foreground startup preserves persisted UUID, resume and no-spawn gates", async () => {
   for (const team of ["requirements", "builder"]) await withPiEnv(async (root, gitState) => {
-    const mode = team === "requirements" ? "analyze" : "implement";
+    const mode = team === "requirements" ? "consult" : "implement";
     const id = "48c3aa4b-bc54-4772-944e-17f92103c1c1";
     const warning = `Warning: No project session found with id '${id}'; creating a new session with that id.\r\n`;
     const output: string[] = [], invocations: string[][] = [];
@@ -4913,7 +4918,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
     ].join("\n") + "\n");
     writeFileSync(join(root, "teams", "requirements.yaml"), [
       "name: requirements", "description: Requirements", "objective: Review", "agents: []", "deploy_modes:",
-      "  - id: analyze", "    label: Analyze", "    provider: openai", "    model: openai/gpt-6.1-sol",
+      "  - id: consult", "    label: Consult", "    provider: openai", "    model: openai/gpt-6.1-sol",
     ].join("\n") + "\n");
     const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const adapter = new PiAdapter({
@@ -4925,7 +4930,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
       },
     });
 
-    for (const [team, mode, model] of [["builder", "implement", "gpt-6.1-sol"], ["builder", "orchestrator", "gpt-6-astra"], ["requirements", "analyze", "gpt-6.1-sol"]] as const) {
+    for (const [team, mode, model] of [["builder", "implement", "gpt-6.1-sol"], ["builder", "orchestrator", "gpt-6-astra"], ["requirements", "consult", "gpt-6.1-sol"]] as const) {
       const result = await deployWithPi({ team, mode }, adapter);
       assert.equal(result.status, "success", result.reason);
       const invocation = invocations.at(-1)!;

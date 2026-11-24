@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
-import { closeDb, emitStartedEvent, ensureDeployDir, readProcessFingerprint } from "@pa-platform/pa-core";
+import { closeDb, emitStartedEvent, ensureDeployDir, readProcessFingerprint, requiresRepositoryIsolation } from "@pa-platform/pa-core";
 import { PiAdapter, runPiManagedProcess } from "../adapter.js";
 import { PI_PROCESS_IDENTITY_FILE, readPiProcessIdentity, recordPiProcessIdentity } from "../process-identity.js";
 
@@ -40,8 +40,8 @@ for (const [team, mode] of modes) {
   }));
 }
 
-test("foreground managed startup records all configured routes before publishing the actual child PID", async () => {
-  for (const [team, mode] of modes) await fixture(team!, mode!, async (root, directory) => {
+test("foreground eligible nonAnalyst startup records its anchor before publishing the actual child PID", async () => {
+  for (const [team, mode] of modes.filter(([team, mode]) => !requiresRepositoryIsolation({ team, mode }))) await fixture(team!, mode!, async (root, directory) => {
     const primer = join(directory, "primer.md"); writeFileSync(primer, "synthetic fixture");
     const input = new Readable({ read() {} });
     let running = true, published = false;
@@ -58,6 +58,17 @@ test("foreground managed startup records all configured routes before publishing
       running = false; assert.ok(exit); exit({ exitCode: 0, signal: 0 });
       assert.equal((await pending).exitCode, 0);
     } finally { input.destroy(); }
+  });
+});
+
+test("foreground protected routes reject before probes, PTY, anchor and PID callbacks", async () => {
+  for (const [team, mode] of modes.filter(([team, mode]) => requiresRepositoryIsolation({ team, mode }))) await fixture(team!, mode!, async (root, directory) => {
+    let effects = 0;
+    const adapter = new PiAdapter({ cwd: root, env: process.env, versionProbe: () => { effects++; return "0.84.4"; },
+      nativeRegistryProbe: () => { effects++; return undefined; }, supervision: { spawnPty: () => { effects++; throw Error("not admitted"); } } });
+    const result = await adapter.spawn({ primerPath: join(directory, "primer.md"), deployId: id, mode: "foreground", onPid: () => { effects++; } });
+    assert.equal(result.exitCode, 1); assert.match(result.errorMessage!, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+    assert.equal(effects, 0); assert.throws(() => readPiProcessIdentity(id, directory));
   });
 });
 

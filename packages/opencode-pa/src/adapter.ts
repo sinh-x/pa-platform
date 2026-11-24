@@ -1,8 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readPriorSession } from "./session-owner.js";
+import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, readBackgroundOwnership, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud" | "opencode-go";
@@ -67,7 +69,8 @@ export class OpencodeAdapter implements RuntimeAdapter {
         await Promise.race([waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid }), launchError.then((error) => { throw error; })]);
       } catch (error) {
         await terminateBackgroundSupervisor(child.pid);
-        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        const retained = readBackgroundOwnership(ownership.ownershipPath);
+        if (!(retained?.deploymentId === deploymentId && retained.ownershipToken === ownership.ownershipToken && retained.supervisorPid === child.pid && retained.admissionRejected === "repository-isolation")) removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
         throw error;
       }
       return { pid: child.pid, ...(opts.repositoryLease ? { repositoryLeaseTransferred: true } : {}) };
@@ -79,7 +82,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   resume(opts: ResumeOpts): Promise<SpawnResult> {
-    return this.runOpencode(opts, opts.sessionId);
+    return this.runOpencode(opts, opts.sessionId, opts.resumedFromDeploymentId);
   }
 
   extractActivity(deployDir: string): ActivityEvent[] {
@@ -122,7 +125,17 @@ export class OpencodeAdapter implements RuntimeAdapter {
     };
   }
 
-  private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+  private async runOpencode(opts: SpawnOpts, sessionId?: string, resumedFromDeploymentId?: string): Promise<SpawnResult> {
+    try {
+      assertRepositoryIsolationIngressAvailable([this.env, opts.env], opts.executionPlan);
+      if (sessionId !== undefined) {
+        if (!resumedFromDeploymentId) throw new RepositoryIsolationUnavailableError();
+        assertRepositoryIsolationResumeAvailable(resumedFromDeploymentId, "opencode");
+        if (!sessionId || readPriorSession(resumedFromDeploymentId, this.sessionFileName) !== sessionId) throw new RepositoryIsolationUnavailableError();
+      }
+    } catch {
+      return { exitCode: 1, logFile: opts.logFile, errorMessage: new RepositoryIsolationUnavailableError().message };
+    }
     // Only shared Lavish metadata, never the PPA-only AXI PATH/Treehouse seam.
     const env: NodeJS.ProcessEnv = { ...this.env, ...opts.env, PA_ARTIFACT_ADAPTER: "opencode",
       PA_ARTIFACT_OWNER_PID: opts.mode === "background" ? "background" : String(process.pid) };

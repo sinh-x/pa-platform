@@ -426,7 +426,7 @@ test("ticket-worktree helper early returns retain bounded failures and zero adap
   });
 });
 
-test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary", async () => {
+test("dry-run ticket-worktree intent reaches only the eligible PPA CLI adapter boundary", async () => {
   await withFixture("ticket-worktree-boundary", async (fixture) => {
     writeTicket(fixture, "PAP-234", "registered");
     process.chdir(fixture.repo);
@@ -435,7 +435,7 @@ test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary"
       const captured = capture();
       const seen: Array<{ request: DeployRequest; cwd: string }> = [];
       const selectorArgs = selector ? ["--repo", selector] : [];
-      const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-234", "--ticket-worktree", "--timeout", String(DEFAULT_DEPLOY_TIMEOUT_SECONDS), ...selectorArgs], {
+      const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-234", "--ticket-worktree", "--dry-run", "--timeout", String(DEFAULT_DEPLOY_TIMEOUT_SECONDS), ...selectorArgs], {
         binaryName: "ppa",
         io: captured.io,
         hooks: { deploy: (request) => {
@@ -452,6 +452,7 @@ test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary"
           ticket: "PAP-234",
           timeout: DEFAULT_DEPLOY_TIMEOUT_SECONDS,
           ticketWorktree: true,
+          dryRun: true,
           invocationChannel: "cli",
         },
         cwd: fixture.repo,

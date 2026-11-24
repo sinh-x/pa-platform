@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, getDeploymentEvents, TicketStore, parseTeamYamlContent, generatePrimer, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, getDeploymentEvents, TicketStore, parseTeamYamlContent, generatePrimer, RepositoryIsolationUnavailableError, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { createPiPaModules, createPiSessionLifecycle, registerPiSessionModules, type PiToolDefinition } from "../pi-extension/index.js";
@@ -150,7 +150,7 @@ test("default non-editor composition registers finite intake only for fresh auth
 for (const selected of [
   { config: "pa-document-interactions/v4", native: profile },
   { config: "pa-document-policy/v1", native: "requirements-document-policy/v1" },
-]) test(`source launcher selects ${selected.config} before native registration and one bound companion; simulated provider, no installed qualification`, async () => {
+]) test(`source launcher selects ${selected.config} before native registration and one bound companion; simulated provider, no installed qualification`, { skip: "Deferred: protected requirements/analyze execution has no qualified repository-isolation executor; preserve the source-launch integration body, not a bypass." }, async () => {
   const env = process.env, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "intake-launch-source-"));
   closeDb();
   try {
@@ -211,6 +211,31 @@ for (const selected of [
     const result = await deployWithPi({ team: "requirements", mode: "analyze", repo: "example", ticket: parent.id, timeout: 60, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter);
     if (bodyError) throw bodyError;
     assert.equal(spawns, 1, result.reason); assert.equal(created, "OTH-001"); assert.equal(store.list().length, 2);
+  } finally { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); }
+});
+
+test("protected source intake launches stop before session allocation, hooks or companion mutation", async () => {
+  const env = process.env, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "intake-launch-guard-"));
+  closeDb();
+  try {
+    process.env = Object.fromEntries(Object.entries(env).filter(([key]) => !/^(PA_|PI_)/.test(key)));
+    const repo = join(root, "repo"), config = join(root, "config"), teams = join(root, "teams");
+    for (const path of [repo, config, teams]) mkdirSync(path);
+    Object.assign(process.env, { PA_PLATFORM_CONFIG: config, PA_PLATFORM_TEAMS: teams, PA_AI_USAGE_HOME: join(root, "usage"), PA_REGISTRY_DB: join(root, "registry.db") });
+    process.chdir(repo);
+    let effects = 0;
+    const forbidden = (): never => { effects++; throw Error("protected runtime must not be reached"); };
+    const adapter: RuntimeAdapter = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: forbidden, installHooks: forbidden, describeTools: forbidden, extractActivity: forbidden, spawn: forbidden, resume: forbidden };
+    const before = readdirSync(root).sort();
+    for (const profile of ["pa-document-interactions/v4", "pa-document-policy/v1"]) {
+      writeFileSync(join(teams, "requirements.yaml"), `name: requirements\nagents: []\ndeploy_modes:\n - id: analyze\n   document_profile: ${profile}\n${profile === "pa-document-policy/v1" ? '   capability_policy: {version: pa-mode-capabilities/v1, allow: [ticket.intake]}\n' : ""}`);
+      const result = await deployWithPi({ team: "requirements", mode: "analyze", repo: "example", ticket: "EX-001" }, adapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+      assert.equal(result.reason, new RepositoryIsolationUnavailableError().message);
+      assert.deepEqual(readdirSync(root).sort(), before, "no registry, usage, prompt or deployment allocation");
+      assert.deepEqual(readdirSync(repo), []); assert.deepEqual(readdirSync(config), []);
+    }
+    assert.equal(effects, 0);
   } finally { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); }
 });
 

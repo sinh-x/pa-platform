@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,8 @@ import { serve } from "@hono/node-server";
 import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, getDeploymentEvents, hub, queryDeploymentStatus, startWatchers, TicketStore, WsHub } from "../index.js";
 import type { DeployRequest, WsClient, WsEvent } from "../index.js";
 import { PA_OPENCODE_BINARY_ENV } from "../agent-api/ws/session-hub.js";
+import { getDeployPaths } from "../deploy/paths.js";
+import { getDb } from "../registry/index.js";
 
 // Keep synthetic authorization inputs out of literal stored-secret patterns.
 function fixtureBearer(credential: string): string {
@@ -46,7 +48,7 @@ class FakeWsClient implements WsClient {
   }
 }
 
-function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
+async function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-agent-api-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -57,26 +59,29 @@ function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   writeFileSync(join(config, "config.yaml"), `defaults:\n  runtime: opencode\n  opencode:\n    provider: openai\n    model: gpt-5.5\nprovider_defaults:\n  providers:\n    minimax:\n      models:\n        opus: minimax-coding-plan/MiniMax-M2.7\n    openai:\n      models:\n        opus: openai/gpt-5.5\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\ndefault_mode: plan\ntimeout: 600\nobjective: Build\nagents:\n  - name: implementer\n    role: Writes code\n    model: opus\ndeploy_modes:\n  - id: plan\n    label: Plan\n    mode_type: work\n    provider: minimax\n    model: opus\n    timeout: 900\n  - id: hidden\n    label: Hidden\n    mode_type: work\n    phone_visible: false\n  - id: chat\n    label: Chat\n    mode_type: interactive\n`);
-  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
-  const previousTeams = process.env["PA_PLATFORM_TEAMS"];
-  const previousRegistry = process.env["PA_REGISTRY_DB"];
-  const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
-  process.env["PA_PLATFORM_CONFIG"] = config;
-  process.env["PA_PLATFORM_TEAMS"] = teams;
-  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
-  process.env["PA_AI_USAGE_HOME"] = root;
-  return fn(root).finally(() => {
-    closeDb();
-    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
-    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
-    if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"];
-    else process.env["PA_PLATFORM_TEAMS"] = previousTeams;
-    if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"];
-    else process.env["PA_REGISTRY_DB"] = previousRegistry;
-    if (previousAiUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
-    else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
-    rmSync(root, { recursive: true, force: true });
-  });
+  const previous = process.env;
+  closeDb();
+  process.env = {
+    ...previous,
+    PA_PLATFORM_CONFIG: config,
+    PA_PLATFORM_TEAMS: teams,
+    PA_PLATFORM_DATA: join(root, "data"),
+    PA_REGISTRY_DB: join(root, "registry.db"),
+    PA_AI_USAGE_HOME: root,
+  };
+  // Independent fixture callers must not inherit the runner's live principal.
+  // Protected-env tests deliberately install their own identity after this reset.
+  delete process.env.PA_DEPLOYMENT_ID;
+  delete process.env.PA_TEAM;
+  delete process.env.PA_MODE;
+  try { await fn(root); }
+  finally {
+    try { closeDb(); }
+    finally {
+      process.env = previous;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 }
 
 function p95(values: number[]): number {
@@ -85,6 +90,46 @@ function p95(values: number[]): number {
   const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
   return sorted[index] ?? 0;
 }
+
+test("withApiEnv isolates inherited principals and restores env, closes DB and removes only its root on success or failure", async () => {
+  const previous = process.env;
+  const inherited = { ...previous, PA_DEPLOYMENT_ID: "d-334abc", PA_TEAM: "analyst", PA_MODE: "implement" };
+  const saved = { ...inherited };
+  process.env = inherited;
+  try {
+    for (const outcome of ["success", "sync failure", "async failure"] as const) {
+      let root: string | undefined;
+      let db: ReturnType<typeof getDb> | undefined;
+      const failure = new Error(outcome);
+      const result = withApiEnv((fixtureRoot) => {
+        root = fixtureRoot;
+        assert.equal(process.env.PA_DEPLOYMENT_ID, undefined);
+        assert.equal(process.env.PA_TEAM, undefined);
+        assert.equal(process.env.PA_MODE, undefined);
+        assert.equal(process.env.PA_PLATFORM_CONFIG, join(root, "config"));
+        assert.equal(process.env.PA_PLATFORM_DATA, join(root, "data"));
+        assert.equal(process.env.PA_AI_USAGE_HOME, root);
+        assert.equal(process.env.PA_REGISTRY_DB, join(root, "registry.db"));
+        assert.ok(process.env.PA_SQLITE_NATIVE_BINDING === inherited.PA_SQLITE_NATIVE_BINDING, "retain the native binding");
+        db = getDb();
+        assert.ok(db.open);
+        process.env.PA_TEAM = "fixture-only";
+        process.env.PA_API_FIXTURE_ONLY = "temporary";
+        if (outcome === "sync failure") throw failure;
+        return outcome === "async failure" ? Promise.reject(failure) : Promise.resolve();
+      });
+      if (outcome === "success") await result;
+      else await assert.rejects(result, error => error === failure);
+      assert.ok(root);
+      assert.equal(existsSync(root), false, "remove the fixture-owned root");
+      assert.ok(db);
+      assert.equal(db.open, false, "close the fixture database before restoring env");
+      assert.ok(process.env === inherited, "restore the complete parent environment object");
+      assert.deepEqual(Object.keys(process.env).sort(), Object.keys(saved).sort(), "restore environment keys");
+      assert.ok(Object.keys(saved).every(key => process.env[key] === saved[key]), "restore environment values");
+    }
+  } finally { process.env = previous; }
+});
 
 test("agent API exposes health, tickets, bulletins, teams, and documents", async () => {
   await withApiEnv(async (root) => {
@@ -360,24 +405,28 @@ test("dashboard shell endpoints are read-only, include empty states, and stay fa
 });
 
 test("agent API CORS matches Avodah phone proxy contract", async () => {
-  const { app } = createAgentApiApp({ enableCors: true });
-  const preflight = await app.request("/api/projects", {
-    method: "OPTIONS",
-    headers: {
-      origin: "https://drgnfly.tail10c2c6.ts.net",
-      "access-control-request-method": "GET",
-      "access-control-request-headers": "content-type,x-av-pair-token,x-av-node-id",
-    },
-  });
-  assert.equal(preflight.status, 204);
-  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
-  assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /OPTIONS/);
-  assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /X-Av-Pair-Token/);
-  assert.equal(preflight.headers.get("access-control-max-age"), "600");
+  await withApiEnv(async () => {
+    const { app, cleanup } = createAgentApiApp({ enableCors: true });
+    try {
+      const preflight = await app.request("/api/projects", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://drgnfly.tail10c2c6.ts.net",
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "content-type,x-av-pair-token,x-av-node-id",
+        },
+      });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+      assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /OPTIONS/);
+      assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /X-Av-Pair-Token/);
+      assert.equal(preflight.headers.get("access-control-max-age"), "600");
 
-  const get = await app.request("/api/health", { headers: { origin: "https://drgnfly.tail10c2c6.ts.net" } });
-  assert.equal(get.headers.get("access-control-allow-origin"), "*");
-  assert.match(get.headers.get("access-control-expose-headers") ?? "", /Content-Length/);
+      const get = await app.request("/api/health", { headers: { origin: "https://drgnfly.tail10c2c6.ts.net" } });
+      assert.equal(get.headers.get("access-control-allow-origin"), "*");
+      assert.match(get.headers.get("access-control-expose-headers") ?? "", /Content-Length/);
+    } finally { cleanup(); }
+  });
 });
 
 test("agent API board resolves projects, applies legacy filters, and includes doc ref titles", async () => {
@@ -1435,6 +1484,7 @@ test("agent API PATCH ticket validates and projects planned/materialized linked-
 // ---- Phase 2: /ws/session integration tests ----
 
 class FakeOpencodeChild extends EventEmitter {
+  readonly pid = 43001;
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
   killed = false;
@@ -1447,16 +1497,18 @@ class FakeOpencodeChild extends EventEmitter {
   }
 }
 
-function createSessionSpawnSpy(): { fn: typeof import("node:child_process").spawn; children: FakeOpencodeChild[]; commands: string[] } {
+function createSessionSpawnSpy(): { fn: typeof import("node:child_process").spawn; children: FakeOpencodeChild[]; commands: string[]; args: string[][] } {
   const list: FakeOpencodeChild[] = [];
   const commands: string[] = [];
-  const fn = ((cmd: string, _args: string[], _opts: unknown): FakeOpencodeChild => {
+  const args: string[][] = [];
+  const fn = ((cmd: string, commandArgs: string[], _opts: unknown): FakeOpencodeChild => {
     commands.push(cmd);
+    args.push(commandArgs);
     const child = new FakeOpencodeChild();
     list.push(child);
     return child as unknown as import("node:child_process").ChildProcess;
   }) as unknown as typeof import("node:child_process").spawn;
-  return { fn, children: list, commands };
+  return { fn, children: list, commands, args };
 }
 
 interface SessionWsMessage {
@@ -1494,6 +1546,40 @@ async function recvSessionMessages(ws: WebSocket, count: number, timeoutMs = 150
     }, { once: true });
   });
 }
+
+for (const runtime of ["opencode", "pi"] as const) for (const protectedRole of [true, false]) test(`/ws/session ${runtime} checks isolation before preflight, with writer twin: ${protectedRole}`, async () => {
+  await withApiEnv(async () => {
+    const originalTeam = process.env.PA_TEAM, originalMode = process.env.PA_MODE;
+    process.env.PA_TEAM = protectedRole ? "analyst" : "builder"; process.env.PA_MODE = "implement";
+    const { fn, children } = createSessionSpawnSpy(); let probes = 0;
+    const api = createAgentApiApp({ sessionSpawnFn: fn, hooks: { runtimeHooks: { [runtime]: { sessionPreflight: () => { probes++; } } } } });
+    let server: Server | undefined, ws: WebSocket | undefined;
+    try {
+      server = await new Promise<Server>(resolveListen => { const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening)); api.injectWebSocket(listening); });
+      ws = openSessionWs((server.address() as { port: number }).port);
+      await new Promise<void>((resolveOpen, rejectOpen) => { ws!.addEventListener("open", () => resolveOpen(), { once: true }); ws!.addEventListener("error", () => rejectOpen(Error("ws connect failed")), { once: true }); });
+      ws.send(JSON.stringify({ type: "start", runtime, prompt: "fixture" }));
+      const response = (await recvSessionMessages(ws, 1))[0]!;
+      if (protectedRole) { assert.equal(response.type, "error"); assert.match(response.message!, /REPOSITORY_ISOLATION_UNAVAILABLE/); assert.equal(probes, 0); assert.equal(children.length, 0); }
+      else { assert.equal(response.type, "session-id"); assert.equal(probes, 1); assert.equal(children.length, 1); const ended = recvSessionMessages(ws, 1); children[0]!.emit("close", 0); await ended; }
+      const before = probes;
+      if (!protectedRole) {
+        appendRegistryEvent({ deployment_id: "d-334abc", team: "analyst", runtime, event: "started", timestamp: new Date().toISOString() });
+        ws.send(JSON.stringify({ type: "start", runtime, deploymentId: "d-334abc", prompt: "fixture" }));
+        assert.match((await recvSessionMessages(ws, 1))[0]?.message ?? "", /REPOSITORY_ISOLATION_UNAVAILABLE/);
+        assert.equal(probes, before, "supplied protected native identity must not reach preflight");
+      }
+      ws.send(JSON.stringify({ type: "resume", runtime, sessionId: "unknown-native-origin", prompt: "continue" }));
+      assert.match((await recvSessionMessages(ws, 1))[0]?.message ?? "", /REPOSITORY_ISOLATION_UNAVAILABLE/);
+      assert.equal(probes, before, "unknown native origin must not reach preflight");
+    } finally {
+      ws?.close(); api.cleanup();
+      if (server) await new Promise<void>(resolveClose => server!.close(() => resolveClose()));
+      if (originalTeam === undefined) delete process.env.PA_TEAM; else process.env.PA_TEAM = originalTeam;
+      if (originalMode === undefined) delete process.env.PA_MODE; else process.env.PA_MODE = originalMode;
+    }
+  });
+});
 
 test("/ws/session accepts start message and streams JSONL events back over the WebSocket", async () => {
   await withApiEnv(async () => {
@@ -1543,10 +1629,18 @@ test("/ws/session accepts start message and streams JSONL events back over the W
   });
 });
 
-test("/ws/session resume message spawns opencode with the provided session id", async () => {
+for (const runtime of ["opencode", "pi"] as const) test(`/ws/session resumes ${runtime} from a proven launch-bound or recorded managed origin`, async () => {
   await withApiEnv(async () => {
-    const { fn, children } = createSessionSpawnSpy();
-    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    const deploymentId = "d-334abc";
+    let sessionId = "managed-opencode-session", probes = 0;
+    if (runtime === "opencode") {
+      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", runtime, event: "started", timestamp: new Date().toISOString() });
+      const dir = getDeployPaths(deploymentId).deployDir;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "session-id-opencode.txt"), sessionId, { mode: 0o600 });
+    }
+    const { fn, children, args } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn, hooks: { runtimeHooks: { [runtime]: { sessionPreflight: () => { probes++; } } } } });
     let server: Server | undefined;
     try {
       server = await new Promise<Server>((resolveListen) => {
@@ -1560,12 +1654,19 @@ test("/ws/session resume message spawns opencode with the provided session id", 
         ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
       });
 
-      ws.send(JSON.stringify({ type: "resume", sessionId: "opencode-token-123", prompt: "continue" }));
+      ws.send(JSON.stringify(runtime === "pi" ? { type: "start", runtime, prompt: "original" } : { type: "resume", runtime, deploymentId, sessionId, prompt: "original" }));
+      const initial = (await recvSessionMessages(ws, 1))[0]!;
+      assert.equal(initial.type, "session-id");
+      if (runtime === "pi") sessionId = initial.sessionId!;
+      const completed = recvSessionMessages(ws, 1);
+      children[0]!.emit("close", 0);
+      await completed;
+      ws.send(JSON.stringify({ type: "resume", runtime, sessionId, prompt: "continue" }));
       const messages = await recvSessionMessages(ws, 1);
       assert.equal(messages[0]?.type, "session-id");
       assert.ok(typeof messages[0]?.sessionId === "string");
 
-      const child = children[0]!;
+      const child = children[1]!;
       child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "text", text: "resumed" }) + "\n"));
       child.emit("close", 0);
       await recvSessionMessages(ws, 2);
@@ -1574,9 +1675,66 @@ test("/ws/session resume message spawns opencode with the provided session id", 
       api.cleanup();
       if (server) await new Promise<void>((r) => server!.close(() => r()));
     }
-    assert.equal(children.length, 1);
+    assert.equal(children.length, 2);
+    assert.equal(probes, 2);
+    assert.equal(args[1]![args[1]!.indexOf(runtime === "pi" ? "--session-id" : "--session") + 1], sessionId);
   });
 });
+
+for (const runtime of ["opencode", "pi"] as const) for (const output of ["id", "regex"] as const) {
+  test(`/ws/session ${runtime} rejects stdout ${output} replay before preflight, allocation, spawn or lifecycle logging`, async () => {
+    await withApiEnv(async root => {
+      const deploymentId = "d-334abc", sessionId = "old-protected-session";
+      appendRegistryEvent({ deployment_id: deploymentId, team: "analyst", runtime, event: "started", timestamp: new Date().toISOString() });
+      const dir = getDeployPaths(deploymentId).deployDir;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `session-id-${runtime}.txt`), sessionId, { mode: 0o600 });
+      closeDb();
+      const { fn, children } = createSessionSpawnSpy();
+      let probes = 0, commands = 0;
+      const api = createAgentApiApp({ sessionSpawnFn: fn, hooks: { runtimeHooks: { [runtime]: {
+        sessionPreflight: () => { probes++; },
+        sessionCommand: ({ session, prompt }) => { commands++; return { binary: runtime, args: runtime === "pi" ? ["--session-id", session.id, prompt] : ["run", prompt] }; },
+        sessionNormalizer: (raw, deployId) => createActivityEvent({ deployId, kind: "text", source: runtime, body: JSON.stringify(raw) }),
+      } } } });
+      const snapshot = () => readdirSync(root, { recursive: true, withFileTypes: true }).map(entry => {
+        const path = join(entry.parentPath, entry.name);
+        return { path, content: entry.isFile() ? readFileSync(path) : null };
+      });
+      let server: Server | undefined, ws: WebSocket | undefined;
+      try {
+        server = await new Promise<Server>(resolveListen => { const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening)); api.injectWebSocket(listening); });
+        ws = openSessionWs((server.address() as { port: number }).port);
+        await new Promise<void>((resolveOpen, rejectOpen) => { ws!.addEventListener("open", () => resolveOpen(), { once: true }); ws!.addEventListener("error", () => rejectOpen(Error("ws connect failed")), { once: true }); });
+        ws.send(JSON.stringify({ type: "start", runtime, prompt: "ordinary fresh session" }));
+        assert.equal((await recvSessionMessages(ws, 1))[0]?.type, "session-id");
+        const text = output === "id" ? JSON.stringify({ id: sessionId }) + "\n" : JSON.stringify({ text: `session: ${sessionId}` }) + '\n{"text":"tail"}\n';
+        const streamed = recvSessionMessages(ws, output === "id" ? 2 : 3);
+        children[0]!.stdout.emit("data", Buffer.from(text));
+        children[0]!.emit("close", 0);
+        assert.ok(JSON.stringify(await streamed).includes(sessionId), "native hints remain observable, not authoritative");
+        const before = snapshot();
+        ws.send(JSON.stringify({ type: "resume", runtime, sessionId, prompt: "continue" }));
+        const rejected = (await recvSessionMessages(ws, 1))[0]!;
+        assert.equal(rejected.type, "error");
+        assert.match(rejected.message!, /^Execution not started: repository-isolation scope is unavailable\./);
+        assert.match(rejected.message!, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+        assert.equal(probes, 1);
+        assert.equal(commands, 1);
+        assert.equal(children.length, 1);
+        assert.deepEqual(await (await api.app.request("/api/sessions")).json(), []);
+        assert.deepEqual(snapshot(), before, "no lifecycle writes or deployment allocation on replay rejection");
+        ws.send(JSON.stringify({ type: "start", runtime, prompt: "ordinary fresh session" }));
+        const next = (await recvSessionMessages(ws, 1))[0]!;
+        assert.equal(next.type, "session-id");
+        assert.equal(next.sessionId?.split("-").at(-1), "2", "replay rejection must not allocate a session id");
+      } finally {
+        ws?.close(); api.cleanup();
+        if (server) await new Promise<void>(resolveClose => server!.close(() => resolveClose()));
+      }
+    });
+  });
+}
 
 test("/ws/session auto-terminates the opencode process when the WebSocket disconnects", async () => {
   await withApiEnv(async () => {

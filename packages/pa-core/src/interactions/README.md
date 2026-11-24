@@ -373,3 +373,81 @@ need explicit inventory entries. Tracked hashes detect subsequent byte changes,
 not semantic completeness, live registration or installed provenance. Launch
 plan/control/deploy/adapter hashes are not renewed by this reconciliation; later
 changes must trigger their own semantic review.
+
+## PAP-334 P2b — interim launch/resume rejection, not confinement
+
+This separate **source-only interim ingress** reconciliation supersedes historical
+working-launch claims for public Analyst (all modes), legacy
+`requirements/analyze` and existing v3 `pa-readonly-document/v1` selections.
+There is **no working confined executor or scope-grant override**. Read-only
+admission, prompts, approvals and writer labels are not confinement.
+
+- The reviewed core deploy CLI, Pi/OPA launchers, actual adapters and raw background
+  runners fail closed for protected execution. The shared isolation owner checks
+  all v1/v2/v3 bindings, public/effective identities, immutable plan identity,
+  `plan.environment`, original environments and merged overlays. One source cannot
+  erase another's protected selection. Source dry-runs remain static planning that
+  may write private artifacts; actual adapter `dry-run` calls still reject
+  protected execution.
+- `queryReadonlyIsolationLineage` reads raw current/start/event rows and the whole
+  resumed ancestry in one read transaction. Missing, conflicting, duplicate-start,
+  cyclic or malformed evidence rejects rather than trusting display projections.
+  Retained `requirements-document-*` or `readonly-document-policy/*` notes forbid
+  downgrade even with a writer label or missing binding, including unrecognized
+  protocol revisions. Existing-files-only reads do not initialize registry state
+  or allocate missing WAL/SHM sidecars. Selecting rogue-one cannot remove retained
+  protection.
+- The private Pi and OPA `session-owner.ts` readers reuse the isolation owner's
+  safe existing-file read and require the exact recorded native token/runtime for
+  the prior deployment ID. Linked, special, multiply linked, oversized or changed
+  evidence cannot qualify a direct adapter resume; a supplied token alone cannot.
+- Raw runner checks run inside their lifecycle before runtime spawn or custody
+  transfer. Isolation rejection retains the configuration and existing claims,
+  publishes failed readiness, removes signal handlers and skips terminal registry
+  reconciliation. Launcher cleanup recognizes matching rejection evidence rather
+  than deleting the retained configuration. This is not a successful launch or
+  permission to release another owner's claims.
+- Agent API websocket start/resume admission runs before runtime preflight. The
+  central `SessionManager` repeats admission before allocation, lifecycle logging,
+  command building or spawn, including default-command fallback. Stdout session
+  hints remain observational, never resume provenance. API continuation needs a
+  matching launch-bound native session argument with retained origin or an exact
+  recorded managed session. Unknown opaque API resumes remain unavailable;
+  eligible nonAnalyst fresh sessions and known launch-bound/recorded continuations
+  preserve their existing admission and rechecks. Observational deploy-session
+  registration is not execution admission.
+
+This final pass renews **eight changed tracked hashes**: Pi background runner,
+Pi/OPA adapters and launchers, raw registry lineage, isolation owner and Agent API
+websocket ingress. It adds **five explicit dependencies**:
+`packages/pi-pa/src/session-owner.ts`,
+`packages/opencode-pa/src/session-owner.ts`,
+`packages/opencode-pa/src/background-runner.ts`,
+`packages/pa-core/src/deploy/background-ownership.ts` and
+`packages/pa-core/src/agent-api/ws/session-hub.ts`. Earlier reconciled core deploy
+CLI/export and binding-parser hashes remain unchanged by this pass. Only added
+core CLI command files are auto-discovered; these imported owners need explicit
+entries. Hash equality detects byte drift, not semantic completeness or authority.
+Catalogue forms, effects, null bindings/schema references and unproven installed
+availability remain unchanged. Twelve historical Analyst functional cases remain
+**deferred**, not qualifications. This is not working protected execution,
+adoption, universal route qualification, installed verification or ticket completion.
+
+A subsequent independent review found two additional source defects. Pi `spawn`
+now consumes only an adapter-issued, single-use fresh session reservation; supplied
+existing tokens cannot masquerade as fresh requests. This reservation is not
+qualification of races in installed native session storage. The actual Pi runner
+entrypoint now consumes its configuration only after isolation admission inside
+the existing lifecycle, preserving rejected configuration evidence. The adapter
+and runner hashes are renewed again for these reviewed changes. No configuration
+field, environment grant, approval selector or confined executor is introduced.
+
+The full source regression run also exposed a finite native auto-publication
+compatibility regression: its approved operator-owned queue was being checked as
+unrelated generic administration. `auto-runtime.ts` now uses the same internal
+finite-owner distinction as document publication, retaining terminal/native
+reauthentication, the exact approved intent, mutex/CAS and per-effect authorization.
+No public actor/privilege field or new operation is accepted. The existing combined
+owner test again publishes/queues once while holding synthetic implementation
+success uncertain. Its hash is renewed for this semantic repair. Generic
+administration still cannot take over the native owner's unsettled operation.
