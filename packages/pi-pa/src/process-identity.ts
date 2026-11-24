@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, lstatSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getDeploymentEvents, MODE_CAPABILITY_MAX_BYTES, ModeCapabilityError, modeCapabilityRouteMatches, modeCapabilitySessionMatches, parseModeCapabilityBinding, parseReviewEvidenceJson, readProcessFingerprint, readReviewEvidenceFile, type ProcessFingerprint } from "@pa-platform/pa-core";
+import { getDeploymentEvents, getDeployPaths, queryDeploymentStatus, MODE_CAPABILITY_MAX_BYTES, ModeCapabilityError, modeCapabilityRouteMatches, modeCapabilitySessionMatches, parseModeCapabilityBinding, parseReviewEvidenceJson, readProcessFingerprint, readReviewEvidenceFile, type ProcessFingerprint } from "@pa-platform/pa-core";
 
 export const PI_PROCESS_IDENTITY_FILE = "pi-process-identity.json";
 const MAX_IDENTITY_BYTES = 4096;
@@ -71,24 +71,25 @@ export function readPiProcessIdentity(deploymentId: string, deploymentDirectory:
 
 /** Bind the registry's Pi-child incarnation separately from launcher/supervisor custody. */
 export function recordPiReadonlyRoleProcessIdentity(env: NodeJS.ProcessEnv, deploymentId: string, deploymentDirectory: string, pid: number): void {
-  if ((env["PA_TEAM"] === "builder" && ["orchestrator", "implement", "worker"].includes(env["PA_MODE"] ?? ""))
-    || (env["PA_TEAM"] === "requirements" && ["analyze", "review-auto"].includes(env["PA_MODE"] ?? ""))
-    || (env["PA_TEAM"] === "analyst" && env["PA_MODE"] === "analyze")
-    || (env["PA_TEAM"] === "repo-setup" && env["PA_MODE"] === "setup")
-    || env["PA_TEAM"] === "rogue-one") {
-    recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
-    return;
-  }
-  if (env.PA_DEPLOYMENT_ID !== deploymentId) return;
+  if (env.PA_DEPLOYMENT_ID !== deploymentId || env.PA_DEPLOYMENT_DIR !== deploymentDirectory
+    || getDeployPaths(deploymentId).deployDir !== deploymentDirectory) return;
   const starts = getDeploymentEvents(deploymentId).filter(event => event.event === "started"), start = starts[0];
-  if (starts.length === 1 && start?.mode_capability_binding) {
+  const status = queryDeploymentStatus(deploymentId);
+  // Called only at the managed launch gate with the actual admitted child PID.
+  // Environment labels cannot create an anchor without an authenticated start.
+  if (starts.length !== 1 || !start || !status || status.status !== "running" || start.runtime !== "pi" || start.binary !== "ppa"
+    || status.runtime !== "pi" || start.team !== status.team || start.mode !== status.mode
+    || start.team !== env.PA_TEAM || start.mode !== env.PA_MODE
+    || start.repo !== status.repo || start.repo_root !== status.repo_root || start.worktree_root !== status.worktree_root
+    || start.mode_capability_binding !== status.mode_capability_binding) return;
+  if (start.mode_capability_binding !== undefined) {
     try {
       if (Buffer.byteLength(start.mode_capability_binding) > MODE_CAPABILITY_MAX_BYTES) throw new ModeCapabilityError("CAPABILITY_BINDING");
       const binding = parseModeCapabilityBinding(JSON.parse(start.mode_capability_binding));
-      if (binding.schemaVersion !== "pa-mode-capability-binding/v3" || JSON.stringify(binding) !== start.mode_capability_binding
+      if (JSON.stringify(binding) !== start.mode_capability_binding
         || !modeCapabilitySessionMatches(binding, start.note) || !modeCapabilityRouteMatches(binding, start.team, start.mode)
         || !modeCapabilityRouteMatches(binding, env.PA_TEAM, env.PA_MODE) || start.runtime !== "pi" || start.binary !== "ppa") throw new ModeCapabilityError("CAPABILITY_BINDING");
     } catch { throw new ModeCapabilityError("CAPABILITY_BINDING"); }
-    recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
   }
+  recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
 }

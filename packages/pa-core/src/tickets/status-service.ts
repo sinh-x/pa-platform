@@ -3,6 +3,9 @@ import { lstatSync } from "node:fs";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { modeCapabilitySessionMatches, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
 import { getDeploymentsByTicketId } from "../registry/index.js";
+import { openReadonlyRegistryDatabase } from "../registry/db.js";
+import { RegistryDocumentJournal, documentPending } from "../registry/documents.js";
+import { getRegistryDbPath } from "../paths.js";
 import { assertWorkflowMarkerAvailable } from "../workflows/catalog.js";
 import { readTicketWorkflow } from "../workflows/public.js";
 import { loadReposYaml } from "../repos.js";
@@ -31,6 +34,33 @@ export function assertTicketStatusOwner(store: TicketStore, ticket: string, call
   try {
     if (readTicketWorkflow(ticket)) return statusFail("TICKET_STATUS_OWNER");
     assertWorkflowMarkerAvailable(caller.repoKey, ticket, false, store);
+    assertTicketCompetingDeployments(ticket, caller);
+  } catch { return statusFail("TICKET_STATUS_OWNER"); }
+}
+/** Generic administration is stage/role independent. Retained workflow records,
+ * decisions and completed publications are history, not live custody. Reuse the
+ * owning journal replayers so corrupt/unknown and unsettled effects still fail
+ * closed; never import their approvals as administrative authority. */
+export function assertTicketAdminOwner(store: TicketStore, ticket: string, caller: TicketStatusCaller): void {
+  try {
+    const record = store.get(ticket);
+    if (!record || record.project !== caller.repoKey) return statusFail("TICKET_STATUS_OWNER");
+    const workflow = readTicketWorkflow(ticket);
+    if (workflow?.pending.length) return statusFail("TICKET_STATUS_OWNER");
+    let present = false;
+    try { lstatSync(getRegistryDbPath()); present = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (present) {
+      const db = openReadonlyRegistryDatabase(true);
+      try {
+        const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_events'").get();
+        if (table && documentPending(new RegistryDocumentJournal(db).events(caller.repoKey, ticket)).length) return statusFail("TICKET_STATUS_OWNER");
+      } finally { db.close(); }
+    }
+    assertTicketCompetingDeployments(ticket, caller);
+  } catch { return statusFail("TICKET_STATUS_OWNER"); }
+}
+function assertTicketCompetingDeployments(ticket: string, caller: TicketStatusCaller): void {
     const others = getDeploymentsByTicketId(ticket).filter(s => s.deploy_id !== caller.deploymentId);
     if (others.length > 256) return statusFail("TICKET_STATUS_OWNER");
     for (const other of others) {
@@ -38,7 +68,6 @@ export function assertTicketStatusOwner(store: TicketStore, ticket: string, call
       try { lstatSync(`/proc/${other.pid}`); return statusFail("TICKET_STATUS_OWNER"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return statusFail("TICKET_STATUS_OWNER"); }
     }
-  } catch { return statusFail("TICKET_STATUS_OWNER"); }
 }
 /** Trusted adapters authenticate under the actual shared ticket mutex. This
  * request cannot supply caller identity, an actor, decisions or callbacks. */
@@ -51,8 +80,8 @@ export function ticketStatusService(raw: string, owner: { store: TicketStore; au
         || !/^d-[a-f0-9]{6}$/.test(current.deploymentId) || !capabilityToolSelected(parseModeCapabilityBinding(current.capabilities).policy, "pa_ticket_status")) return statusFail("TICKET_STATUS_SESSION");
     } catch { return statusFail("TICKET_STATUS_SESSION"); }
     const repos = loadReposYaml(), ticket = owner.store.get(request.ticket);
-    if (!Object.hasOwn(repos, request.project) || current.repoKey !== request.project || !ticket || ticket.id !== request.ticket || ticket.project !== request.project) return statusFail("TICKET_STATUS_INPUT");
-    if (request.action === "set") assertTicketStatusOwner(owner.store, request.ticket, caller);
+    if (!Object.hasOwn(repos, request.project) || !ticket || ticket.id !== request.ticket || ticket.project !== request.project) return statusFail("TICKET_STATUS_INPUT");
+    if (request.action === "set") assertTicketStatusOwner(owner.store, request.ticket, { ...caller, repoKey: request.project });
   };
   check();
   if (request.action === "inspect") {

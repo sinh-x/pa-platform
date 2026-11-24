@@ -20,6 +20,8 @@ export interface TicketCreateIntentHooks {
   requestBinding?: string;
   /** Mandatory owner reauthentication INSIDE the shared ticket mutation mutex. */
   assertCurrent(): void;
+  /** Optional trusted candidate policy check, repeated before each effect. */
+  assertCandidate?(ticket: Ticket): void;
   /** Trusted embedding/fault-test observation, never tool request data. */
   afterPersist?(stage: "intent" | "ticket" | "audit"): void;
 }

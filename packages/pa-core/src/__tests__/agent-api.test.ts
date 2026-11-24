@@ -192,10 +192,12 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
 
 test("persistent API requires trusted caller identity for status mutation", async () => {
   await withApiEnv(async () => {
-    appendRegistryEvent({ deployment_id: "d-api-implement", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001" });
-    appendRegistryEvent({ deployment_id: "d-api-parent", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:01.000Z", ticket_id: "PAP-001" });
-    appendRegistryEvent({ deployment_id: "d-api-stale", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:02.000Z", ticket_id: "PAP-001" });
-    appendRegistryEvent({ deployment_id: "d-api-stale", team: "builder", mode: "orchestrator", event: "completed", timestamp: "2026-04-26T00:00:03.000Z", status: "success", ticket_id: "PAP-001" });
+    // Identity/authentication fixtures are independent callers, not competing
+    // native owners of the administration target.
+    appendRegistryEvent({ deployment_id: "d-api-implement", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    appendRegistryEvent({ deployment_id: "d-api-parent", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:01.000Z" });
+    appendRegistryEvent({ deployment_id: "d-api-stale", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:02.000Z" });
+    appendRegistryEvent({ deployment_id: "d-api-stale", team: "builder", mode: "orchestrator", event: "completed", timestamp: "2026-04-26T00:00:03.000Z", status: "success" });
     const implementApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-implement", credential: "implement-credential", operatorCredential: "operator-credential" } });
     const staleApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-stale", credential: "stale-credential" } });
     const unknownApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-unknown", credential: "unknown-deployment-credential" } });
@@ -206,7 +208,6 @@ test("persistent API requires trusted caller identity for status mutation", asyn
       { app: implementApp.app, headers: { "content-type": "application/json" } },
       { app: implementApp.app, headers: { "content-type": "application/json", Authorization: fixtureBearer("implement-credential"), "X-PA-Deployment-ID": "d-api-parent" } },
       { app: implementApp.app, headers: { "content-type": "application/json", Authorization: "Bearer unknown-credential" } },
-      { app: implementApp.app, headers: { "content-type": "application/json", Authorization: fixtureBearer("implement-credential"), "X-PA-Deployment-ID": "d-api-implement" } },
       { app: implementApp.app, headers: { "content-type": "application/json", Authorization: fixtureBearer("wrong-implement-credential") } },
       { app: staleApp.app, headers: { "content-type": "application/json", Authorization: "Bearer stale-credential", "X-PA-Deployment-ID": "d-api-stale" } },
       { app: unknownApp.app, headers: { "content-type": "application/json", Authorization: fixtureBearer("unknown-deployment-credential"), "X-PA-Deployment-ID": "d-api-unknown" } },
@@ -219,6 +220,9 @@ test("persistent API requires trusted caller identity for status mutation", asyn
       assert.deepEqual(store.get(id), beforeTicket);
       assert.deepEqual(store.readAudit(), beforeAudit);
     }
+    const implementAccepted = await implementApp.app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", Authorization: fixtureBearer("implement-credential"), "X-PA-Deployment-ID": "d-api-implement" }, body: JSON.stringify({ status: "implementing" }) });
+    assert.equal(implementAccepted.status, 200);
+    assert.equal(store.get(id)?.status, "implementing");
     const parentApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-parent", credential: "parent-credential" } });
     const accepted = await parentApp.app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", Authorization: "Bearer parent-credential", "X-PA-Deployment-ID": "d-api-parent" }, body: JSON.stringify({ status: "review-uat" }) });
     assert.equal(accepted.status, 200);

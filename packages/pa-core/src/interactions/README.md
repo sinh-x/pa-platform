@@ -305,3 +305,71 @@ contention, reauthentication-time drift and live-PID terminal-owner rejection.
 This is semantic reconciliation by the implementer, not independent review or
 full PAP-290 operation parity. See docs/PAP-292-implementation.md for remaining
 catalogue, installed qualification and UAT gaps.
+
+## PAP-334 semantic supersession — current source-only ticket administration
+
+This note supersedes the historical PAP-292 blanket restriction on generic
+`ticket update --status` for selected policy callers, and the earlier read/comment-only
+characterization of `pa_ticket`. It does not upgrade retained document, intake,
+approval or execution contracts. The catalogue still has **null native/delegation
+bindings and schema references**, with installed/session availability unproven and
+admission not checked. These are finite source interfaces, not full R4 acceptance,
+installed/native foreground qualification or human UAT.
+
+- Generic CLI status updates and authenticated REST `PATCH /api/tickets/:id` now
+  use the shared TicketStore owner independently of team/mode or document profile,
+  including another target project. Trusted running deployment/operator authority
+  is re-resolved under the mutex, including the final effect fence. Live competing
+  custody, pending workflow/document effects, unsettled ticket intents and open
+  subtickets still block dependent transitions. Completed history is not a blanket
+  stage restriction. Deletion retains separate restrictions. These legacy writes
+  do not acquire the selected status port's intent/CAS grammar or prove transport
+  parity.
+- Generic native `pa_ticket` adds `inspect`, `create`, `update`, `set-status` and
+  authenticated `comment` through `tickets/admin-service.ts`, TicketStore and
+  `ticket-session.ts`. Targets are exact registered projects/tickets, independent
+  of the launch association or document capability selection. Process/session,
+  immutable registry start, canonical roots, private incarnation anchor and live
+  lineage must agree; environment labels alone fail. The process-anchor recorder
+  now covers all managed teams/modes after start validation, not a role allowlist
+  or a workflow/source grant. A deliberately omitted tool module is not registered
+  by catalogue discovery or by policy exposure.
+- Native creation preserves its original durable intent and defaults to an idea
+  task with medium/M/sinh metadata. Native update accepts only the eleven bounded
+  administrative fields: title, summary, description, priority, estimate, type,
+  assignee, tags, blockedBy, from and to. It uses complete-snapshot CAS; supplied
+  arrays replace their values. It cannot replace status, refs, primary or Git
+  evidence. Native status uses the original durable status intent. Preserve
+  original create/status request coordinates after reply loss; update/comment
+  have no replay intent and require inspection before another mutation.
+  Comment author/audit derives from the authenticated public team/mode, not the
+  document profile's effective actor. The compatibility form
+  `comment(id,author,content)` resolves the existing ticket's project and accepts
+  only the caller or a configured same-team agent as attribution, never authority.
+  Oversized inspect replies explicitly omit the body while retaining metadata;
+  this is not a complete paged ticket/history interface.
+- Selected `pa_ticket_status` and `ppa ticket-status --request` remain separate
+  policy-selected, document-process-authenticated status-only owners. They now
+  accept any exact registered target project, not only the caller's repository;
+  target ticket/project matching, original intent/CAS and their stricter
+  workflow/competing-owner checks remain. Finite document mutation contexts stay
+  separate from generic administration principals so an owner can reconcile its
+  own original pending publication/queue, not overwrite another owner.
+- `pa_ticket_intake` keeps its selected finite capabilities/inspect/reuse/create/
+  patch-planning grammar and conservative scalar-planning eligibility; generic
+  administration does not silently widen it. In native execution sessions the
+  five administrative forms, including inspect, pass the existing administrative
+  source barrier and lower tool boundary: no concurrent source operation or pending
+  restart, unchanged source snapshot and separate administrative evidence. This
+  neither passes a phase check nor resets a failure. No source/Git, approval,
+  publication, queue, resource or launch authority follows from administration.
+
+The manifest renews only the twelve reviewed changed ticket/authentication/
+registration/execution sources. It explicitly adds the new admin-service and
+ticket-session owners plus previously untracked ticket exports, REST ticket route,
+execution administration grammar and lower execution-tool barrier. The guard
+**auto-discovers only added core CLI command files**; imported domain/native owners
+need explicit inventory entries. Tracked hashes detect subsequent byte changes,
+not semantic completeness, live registration or installed provenance. Launch
+plan/control/deploy/adapter hashes are not renewed by this reconciliation; later
+changes must trigger their own semantic review.

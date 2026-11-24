@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { TICKET_INTERACTIONS_PROFILE, DocumentPackageError, getDeployPaths, getDeploymentEvents, processIsWithinFingerprintLineage, queryDeploymentStatus, queryReadonlyDeploymentStatus, queryReadonlyDeploymentEvents, readProcessFingerprint, resolveRepoExecutionPath, listRepos, workflowDigest } from "@pa-platform/pa-core";
-import { READONLY_DOCUMENT_PROFILE, READONLY_DOCUMENT_SESSION, hasModeResources, isModeCapabilitySession, modeCapabilitySessionMatches, MODE_CAPABILITY_SESSION, modeCapabilityActor, modeCapabilityRouteMatches, capabilityToolSelected, resolveTrustedTicketMutationContext, parseModeCapabilityBinding, type ModeCapabilityBinding, type TicketMutationContext } from "@pa-platform/pa-core";
+import { READONLY_DOCUMENT_PROFILE, READONLY_DOCUMENT_SESSION, hasModeResources, isModeCapabilitySession, modeCapabilitySessionMatches, MODE_CAPABILITY_SESSION, modeCapabilityActor, modeCapabilityRouteMatches, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding, type TicketMutationContext } from "@pa-platform/pa-core";
 import { readPiProcessIdentity } from "./process-identity.js";
 import type { PiPreparationContext } from "./pi-extension/prepared-workflow.js";
 
@@ -118,9 +118,13 @@ function authenticateDocumentProcess(context: PiPreparationContext | { cwd: stri
 /** Only finite owners call this AFTER process/registry authentication and before
  * their own reauthentication/CAS guards. Never used by generic CLI/API writers. */
 export function documentTicketMutationContext(caller: PiDocumentCaller, tool: "pa_document" | "pa_handoff" | "pa_ticket_status"): TicketMutationContext {
-  if (!hasModeResources(caller.capabilities)) return resolveTrustedTicketMutationContext({ deploymentId: caller.deploymentId }, false);
-  if (!capabilityToolSelected(caller.capabilities.policy, tool)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
-  return { team: caller.capabilities.identity.effectiveTeam, mode: caller.capabilities.identity.effectiveMode, privileged: true };
+  if (caller.capabilities && !capabilityToolSelected(caller.capabilities.policy, tool)) throw new DocumentPackageError("DOCUMENT_AUTHORITY");
+  // Finite native owners enforce their own exact intent, live reauthentication
+  // and custody. Do not attach the GENERIC administration principal: its
+  // competitor fence would reject this owner's own pending publication/queue.
+  return hasModeResources(caller.capabilities)
+    ? { team: caller.capabilities.identity.effectiveTeam, mode: caller.capabilities.identity.effectiveMode, privileged: true }
+    : { team: "requirements", mode: "analyze", privileged: true };
 }
 export function assertSameDocumentCaller(before: PiDocumentCaller, after: PiDocumentCaller): void {
   if (!isDeepStrictEqual(before, after)) throw new DocumentPackageError("DOCUMENT_STALE");
