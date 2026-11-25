@@ -6,6 +6,7 @@ import type { Http2SecureServer, Http2Server } from "node:http2";
 import type { spawn as spawnType } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
+import { RepositoryIsolationUnavailableError } from "../deploy/repository-isolation.js";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
 import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, sessionRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
@@ -169,8 +170,10 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
              return;
            }
             const selectedRuntime = runtime ?? "opencode";
-            try { await hooks?.runtimeHooks?.[selectedRuntime]?.sessionPreflight?.(); } catch (error) { sink.send({ type: "error", message: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() }); return; }
-            const result = sessionManager.start({ prompt, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
+            const deploymentId = typeof parsed["deploymentId"] === "string" ? parsed["deploymentId"] : undefined;
+            if (parsed["deploymentId"] !== undefined && deploymentId === undefined) { sink.send({ type: "error", message: new RepositoryIsolationUnavailableError().message, timestamp: new Date().toISOString() }); return; }
+            try { sessionManager.assertExecutionAvailable({ prompt, runtime: selectedRuntime, deploymentId }); await hooks?.runtimeHooks?.[selectedRuntime]?.sessionPreflight?.(); } catch (error) { sink.send({ type: "error", message: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() }); return; }
+            const result = sessionManager.start({ prompt, deploymentId, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
           if (result.ok) {
             activeSessionId = result.session.id;
             sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
@@ -196,8 +199,10 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
            }
             const selectedRuntime = runtime ?? "opencode";
             if (!/^[A-Za-z0-9._:-]{1,256}$/.test(sessionId)) { sink.send({ type: "error", message: "Invalid sessionId", timestamp: new Date().toISOString() }); return; }
-            try { await hooks?.runtimeHooks?.[selectedRuntime]?.sessionPreflight?.(); } catch (error) { sink.send({ type: "error", message: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() }); return; }
-            const result = sessionManager.resume({ prompt, sessionId, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
+            const deploymentId = typeof parsed["deploymentId"] === "string" ? parsed["deploymentId"] : undefined;
+            if (parsed["deploymentId"] !== undefined && deploymentId === undefined) { sink.send({ type: "error", message: new RepositoryIsolationUnavailableError().message, timestamp: new Date().toISOString() }); return; }
+            try { sessionManager.assertExecutionAvailable({ prompt, sessionId, runtime: selectedRuntime, deploymentId }); await hooks?.runtimeHooks?.[selectedRuntime]?.sessionPreflight?.(); } catch (error) { sink.send({ type: "error", message: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() }); return; }
+            const result = sessionManager.resume({ prompt, sessionId, deploymentId, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
           if (result.ok) {
             activeSessionId = result.session.id;
             sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });

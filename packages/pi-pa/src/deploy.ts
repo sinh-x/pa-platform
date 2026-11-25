@@ -1,4 +1,5 @@
 import { ADVISORY_RUNTIME_VERSION, resolveAdvisoryTaskBaseline, preparedRepositoryTicketReservationPath } from "@pa-platform/pa-core";
+import { readSession } from "./session-owner.js";
 import { documentSessionVersion, selectsDocumentSession } from "./document-session.js";
 import { READONLY_DOCUMENT_PROFILE, MODE_CAPABILITY_PROFILE, ModeCapabilityError, selectModeCapabilities } from "@pa-platform/pa-core";
 import { execFileSync } from "node:child_process";
@@ -6,8 +7,8 @@ import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type Repo
 import { createHash } from "node:crypto";
 import { ReadOnlyHelperFailure, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readReviewEvidenceFile, type ReadOnlyHelperCapability, type ReadOnlyHelperRole, type RepositoryMutationLease } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
-import { assertMatchingRuntime, assertSupportedRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup } from "@pa-platform/pa-core";
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { assertMatchingRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup, assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, resolveOrdinaryTaskBaseline, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
@@ -730,10 +731,14 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
       let mode: ReturnType<typeof resolveDeployMode>;
       try {
         ({ team, mode } = selectPiTeamConfig(request));
+        if (!request.dryRun) {
+          assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
+          assertRepositoryIsolationResumeAvailable(request.resume);
+        }
         assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
       }
       catch (error) {
-        if (error instanceof DeployModeSelectionError) return { reason: error.message };
+        if (error instanceof DeployModeSelectionError || error instanceof RepositoryIsolationUnavailableError) return { reason: error.message };
         throw error;
       }
       if (team.name !== "requirements" || mode?.id !== "review-auto") return undefined;
@@ -798,6 +803,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     ({ team, mode, pinned: pinnedConfig, plainInteractive } = selectPiTeamConfig(request));
     if (plainInteractive) inheritedAttempt = undefined;
+    if (!request.dryRun) {
+      assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
+      assertRepositoryIsolationResumeAvailable(request.resume);
+    }
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
     // A profile-only team has no generic base route. Missing mode/default must
     // not discard its immutable binding or restore name-based writer privileges.
@@ -805,7 +814,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       && mode?.document_profile !== READONLY_DOCUMENT_PROFILE) throw new ModeCapabilityError("CAPABILITY_PROFILE");
     assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
   } catch (error) {
-    if (error instanceof ModeCapabilityError) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: error.message };
+    if (error instanceof ModeCapabilityError || error instanceof RepositoryIsolationUnavailableError) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: error.message };
     if (error instanceof DeployModeSelectionError) return { status: "failed", team: request.team, mode: null, reason: error.message };
     if (request.team === "analyst") return { status: "failed", team: request.team, mode: request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
     if (!request.ticketWorktree) throw error;
@@ -1985,19 +1994,3 @@ function inheritedParentContext(): { parentDeploymentId: string; parentDeploymen
   return parentIdentity ? { parentDeploymentId, parentDeploymentDirectory } : undefined;
 }
 function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Partial<Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string>> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "", ...(isRogueOneTeam(team.name) ? { PA_ROGUE_ONE: "1" } : {}), [PA_PI_EXECUTION_MODE_ENV]: request.background ? "background" : "foreground" }; }
-function readSession(id: string, expected: string): string {
-  const dir = getDeployPaths(id).deployDir;
-  const recorded = queryReadonlyDeploymentStatus(id)?.runtime;
-  if (recorded !== undefined) assertMatchingRuntime(recorded, "pi");
-  for (const file of existsSync(dir) ? readdirSync(dir) : []) {
-    const match = /^session-id-(.+)\.txt$/.exec(file);
-    if (!match) continue;
-    assertSupportedRuntime(match[1]);
-    assertMatchingRuntime(match[1], "pi");
-  }
-  const path = resolve(dir, expected);
-  if (!existsSync(path)) throw new Error(`no Pi session id recorded for ${id} — cannot resume`);
-  const value = readFileSync(path, "utf8").trim();
-  if (!value) throw new Error(`empty Pi session id recorded for ${id} — cannot resume`);
-  return value;
-}

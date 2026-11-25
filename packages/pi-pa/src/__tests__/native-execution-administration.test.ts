@@ -31,14 +31,20 @@ test("PAP-264 administrative vocabulary is exact, inert argv and self-bound, not
   for (const extra of [{ cwd: "/canonical" }, { env: {} }, { timeout: 0 }, { timeout: Infinity }]) assert.equal(bash("ppa bulletin list", extra), null);
 });
 
-test("PAP-264 only typed comments on the current ticket use the existing ticket audit port", () => {
+test("typed ticket administration delegates cross-ticket and project scope to the independent owner, never shell execution", () => {
   const input = { action: "comment", id: "TTL-006", author: "builder/team-manager", content: "Startup stopped; no source edits." };
   const call = (patch: Record<string, unknown> = {}) => executionAdministration({ toolName: "pa_ticket", input: { ...input, ...patch } }, identity);
-  assert.deepEqual(call(), { kind: "ticket-comment" });
+  assert.deepEqual(call(), { kind: "ticket-admin" });
   assert.equal(call({ author: undefined }), null);
-  for (const patch of [{ action: "update" }, { id: "TTL-999" }, { author: "sinh" }, { content: "" }, { content: "x".repeat(16_385) }, { status: "done" }, { content: { text: "claim" } }]) assert.equal(call(patch), null);
+  assert.deepEqual(call({ id: "TTL-999" }), { kind: "ticket-admin" });
+  for (const request of [
+    { action: "create", project: "other", requestId: "original", fields: { title: "Independent administration" } },
+    { action: "update", project: "other", id: "OTH-001", expectedVersion: "a".repeat(64), fields: { summary: "Updated" } },
+    { action: "set-status", project: "other", id: "OTH-001", requestId: "status", expectedVersion: "a".repeat(64), status: "done" },
+  ]) assert.deepEqual(executionAdministration({ toolName: "pa_ticket", input: request }, identity), { kind: "ticket-admin" });
+  for (const patch of [{ action: "update" }, { author: "sinh" }, { content: "" }, { content: "x".repeat(32_769) }, { status: "done" }, { content: { text: "claim" } }]) assert.equal(call(patch), null);
   assert.equal(executionAdministration({ toolName: "mcp__unknown.pa_ticket", input }, identity), null);
-  assert.deepEqual(executionAdministration({ toolName: "functions.pa_ticket", input }, identity), { kind: "ticket-comment" });
+  assert.deepEqual(executionAdministration({ toolName: "functions.pa_ticket", input }, identity), { kind: "ticket-admin" });
 });
 
 test("PAP-264 d-9e8ccf compound Git preflight is parsed as finite inert observations, never a shell", () => {

@@ -6,6 +6,7 @@ import { nowUtc } from "../../time.js";
 import type { ApiRuntimeName } from "../../types.js";
 import type { CoreExecutionHooks } from "../../deploy/control.js";
 import { assertSupportedRuntime } from "../../deploy/runtime-config.js";
+import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, readRecordedRuntimeSession, RepositoryIsolationUnavailableError } from "../../deploy/repository-isolation.js";
 
 export type SessionStatus = "running" | "stopping";
 
@@ -131,8 +132,15 @@ export function resolveBinary(opts: {
   return DEFAULT_BINARY;
 }
 
+interface SessionOrigin {
+  runtime: ApiRuntimeName;
+  environments: NodeJS.ProcessEnv[];
+  deploymentIds: string[];
+}
+
 interface ActiveSession {
   record: SessionRecord;
+  origin?: SessionOrigin;
   child: ChildProcess | null;
   /**
    * Streaming sinks for live SSE observation. Absent for deploy sessions
@@ -183,7 +191,7 @@ export class SessionManager {
   private readonly runtimes: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
   private readonly runtimeNormalizers: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
   private readonly runtimeCommands: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
-  private readonly nativeSessionRuntimes = new Map<string, ApiRuntimeName>();
+  private readonly nativeSessionOrigins = new Map<string, SessionOrigin>();
   private readonly onTerminal?: (sessionId: string) => void;
   private readonly secretValues: string[];
   private nextId = 1;
@@ -258,7 +266,7 @@ export class SessionManager {
     }
     const promptError = this.validatePromptLength(opts.prompt);
     if (promptError) return promptError;
-    const knownRuntime = this.nativeSessionRuntimes.get(opts.sessionId);
+    const knownRuntime = this.nativeSessionOrigins.get(opts.sessionId)?.runtime;
     if (knownRuntime && knownRuntime !== (opts.runtime ?? DEFAULT_RUNTIME)) return { ok: false, error: `Session belongs to runtime ${knownRuntime}; resume it with '${runtimeBinary(knownRuntime)}'`, limit: this.maxSessions };
     return this.createSession(opts, sink);
   }
@@ -306,11 +314,40 @@ export class SessionManager {
     return { ok: true, session: { ...record } };
   }
 
+  /** Admission is repeated at allocation, and exposed for the websocket owner to
+   * run before runtime probes. A runtime-name cache is not resume provenance. */
+  assertExecutionAvailable(opts: SessionSpawnOptions): void {
+    try {
+      const runtime = opts.runtime ?? DEFAULT_RUNTIME;
+      assertRepositoryIsolationIngressAvailable([this.env, opts.env]);
+      const deployments = new Set([opts.deploymentId, this.env["PA_DEPLOYMENT_ID"], opts.env?.["PA_DEPLOYMENT_ID"]].filter((id): id is string => id !== undefined));
+      for (const id of deployments) {
+        if (!id) throw new RepositoryIsolationUnavailableError();
+        assertRepositoryIsolationResumeAvailable(id, runtime);
+      }
+      if (opts.sessionId !== undefined) {
+        if (!isBoundedNativeSessionId(opts.sessionId)) throw new RepositoryIsolationUnavailableError();
+        const origin = this.nativeSessionOrigins.get(opts.sessionId);
+        if (origin) {
+          if (origin.runtime !== runtime) throw new RepositoryIsolationUnavailableError();
+          assertRepositoryIsolationIngressAvailable(origin.environments);
+          for (const id of origin.deploymentIds) assertRepositoryIsolationResumeAvailable(id, runtime);
+          if ([...deployments].some(id => !origin.deploymentIds.includes(id))) throw new RepositoryIsolationUnavailableError();
+        } else {
+          if (!deployments.size) throw new RepositoryIsolationUnavailableError();
+          for (const id of deployments) if (readRecordedRuntimeSession(id, `session-id-${runtime}.txt`) !== opts.sessionId) throw new RepositoryIsolationUnavailableError();
+        }
+      }
+    } catch { throw new RepositoryIsolationUnavailableError(); }
+  }
+
   private createSession(opts: SessionSpawnOptions & { sessionId?: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     const runtime = opts.runtime === undefined ? DEFAULT_RUNTIME : opts.runtime;
     const runtimeError = runtimeAdmissionError(runtime);
     if (runtimeError) return { ok: false, error: runtimeError, limit: this.maxSessions };
     if (runtime !== DEFAULT_RUNTIME && !this.runtimes[runtime]) return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
+    try { this.assertExecutionAvailable(opts); }
+    catch { return { ok: false, error: new RepositoryIsolationUnavailableError().message, limit: this.maxSessions }; }
     const newId = this.allocateId();
     const model = opts.model ?? this.defaultModel;
     const deploymentId = opts.deploymentId ?? `session-${newId}`;
@@ -322,8 +359,14 @@ export class SessionManager {
       deploymentId,
       runtime,
     };
+    const priorOrigin = opts.sessionId ? this.nativeSessionOrigins.get(opts.sessionId) : undefined;
+    const environments = [...(priorOrigin?.environments ?? []), this.env, opts.env, { ...this.env, ...opts.env }]
+      .map(env => ({ PA_TEAM: env?.["PA_TEAM"], PA_MODE: env?.["PA_MODE"] }));
+    const deploymentIds = [...new Set([...(priorOrigin?.deploymentIds ?? []), opts.deploymentId, this.env["PA_DEPLOYMENT_ID"], opts.env?.["PA_DEPLOYMENT_ID"]]
+      .filter((id): id is string => id !== undefined))];
     const session: ActiveSession = {
       record,
+      origin: { runtime, environments: [...new Map(environments.map(env => [JSON.stringify(env), env])).values()], deploymentIds },
       child: null,
       sinks: new Set<SessionStreamSink>([sink]),
       sessionIdParser: createSessionIdParser(),
@@ -335,12 +378,10 @@ export class SessionManager {
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
     try {
-      const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
-      if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, record.runtime);
       this.spawnOpencode(session, opts);
     } catch (error) {
       const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
-      if (nativeSessionId) this.nativeSessionRuntimes.delete(nativeSessionId);
+      if (nativeSessionId && !opts.sessionId) this.nativeSessionOrigins.delete(nativeSessionId);
       this.sessions.delete(newId);
       const rawMessage = error instanceof Error ? error.message : String(error);
       const isEnoent = error instanceof Error && (error as Error & { code?: string }).code === "ENOENT";
@@ -415,6 +456,15 @@ export class SessionManager {
       stdio: ["ignore", "pipe", "pipe"],
     });
     session.child = child;
+    // Only an admitted resume token or Pi's freshly allocated id can bind an
+    // origin. A custom builder must pass that exact id, without conflicting flags.
+    const nativeId = opts.sessionId ?? (runtime === "pi" ? session.record.id : undefined);
+    const sessionFlag = runtime === "pi" ? "--session-id" : "--session";
+    const flagIndex = args.indexOf(sessionFlag);
+    if (child.pid && nativeId && isBoundedNativeSessionId(nativeId) && session.origin
+      && flagIndex >= 0 && flagIndex === args.lastIndexOf(sessionFlag) && args[flagIndex + 1] === nativeId) {
+      this.nativeSessionOrigins.set(nativeId, session.origin);
+    }
 
     child.stdout?.on("data", (chunk: Buffer) => this.handleStdout(session, chunk));
     child.stderr?.on("data", (chunk: Buffer) => this.handleStderr(session, chunk));
@@ -477,8 +527,9 @@ export class SessionManager {
     if (session.stderrBuffer?.trim()) this.processLine(session, session.stderrBuffer);
     session.stdoutBuffer = "";
     session.stderrBuffer = "";
-    const nativeSessionId = session.sessionIdParser?.flush();
-    if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, session.record.runtime);
+    // Parsed stdout ids are observational hints, never execution provenance.
+    // Fresh opaque OPA ids need an exact recorded managed owner before resume.
+    session.sessionIdParser?.flush();
     if (session.terminated) return;
     this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0, ...(session.terminateReason ? { reason: session.terminateReason } : {}) } });
     this.logLifecycle(session, "session_ended", `exitCode=${code ?? 0}`);
@@ -553,7 +604,8 @@ function defaultSessionCommand(runtime: ApiRuntimeName, opencodeBinary: string, 
   const args = runtime === "opencode"
     ? ["run", "-m", opts.model ?? session.model, "--dangerously-skip-permissions"]
     : ["--print", "--mode", "json"];
-  if (opts.sessionId) args.push(runtime === "opencode" ? "--session" : "--session-id", opts.sessionId);
+  if (runtime === "pi") args.push("--session-id", opts.sessionId ?? session.id);
+  else if (opts.sessionId) args.push("--session", opts.sessionId);
   if (runtime === "opencode") args.push("--format", "json");
   args.push(opts.prompt);
   return { binary: runtime === "opencode" ? opencodeBinary : runtime, args };

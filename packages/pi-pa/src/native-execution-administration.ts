@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { runCoreCommand, workflowError } from "@pa-platform/pa-core";
+import { parseTicketAdminRequest, runCoreCommand, workflowError } from "@pa-platform/pa-core";
 import type { PiToolCall } from "./pi-extension/index.js";
 import { assertOwnExecutionSessionLog, MAX_EXECUTION_SESSION_LOG_BYTES, ownExecutionSessionLog, writeOwnExecutionSessionLog, type ExecutionLogIdentity } from "./native-execution-session-log.js";
 
@@ -14,7 +14,7 @@ export type ExecutionAdministration =
   | { readonly kind: "date"; readonly utc: boolean }
   | { readonly kind: "preflight"; readonly observations: readonly (Observation & { readonly when: "always" | "success" })[]; readonly timeoutSeconds: number }
   | { readonly kind: "session-log"; readonly path: string; readonly content: string }
-  | { readonly kind: "ticket-comment" };
+  | { readonly kind: "ticket-admin" };
 
 /** Tokenization only: nothing is expanded or executed. Separators are accepted
  * solely when EVERY segment maps to the finite read-only observation grammar. */
@@ -80,10 +80,11 @@ export function executionAdministration(call: PiToolCall, identity: ExecutionAdm
   const name = raw?.startsWith("functions.") ? raw.slice(10) : raw;
   const input = call.input;
   if (name === "pa_ticket") {
-    if (Object.keys(input).some((key) => !["action", "id", "author", "content"].includes(key))
-      || input.action !== "comment" || input.id !== identity.ticket || input.author !== "builder/team-manager"
-      || typeof input.content !== "string" || !input.content.trim() || Buffer.byteLength(input.content) > 16_384) return null;
-    return { kind: "ticket-comment" };
+    // Only the independent typed ticket owner gets administration here. Target
+    // project/ticket need not match source execution; this grammar grants no
+    // shell, branch or workflow authority. Native ticket auth owns attribution.
+    try { parseTicketAdminRequest(JSON.stringify(input)); } catch { return null; }
+    return { kind: "ticket-admin" };
   }
   if (name === "write") {
     if (Object.keys(input).some((key) => !["path", "content"].includes(key)) || typeof input.path !== "string" || !isAbsolute(input.path) || typeof input.content !== "string"
@@ -110,7 +111,7 @@ export function executionAdministration(call: PiToolCall, identity: ExecutionAdm
 
 /** Native-only runner after live session authorization. No shell, network,
  * arbitrary Git option, inherited Git override, or caller-selected cwd. */
-export async function runExecutionAdministration(request: Exclude<ExecutionAdministration, { kind: "ticket-comment" }>, identity: ExecutionAdministrationIdentity): Promise<{ text: string; exitCode: number }> {
+export async function runExecutionAdministration(request: Exclude<ExecutionAdministration, { kind: "ticket-admin" }>, identity: ExecutionAdministrationIdentity): Promise<{ text: string; exitCode: number }> {
   if (request.kind === "date") {
     const now = new Date(); return { text: `${request.utc ? now.toUTCString() : now.toString()}\n`, exitCode: 0 };
   }

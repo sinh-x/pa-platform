@@ -1,7 +1,8 @@
 import { ADVISORY_RUNTIME_VERSION } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { assertMatchingRuntime, assertSupportedRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup } from "@pa-platform/pa-core";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readPriorSession } from "./session-owner.js";
+import { assertMatchingRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup, assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, normalizeRogueOneDeployRequest, isRogueOneTeam, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
@@ -141,11 +142,15 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   let selectedMode: DeployMode | undefined;
   try {
     selectedMode = resolveDeployMode(teamConfig, request.mode);
+    if (!request.dryRun) {
+      assertRepositoryIsolationAvailable({ team: teamConfig.name, mode: selectedMode?.id, documentProfile: selectedMode?.document_profile });
+      assertRepositoryIsolationResumeAvailable(request.resume);
+    }
     if (selectedMode?.capability_policy !== undefined) return { status: "failed" as const, team: request.team, mode: selectedMode.id, reason: modeCapabilityDiagnostic("CAPABILITY_PROFILE") };
     assertDeployResumeMode(teamConfig, request.resume, selectedMode);
   }
   catch (error) {
-    if (error instanceof DeployModeSelectionError) return { status: "failed" as const, team: request.team, mode: null, reason: error.message };
+    if (error instanceof DeployModeSelectionError || error instanceof RepositoryIsolationUnavailableError) return { status: "failed" as const, team: request.team, mode: null, reason: error.message };
     throw error;
   }
   // Preserve strict mode precedence while rejecting unsupported resume history
@@ -290,7 +295,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     // custody mutex for the lifetime of a synchronous foreground command.
     const onPid = advisoryLaunch || plainInteractive ? (pid: number) => emitPidEvent({ deploymentId, team: teamConfig.name, pid }) : undefined;
     const start = () => priorSession
-      ? adapter.resume({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(onPid ? { onPid } : {}), ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
+      ? adapter.resume({ primerPath, deployId: deploymentId, resumedFromDeploymentId: request.resume, mode, model, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(onPid ? { onPid } : {}), ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
       : adapter.spawn({ primerPath, deployId: deploymentId, mode, model, logFile: resolve(deployDir, "opencode.log"), env, ...(onPid ? { onPid } : {}), sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
     const result = await (plainInteractive ? withOrdinaryRepositoryStartup(plan, () => {
       assertDeployResumeMode(teamConfig, request.resume, selectedMode);
@@ -382,27 +387,7 @@ function firstLine(text: string): string {
   return text.split("\n", 1)[0] ?? "";
 }
 
-function readPriorSession(deploymentId: string, sessionFileName: string): string {
-  const deployDir = getDeployPaths(deploymentId).deployDir;
-  const recorded = queryReadonlyDeploymentStatus(deploymentId)?.runtime;
-  if (recorded !== undefined) assertMatchingRuntime(recorded, "opencode");
-  // Session filenames are historical metadata, not an executable runtime map.
-  for (const file of existsSync(deployDir) ? readdirSync(deployDir) : []) {
-    const match = /^session-id-(.+)\.txt$/.exec(file);
-    if (!match) continue;
-    assertSupportedRuntime(match[1]);
-    assertMatchingRuntime(match[1], "opencode");
-  }
-  const sessionPath = resolve(deployDir, sessionFileName);
-  if (!existsSync(sessionPath)) {
-    throw new Error(`no opencode session id recorded for ${deploymentId} — cannot resume (foreground TUI runs are not resumable)`);
-  }
-  const value = readFileSync(sessionPath, "utf-8").trim();
-  if (!value) {
-    throw new Error(`empty opencode session id recorded for ${deploymentId} — cannot resume`);
-  }
-  return value;
-}
+
 
 function computePlannerVars(team: string, mode: string | undefined, today: string): Record<string, string> {
   if (team !== "planner" || !mode || !new Set(["plan", "plan-review", "progress", "end", "end-review"]).has(mode)) return {};

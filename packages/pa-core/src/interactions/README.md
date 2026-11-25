@@ -305,3 +305,164 @@ contention, reauthentication-time drift and live-PID terminal-owner rejection.
 This is semantic reconciliation by the implementer, not independent review or
 full PAP-290 operation parity. See docs/PAP-292-implementation.md for remaining
 catalogue, installed qualification and UAT gaps.
+
+## PAP-334 semantic supersession — current source-only ticket administration
+
+This note supersedes the historical PAP-292 blanket restriction on generic
+`ticket update --status` for selected policy callers, and the earlier read/comment-only
+characterization of `pa_ticket`. It does not upgrade retained document, intake,
+approval or execution contracts. The catalogue still has **null native/delegation
+bindings and schema references**, with installed/session availability unproven and
+admission not checked. These are finite source interfaces, not full R4 acceptance,
+installed/native foreground qualification or human UAT.
+
+- Generic CLI status updates and authenticated REST `PATCH /api/tickets/:id` now
+  use the shared TicketStore owner independently of team/mode or document profile,
+  including another target project. Trusted running deployment/operator authority
+  is re-resolved under the mutex, including the final effect fence. Live competing
+  custody, pending workflow/document effects, unsettled ticket intents and open
+  subtickets still block dependent transitions. Completed history is not a blanket
+  stage restriction. Deletion retains separate restrictions. These legacy writes
+  do not acquire the selected status port's intent/CAS grammar or prove transport
+  parity.
+- Generic native `pa_ticket` adds `inspect`, `create`, `update`, `set-status` and
+  authenticated `comment` through `tickets/admin-service.ts`, TicketStore and
+  `ticket-session.ts`. Targets are exact registered projects/tickets, independent
+  of the launch association or document capability selection. Process/session,
+  immutable registry start, canonical roots, private incarnation anchor and live
+  lineage must agree; environment labels alone fail. The process-anchor recorder
+  now covers all managed teams/modes after start validation, not a role allowlist
+  or a workflow/source grant. A deliberately omitted tool module is not registered
+  by catalogue discovery or by policy exposure.
+- Native creation preserves its original durable intent and defaults to an idea
+  task with medium/M/sinh metadata. Native update accepts only the eleven bounded
+  administrative fields: title, summary, description, priority, estimate, type,
+  assignee, tags, blockedBy, from and to. It uses complete-snapshot CAS; supplied
+  arrays replace their values. It cannot replace status, refs, primary or Git
+  evidence. Native status uses the original durable status intent. Preserve
+  original create/status request coordinates after reply loss; update/comment
+  have no replay intent and require inspection before another mutation.
+  Comment author/audit derives from the authenticated public team/mode, not the
+  document profile's effective actor. The compatibility form
+  `comment(id,author,content)` resolves the existing ticket's project and accepts
+  only the caller or a configured same-team agent as attribution, never authority.
+  Oversized inspect replies explicitly omit the body while retaining metadata;
+  this is not a complete paged ticket/history interface.
+- Selected `pa_ticket_status` and `ppa ticket-status --request` remain separate
+  policy-selected, document-process-authenticated status-only owners. They now
+  accept any exact registered target project, not only the caller's repository;
+  target ticket/project matching, original intent/CAS and their stricter
+  workflow/competing-owner checks remain. Finite document mutation contexts stay
+  separate from generic administration principals so an owner can reconcile its
+  own original pending publication/queue, not overwrite another owner.
+- `pa_ticket_intake` keeps its selected finite capabilities/inspect/reuse/create/
+  patch-planning grammar and conservative scalar-planning eligibility; generic
+  administration does not silently widen it. In native execution sessions the
+  five administrative forms, including inspect, pass the existing administrative
+  source barrier and lower tool boundary: no concurrent source operation or pending
+  restart, unchanged source snapshot and separate administrative evidence. This
+  neither passes a phase check nor resets a failure. No source/Git, approval,
+  publication, queue, resource or launch authority follows from administration.
+
+The manifest renews only the twelve reviewed changed ticket/authentication/
+registration/execution sources. It explicitly adds the new admin-service and
+ticket-session owners plus previously untracked ticket exports, REST ticket route,
+execution administration grammar and lower execution-tool barrier. The guard
+**auto-discovers only added core CLI command files**; imported domain/native owners
+need explicit inventory entries. Tracked hashes detect subsequent byte changes,
+not semantic completeness, live registration or installed provenance. Launch
+plan/control/deploy/adapter hashes are not renewed by this reconciliation; later
+changes must trigger their own semantic review.
+
+## PAP-334 P2b — interim launch/resume rejection, not confinement
+
+This separate **source-only interim ingress** reconciliation supersedes historical
+working-launch claims for public Analyst (all modes), legacy
+`requirements/analyze` and existing v3 `pa-readonly-document/v1` selections.
+There is **no working confined executor or scope-grant override**. Read-only
+admission, prompts, approvals and writer labels are not confinement.
+
+- The reviewed core deploy CLI, Pi/OPA launchers, actual adapters and raw background
+  runners fail closed for protected execution. The shared isolation owner checks
+  all v1/v2/v3 bindings, public/effective identities, immutable plan identity,
+  `plan.environment`, original environments and merged overlays. One source cannot
+  erase another's protected selection. Source dry-runs remain static planning that
+  may write private artifacts; actual adapter `dry-run` calls still reject
+  protected execution.
+- `queryReadonlyIsolationLineage` reads raw current/start/event rows and the whole
+  resumed ancestry in one read transaction. Missing, conflicting, duplicate-start,
+  cyclic or malformed evidence rejects rather than trusting display projections.
+  Retained `requirements-document-*` or `readonly-document-policy/*` notes forbid
+  downgrade even with a writer label or missing binding, including unrecognized
+  protocol revisions. Existing-files-only reads do not initialize registry state
+  or allocate missing WAL/SHM sidecars. Selecting rogue-one cannot remove retained
+  protection.
+- The private Pi and OPA `session-owner.ts` readers reuse the isolation owner's
+  safe existing-file read and require the exact recorded native token/runtime for
+  the prior deployment ID. Linked, special, multiply linked, oversized or changed
+  evidence cannot qualify a direct adapter resume; a supplied token alone cannot.
+- Raw runner checks run inside their lifecycle before runtime spawn or custody
+  transfer. Isolation rejection retains the configuration and existing claims,
+  publishes failed readiness, removes signal handlers and skips terminal registry
+  reconciliation. Launcher cleanup recognizes matching rejection evidence rather
+  than deleting the retained configuration. This is not a successful launch or
+  permission to release another owner's claims.
+- Agent API websocket start/resume admission runs before runtime preflight. The
+  central `SessionManager` repeats admission before allocation, lifecycle logging,
+  command building or spawn, including default-command fallback. Stdout session
+  hints remain observational, never resume provenance. API continuation needs a
+  matching launch-bound native session argument with retained origin or an exact
+  recorded managed session. Unknown opaque API resumes remain unavailable;
+  eligible nonAnalyst fresh sessions and known launch-bound/recorded continuations
+  preserve their existing admission and rechecks. Observational deploy-session
+  registration is not execution admission.
+
+This final pass renews **eight changed tracked hashes**: Pi background runner,
+Pi/OPA adapters and launchers, raw registry lineage, isolation owner and Agent API
+websocket ingress. It adds **five explicit dependencies**:
+`packages/pi-pa/src/session-owner.ts`,
+`packages/opencode-pa/src/session-owner.ts`,
+`packages/opencode-pa/src/background-runner.ts`,
+`packages/pa-core/src/deploy/background-ownership.ts` and
+`packages/pa-core/src/agent-api/ws/session-hub.ts`. Earlier reconciled core deploy
+CLI/export and binding-parser hashes remain unchanged by this pass. Only added
+core CLI command files are auto-discovered; these imported owners need explicit
+entries. Hash equality detects byte drift, not semantic completeness or authority.
+Catalogue forms, effects, null bindings/schema references and unproven installed
+availability remain unchanged. Twelve historical Analyst functional cases remain
+**deferred**, not qualifications. This is not working protected execution,
+adoption, universal route qualification, installed verification or ticket completion.
+
+A subsequent independent review found two additional source defects. Pi `spawn`
+now consumes only an adapter-issued, single-use fresh session reservation; supplied
+existing tokens cannot masquerade as fresh requests. This reservation is not
+qualification of races in installed native session storage. The actual Pi runner
+entrypoint now consumes its configuration only after isolation admission inside
+the existing lifecycle, preserving rejected configuration evidence. The adapter
+and runner hashes are renewed again for these reviewed changes. No configuration
+field, environment grant, approval selector or confined executor is introduced.
+
+The full source regression run also exposed a finite native auto-publication
+compatibility regression: its approved operator-owned queue was being checked as
+unrelated generic administration. `auto-runtime.ts` now uses the same internal
+finite-owner distinction as document publication, retaining terminal/native
+reauthentication, the exact approved intent, mutex/CAS and per-effect authorization.
+No public actor/privilege field or new operation is accepted. The existing combined
+owner test again publishes/queues once while holding synthetic implementation
+success uncertain. Its hash is renewed for this semantic repair. Generic
+administration still cannot take over the native owner's unsettled operation.
+
+## PAP-334 scope split and integration handoff
+
+On 2026-11-25 Sinh explicitly revised PAP-334 to the delivered independent typed
+administration and interim fail-closed source slice, with PR integration into
+`develop`. The original unfinished requirements remain in linked follow-ups:
+PAP-338 mechanism feasibility, PAP-339 trusted topology, PAP-340 confined execution,
+PAP-341 transactional shared files, PAP-342 forced AC2/AC3 qualification, PAP-343
+foreground AC1 observation, and PAP-344 remaining universal AC5 availability.
+Closing the revised delivery after a verified PR merge does not convert source
+checks, deferred cases, or launch rejection into original confinement acceptance.
+See [the maintained contract](../../../../docs/analyst-repository-isolation.md).
+Sinh will perform installation from the retained worktree. This integration
+instruction is not agent installation, selector activation, native-effect
+approval, worktree return, or human UAT.

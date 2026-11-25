@@ -3,6 +3,11 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PiPromptCleanupError } from "./prompt-transport.js";
 import {
+  assertRepositoryIsolationBindingAvailable,
+  assertRepositoryIsolationIngressAvailable,
+  assertRepositoryIsolationAvailable,
+  assertRepositoryIsolationResumeAvailable,
+  RepositoryIsolationUnavailableError,
   advanceParentAuthoritySnapshot,
   appendActivityEvent,
   assertRepositoryGitIdentity,
@@ -60,6 +65,8 @@ const ACTIVITY_DIAGNOSTIC_MAX = 500;
 const TERMINAL_DIAGNOSTIC_MAX = 2_000;
 
 export interface PiBackgroundRunnerOptions {
+  /** Entrypoint-owned config consumption after scope admission; never read from config, environment or requests. */
+  onScopeAdmitted?: () => void;
   /** Trusted fixture seam only; never supplied by runner config, environment or requests. */
   reviewBoundary?: typeof withPiReviewCandidateAtMatrixBoundary;
   supervision?: PiSupervisionOptions;
@@ -78,6 +85,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let normalExecutionExit: number | undefined;
   let ready = false;
   let cleanupUnverified = false;
+  let isolationRejected = false;
   let repositoryLease = config.repositoryLease;
   let repositoryBorrower = config.repositoryBorrower;
   let repositoryLeaseTransferred = false;
@@ -121,7 +129,13 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
+    assertRepositoryIsolationIngressAvailable([process.env, config.environment]);
+    assertRepositoryIsolationAvailable({ team: config.team, mode: config.mode });
+    if (config.modeCapabilityBinding !== undefined) assertRepositoryIsolationBindingAvailable(config.modeCapabilityBinding);
+    if (!config.deploymentId) throw new RepositoryIsolationUnavailableError();
+    assertRepositoryIsolationResumeAvailable(config.deploymentId, "pi");
     assertTreehouseRuntimeEnvironment(config, process.env);
+    options.onScopeAdmitted?.();
     if (config.repositoryHandoffPath) {
       try {
         if (config.repositoryHandoffPath !== resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE)) throw new Error("runner-readiness: repository handoff path mismatch");
@@ -351,8 +365,13 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     writePiSupervisorOwnership(ownershipPath, ownership("finalized", { terminalEvent: terminal.event, terminalStatus: terminal.status }));
     audit.observe("background-diagnostic", terminal.diagnostic, secrets);
   } catch (error) {
+    isolationRejected = error instanceof RepositoryIsolationUnavailableError;
     cleanupUnverified ||= error instanceof PiPromptCleanupError;
     terminateChild();
+    if (isolationRejected) {
+      writePiSupervisorOwnership(ownershipPath, ownership("failed", { ready: false, admissionRejected: "repository-isolation", cleanupVerified: false, error: new RepositoryIsolationUnavailableError().message }));
+      return;
+    }
     const reason = bounded(categoryForRunnerError(error), secrets, TERMINAL_DIAGNOSTIC_MAX);
     try {
       const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
@@ -458,7 +477,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         }
       }
     } finally {
-      ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
+      if (!isolationRejected) ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
     }
   }
 }
@@ -590,6 +609,7 @@ if (isEntrypoint()) {
   const configPath = process.argv[2];
   if (!configPath) throw new Error("runner-readiness: Missing Pi background configuration path");
   const config = readPiBackgroundConfig(configPath);
-  try { if (existsSync(configPath)) unlinkSync(configPath); } catch { /* the bounded non-secret config may remain for diagnosis */ }
-  await runPiBackgroundRunner(config);
+  await runPiBackgroundRunner(config, { onScopeAdmitted: () => {
+    try { if (existsSync(configPath)) unlinkSync(configPath); } catch { /* the bounded non-secret config may remain for diagnosis */ }
+  } });
 }

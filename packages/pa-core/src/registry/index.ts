@@ -898,6 +898,47 @@ export function queryReadonlyOrdinaryResume(deployId: string): DeploymentStatus 
   } finally { db.close(); }
 }
 
+/** Snapshot all retained launch identities, without ordinary-writer admission rules.
+ * Raw rows matter: display projections may omit malformed binding evidence. */
+export function queryReadonlyIsolationLineage(deployId: string, runtime?: string): Array<{ team: string; mode?: string; binding?: string; note?: string }> {
+  const db = openReadonlyRegistryDatabase(true);
+  try {
+    return db.transaction(() => {
+      const seen = new Set<string>();
+      const result: Array<{ team: string; mode?: string; binding?: string; note?: string }> = [];
+      let id: unknown = deployId;
+      let lineageRuntime = runtime;
+      while (id !== null && id !== undefined && id !== "") {
+        if (typeof id !== "string" || !/^d-[a-f0-9]{6}$/.test(id) || seen.has(id) || seen.size >= 1024) throw new Error("invalid isolation lineage");
+        seen.add(id);
+        const current = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(id) as Record<string, unknown> | undefined;
+        // Bound hostile histories as well as ancestry depth.
+        const events = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id LIMIT 4097").all(id) as Record<string, unknown>[];
+        const starts = events.filter(row => row.event === "started");
+        if (!current || starts.length !== 1 || result.length + events.length + 1 > 4096) throw new Error("isolation lineage requires one immutable start");
+        const start = starts[0]!;
+        if (typeof start.team !== "string" || !start.team || typeof start.runtime !== "string" || !start.runtime
+          || (lineageRuntime !== undefined && start.runtime !== lineageRuntime)) throw new Error("incomplete isolation identity");
+        lineageRuntime ??= start.runtime;
+        const keys = ["team", "mode", "runtime", "binary", "mode_capability_binding", "resumed_from_deployment_id"];
+        if (keys.some(key => (current[key] ?? null) !== (start[key] ?? null))) throw new Error("isolation identity changed");
+        for (const row of [current, ...events]) {
+          if (keys.some(key => row[key] !== null && row[key] !== undefined && row[key] !== start[key])) throw new Error("conflicting isolation identity");
+          if (row.mode !== null && row.mode !== undefined && typeof row.mode !== "string"
+            || row.mode_capability_binding !== null && row.mode_capability_binding !== undefined && typeof row.mode_capability_binding !== "string") throw new Error("invalid isolation identity");
+          if (row.note !== null && row.note !== undefined && typeof row.note !== "string") throw new Error("invalid isolation protocol evidence");
+          result.push({ team: start.team, ...(typeof row.mode === "string" ? { mode: row.mode } : {}),
+            ...(typeof row.mode_capability_binding === "string" ? { binding: row.mode_capability_binding } : {}),
+            ...(typeof row.note === "string" ? { note: row.note } : {}) });
+        }
+        id = start.resumed_from_deployment_id;
+      }
+      if (!result.length) throw new Error("missing isolation lineage");
+      return result;
+    })();
+  } finally { db.close(); }
+}
+
 /** Resume inspection must not allocate, initialize or migrate registry state. */
 export function queryReadonlyDeploymentStatus(deployId: string, existingFilesOnly = false): DeploymentStatus | null {
   if (!existingFilesOnly && !existsSync(getRegistryDbPath())) return null;

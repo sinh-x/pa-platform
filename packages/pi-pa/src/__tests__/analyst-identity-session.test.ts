@@ -104,7 +104,7 @@ test("PAP-316 omitted Analyst policy stops before allocation and spawn instead o
     for (const mode of [undefined, "analyze", "investigate", "research"]) {
       const result = await deployWithPi({ team: "analyst", ...(mode ? { mode } : {}) }, adapter);
       assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
-      assert.match(result.reason ?? "", /CAPABILITY_PROFILE/);
+      assert.match(result.reason ?? "", /REPOSITORY_ISOLATION_UNAVAILABLE/);
     }
     assert.equal(probes, 0); assert.deepEqual(readdirSync(join(root, "usage")), []);
     assert.deepEqual(readdirSync(root).sort(), ["config.yaml", "teams", "usage"]);

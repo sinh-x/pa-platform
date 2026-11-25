@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readSession } from "./session-owner.js";
+import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -72,6 +74,9 @@ export interface PiBackgroundConfig {
   ownershipToken: string;
   deploymentId: string;
   team: string;
+  mode?: string;
+  environment?: NodeJS.ProcessEnv;
+  modeCapabilityBinding?: import("@pa-platform/pa-core").ModeCapabilityBinding;
   cwd: string;
   repoKey?: string;
   repoRoot?: string;
@@ -116,6 +121,7 @@ export interface PiSupervisorOwnership {
   terminalStatus?: "success" | "failed";
   /** Absence preserves legacy evidence; false retains unverified input/process cleanup. */
   cleanupVerified?: false;
+  admissionRejected?: "repository-isolation";
   error?: string;
 }
 export interface PiToolProtocolOutcome {
@@ -133,6 +139,7 @@ export interface PiAdapterOptions {
   versionProbe?: () => string | Promise<string>;
   nativeRegistryProbe?: () => PiNativeHostEvidence | undefined | Promise<PiNativeHostEvidence | undefined>;
   versionTimeoutMs?: number;
+  /** Trusted constructor-only test seam; production IDs come from native crypto, never model/config/environment input. */
   sessionIdFactory?: () => string;
   secretValues?: string[];
   supervision?: PiSupervisionOptions;
@@ -182,6 +189,8 @@ export class PiAdapter implements RuntimeAdapter {
   private preflightPromise?: Promise<void>;
   private runtimeVersion = "";
   private readonly sessionIdFactory: () => string;
+  // In-process launcher reservations only, not atomic reservations in Pi's native session store.
+  private readonly freshSessionIds = new Map<string, "reserved" | "consumed">();
   private readonly secretValues: string[];
   private readonly supervision: PiSupervisionOptions;
   private readonly protectedValidationLaunches = new Map<string, PiProtectedValidationLaunch>();
@@ -240,16 +249,40 @@ export class PiAdapter implements RuntimeAdapter {
     return this.preflightPromise;
   }
 
-  allocateSessionId(): string { return this.sessionIdFactory(); }
+  allocateSessionId(): string {
+    const id = this.sessionIdFactory();
+    if (typeof id !== "string" || !id || this.freshSessionIds.has(id)) throw new RepositoryIsolationUnavailableError();
+    this.freshSessionIds.set(id, "reserved");
+    return id;
+  }
   private async run(opts: SpawnOpts, resumeId?: string, resumedFromDeploymentId?: string): Promise<SpawnResult> {
+    const plan = opts.executionPlan;
+    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
+    let id: string;
+    // Every identity source is restrictive: an environment overlay cannot erase
+    // a protected immutable plan, and a direct/legacy resume needs native scope.
+    // No probe, prompt snapshot, runtime process or output file precedes this.
+    try {
+      assertRepositoryIsolationIngressAvailable([this.env, opts.env, env], plan);
+      if (resumeId !== undefined) {
+        if (!resumedFromDeploymentId) throw new RepositoryIsolationUnavailableError();
+        assertRepositoryIsolationResumeAvailable(resumedFromDeploymentId, "pi");
+        if (!resumeId || readSession(resumedFromDeploymentId, this.sessionFileName) !== resumeId) throw new RepositoryIsolationUnavailableError();
+        id = resumeId;
+      } else {
+        // Pi's --session-id also opens existing sessions. Caller-supplied IDs are
+        // not evidence of freshness; only this launcher's unspent IDs may spawn.
+        id = opts.sessionId ?? this.allocateSessionId();
+        if (this.freshSessionIds.get(id) !== "reserved") throw new RepositoryIsolationUnavailableError();
+        this.freshSessionIds.set(id, "consumed");
+      }
+    } catch (error) { return failure(error instanceof RepositoryIsolationUnavailableError ? error.message : new RepositoryIsolationUnavailableError().message); }
     let selectedHost;
     try {
       selectedHost = resolveSelectedPiLaunch();
       if (resumeId && resumedFromDeploymentId) assertSelectedPiResumeHost(resumedFromDeploymentId, resumeId, dirname(dirname(opts.primerPath)));
       else if (resumeId && selectedHost) return failure(selectedPiResumeDiagnostic());
     } catch (error) { return failure(error instanceof Error ? error.message : "Pi host contract is unavailable."); }
-    const plan = opts.executionPlan;
-    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
     // Shared Lavish ownership only; selection is resolved by pa-core from the
     // installed closure, not PATH or Pi-specific Treehouse capabilities.
     env["PA_ARTIFACT_ADAPTER"] = "pi";
@@ -285,7 +318,6 @@ export class PiAdapter implements RuntimeAdapter {
       return result;
     }
     finally { this.preflightPromise = undefined; }
-    const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
     if (selectedHost) {
       try { recordSelectedPiLaunch(opts.deployId, id, selectedHost, dirname(opts.primerPath)); }
       catch (error) { return failure(error instanceof Error ? error.message : "Pi selected-host launch evidence is unavailable."); }
@@ -862,6 +894,9 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     ownershipToken,
     deploymentId: input.opts.deployId,
     team: input.env["PA_TEAM"] || plan?.team || "unknown",
+    mode: plan?.mode ?? input.env["PA_MODE"],
+    environment: { PA_TEAM: plan?.environment?.["PA_TEAM"] ?? input.env["PA_TEAM"], PA_MODE: plan?.environment?.["PA_MODE"] ?? input.env["PA_MODE"] },
+    ...(plan?.modeCapabilityBinding ? { modeCapabilityBinding: plan.modeCapabilityBinding } : {}),
     cwd: input.cwd,
     ...(plan ? { repoKey: plan.repoKey, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ...(plan.ticket ? { ticketId: plan.ticket } : {}), ...(plan.repositoryAdmission.slot ? { repositorySlot: plan.repositoryAdmission.slot } : {}) } : {}),
     primerPath: input.opts.primerPath,
@@ -951,7 +986,8 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   if (!ready) {
     const cleanup = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
     let configCleanupError: string | undefined;
-    try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); safeUnlink(validationHandoffPath); }
+    const retainAdmissionEvidence = ownership?.deploymentId === input.opts.deployId && ownership.ownershipToken === ownershipToken && ownership.admissionRejected === "repository-isolation";
+    try { if (!retainAdmissionEvidence) { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); safeUnlink(validationHandoffPath); } }
     catch (error) { configCleanupError = `config cleanup failed: ${boundedRunnerDiagnostic(error, input.secrets)}`; }
     // Reobserve this exact supervisor after termination: it may have published
     // retained-input uncertainty during shutdown. Prose is never lifecycle authority.
@@ -964,7 +1000,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     } catch { inputCleanupVerified = false; }
     const baseReason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
     const reason = [baseReason, cleanup.diagnostic, configCleanupError].filter(Boolean).join("; ");
-    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, cleanupVerified: cleanup.verified && inputCleanupVerified && !configCleanupError, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, cleanupVerified: cleanup.verified && inputCleanupVerified && !configCleanupError && !retainAdmissionEvidence, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
   }
   const established = ownership!;
   runner.unref();
@@ -1152,7 +1188,7 @@ export function readPiSupervisorOwnership(path: string): PiSupervisorOwnership |
   const body = readFileSync(path, "utf8");
   if (Buffer.byteLength(body) > 16 * 1024) throw new Error("Pi supervisor ownership evidence exceeds 16384 bytes");
   const value = JSON.parse(body) as Partial<PiSupervisorOwnership>;
-  if (value.schemaVersion !== 1 || typeof value.deploymentId !== "string" || typeof value.ownershipToken !== "string" || typeof value.state !== "string" || typeof value.ready !== "boolean" || !Number.isInteger(value.supervisorPid) || Number(value.supervisorPid) <= 0 || typeof value.updatedAt !== "string" || !Number.isInteger(value.finalizationDeadlineMs) || (value.cleanupVerified !== undefined && value.cleanupVerified !== false)) throw new Error("Pi supervisor ownership evidence is malformed");
+  if (value.schemaVersion !== 1 || typeof value.deploymentId !== "string" || typeof value.ownershipToken !== "string" || typeof value.state !== "string" || typeof value.ready !== "boolean" || !Number.isInteger(value.supervisorPid) || Number(value.supervisorPid) <= 0 || typeof value.updatedAt !== "string" || !Number.isInteger(value.finalizationDeadlineMs) || (value.cleanupVerified !== undefined && value.cleanupVerified !== false) || (value.admissionRejected !== undefined && value.admissionRejected !== "repository-isolation")) throw new Error("Pi supervisor ownership evidence is malformed");
   return value as PiSupervisorOwnership;
 }
 

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { assertTicketAdminCandidate, validateTicketAdminFields, ticketAdminFail, type TicketAdminFields } from "./admin-service.js";
 import { TicketHandoffError, handoffKey, handoffFail, parseTicketHandoffChange, handoffCandidate, readHandoffIntent, handoffIntents, publishHandoffIntent, handoffAudit, handoffAuditComplete, type TicketHandoffChange, type TicketHandoffHooks } from "./handoff-intent.js";
 import { statusFail, statusKey, statusVersion, statusCandidate, statusIntents, readStatusIntent, publishStatusIntent, statusAudit, statusAuditComplete, TICKET_STATUSES, type TicketStatusHooks } from "./status-intent.js";
+import { assertTicketAdminOwner } from "./status-service.js";
 import { TicketPlanningIntentError, ticketPlanningVersion, validatePlanningPatch, validPlanningDigest, assertPlanningScope, planningKey, readPlanningIntent, planningIntents, publishPlanningIntent, planningAudit, planningAuditComplete, type TicketPlanningPatch, type TicketPlanningHooks } from "./planning-intent.js";
 import { AdvisoryFiles } from "../operations/files.js";
 import { AUTO_DRAFT_APPEND_ACTOR, AutoDraftTicketAppendError, parseAutoDraftTicketAppend, autoDraftTicketVersion, autoDraftAppendKey, assertAutoDraftAppendScope, autoDraftAppendCandidate, readAutoDraftAppendIntent, autoDraftAppendIntents, autoDraftAppendAudit, autoDraftAppendAuditComplete, type AutoDraftAppendIntent, type AutoDraftTicketAppendHooks } from "./auto-draft-append.js";
@@ -148,8 +150,10 @@ export class TicketStore {
     // Keep retained unbound-intent digests unchanged. The optional new adapter
     // binding detects changed raw requests even when sanitization loses bytes.
     const payloadSha256 = creationDigest({ input: normalizedInput, actor, ...(hooks.requestBinding === undefined ? {} : { requestBinding: hooks.requestBinding }) });
+    let candidate: Ticket | undefined;
     const assertCurrent = (): void => {
       const result: unknown = hooks.assertCurrent();
+      if (candidate) hooks.assertCandidate?.(structuredClone(candidate));
       if (result instanceof Promise) void result.catch(() => {});
       if (result !== undefined) throw new TicketCreateIntentError("TICKET_CREATE_INPUT");
     };
@@ -168,11 +172,13 @@ export class TicketStore {
         const ticket = this.normalizeTicket({ ...normalizedInput, id, createdAt: now, updatedAt: now, resolvedAt: input.resolvedAt ?? null,
           subTickets: [], nextSubTicketCounter: 0, linkedBranches: input.linkedBranches ?? [], linkedCommits: input.linkedCommits ?? [] });
         record = { schemaVersion: "pa-ticket-create-intent/v1", key, ...identity, payloadSha256, ticketSha256: creationDigest(ticket), actor, ticket };
+        candidate = ticket;
         assertCurrent();
         publishCreationIntent(this.dir, record);
         observed("intent");
       }
       const planned = record.ticket;
+      candidate = planned;
       // Never silently normalize malformed persisted candidate bytes.
       if (!isDeepStrictEqual(this.normalizeTicket(planned as unknown as Record<string, unknown>), planned) || planned.project !== project) throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN");
       const expectedAudit: AuditEntry = { ticket_id: planned.id, action: "created", actor, timestamp: planned.createdAt,
@@ -191,6 +197,7 @@ export class TicketStore {
           const files = new AdvisoryFiles(this.dir);
           try { files.file(`${planned.id}.json`); throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new TicketCreateIntentError("TICKET_CREATE_UNCERTAIN"); }
+          assertCurrent();
           files.file(`${planned.id}.json`, JSON.stringify(planned, null, 2));
           observed("ticket");
         }
@@ -409,8 +416,10 @@ export class TicketStore {
     if (!isCanonicalTicketId(id) || !/^[a-f0-9]{64}$/.test(expectedVersion) || !TICKET_STATUSES.includes(status)
       || !actor || actor.length > 128 || /[\u0000-\u001f\u007f]/.test(actor)) return statusFail("TICKET_STATUS_INPUT");
     const payloadSha256 = creationDigest({ id, expectedVersion, status, actor });
+    let candidate: Ticket | undefined;
     const check = () => {
       const checked: unknown = hooks.assertCurrent();
+      if (candidate) hooks.assertCandidate?.(structuredClone(candidate));
       if (checked instanceof Promise) void checked.catch(() => {});
       if (checked !== undefined) statusFail("TICKET_STATUS_SESSION");
       assertLifecycleOwnership(status, this.context);
@@ -422,6 +431,9 @@ export class TicketStore {
     };
     return this.withTransaction(() => {
       check();
+      // Administration cannot overwrite another native operation's uncertain
+      // effect. Only this exact status intent may reconcile its own partials.
+      this.assertHandoffSettledExcept(id, undefined, key);
       let record = readStatusIntent(this.dir, key);
       const reused = record !== undefined;
       if (record && (record.payloadSha256 !== payloadSha256 || record.before.id !== id || record.expectedVersion !== expectedVersion || record.actor !== actor || record.status !== status)) statusFail("TICKET_STATUS_CONFLICT");
@@ -433,10 +445,12 @@ export class TicketStore {
         if (status === "done" && before.subTickets.some(sub => sub.status !== "done")) return statusFail("TICKET_STATUS_INPUT");
         const after = before.status === status ? before : statusCandidate(before, status, nowUtc());
         record = { schemaVersion: "pa-ticket-status-intent/v1", key, scope: identity.scope, requestId: identity.requestId, payloadSha256, actor, expectedVersion, status, before, after };
+        candidate = after;
         check();
         if (!isDeepStrictEqual(this.get(id), before)) statusFail("TICKET_STATUS_STALE");
         publishStatusIntent(this.dir, record); observed("intent");
       }
+      candidate = record.after;
       if (!isDeepStrictEqual(this.normalizeTicket(record.before as unknown as Record<string, unknown>), record.before)
         || !isDeepStrictEqual(this.normalizeTicket(record.after as unknown as Record<string, unknown>), record.after)) statusFail("TICKET_STATUS_UNCERTAIN");
       if (!statusAuditComplete(record, this.readCreationAudits().entries)) {
@@ -544,12 +558,17 @@ export class TicketStore {
       this.assertHandoffSettledExcept(id, original?.key);
     });
   }
-  private assertHandoffSettledExcept(id: string, originalKey?: string): void {
+  private assertHandoffSettledExcept(id: string, originalKey?: string, originalStatusKey?: string): void {
     this.withTransaction(() => {
       const audits = this.readCreationAudits().entries;
+      for (const file of readdirSync(this.dir).filter(name => /^\.ticket-create-[a-f0-9]{64}\.json$/.test(name))) {
+        const record = readCreationIntent(this.dir, file.slice(15, -5));
+        if (!record || record.ticket.id === id && !this.inspectCreationWithIntent({ scope: record.scope, requestId: record.requestId })?.complete) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+      }
       if (handoffIntents(this.dir).some(record => record.before.id === id && record.key !== originalKey && !handoffAuditComplete(record, audits))
         || planningIntents(this.dir).some(record => record.before.id === id && !planningAuditComplete(record, audits))
-        || statusIntents(this.dir).some(record => record.before.id === id && !statusAuditComplete(record, audits))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        || autoDraftAppendIntents(this.dir).some(record => record.before.id === id && !autoDraftAppendAuditComplete(record, audits))
+        || statusIntents(this.dir).some(record => record.before.id === id && record.key !== originalStatusKey && !statusAuditComplete(record, audits))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
     });
   }
 
@@ -570,18 +589,46 @@ export class TicketStore {
     return this.updateWithLinkedHeadExpectation(id, input, actor, context);
   }
 
+  /** Generic native administrative fields only. Reauthenticate and compare the
+   * complete snapshot under the same mutex, including at the final write fence.
+   * No linked evidence, lifecycle or full-ticket replacement is accepted. */
+  updateAdministrativeFields(id: string, expectedVersion: string, fields: TicketAdminFields, actor: string, assertCurrent: () => void): Ticket {
+    if (!isCanonicalTicketId(id) || !validPlanningDigest(expectedVersion)) ticketAdminFail("TICKET_ADMIN_INPUT");
+    const patch = validateTicketAdminFields(fields);
+    return this.updateWithLinkedHeadExpectation(id, patch, actor, this.context, undefined, () => {
+      const checked: unknown = assertCurrent();
+      if (checked instanceof Promise) void checked.catch(() => {});
+      if (checked !== undefined) ticketAdminFail("TICKET_ADMIN_SESSION");
+      validateTicketAdminFields(patch);
+      const current = this.get(id);
+      if (!current || statusVersion(current) !== expectedVersion) ticketAdminFail("TICKET_ADMIN_STALE");
+      this.assertHandoffSettled(id);
+    }, candidate => { assertCurrent(); assertTicketAdminCandidate(candidate); });
+  }
+
   /** Existing ticket writer/audit owner, with native Git resolution compared to
    * the exact intended predecessor and target BEFORE publishing any bytes. */
   refreshLinkedBranchHead(id: string, expected: TicketLinkedHeadExpectation, actor: string): Ticket {
     return this.updateWithLinkedHeadExpectation(id, { add_linked_branch: { repo: expected.repo, branch: expected.branch, linkedBy: actor } }, actor, this.context, expected);
   }
 
-  private updateWithLinkedHeadExpectation(id: string, input: UpdateTicketInput, actor: string, context: TicketMutationContext, expected?: TicketLinkedHeadExpectation): Ticket {
-    assertLifecycleOwnership(input.status, context);
+  private updateWithLinkedHeadExpectation(id: string, input: UpdateTicketInput, actor: string, context: TicketMutationContext, expected?: TicketLinkedHeadExpectation, assertCurrent?: () => void, assertCandidate?: (ticket: Ticket) => void): Ticket {
     if (Object.prototype.hasOwnProperty.call(input, "linkedBranches")) {
       throw new Error("Direct linkedBranches replacement is not allowed. Correction: use add_linked_branch so repository and Git evidence are authenticated.");
     }
     return this.withTransaction(() => {
+      const check = () => {
+        assertCurrent?.();
+        assertLifecycleOwnership(input.status, context);
+        const principal = trustedMutationPrincipals.get(context);
+        if (input.status !== undefined && principal) {
+          const ticket = this.get(id);
+          if (!ticket) throw new Error(`Ticket not found: ${id}`);
+          assertTicketAdminOwner(this, ticket.id, { deploymentId: principal.deploymentId ?? "", repoKey: ticket.project });
+          this.assertHandoffSettled(ticket.id);
+        }
+      };
+      check();
       const current = this.get(id);
       if (!current) throw new Error(`Ticket not found: ${id}`);
       if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
@@ -613,6 +660,8 @@ export class TicketStore {
 
       const changes = diffTicket(current, next);
       const auditSnapshot = this.readAuditSnapshot();
+      check();
+      assertCandidate?.(next);
       let persisted: Ticket;
       try {
         this.writeTicket(next);
@@ -621,6 +670,7 @@ export class TicketStore {
           throw new Error("the disk-backed ticket did not equal the validated candidate");
         }
         persisted = readback;
+        assertCandidate?.(persisted);
         this.appendAudits([
           ...linkedAuditIntents,
           { ticketId: id, action: "updated", actor, changes },
@@ -643,14 +693,34 @@ export class TicketStore {
     });
   }
 
-  comment(id: string, author: string, content: string): Comment {
+  comment(id: string, author: string, content: string, assertCandidate?: (ticket: Ticket) => void): Comment {
     return this.withTransaction(() => {
       const ticket = this.get(id);
       if (!ticket) throw new Error(`Ticket not found: ${id}`);
       const now = nowUtc();
       const comment: Comment = { id: `c-${now.replace(/[^0-9]/g, "")}`, author, content, timestamp: now };
-      this.writeTicket({ ...ticket, comments: [...ticket.comments, comment], updatedAt: now });
-      this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
+      const candidate = { ...ticket, comments: [...ticket.comments, comment], updatedAt: now };
+      const auditSnapshot = this.readAuditSnapshot();
+      // Current identity/policy admission ends BEFORE the first write. A later
+      // revocation cannot strand an unaudited comment by throwing mid-effect.
+      assertCandidate?.(candidate);
+      try {
+        this.writeTicket(candidate);
+        const readback = this.get(id);
+        if (!readback || !ticketsEqual(readback, candidate)) ticketAdminFail("TICKET_ADMIN_UNAVAILABLE");
+        this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
+      } catch (error) {
+        // Persistence failures restore both owners under the same mutex. Only a
+        // verified restoration permits propagating the original failure; unknown
+        // recovery remains explicitly uncertain and never authorizes a replay.
+        try {
+          this.writeTicket(ticket);
+          this.restoreAuditSnapshot(auditSnapshot);
+          const restored = this.get(id);
+          if (!restored || !ticketsEqual(restored, ticket) || this.readAuditSnapshot() !== auditSnapshot) ticketAdminFail("TICKET_ADMIN_UNAVAILABLE");
+        } catch { ticketAdminFail("TICKET_ADMIN_UNAVAILABLE"); }
+        throw error;
+      }
       return comment;
     });
   }
@@ -705,8 +775,8 @@ export class TicketStore {
   }
 
   delete(id: string, actor = "pa-core", hard = false, context = this.context): void {
-    assertLifecycleOwnership("cancelled", context);
     this.withTransaction(() => {
+      assertDeletionOwnership(context);
       const ticket = this.get(id);
       if (!ticket) throw new Error(`Ticket not found: ${id}`);
       if (hard) {
@@ -1008,27 +1078,59 @@ function waitForTicketTransactionPath(path: string, action: string): void {
   }
 }
 
+interface TicketMutationAuthority {
+  context: TicketMutationContext;
+  deletionAllowed: boolean;
+  binding?: string;
+}
+
+// Keep authenticated principals out of public context fields and serialized
+// output. Re-resolve them under the ticket mutex, including immediately before
+// generic update effects; a captured running context is not a permanent grant.
+const trustedMutationPrincipals = new WeakMap<TicketMutationContext, TicketMutationPrincipal>();
+const currentMutationAuthorities = new WeakMap<TicketMutationContext, () => TicketMutationAuthority>();
+
+function currentMutationAuthority(context: TicketMutationContext): TicketMutationAuthority {
+  return currentMutationAuthorities.get(context)?.() ?? {
+    context,
+    deletionAllowed: context.privileged === true && context.team !== "analyst" && !(context.team === "builder" && context.mode === "implement"),
+  };
+}
+
 function assertLifecycleOwnership(status: TicketStatus | undefined, context: TicketMutationContext): void {
-  if (status !== undefined && (context.privileged !== true || (context.team === "builder" && context.mode === "implement"))) {
+  if (status !== undefined && currentMutationAuthority(context).context.privileged !== true) statusFail("TICKET_STATUS_SESSION");
+}
+
+function assertDeletionOwnership(context: TicketMutationContext): void {
+  if (!currentMutationAuthority(context).deletionAllowed) {
     throw new Error("Ticket status transitions belong to the parent flow; implement-child agents must report completion without changing status.");
   }
 }
 
-export function resolveTrustedTicketMutationContext(principal: TicketMutationPrincipal = { deploymentId: process.env["PA_DEPLOYMENT_ID"], operator: !process.env["PA_DEPLOYMENT_ID"] }, allowLocalOperator = true): TicketMutationContext {
-  const deploymentId = principal.deploymentId;
-  if (principal.operator === true && allowLocalOperator) return { privileged: true };
-  if (!deploymentId) return { privileged: false };
-  const deployment = queryDeploymentStatus(deploymentId);
-  if (!deployment || deployment.status !== "running") return { privileged: false };
-  // Public profile names are not generic CLI/API lifecycle authority, even if
-  // configured to spell a historical privileged role. Finite owners alone map
-  // the authenticated effective identity; retained v1/v2 behavior is unchanged.
+function resolveTicketMutationAuthority(principal: TicketMutationPrincipal, allowLocalOperator: boolean): TicketMutationAuthority {
+  if (principal.operator === true && allowLocalOperator) return { context: { privileged: true }, deletionAllowed: true };
+  const deployment = principal.deploymentId ? queryDeploymentStatus(principal.deploymentId) : undefined;
+  if (!deployment || deployment.status !== "running") return { context: { privileged: false }, deletionAllowed: false };
+  const context = { team: deployment.team, mode: deployment.mode, privileged: true };
   let readonlyProfile = false;
-  if (deployment.mode_capability_binding) {
+  if (deployment.mode_capability_binding !== undefined) {
     try { readonlyProfile = parseModeCapabilityBinding(JSON.parse(deployment.mode_capability_binding)).schemaVersion === "pa-mode-capability-binding/v3"; }
-    catch { return { team: deployment.team, mode: deployment.mode, privileged: false }; }
+    catch { return { context: { ...context, privileged: false }, deletionAllowed: false }; }
   }
-  return { team: deployment.team, mode: deployment.mode, privileged: deployment.team !== "analyst" && !readonlyProfile };
+  // Administrative ticket access is independent of role/profile spelling. It
+  // does not confer native workflow, branch, approval or execution authority.
+  return { context, binding: deployment.mode_capability_binding,
+    deletionAllowed: deployment.team !== "analyst" && !readonlyProfile && !(deployment.team === "builder" && deployment.mode === "implement") };
+}
+
+export function resolveTrustedTicketMutationContext(principal: TicketMutationPrincipal = { deploymentId: process.env["PA_DEPLOYMENT_ID"], operator: !process.env["PA_DEPLOYMENT_ID"] }, allowLocalOperator = true): TicketMutationContext {
+  const boundPrincipal = Object.freeze({ ...principal }), authority = resolveTicketMutationAuthority(boundPrincipal, allowLocalOperator);
+  trustedMutationPrincipals.set(authority.context, boundPrincipal);
+  currentMutationAuthorities.set(authority.context, () => {
+    const current = resolveTicketMutationAuthority(boundPrincipal, allowLocalOperator);
+    return isDeepStrictEqual(current, authority) ? current : { context: { privileged: false }, deletionAllowed: false };
+  });
+  return authority.context;
 }
 
 function normalizeTimestamp(value: unknown): string {

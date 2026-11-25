@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { authenticatePiTicketCaller } from "../ticket-session.js";
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { publicationRecoveryGuidance, contentPublicationGuidance, contentReviewGuidance, parseDocumentRequest, assertNoSensitiveMatch, DocumentPackageError, getAiUsageDir, getConfigDir, getDeploymentEvents, readArtifactFile } from "@pa-platform/pa-core";
@@ -85,6 +86,12 @@ export function documentToolDeployment(): string | undefined {
 /** Registration of a secured built-in replaces an existing tool; it does NOT
  * grant that tool to a retained document profile or bypass direct-call admission. */
 export function assertNativeDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext, originalReadCaller?: PiDocumentCaller): void {
+  // pa_ticket is authenticated native infrastructure, not an expansion of the
+  // document read/comment selection. Its own service owns every write check.
+  if ((call.toolName ?? call.name) === "pa_ticket") {
+    if (authenticatePiTicketCaller(context).deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
+    return;
+  }
   const caller = (call.toolName ?? call.name) === "pa_handoff" ? authenticatePiDocumentPlanObserver(context) : authenticatePiDocumentCaller(context);
   if (caller.deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
   if (caller.capabilities) return assertPolicyDocumentTool(deploymentId, call, context, originalReadCaller);
@@ -96,6 +103,10 @@ export function policyDocumentDeployment(): string | undefined {
 }
 export function assertPolicyDocumentTool(deploymentId: string, call: PiToolCall, context: PiWorkflowContext, originalReadCaller?: PiDocumentCaller): void {
   const name = call.toolName ?? call.name ?? "";
+  if (name === "pa_ticket") {
+    if (authenticatePiTicketCaller(context).deploymentId !== deploymentId) throw new ModeCapabilityError("CAPABILITY_BINDING");
+    return;
+  }
   const caller = name === "pa_handoff" ? authenticatePiDocumentPlanObserver(context) : authenticatePiDocumentCaller(context);
   if (caller.deploymentId !== deploymentId || !caller.capabilities) throw new ModeCapabilityError("CAPABILITY_BINDING");
   if (!capabilityToolSelected(caller.capabilities.policy, name)) throw new ModeCapabilityError("CAPABILITY_OMITTED");
@@ -115,7 +126,11 @@ export const registerDocumentModule: PiExtensionModule = (pi, lifecycle) => {
     try {
       const caller = authenticatePiDocumentCaller(context as PiWorkflowContext);
       if (caller.deploymentId !== policyDeploymentId || !caller.capabilities || !pi.setActiveTools) throw new ModeCapabilityError("CAPABILITY_BINDING");
-      pi.setActiveTools([...selectedCapabilityTools(caller.capabilities.policy)]);
+      // Infrastructure stays available even if the document selection omits
+      // ticket.read-comment. Deliberately not loading/registering this tool is
+      // still an omission, not evidence that another tool may write tickets.
+      const infrastructure = pi.getAllTools?.().some(tool => tool.name === "pa_ticket") ? ["pa_ticket"] : [];
+      pi.setActiveTools([...new Set([...selectedCapabilityTools(caller.capabilities.policy), ...infrastructure])]);
     } catch (error) { pi.setActiveTools?.([]); throw error; }
   };
   pi.on?.("before_agent_start", (_event, context) => exposePolicy(context));
