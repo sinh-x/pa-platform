@@ -287,3 +287,15 @@ complete final-candidate Pi code/full/native/installed/UAT pass. Prior completed
 file checks and partial retries do not substitute for those gates. Do not count
 larger diagnostic budgets as a speedup or silently remove the expensive cases.
 The measured positive-matrix gain is the scoped optimization established here.
+
+## PR source-inventory reconciliation
+
+The first PR #194 CI attempt rejected stale interaction-source hashes for the
+changed CLI and deployment modules. Reconciliation confirmed that existing command
+forms, aliases, effect classes and native/delegation bindings are unchanged:
+version, board, branch validation and repository inspection remain reads; branch
+creation/quarantine remain operator-owned resources and deployment remains launch.
+The inventory now pins both changed modules and the new read-only helper owner.
+A regression asserts those coverage/boundary invariants. The conservative byte
+comparison and added-command checks remain intact; renewing reviewed source hashes
+is not installed provenance, a native binding, approval or a qualification waiver.
