@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aiUsageRelativePath, documentPath, getImageContentType, insertDocumentSection, listDocuments, listMarkdownFiles, readDocument, readMarkdownDocument, writeDocument } from "../index.js";
+import { aiUsageRelativePath, documentPath, getImageContentType, insertDocumentSection, listDocuments, listMarkdownFiles, readDocument, readMarkdownDocument, writeDocument } from "../documents/index.js";
 
 test("documents use the shared ai-usage root", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-docs-"));

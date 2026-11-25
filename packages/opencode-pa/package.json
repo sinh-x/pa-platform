@@ -11,7 +11,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:run",
-    "test:run": "corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"src/**/*.test.ts\"",
+    "test:run": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm run test:source:run",
+    "test:source": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:source:run",
+    "test:source:run": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

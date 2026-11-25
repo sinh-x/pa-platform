@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { cleanSignalEntries, getSignalPaths, isSensitive, markSignalNoteAsProcessed, parseSignalNoteMarkdown, parseSqlcipherRows, readCollectorState, routeRawSignalNote, saveRawNote, writeCollectorState, writeRoutedMessage } from "../index.js";
-import type { NoteToSelfMessage } from "../index.js";
+import { cleanSignalEntries, getSignalPaths, isSensitive, markSignalNoteAsProcessed, parseSignalNoteMarkdown, parseSqlcipherRows, readCollectorState, routeRawSignalNote, saveRawNote, writeCollectorState, writeRoutedMessage } from "../signal/index.js";
+import type { NoteToSelfMessage } from "../signal/index.js";
 
 test("signal router classifies tags, URLs, sensitive text, and attachments", () => {
   assert.deepEqual(routeRawSignalNote("---\nattachmentsCopied: [\"/tmp/a.png\"]\n---\n\n#idea Build a thing"), {

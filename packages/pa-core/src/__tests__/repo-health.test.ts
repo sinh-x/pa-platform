@@ -3,8 +3,9 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { getRepoHealthDb, getRepoHealthDbPath, getRepoHealthDir, insertRepoHealthReport, getLatestRepoHealthReport, getLatestRepoHealthReportWithBranches, listRepoHealthReports, rowToRepoHealthReport } from "../index.js";
-import type { BranchInsert, ReportInsert } from "../index.js";
+import { getRepoHealthDb, insertRepoHealthReport, getLatestRepoHealthReport, getLatestRepoHealthReportWithBranches, listRepoHealthReports, rowToRepoHealthReport } from "../repo-health/index.js";
+import { getRepoHealthDbPath, getRepoHealthDir } from "../paths.js";
+import type { BranchInsert, ReportInsert } from "../repo-health/index.js";
 
 test("repo-health db stores reports and branch details", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-repo-health-"));

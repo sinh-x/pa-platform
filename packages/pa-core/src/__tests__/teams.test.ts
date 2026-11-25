@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getPlatformHomeDir, getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
+import { getPlatformHomeDir } from "../paths.js";
+import { getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, validateTeamSkillReferences } from "../teams/index.js";
+import { parseTeamYamlContent } from "../yaml-parser.js";
 import { directBuilderProfile } from "./builder-instruction-contract.js";
 
 const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
