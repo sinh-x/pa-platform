@@ -20,7 +20,6 @@ import {
   createTodoModule,
   createTodoTool,
   reconstructTodoState,
-  registerTodoModule,
   type TodoDetails,
   type TodoInput,
   type TodoTask,
@@ -202,7 +201,7 @@ test("managed Todo registers once and preserves add, list, and active-branch res
     registerTool: (tool) => { tools.push(tool as PiToolDefinition<TodoInput, TodoDetails>); },
     on: ((event: string, handler: (event: unknown, context: unknown) => unknown) => { handlers.set(event, handler); }) as NonNullable<PiRuntime["on"]>,
   };
-  registerTodoModule(runtime);
+  createTodoModule({ env: {} })(runtime);
   assert.equal(tools.length, 1);
   assert.equal(tools[0]?.name, "todo");
 

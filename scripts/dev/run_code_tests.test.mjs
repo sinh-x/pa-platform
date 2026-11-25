@@ -27,7 +27,8 @@ test('ordinary CI has no Nix step and package builds are manual/release-only', (
   assert.deepEqual(packaging.on.push.branches, ['main']);
   assert.ok(Object.hasOwn(packaging.on, 'workflow_dispatch'));
   const pkg = JSON.parse(readFileSync(new URL('packages/pi-pa/package.json', root), 'utf8'));
-  assert.match(pkg.scripts.test, /src\/\*\*\/\*\.test\.ts/);
+  assert.match(pkg.scripts.test, /isolated-test-env\.mjs -- corepack pnpm run test:run/);
+  assert.match(pkg.scripts['test:run'], /src\/\*\*\/\*\.test\.ts/);
 });
 
 test('hosted CI checks only this repository and its owned fixtures without external configuration access', () => {
@@ -76,7 +77,7 @@ test('full local and installed workflow entry still registers all native groups 
   assert.doesNotMatch(entry.getText(entry), /test\.(?:skip|todo)/);
   assert.doesNotMatch(code.getText(code), /test\.(?:skip|todo)|registerWorkflowMatrixCases/);
   const pkg = JSON.parse(readFileSync(new URL('../../packages/pi-pa/package.json', import.meta.url), 'utf8'));
-  assert.match(pkg.scripts.test, /tsx --test --test-concurrency=1 "src\/\*\*\/\*\.test\.ts"/);
+  assert.match(pkg.scripts['test:run'], /tsx --test --test-concurrency=1 "src\/\*\*\/\*\.test\.ts"/);
   const config = JSON.parse(readFileSync(new URL('../../packages/pi-pa/tsconfig.json', import.meta.url), 'utf8'));
   assert.ok(config.exclude.includes('src/__tests__/pi-workflow-code-cases.ts'));
 });
