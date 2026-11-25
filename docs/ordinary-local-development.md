@@ -6,6 +6,9 @@ starting at `2acdc1fd59a799dd5ce611727c3949144b475e63` (package 0.1.149).
 
 ## Code-only CI and manual integration
 
+For disposable test environments, focused serial source checks, bounded timing
+output and current qualification limits, see [local regression](local-regression.md).
+
 Per the operator's explicit CI scope decision, PR CI runs `corepack pnpm test:code`
 without installing Nix, entering a Nix shell or building a Nix package. The
 separate Nix packaging workflow is triggered only manually or on release `main`
