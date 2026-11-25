@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { DASHBOARD_HTML, DASHBOARD_CSS, DASHBOARD_SCRIPT } from "../session-dashboard-page.js";
 import type { SessionSnapshot } from "../session-capture.js";
+import type { SessionObjectivePreview } from "@pa-platform/pa-core";
 
 /** Minimal DOM contract fixture, not a browser/keyboard/layout observation. */
 class Element {
@@ -25,6 +26,9 @@ function snapshot(count = 1): SessionSnapshot {
     coverage: { complete: true, reasons: [], candidatesObserved: count, diagnosticsOmitted: 0 }, rows: Array.from({ length: count }, (_, i) => ({ deploymentId: `d-${i.toString(16).padStart(6, "0")}`, ticket: "PAP-286", team: "rogue-one", mode: "rogue-one", repository: "project", startedAt: null, registryStatus: "success", candidatePid: 42, process: { state: "verified-open", pid: 42 }, herdr: { state: "unmatched", reason: "no-foreground-ancestry-match" } })) };
 }
 const location = { session: "s1", workspaceId: "w1", workspaceLabel: "Project", tabId: "t1", tabLabel: "Dashboard", paneId: "p1", terminalId: "term1" };
+function dashboardCapture(inventory: SessionSnapshot, byDeployment: Record<string, SessionObjectivePreview> = {}) {
+  return { schemaVersion: "ppa-session-dashboard/v1", inventory, objectives: { capture: { startedAt: new Date(1000).toISOString(), endedAt: new Date(1000).toISOString() }, byDeployment } };
+}
 function client() {
   const elements = new Map([...DASHBOARD_HTML.matchAll(/id="([^"]+)"/g)].map(match => [match[1]!, new Element(match[1]!)]));
   elements.get("location")!.value = "all";
@@ -38,7 +42,7 @@ function client() {
     fetch: (url: string, options: Record<string, unknown>) => new Promise((resolve, reject) => { requests.push({ url, options, resolve, reject }); (options.signal as AbortSignal).addEventListener("abort", () => reject(new Error("aborted"))); }),
   });
   const el = (id: string) => elements.get(id)!;
-  async function settle(data: unknown, index = requests.length - 1) { requests[index]!.resolve({ ok: true, json: async () => data }); await flush(); }
+  async function settle(data: unknown, index = requests.length - 1) { const payload = (data as SessionSnapshot)?.schemaVersion === "ppa-sessions/v1" ? dashboardCapture(data as SessionSnapshot) : data; requests[index]!.resolve({ ok: true, json: async () => payload }); await flush(); }
   async function flush() { for (let i = 0; i < 6; i++) await Promise.resolve(); }
   return { el, requests, settle, flush, intervals, timeouts, setNow: (time: number) => { now = time; intervals.forEach(fn => fn()); } };
 }
@@ -58,7 +62,7 @@ test("initial loading, one flight, exact server filters, capture metadata and em
   await view.settle(snapshot(0)); assert.match(view.el("results").textContent, /No matching sessions in this capture/);
   assert.equal(view.el("refresh").disabled, false); assert.equal(view.el("pagination").hidden, true);
   view.el("ticket").value = "PAP-286"; view.el("repo").value = "project"; view.el("all").checked = true;
-  const pending = view.el("filters").fire("submit"); assert.equal(view.requests[1]!.url, "/v1/sessions?ticket=PAP-286&repo=project&all=true");
+  const pending = view.el("filters").fire("submit"); assert.equal(view.requests[1]!.url, "/v1/dashboard?ticket=PAP-286&repo=project&all=true");
   assert.equal(view.requests[1]!.options.credentials, "omit"); assert.equal(view.requests[1]!.options.redirect, "error"); assert.match(view.el("status").textContent, /previous capture/);
   const data = snapshot(); data.filters = { all: true, ticket: "PAP-286", repo: "project" }; await view.settle(data); await pending;
   assert.match(view.el("applied").textContent, /"all":true/); assert.match(view.el("capture").textContent, /1970/); assert.match(view.el("count").textContent, /1 candidates · 1 verified open/);
@@ -76,6 +80,39 @@ test("exact repository/ticket grouping merges deployments only within their asso
   for (const detail of [...board.withClass("sessions"), ...board.withClass("technical")]) assert.equal(detail.open, false);
   for (const field of ["Deployment", "Ticket", "Repository", "Team", "Mode", "Started", "Registry status", "Process", "Verified PID", "Location evidence"]) assert.ok(board.textContent.includes(field), field);
   assert.equal(board.descendants("table").length, 0);
+});
+test("compact objective previews remain per deployment on shared ticket cards; longer safe text stays in details", async () => {
+  const view = client(), data = snapshot(2), long = "Check the dashboard view. ".repeat(15), hostile = "Render <img src=x onerror=alert(1)> as text";
+  await view.settle(dashboardCapture(data, {
+    "d-000000": { state: "available", preview: hostile, text: hostile, truncated: false },
+    "d-000001": { state: "available", preview: long.slice(0, 180), text: long, truncated: true },
+  }));
+  const board = view.el("results"), previews = board.withClass("objective-preview"); assert.equal(previews.length, 2); assert.equal(board.withClass("ticket-card").length, 1);
+  assert.deepEqual(previews.map(item => item.attributes.get("data-deployment")), ["d-000000", "d-000001"]);
+  assert.ok(previews[0]!.textContent.includes(hostile)); assert.ok(!previews[1]!.textContent.includes(long)); assert.ok(previews[1]!.textContent.includes("…"));
+  assert.ok(board.withClass("technical")[1]!.textContent.includes(long)); assert.ok(board.textContent.includes("[display text truncated]"));
+  assert.equal(board.descendants("img").length, 0); assert.ok(board.withClass("technical").every(item => !item.open)); assert.match(view.el("objectives-observed").textContent, /separate from process verification/);
+});
+test("withheld/unavailable objective states never render stray source fields; refreshed metadata never reuses another deployment's text", async () => {
+  const view = client(), data = snapshot(2);
+  await view.settle(dashboardCapture(data, {
+    "d-000000": { state: "withheld", reason: "sensitive-or-private", text: "must-not-render", preview: "must-not-render" } as unknown as SessionObjectivePreview,
+    "d-000001": { state: "unavailable", reason: "not-recorded", text: "must-not-render" } as unknown as SessionObjectivePreview,
+  }));
+  assert.ok(!view.el("results").textContent.includes("must-not-render")); assert.match(view.el("results").textContent, /Objective withheld/); assert.match(view.el("results").textContent, /Objective unavailable/);
+  const refresh = view.el("filters").fire("submit"); await view.settle(dashboardCapture(data, { "d-000000": { state: "available", preview: "First deployment task", text: "First deployment task", truncated: false } })); await refresh;
+  const before = view.el("results").textContent, observed = view.el("objectives-observed").textContent;
+  const failed = view.el("filters").fire("submit"); view.requests.at(-1)!.reject(new Error("private infrastructure")); await failed;
+  assert.equal(view.el("results").textContent, before); assert.equal(view.el("objectives-observed").textContent, observed); assert.match(view.el("status").textContent, /Historical data/);
+  const next = snapshot(); next.rows[0]!.deploymentId = "d-000009";
+  const recovery = view.el("filters").fire("submit"); await view.settle(dashboardCapture(next)); await recovery;
+  assert.ok(!view.el("results").textContent.includes("First deployment task")); assert.match(view.el("results").textContent, /Objective unavailable/);
+});
+test("off-page objective previews are not rendered until their own deployment page is selected", async () => {
+  const view = client(), data = snapshot(101);
+  await view.settle(dashboardCapture(data, { "d-000064": { state: "available", preview: "Only on the next page", text: "Only on the next page", truncated: false } }));
+  assert.equal(view.el("results").withClass("objective-preview").length, 100); assert.ok(!view.el("results").textContent.includes("Only on the next page"));
+  view.el("next").fire("click"); assert.equal(view.el("results").withClass("objective-preview").length, 1); assert.ok(view.el("results").textContent.includes("Only on the next page")); assert.equal(view.requests.length, 1);
 });
 test("local search/location filtering is capture-only, preserves applied server filters and distinguishes view-empty from capture-empty", async () => {
   const view = client(), data = snapshot(3);
@@ -116,6 +153,7 @@ test("10,000 sessions in one ticket remain reachable with at most 100 rendered e
     for (const row of rows) deployments.add(row.attributes.get("data-deployment")!);
     if (page < 99) view.el("next").fire("click");
   }
+  assert.equal(view.el("results").withClass("objective-preview").length, 100);
   assert.equal(deployments.size, 10_000); assert.equal(view.el("next").disabled, true); assert.equal(view.requests.length, 1);
   view.el("search").value = "d-000001"; view.el("search").fire("input"); assert.match(view.el("page").textContent, /Page 1 of 1/); assert.equal(view.el("pagination").hidden, true);
 });

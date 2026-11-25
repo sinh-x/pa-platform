@@ -114,6 +114,16 @@ and a `byDeployment` map for only those captured deployment IDs. It uses the sam
 custom header, Host/origin/cookie/body guards, capture admission slot, deadlines,
 no-store policy and response cap. No arbitrary objective-selection route exists.
 
+The page reads this dashboard envelope and shows one compact objective line for
+each deployment visible on the current ticket-card page, attributed by team and
+deployment ID. It does not combine objectives just because deployments share a
+ticket. The longer screened text is under **Identifiers & evidence**; an explicit
+marker indicates when even that bounded text is truncated. Withheld/unavailable
+states remain visible without any source prefix. Preview text uses text nodes,
+not executable markup, and objectives are not added to local search. Refresh
+failures retain objectives only with their original, labelled historical capture;
+a new deployment never inherits an earlier deployment's objective.
+
 Objective metadata comes from the existing registry's recorded objective, never
 process arguments, environment, terminal content or launch-file backfill. It is
 recorded metadata observed after the inventory window, not proof of the exact
