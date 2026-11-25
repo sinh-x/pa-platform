@@ -148,7 +148,14 @@ nix eval .#checks.aarch64-linux.pa-server-module.drvPath
 nix build .#checks.x86_64-linux.pa-server-module --no-link --print-build-logs
 ```
 
-The check evaluates disabled behavior, real package selection, port and account
+The interaction source inventory tracks the flake and its new boot-service owner.
+The flake change adds only module exports and checks: it does not change CLI
+forms, aliases, native bindings or the existing operator-only resource effects of
+serve start/stop/restart. Serve status still permits stale PID cleanup and remains
+a write, not a native observational read. The catalogue regression test preserves
+these boundaries; renewing source digests grants no installed capability.
+
+The Nix check evaluates disabled behavior, real package selection, port and account
 validation, boot target, HOME/working directory, supervision, generated unit text
 and absence of exposure/fork flags. Its generated unit uses an inert fixture
 package to avoid requiring a full PA package build, and the fixture is never run.
