@@ -39,12 +39,17 @@ test("native-first and actual CLI subprocess-first share status owner, CAS, repl
       const ticket = create(), inspect = { schemaVersion: "pa-ticket-status/v1", action: "inspect", project: "example", ticket: ticket.id };
       const read = await call(inspect); assert.notEqual(read.isError, true, read.content[0].text);
       const inspected = JSON.parse(read.content[0].text);
-      for (const args of [["ticket", "update", ticket.id, "--status", "done"], ["ticket", "delete", ticket.id]]) {
+      for (const args of [["ticket", "delete", ticket.id]]) {
         const legacy = spawnSync(process.execPath, [`--import=${import.meta.resolve("tsx")}`, cli, ...args], { cwd: repo, env: process.env, encoding: "utf8" });
         assert.equal(legacy.status, 1); assert.match(legacy.stderr, /TICKET_STATUS_ROUTE/);
         assert.ok(legacy.stderr.length <= 2000); assert.equal(store.get(ticket.id)!.status, "idea");
       }
-      const request = { ...inspect, action: "set", requestId: `${first}-first`, expectedVersion: inspected.version, status: "requirement-review" };
+      const administrative = spawnSync(process.execPath, [`--import=${import.meta.resolve("tsx")}`, cli, "ticket", "update", ticket.id, "--status", "idea", "--summary", "Administrative update"], { cwd: repo, env: process.env, encoding: "utf8" });
+      assert.equal(administrative.status, 0, administrative.stderr);
+      assert.equal(store.get(ticket.id)!.summary, "Administrative update");
+      const refreshed = JSON.parse((await call(inspect)).content[0].text);
+      assert.notEqual(refreshed.version, inspected.version, "generic administration participates in the native version fence");
+      const request = { ...inspect, action: "set", requestId: `${first}-first`, expectedVersion: refreshed.version, status: "requirement-review" };
       const result = first === "native" ? await call(request) : cliCall(request);
       if (first === "native") assert.notEqual((result as any).isError, true, JSON.stringify(result));
       else assert.equal((result as any).status, 0, (result as any).stderr);
@@ -61,6 +66,9 @@ test("native-first and actual CLI subprocess-first share status owner, CAS, repl
       emitPidEvent({ deploymentId: otherId, team: "builder", pid: process.pid });
       emitCompletedEvent({ deploymentId: otherId, team: "builder", status: "success" });
       assert.equal((await call({ ...request, requestId: `${first}-owner-conflict`, expectedVersion: JSON.parse((await call(inspect)).content[0].text).version })).details.code, "TICKET_STATUS_OWNER");
+      const blockedLegacy = spawnSync(process.execPath, [`--import=${import.meta.resolve("tsx")}`, cli, "ticket", "update", ticket.id, "--status", "done"], { cwd: repo, env: process.env, encoding: "utf8" });
+      assert.equal(blockedLegacy.status, 1); assert.match(blockedLegacy.stderr, /TICKET_STATUS_OWNER/);
+      assert.equal(store.get(ticket.id)!.status, "requirement-review");
       // Keep each iteration's foreign owner on its own target.
     }
     const raceTicket = create();

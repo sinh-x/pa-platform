@@ -122,7 +122,7 @@ async function foreground(root: string, env: NodeJS.ProcessEnv, options: { proce
     persistLine: () => {}, processExists: options.processExists ?? (() => true),
     ...(options.fastClock ? { now: () => now, sleep: async (ms: number) => { now += ms; await tick(); } } : {}),
   } });
-  const result = adapter.spawn({ primerPath, deployId: "d-herdr-exit", mode: "foreground", sessionId: "same-conversation" });
+  const result = adapter.spawn({ primerPath, deployId: "d-herdr-exit", mode: "foreground", sessionId: adapter.allocateSessionId() });
   const childEnv = await Promise.race([ready, result.then(value => { throw new Error(`fixture Pi did not spawn: ${value.errorMessage ?? value.exitCode}`); })]);
   return { pty, input, result, output, childEnv };
 }

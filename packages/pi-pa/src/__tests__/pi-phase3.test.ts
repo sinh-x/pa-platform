@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { closeDb, emitPidEvent, emitStartedEvent, ensureDeployDir, TicketStore } from "@pa-platform/pa-core";
+import { recordPiProcessIdentity } from "../process-identity.js";
 import { Check } from "typebox/value";
 import registerPiPaExtension, {
   PI_EXAMPLE_SOURCES,
@@ -100,7 +103,24 @@ test("trusted entrypoint registers only selected editors while preserving attrib
   assert.deepEqual(shortcuts, ["alt+i", "alt+g"]);
 });
 
-test("Pi extension exposes bounded typed PA tools and native ticket read aliases", async () => {
+test("Pi extension exposes additive bounded native ticket schemas, read aliases and authenticated compatibility comments", async t => {
+  const env = process.env, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "ppa-native-tool-schema-"));
+  closeDb();
+  t.after(() => { closeDb(); process.chdir(cwd); process.env = env; rmSync(root, { recursive: true, force: true }); });
+  process.env = Object.fromEntries(Object.entries(env).filter(([key]) => !/^(PA_|PI_)/.test(key)));
+  const repo = join(root, "repo"), config = join(root, "config");
+  mkdirSync(repo); mkdirSync(config);
+  Object.assign(process.env, { PA_PLATFORM_CONFIG: config, PA_AI_USAGE_HOME: join(root, "usage"), PA_REGISTRY_DB: join(root, "registry.db") });
+  execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "pipe" }); process.chdir(repo);
+  writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
+  const store = new TicketStore();
+  const primary = store.create({ project: "example", title: "Native schema fixture", summary: "", description: "", status: "idea", type: "feature", priority: "medium", estimate: "M", assignee: "sinh", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] });
+  const deploymentId = "d-318abc", directory = ensureDeployDir(deploymentId);
+  emitStartedEvent({ deploymentId, team: "coordinator", mode: "coordinate", runtime: "pi", binary: "ppa", repo, repoRoot: repo, worktreeRoot: repo });
+  emitPidEvent({ deploymentId, team: "coordinator", pid: process.pid });
+  assert.equal(recordPiProcessIdentity(deploymentId, directory, process.pid), true);
+  Object.assign(process.env, { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: directory, PA_TEAM: "coordinator", PA_MODE: "coordinate", PA_REPO: repo, PA_REPO_ROOT: repo, PA_WORKTREE_ROOT: repo, PA_PI_EXECUTION_MODE: "foreground" });
+  const context = { cwd: repo, mode: "tui", sessionManager: { getSessionId: () => "native-schema-fixture", getCwd: () => repo } };
   const tools = new Map(createPaTools().map((tool) => [tool.name, tool]));
   assert.deepEqual([...tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status"]);
   for (const [name, input] of [
@@ -119,12 +139,41 @@ test("Pi extension exposes bounded typed PA tools and native ticket read aliases
   }
 
   const ticket = tools.get("pa_ticket")!;
-  for (const action of ["read", "show", "list", "comment"]) assert.equal(Check(ticket.parameters, { action }), true, action);
-  for (const action of ["update", "delete", "other"]) assert.equal(Check(ticket.parameters, { action }), false, action);
-  const read = await ticket.execute("tool-call-read", { action: "read", id: "PAP-218" }, undefined, undefined, undefined);
-  const show = await ticket.execute("tool-call-show", { action: "show", id: "PAP-218" }, undefined, undefined, undefined);
+  for (const action of ["read", "show", "list"]) assert.equal(Check(ticket.parameters, { action }), true, action);
+  for (const input of [
+    { action: "inspect", project: "example", id: primary.id },
+    { action: "create", project: "example", requestId: "original-create", fields: { title: "New idea" } },
+    { action: "update", project: "example", id: primary.id, expectedVersion: "a".repeat(64), fields: { summary: "New summary" } },
+    { action: "set-status", project: "example", id: primary.id, requestId: "original-status", expectedVersion: "a".repeat(64), status: "review-uat" },
+    { action: "comment", project: "example", id: primary.id, content: "Native comment" },
+    { action: "comment", id: primary.id, author: "coordinator/coordinate", content: "Compatibility comment" },
+  ]) assert.equal(Check(ticket.parameters, input), true, input.action);
+  for (const action of ["inspect", "create", "update", "set-status", "comment", "delete", "other"]) assert.equal(Check(ticket.parameters, { action }), false, action);
+  const read = await ticket.execute("tool-call-read", { action: "read", id: primary.id }, undefined, undefined, undefined);
+  const show = await ticket.execute("tool-call-show", { action: "show", id: primary.id }, undefined, undefined, undefined);
   assert.equal(read.content[0]?.text, show.content[0]?.text);
-  await assert.rejects(ticket.execute("tool-call-unknown", { action: "update" }, undefined, undefined, undefined), /Accepted actions: read, show, list, comment/);
+  assert.equal(JSON.parse(read.content[0]!.text).id, primary.id);
+  const compatible = await ticket.execute("compatibility-comment", { action: "comment", id: primary.id, author: "coordinator/coordinate", content: "Compatibility comment" }, undefined, undefined, context);
+  assert.notEqual(compatible.isError, true, compatible.content[0]!.text);
+  assert.equal(store.get(primary.id)!.comments.at(-1)!.author, "coordinator/coordinate");
+  assert.equal(store.readAudit().at(-1)!.actor, "coordinator/coordinate");
+  const before = store.get(primary.id), audit = store.readAudit(), tickets = store.list();
+  for (const [input, schemaValid] of [
+    [{ action: "update" }, false], // Former unknown-action assertion: now a typed action with invalid fields.
+    [{ action: "create", project: "example", requestId: "invalid-create", fields: { title: "No status grant", status: "done" } }, false],
+    [{ action: "comment", id: primary.id, author: "foreign/agent", content: "No spoof" }, true], // Shape is valid; authentication must reject spoofed attribution.
+    [{ action: "comment", project: "example", id: primary.id, author: "coordinator/coordinate", content: "No mixed grammar" }, false],
+  ] as const) {
+    assert.equal(Check(ticket.parameters, input), schemaValid);
+    const failure = await ticket.execute("invalid-native-request", input, undefined, undefined, context);
+    assert.equal(failure.isError, true); assert.equal(failure.details.code, "TICKET_ADMIN_INPUT");
+    assert.ok(Buffer.byteLength(failure.content[0]!.text) <= 2000);
+    assert.doesNotMatch(failure.content[0]!.text, /No status grant|No spoof|foreign\/agent/);
+    assert.deepEqual(store.get(primary.id), before); assert.deepEqual(store.readAudit(), audit); assert.deepEqual(store.list(), tickets);
+  }
+  const unauthenticated = await ticket.execute("unbound-compatibility", { action: "comment", id: primary.id, author: "coordinator/coordinate", content: "No caller" }, undefined, undefined, undefined);
+  assert.equal(unauthenticated.isError, true); assert.equal(unauthenticated.details.code, "TICKET_ADMIN_SESSION");
+  assert.deepEqual(store.get(primary.id), before); assert.deepEqual(store.readAudit(), audit);
   await assert.rejects(tools.get("pa_bulletin")!.execute("tool-call-error", { action: "other" }, undefined, undefined, undefined), /Only bulletin list is available/);
   assert.match(boundJson({ output: "x".repeat(60_000) }), /truncated/);
 });

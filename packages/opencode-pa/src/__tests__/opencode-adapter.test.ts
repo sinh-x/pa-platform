@@ -229,6 +229,8 @@ function writeRequirementsTeamConfig(root: string): void {
     "    mode_type: work",
     "    provider: openai",
     "    model: gpt-5.5",
+    "  - id: consult",
+    "    label: Consult",
   ].join("\n"));
 }
 
@@ -828,7 +830,7 @@ test("OPA foreground builders hold exact-root ownership through success, nonzero
   });
 });
 
-test("OPA dirty background rejects pre-spawn while requirements bypass status and lease admission", async () => {
+test("OPA dirty background rejects pre-spawn while nonAnalyst requirements consult bypasses status and lease admission", async () => {
   await withOpaEnv(async (root, gitState) => {
     writeBuilderTeamConfig(root);
     writeRequirementsTeamConfig(root);
@@ -856,7 +858,7 @@ test("OPA dirty background rejects pre-spawn while requirements bypass status an
       assert.equal(opts.repositoryLease, undefined);
       return requirementsBase.spawn(opts);
     } };
-    const launched = await deployWithOpencode({ team: "requirements", mode: "analyze" }, requirementsAdapter);
+    const launched = await deployWithOpencode({ team: "requirements", mode: "consult" }, requirementsAdapter);
     assert.equal(launched.status, "success", launched.reason);
     assert.equal(requirementsSpawns, 1);
     assert.equal(readFileSync(leasePath, "utf8"), before);
@@ -1545,19 +1547,25 @@ test("OpenCode foreground spawn and resume ignore legacy timeoutMs even with PID
   const executable = join(bin, "opencode"); writeFileSync(executable, "#!/bin/sh\nsleep 0.05\nexit 0\n"); chmodSync(executable, 0o755);
   const adapter = new OpencodeAdapter({ cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PA_AI_USAGE_HOME: root } });
   let pidCount = 0;
+  const previousRegistry = process.env.PA_REGISTRY_DB, previousHome = process.env.PA_AI_USAGE_HOME;
+  closeDb(); process.env.PA_REGISTRY_DB = join(root, "registry.db"); process.env.PA_AI_USAGE_HOME = root;
+  mkdirSync(join(root, "deployments", "d-334abc"), { recursive: true });
+  writeFileSync(join(root, "deployments", "d-334abc", "session-id-opencode.txt"), "existing-session", { mode: 0o600 });
+  appendRegistryEvent({ deployment_id: "d-334abc", team: "daily", mode: "plan", runtime: "opencode", event: "started", timestamp: "2026-11-24T00:00:00Z" });
+  closeDb();
   try {
     const opts = { primerPath: primer, deployId: "d-unlimited", mode: "foreground" as const, timeoutMs: 1, onPid: (pid: number) => { assert.ok(pid > 0); pidCount++; } };
     assert.equal((await adapter.spawn(opts)).exitCode, 0);
-    assert.equal((await adapter.resume({ ...opts, sessionId: "existing-session" })).exitCode, 0);
+    assert.equal((await adapter.resume({ ...opts, sessionId: "existing-session", resumedFromDeploymentId: "d-334abc" })).exitCode, 0);
     assert.equal(pidCount, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { closeDb(); restore("PA_REGISTRY_DB", previousRegistry); restore("PA_AI_USAGE_HOME", previousHome); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("OpenCode launch and resume routes never forward deployment deadlines", async () => {
   await withOpaEnv(async () => {
     const captured: SpawnOpts[] = [], adapter = createStubAdapter({ exitCode: 0 }), spawn = adapter.spawn.bind(adapter), resume = adapter.resume.bind(adapter);
     adapter.spawn = opts => { captured.push(opts); return spawn(opts); };
-    adapter.resume = opts => { captured.push(opts); return resume(opts); };
+    adapter.resume = opts => { assert.ok(opts.resumedFromDeploymentId); captured.push(opts); return resume(opts); };
     for (const background of [false, true]) {
       const base = { team: "daily", mode: "plan", provider: "openai", timeout: 60, background };
       const initial = await deployWithOpencode(base, adapter);
@@ -1770,7 +1778,7 @@ test("opa deploy registry summary includes exit code on failure", async () => {
 
 test("opa background supervisor transfers repository ownership and releases it after terminal finalization", async () => {
   await withOpaEnv(async (root, gitState) => {
-    const deploymentId = "d-bgterm";
+    const deploymentId = "d-334004";
     const deployDir = join(root, "deployments", deploymentId);
     const repo = join(root, "repo");
     const bin = join(root, "runtime-bin");
@@ -1896,7 +1904,9 @@ exit 7
 test("opa deploy --resume fails fast when no session id was recorded", async () => {
   await withOpaEnv(async (root) => {
     // Pretend a previous foreground deploy ran but never produced a session file.
-    const priorId = "d-foregr";
+    const priorId = "d-334005";
+    appendRegistryEvent({ deployment_id: priorId, team: "daily", mode: "plan", runtime: "opencode", event: "started", timestamp: "2026-11-24T00:00:00Z" });
+    const history = getDeploymentEvents(priorId);
     const priorDir = join(root, "deployments", priorId);
     mkdirSync(priorDir, { recursive: true });
     writeFileSync(join(priorDir, "primer.md"), "stub primer");
@@ -1905,13 +1915,16 @@ test("opa deploy --resume fails fast when no session id was recorded", async () 
     const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", priorId], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.notEqual(code, 0);
     assert.match(stderr.join("\n"), /no opencode session id recorded/);
-    assert.equal(queryDeploymentStatuses().length, 0);
+    assert.deepEqual(getDeploymentEvents(priorId), history);
+    assert.equal(queryDeploymentStatuses().length, 1);
   });
 });
 
 test("opa deploy --resume rejects unsupported historical session files without registering", async () => {
   await withOpaEnv(async (root) => {
-    const priorId = "d-legacy";
+    const priorId = "d-334006";
+    appendRegistryEvent({ deployment_id: priorId, team: "daily", mode: "plan", runtime: "unsupported-synthetic", event: "started", timestamp: "2026-11-24T00:00:00Z" });
+    const history = getDeploymentEvents(priorId);
     const priorDir = join(root, "deployments", priorId);
     mkdirSync(priorDir, { recursive: true });
     const sessionPath = join(priorDir, "session-id-unsupported-synthetic.txt");
@@ -1924,8 +1937,8 @@ test("opa deploy --resume rejects unsupported historical session files without r
     assert.match(stderr.join("\n"), /unsupported runtime/);
     assert.doesNotMatch(stderr.join("\n"), /\buse ['`]?\S+ deploy --resume/);
     assert.deepEqual(readFileSync(sessionPath), original);
-    assert.equal(existsSync(join(root, "registry.db")), false, "rejected resume must not initialize the registry");
-    assert.equal(queryDeploymentStatuses().length, 0);
+    assert.deepEqual(getDeploymentEvents(priorId), history, "runtime rejection preserves the qualifying native record");
+    assert.equal(queryDeploymentStatuses().length, 1);
   });
 });
 

@@ -5,7 +5,7 @@ import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, finalizeRepositoryMutationBorrower, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, createModeCapabilityBinding, finalizeRepositoryMutationBorrower, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PI_REPOSITORY_HANDOFF_FILE, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
@@ -34,7 +34,7 @@ function restore(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-async function withRunnerEnv(fn: (root: string, deployDir: string, config: PiBackgroundConfig) => Promise<void>, deployId = "d-runner-test", recordStart = true): Promise<void> {
+async function withRunnerEnv(fn: (root: string, deployDir: string, config: PiBackgroundConfig) => Promise<void>, deployId = "d-334001", recordStart = true): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pi-runner-"));
   const deployDir = join(root, "deployments", deployId);
   mkdirSync(deployDir, { recursive: true });
@@ -126,7 +126,7 @@ test("PAP-267 AC-3/5/6: requirements/builder runners preserve raw warnings, JSON
       assert.equal((event.summary ?? "").includes("No project session found"), !fresh);
       assert.match(readFileSync(config.logFile, "utf8"), /No project session found/);
       assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "failed");
-    }, "d-startup-runner", false);
+    }, "d-334002", false);
   }
 });
 
@@ -143,8 +143,9 @@ test("PAP-267: launcher transports trusted fresh/resume version context; malform
           return new LauncherProcess() as never;
         },
       } });
-    const opts = { primerPath: config.primerPath, deployId: config.deploymentId, mode: "background" as const, sessionId: config.sessionId };
-    const result = await (resume ? adapter.resume(opts) : adapter.spawn(opts));
+    const opts = { primerPath: config.primerPath, deployId: config.deploymentId, mode: "background" as const, sessionId: resume ? config.sessionId : adapter.allocateSessionId() };
+    writeFileSync(join(deployDir, "session-id-pi.txt"), config.sessionId, { mode: 0o600 });
+    const result = await (resume ? adapter.resume({ ...opts, resumedFromDeploymentId: config.deploymentId }) : adapter.spawn(opts));
     assert.equal(result.exitCode, 0);
     assert.deepEqual(observed?.startup, { fresh: !resume, version: "0.84.4" });
     const path = join(deployDir, PI_BACKGROUND_CONFIG_FILE);
@@ -403,7 +404,7 @@ test("runner rejects malformed or mismatched protected Git identity before child
     const alternateCommonDir = join(root, "alternate-common-dir");
     mkdirSync(alternateGitDir);
     mkdirSync(alternateCommonDir);
-    const secondDeployId = `${config.deploymentId}-identity`;
+    const secondDeployId = "d-334005";
     appendRegistryEvent({ deployment_id: secondDeployId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa" });
     const mismatched = { ...config, deploymentId: secondDeployId };
     writePiRepositoryHandoff(mismatched.repositoryHandoffPath!, {
@@ -692,7 +693,7 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
         },
       });
       const launched = await adapter.spawn({
-        primerPath: config.primerPath, deployId: config.deploymentId, mode: "background", sessionId: config.sessionId,
+        primerPath: config.primerPath, deployId: config.deploymentId, mode: "background", sessionId: adapter.allocateSessionId(),
         repositoryBorrower,
         executionPlan: {
           runtime: "pi", team: "builder", mode: "implement", repoRoot: repo, worktreeRoot: repo,
@@ -788,7 +789,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     },
   });
   try {
-    const result = await adapter.spawn({ primerPath: primer, deployId: "d-readiness", mode: "background", sessionId: "readiness-session" });
+    const result = await adapter.spawn({ primerPath: primer, deployId: "d-readiness", mode: "background", sessionId: adapter.allocateSessionId() });
     assert.equal(result.exitCode, 1);
     assert.match(result.errorMessage ?? "", /^runner-readiness: ownership was not established within 100ms$/);
     assert.ok((result.errorMessage ?? "").length <= 2000);
@@ -800,7 +801,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
       launchBackgroundRunner: (() => new LauncherProcess() as never),
       readBackgroundOwnership: () => { throw new Error("ownership fixture unreadable"); },
     } });
-    const unreadable = await readFailure.spawn({ primerPath: primer, deployId: "d-read-error", mode: "background", sessionId: "read-error-session" });
+    const unreadable = await readFailure.spawn({ primerPath: primer, deployId: "d-read-error", mode: "background", sessionId: readFailure.allocateSessionId() });
     assert.equal(unreadable.exitCode, 1);
     assert.match(unreadable.errorMessage ?? "", /^runner-readiness: ownership fixture unreadable$/);
     assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
@@ -808,7 +809,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     const launcherFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, secretValues: [secret], supervision: {
       launchBackgroundRunner: (() => { throw new Error(`launcher fixture failed ${secret}`); }),
     } });
-    const failed = await launcherFailure.spawn({ primerPath: primer, deployId: "d-launcher", mode: "background", sessionId: "launcher-session" });
+    const failed = await launcherFailure.spawn({ primerPath: primer, deployId: "d-launcher", mode: "background", sessionId: launcherFailure.allocateSessionId() });
     assert.equal(failed.exitCode, 1);
     assert.match(failed.errorMessage ?? "", /^runner-launcher: launcher fixture failed/);
     assert.match(failed.errorMessage ?? "", new RegExp(secret));
@@ -834,7 +835,7 @@ test("readiness timeout escalates a resistant runner and removes only its owned 
     sendSignal: (_pid, signal) => { signals.push(signal); if (signal === "SIGKILL") gone = true; },
   } });
   try {
-    const result = await adapter.spawn({ primerPath: primer, deployId: "d-readiness-resistant", mode: "background", sessionId: "readiness-resistant-session" });
+    const result = await adapter.spawn({ primerPath: primer, deployId: "d-readiness-resistant", mode: "background", sessionId: adapter.allocateSessionId() });
     assert.equal(result.exitCode, 1);
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
     assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
@@ -847,7 +848,7 @@ test("readiness timeout escalates a resistant runner and removes only its owned 
 test("launcher process exits after handoff while the persistent runner owns completion", { timeout: 30_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-runner-boundary-"));
   const bin = join(root, "bin");
-  const deployDir = join(root, "deployments", "d-boundary");
+  const deployDir = join(root, "deployments", "d-334003");
   mkdirSync(bin, { recursive: true });
   mkdirSync(deployDir, { recursive: true });
   const fakePi = join(bin, "pi");
@@ -869,7 +870,8 @@ test("launcher process exits after handoff while the persistent runner owns comp
     `import { spawn } from "node:child_process";`,
     `import { PiAdapter } from ${JSON.stringify(adapterUrl)};`,
     `const adapter = new PiAdapter({ cwd: ${JSON.stringify(deployDir)}, nativeRegistryProbe: () => undefined, supervision: { launchBackgroundRunner: (_ignored, configPath, options) => spawn(process.execPath, ["--import", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(runnerWrapper)}, configPath], { ...options, detached: true, stdio: ["ignore", "ignore", "inherit"] }) } });`,
-    `const result = await adapter.spawn({ primerPath: ${JSON.stringify(primer)}, deployId: "d-boundary", mode: "background", sessionId: "boundary-session", logFile: ${JSON.stringify(join(deployDir, "pi.log"))} });`,
+    `const core = await import(${JSON.stringify(import.meta.resolve("@pa-platform/pa-core"))}); core.appendRegistryEvent({ deployment_id: "d-334003", team: "builder", runtime: "pi", event: "started", timestamp: new Date().toISOString() });`,
+    `const result = await adapter.spawn({ primerPath: ${JSON.stringify(primer)}, deployId: "d-334003", mode: "background", sessionId: adapter.allocateSessionId(), logFile: ${JSON.stringify(join(deployDir, "pi.log"))} });`,
     `process.stdout.write(JSON.stringify(result));`,
   ].join("\n"));
   const env = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, PA_AI_USAGE_HOME: root, PA_REGISTRY_DB: join(root, "registry.db"), PA_TEAM: "builder" };
@@ -904,7 +906,7 @@ test("launcher process exits after handoff while the persistent runner owns comp
     assert.equal(ownership.terminalStatus, "success");
     assert.equal(readPiTerminalStatus(deployDir)?.stopReason, "stop");
     const coreUrl = import.meta.resolve("@pa-platform/pa-core");
-    const registry = spawnSync(process.execPath, ["--input-type=module", "--eval", `const core = await import(${JSON.stringify(coreUrl)}); const terminal = core.getDeploymentEvents("d-boundary").filter((event) => event.event === "completed" || event.event === "crashed"); process.stdout.write(JSON.stringify(terminal));`], { cwd: process.cwd(), env, encoding: "utf8" });
+    const registry = spawnSync(process.execPath, ["--input-type=module", "--eval", `const core = await import(${JSON.stringify(coreUrl)}); const terminal = core.getDeploymentEvents("d-334003").filter((event) => event.event === "completed" || event.event === "crashed"); process.stdout.write(JSON.stringify(terminal));`], { cwd: process.cwd(), env, encoding: "utf8" });
     assert.equal(registry.status, 0, registry.stderr);
     const terminal = JSON.parse(registry.stdout) as Array<{ event: string; status?: string }>;
     assert.deepEqual(terminal.map((event) => [event.event, event.status]), [["completed", "success"]]);
@@ -985,3 +987,90 @@ test("runner shutdown escalates a TERM-resistant process group and finalizes exa
     assert.ok(now < 5_000);
   });
 });
+
+for (const scenario of ["config-role", "config-binding", "config-env", "original-env", "merged-env", "native", "ancestor", "writer"] as const) test(`Pi background admission preserves retained evidence: ${scenario}`, () => withRunnerEnv(async (root, deployDir, config) => {
+  config.team = scenario === "config-role" ? "analyst" : "builder";
+  if (scenario === "config-binding") config.modeCapabilityBinding = createModeCapabilityBinding("a".repeat(40), Buffer.from("fixture"), { version: "pa-mode-capabilities/v1", allow: [] });
+  if (scenario === "config-env") config.environment = { PA_TEAM: "analyst" };
+  if (scenario === "original-env") { process.env.PA_TEAM = "analyst"; config.environment = { PA_TEAM: "builder" }; }
+  if (scenario === "merged-env") { process.env.PA_TEAM = "requirements"; config.environment = { PA_MODE: "analyze" }; }
+  appendRegistryEvent({ deployment_id: config.deploymentId, team: scenario === "native" ? "analyst" : "builder", runtime: "pi", event: "started", timestamp: new Date().toISOString(), ...(scenario === "ancestor" ? { resumed_from_deployment_id: "d-334def" } : {}) });
+  if (scenario === "ancestor") appendRegistryEvent({ deployment_id: "d-334def", team: "analyst", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+  if (scenario === "native") appendRegistryEvent({ deployment_id: config.deploymentId, team: "analyst", runtime: "pi", event: "completed", status: "partial", timestamp: new Date().toISOString() });
+  config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+  writeFileSync(config.repositoryHandoffPath, "retained protected handoff");
+  if (scenario === "writer") delete config.repositoryHandoffPath;
+  const history = getDeploymentEvents(config.deploymentId), child = new RunnerChild(); let spawned = 0;
+  try {
+    const pending = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => { spawned++; return child as never; }) as typeof spawn, persistLine: () => {} } });
+    await immediate();
+    if (scenario === "writer") child.emit("close", 0);
+    await pending;
+    assert.equal(spawned, scenario === "writer" ? 1 : 0);
+    if (scenario !== "writer") {
+      assert.deepEqual(getDeploymentEvents(config.deploymentId), history);
+      assert.equal(readFileSync(join(deployDir, PI_REPOSITORY_HANDOFF_FILE), "utf8"), "retained protected handoff");
+      assert.equal(existsSync(config.logFile), false);
+      const ownership = readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE));
+      assert.equal(ownership?.state, "failed"); assert.equal(ownership?.ready, false); assert.match(ownership?.error ?? "", /REPOSITORY_ISOLATION_UNAVAILABLE/);
+    }
+  } finally { delete process.env.PA_TEAM; delete process.env.PA_MODE; }
+}, "d-334004", false));
+
+for (const scenario of ["config-role", "config-binding", "config-env", "process-env", "native", "ancestor", "invalid", "writer", "writer-failure"] as const) test(`Pi executable entrypoint retains rejected configuration and consumes only admitted input: ${scenario}`, () => withRunnerEnv(async (root, deployDir, config) => {
+  if (scenario === "config-role") config.team = "analyst";
+  if (scenario === "config-binding") config.modeCapabilityBinding = createModeCapabilityBinding("a".repeat(40), Buffer.from("fixture"), { version: "pa-mode-capabilities/v1", allow: [] });
+  if (scenario === "config-env") config.environment = { PA_TEAM: "analyst" };
+  appendRegistryEvent({ deployment_id: config.deploymentId, team: scenario === "native" ? "analyst" : "builder", runtime: "pi", event: "started", timestamp: new Date().toISOString(), ...(scenario === "ancestor" ? { resumed_from_deployment_id: "d-334def" } : {}) });
+  if (scenario === "ancestor") appendRegistryEvent({ deployment_id: "d-334def", team: "analyst", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+  if (scenario === "native") appendRegistryEvent({ deployment_id: config.deploymentId, team: "analyst", runtime: "pi", event: "completed", status: "partial", summary: "original partial result", timestamp: new Date().toISOString() });
+  const admitted = scenario === "writer" || scenario === "writer-failure";
+  if (!admitted) {
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    writeFileSync(config.repositoryHandoffPath, "retained protected handoff");
+  }
+  const configPath = join(deployDir, PI_BACKGROUND_CONFIG_FILE);
+  const body = scenario === "invalid" ? '{ "schemaVersion": 1, "invalid": true }\n' : JSON.stringify(config, null, 2) + "\n";
+  writeFileSync(configPath, body, { mode: 0o600 });
+  const bin = join(root, "bin"), childMarker = join(root, "child-started"); mkdirSync(bin);
+  writeFileSync(join(bin, "pi"), `#!${process.execPath}\nimport { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(childMarker)}, "started"); process.exitCode = ${scenario === "writer-failure" ? 17 : 0};\n`, { mode: 0o700 });
+  const history = getDeploymentEvents(config.deploymentId);
+  closeDb();
+  const child = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), new URL("../background-runner.ts", import.meta.url).pathname, configPath], {
+    cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, PA_TEAM: scenario === "process-env" ? "analyst" : "builder" }, encoding: "utf8", timeout: 20_000,
+  });
+  assert.ifError(child.error);
+  assert.equal(child.status, scenario === "invalid" ? 1 : 0, child.stderr);
+  if (admitted) {
+    assert.equal(existsSync(configPath), false); assert.equal(existsSync(childMarker), true);
+    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.terminalStatus, scenario === "writer" ? "success" : "failed");
+    assert.equal(terminalEvents(config.deploymentId).length, 1);
+  } else {
+    assert.equal(readFileSync(configPath, "utf8"), body);
+    assert.equal(readFileSync(config.repositoryHandoffPath!, "utf8"), "retained protected handoff");
+    assert.equal(existsSync(childMarker), false); assert.equal(existsSync(config.logFile), false);
+    assert.deepEqual(getDeploymentEvents(config.deploymentId), history);
+    if (scenario !== "invalid") {
+      const ownership = readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE));
+      assert.equal(ownership?.admissionRejected, "repository-isolation"); assert.equal(ownership?.ready, false);
+      assert.equal(readPiTerminalStatus(deployDir), undefined);
+    }
+  }
+}, "d-334005", false));
+
+test("Pi launcher retains config after authenticated isolation readiness rejection", () => withRunnerEnv(async (_root, deployDir, config) => {
+  const adapter = new PiAdapter({ cwd: deployDir, env: {}, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
+    launchBackgroundRunner: (_runner, path) => {
+      const pending = readPiBackgroundConfig(path);
+      writePiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE), { schemaVersion: 1, deploymentId: pending.deploymentId, ownershipToken: pending.ownershipToken,
+        supervisorPid: 81002, state: "failed", ready: false, admissionRejected: "repository-isolation", cleanupVerified: false,
+        updatedAt: new Date().toISOString(), finalizationDeadlineMs: 5000, error: "REPOSITORY_ISOLATION_UNAVAILABLE" });
+      return new LauncherProcess() as never;
+    }, processGroupGone: () => true, sendSignal: () => {},
+  } });
+  const history = getDeploymentEvents(config.deploymentId);
+  const result = await adapter.spawn({ primerPath: config.primerPath, deployId: config.deploymentId, mode: "background" });
+  assert.equal(result.exitCode, 1); assert.equal(result.metadata?.cleanupVerified, false);
+  assert.equal(existsSync(join(deployDir, PI_BACKGROUND_CONFIG_FILE)), true);
+  assert.deepEqual(getDeploymentEvents(config.deploymentId), history);
+}));

@@ -45,11 +45,10 @@ export const PI_EXAMPLE_SOURCES = [
 ] as const;
 
 export interface PiToolCall { name?: string; toolName?: string; input: Record<string, unknown> }
-export type PiTicketAction = "read" | "show" | "list" | "comment";
+export type PiTicketAction = "read" | "show" | "list" | "comment" | "inspect" | "create" | "update" | "set-status";
 export interface PiTicketToolInput extends Record<string, unknown> {
   action: PiTicketAction;
   id?: string;
-  author?: string;
   content?: string;
   search?: string;
 }
@@ -76,6 +75,7 @@ export interface PiSafetyDecision { allowed: boolean; reason?: string }
 export interface PiAgentMessage { role?: string; stopReason?: string; errorMessage?: string; content?: unknown }
 export interface PiRuntime {
   setActiveTools?: (names: string[]) => void;
+  getAllTools?: () => readonly { name: string }[];
   registerTool?: <TInput extends Record<string, unknown>, TDetails extends Record<string, unknown>>(tool: PiToolDefinition<TInput, TDetails>) => void;
   on?: {
     (event: "tool_call", handler: (call: PiToolCall) => unknown): void;
@@ -158,8 +158,13 @@ export function registerPiSessionModules(
   lifecycle.addShutdownStep(() => { readLifetime.abort(); });
   // Capability admission precedes execution. Source-aware output protection also
   // covers direct/delegated custom calls outside document profiles. No role list.
+  const registeredTools = new Set<string>();
   const guardedRuntime = new Proxy(pi, {
     get(target, property) {
+      // Pi ignores unknown tool names in setActiveTools. Preserve deliberate
+      // module omission in small/custom compositions as well as the real host.
+      if (property === "getAllTools") return () => [...(target.getAllTools?.() ?? []),
+        ...[...registeredTools].map(name => ({ name }))];
       if (property === "registerTool") return (definition: PiToolDefinition) => {
         const base = definition.name === "read" && nativeReadTool ? nativeReadTool : definition;
         let tool = base, originalReadCaller: PiDocumentCaller | undefined;
@@ -224,6 +229,7 @@ export function registerPiSessionModules(
         });
         } };
         target.registerTool?.(registered);
+        if (target.registerTool) registeredTools.add(registered.name);
         if (tool.name === "read" && policyDeploymentId) pi.on?.("session_start", (_event, context) => {
           // The final native/guarded definition is known now; identity is only
           // available at session_start. Replace read in place, never add a grant.

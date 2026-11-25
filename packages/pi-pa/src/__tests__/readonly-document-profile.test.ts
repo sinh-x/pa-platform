@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { ReadStream } from "node:tty";
 import { test } from "node:test";
 import { spawn as spawnPty } from "node-pty";
-import { closeDb, getDeployPaths, getDeploymentEvents, READONLY_DOCUMENT_PROFILE, READONLY_DOCUMENT_SESSION, hasModeResources, selectedCapabilityTools, parseModeCapabilityBinding, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { closeDb, getDeployPaths, getDeploymentEvents, READONLY_DOCUMENT_PROFILE, READONLY_DOCUMENT_SESSION, hasModeResources, selectedCapabilityTools, parseModeCapabilityBinding, CommittedConfigSource, parseTeamYamlContent, selectModeCapabilities, RepositoryIsolationUnavailableError, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { PiAdapter } from "../adapter.js";
 import { deployWithPi } from "../deploy.js";
 import { readPiProcessIdentity } from "../process-identity.js";
@@ -82,7 +82,7 @@ async function fixture(run: (f: Fixture) => Promise<void>) {
   } finally { input.destroy(); closeDb(); process.chdir(cwd); process.env = prior; rmSync(root, { recursive: true, force: true }); }
 }
 
-test("PAP-318 same production runtime admits three modes and PAPC-only team/mode add/edit/rename with large exact primers", () => fixture(async f => {
+test("PAP-318 same production runtime admits three modes and PAPC-only team/mode add/edit/rename with large exact primers", { skip: "Deferred: Analyst and read-only document launches have no qualified repository-isolation executor; this retained runtime/PTY/primer matrix is not passing evidence." }, () => fixture(async f => {
   const adapter = new PiAdapter({ cwd: f.repo, env: process.env, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
     supervision: { input: f.input, spawnPty(file, args, options) {
       assert.ok(args.every(value => Buffer.byteLength(value) < 128 * 1024)); assert.ok(Object.values(options.env ?? {}).every(value => Buffer.byteLength(value) < 128 * 1024));
@@ -142,7 +142,7 @@ test("PAP-318 missing mode cannot drop a profile-only team's binding or restore 
     for (const dryRun of [false, true]) {
       const result = await deployWithPi({ team, repo: "example", dryRun }, inert);
       assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
-      assert.match(result.reason ?? "", /CAPABILITY_PROFILE/); assert.equal(probes, 0);
+      assert.match(result.reason ?? "", team === "analyst" && !dryRun ? /REPOSITORY_ISOLATION_UNAVAILABLE/ : /CAPABILITY_PROFILE/); assert.equal(probes, 0);
     }
   }
 }));
@@ -154,13 +154,14 @@ test("PAP-318 explicit profile selection never upgrades unprofiled names or excl
   for (const key of ["pinned", "resume", "inherited", "rogue", "background", "ticketWorktree"] as const) assert.equal(selectsDocumentSession({ ...input, [key]: true }), false);
 });
 
-test("PAP-318 generic profile keeps all fresh-foreground exclusions and rejects current-source drift before native release", () => fixture(async f => {
+test("PAP-318 generic profile blocks fresh and excluded launches and rejects invalid configuration without runtime effects", () => fixture(async f => {
   f.author("evidence-lab", ["survey"]); f.commit();
   let probes = 0;
   const inert: RuntimeAdapter = { name: "pi", defaultModel: "", sessionFileName: "fixture", allocateSessionId() { probes++; throw Error("not admitted"); }, installHooks() { probes++; }, describeTools() { probes++; throw Error("not admitted"); }, async spawn() { probes++; throw Error("not admitted"); }, async resume() { probes++; throw Error("not admitted"); }, extractActivity: () => [] };
-  for (const excluded of [{ background: true }, { resume: "d-318fff" }, { ticketWorktree: true }, { force: true }]) {
+  for (const excluded of [{}, { background: true }, { resume: "d-318fff" }, { ticketWorktree: true }, { force: true }]) {
     const result = await deployWithPi({ team: "evidence-lab", mode: "survey", repo: "example", ...excluded }, inert);
     assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.equal(result.reason, new RepositoryIsolationUnavailableError().message);
   }
   process.env.PA_DEPLOYMENT_ID = "d-318999";
   const inherited = await deployWithPi({ team: "evidence-lab", mode: "survey", repo: "example" }, inert);
@@ -178,6 +179,24 @@ test("PAP-318 generic profile keeps all fresh-foreground exclusions and rejects 
     for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(rejected.reason!.split(`${label}:`).length - 1, 1);
   }
   writeFileSync(configPath, originalConfig); assert.equal(probes, 0);
+}));
+
+test("PAP-318 pure selected-resource owner rejects missing selection and current-source drift without launching", () => fixture(async f => {
+  f.author("evidence-lab", ["survey"]); f.commit();
+  const team = parseTeamYamlContent(readFileSync(join(f.config, "teams/evidence-lab.yaml"), "utf8"));
+  const policy = team.deploy_modes![0]!.capability_policy!;
+  const source = CommittedConfigSource.at(f.config);
+  for (const mode of [undefined, "absent"]) assert.throws(() => selectModeCapabilities(policy, source, { team, repoKey: "example", mode }), /CAPABILITY_BINDING/);
+  const selected = selectModeCapabilities(policy, source, { team, repoKey: "example", mode: "survey" });
+  assert.ok(hasModeResources(selected.binding)); assert.doesNotThrow(() => selected.assertCurrent());
+  assert.equal(selected.resources!.read("docs/agent.md"), "Selected agent instructions.");
+  writeFileSync(join(f.config, "docs/agent.md"), "Uncommitted selected-source drift.");
+  assert.throws(() => selected.assertCurrent(), error => error instanceof Error && "kind" in error && error.kind === "drift");
+  assert.throws(() => selectModeCapabilities(policy, CommittedConfigSource.at(f.config), { team, repoKey: "example", mode: "survey" }), error => error instanceof Error && "kind" in error && error.kind === "resource");
+}));
+
+test("PAP-318 current-source drift at actual PTY admission prevents native release", { skip: "Deferred: read-only document execution stops at repository-isolation admission before the PTY drift seam; pure selection drift remains active separately." }, () => fixture(async f => {
+  f.author("evidence-lab", ["survey"]); f.commit();
   let spawns = 0;
   const adapter = new PiAdapter({ cwd: f.repo, env: process.env, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: { input: f.input, spawnPty(file, args, options) {
     const child = spawnPty(file, args, options); spawns++; writeFileSync(join(f.config, "docs/agent.md"), "Uncommitted source drift at real PTY admission."); return child;

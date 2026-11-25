@@ -23,7 +23,7 @@ export class TicketStatusError extends Error {
 }
 export const statusFail = (code: TicketStatusCode): never => { throw new TicketStatusError(code); };
 export const statusVersion = (ticket: Ticket): string => creationDigest(ticket);
-export interface TicketStatusHooks { assertCurrent(): void; afterPersist?(stage: "intent" | "ticket" | "audit"): void }
+export interface TicketStatusHooks { assertCurrent(): void; assertCandidate?(ticket: Ticket): void; afterPersist?(stage: "intent" | "ticket" | "audit"): void }
 export interface TicketStatusIntent extends TicketCreateIntentIdentity {
   schemaVersion: "pa-ticket-status-intent/v1"; key: string; actor: string; payloadSha256: string;
   expectedVersion: string; status: TicketStatus; before: Ticket; after: Ticket;

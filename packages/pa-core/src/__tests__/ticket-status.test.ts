@@ -39,9 +39,9 @@ test("status owner covers all 81 enum edges, lifecycle denials, CAS and original
     assert.equal(store.setStatusWithIntent(ticket.id, expected, "requirement-review", "requirements/analyze", identity, { assertCurrent() {} }).ticket.summary, "Later work must survive replay");
     store.addSubTicket(ticket.id, { title: "Open child", summary: "", assignee: "sinh", priority: "medium", estimate: "S" });
     assert.throws(() => set(ticket.id, "done"), /TICKET_STATUS_INPUT/);
-    for (const context of [{}, { privileged: true, team: "builder", mode: "implement" }]) {
+    for (const context of [{}, { privileged: false, team: "builder", mode: "implement" }]) {
       const denied = new TicketStore(join(root, "tickets"), context);
-      assert.throws(() => denied.setStatusWithIntent(ticket.id, statusVersion(store.get(ticket.id)!), "cancelled", "synthetic", { scope: "a".repeat(64), requestId: `denied-${seq++}` }, { assertCurrent() {} }), /parent flow/);
+      assert.throws(() => denied.setStatusWithIntent(ticket.id, statusVersion(store.get(ticket.id)!), "cancelled", "synthetic", { scope: "a".repeat(64), requestId: `denied-${seq++}` }, { assertCurrent() {} }), /TICKET_STATUS_SESSION/);
     }
     for (const boundary of [2, 3]) {
       const t = store.create(input); let checks = 0;

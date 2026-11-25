@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
-import { composeRuntimeHooks, createAgentApiApp, parseModeCapabilityBinding, runCoreCommand } from "@pa-platform/pa-core";
+import { test, type TestContext } from "node:test";
+import { appendRegistryEvent, closeDb, getDeployPaths, composeRuntimeHooks, createAgentApiApp, parseModeCapabilityBinding, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { detectPiRedactionMatches, PiRedactionAudit, StreamingPiRedactionAuditor, type PiRedactionAuditRecord } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
@@ -69,6 +69,19 @@ function controlledAdapter(child: FakePiChild, options: { persistLine?: () => vo
 }
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
+
+// Qualify direct resumes without bypassing the behavior under test.
+function nativeResumeFixture(t: TestContext): string {
+  const root = mkdtempSync(join(tmpdir(), "pi-native-resume-")), previous = process.env.PA_REGISTRY_DB, previousHome = process.env.PA_AI_USAGE_HOME;
+  closeDb(); process.env.PA_REGISTRY_DB = join(root, "registry.db"); process.env.PA_AI_USAGE_HOME = root;
+  const id = "d-334abc";
+  appendRegistryEvent({ deployment_id: id, team: "builder", mode: "implement", runtime: "pi", event: "started", timestamp: "2026-11-24T00:00:00Z" });
+  closeDb();
+  mkdirSync(getDeployPaths(id).deployDir, { recursive: true });
+  writeFileSync(join(getDeployPaths(id).deployDir, "session-id-pi.txt"), "retained-session", { mode: 0o600 });
+  t.after(() => { closeDb(); if (previous === undefined) delete process.env.PA_REGISTRY_DB; else process.env.PA_REGISTRY_DB = previous; if (previousHome === undefined) delete process.env.PA_AI_USAGE_HOME; else process.env.PA_AI_USAGE_HOME = previousHome; rmSync(root, { recursive: true, force: true }); });
+  return id;
+}
 
 interface ToolStreamFixture {
   id: string;
@@ -358,14 +371,16 @@ test("shadow audit failures preserve delivery and warn once without recursive de
 test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
   assert.equal(meetsMinimum("0.80.8"), false); assert.equal(meetsMinimum("0.84.3"), false); assert.equal(meetsMinimum("0.84.4"), true); assert.equal(meetsMinimum("0.85.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
   const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0; const invocations: string[][] = [];
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.84.4"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { invocations.push(args); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
-  await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground" });
-  await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "background" });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.84.4"; }, runCommand: (args) => { invocations.push(args); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
+  const foregroundId = adapter.allocateSessionId(), backgroundId = adapter.allocateSessionId();
+  await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground", sessionId: foregroundId });
+  await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "background", sessionId: backgroundId });
   assert.equal(probes, 2);
-  assert.deepEqual(invocations[0]?.slice(0, 2), ["--session-id", "00000000-0000-0000-0000-000000000001"]);
+  assert.notEqual(foregroundId, backgroundId);
+  assert.deepEqual(invocations[0]?.slice(0, 2), ["--session-id", foregroundId]);
   assert.ok(!invocations[0]?.includes("--print"));
   assert.ok(!invocations[0]?.includes("--mode"));
-  assert.deepEqual(invocations[1]?.slice(0, 5), ["--print", "--mode", "json", "--session-id", "00000000-0000-0000-0000-000000000001"]);
+  assert.deepEqual(invocations[1]?.slice(0, 5), ["--print", "--mode", "json", "--session-id", backgroundId]);
   assert.ok(!invocations[1]?.includes("--json"));
 });
 
@@ -408,7 +423,8 @@ test("reuses a successful configurable version preflight and preserves timeout f
   assert.equal(spawned, false);
 });
 
-test("managed foreground and background Pi invocations disable skill discovery but retain extensions and selected skills", async () => {
+test("managed foreground and background Pi invocations disable skill discovery but retain extensions and selected skills", async (t) => {
+  const resumedFromDeploymentId = nativeResumeFixture(t);
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
   const primer = join(dir, "primer.md");
   const trustedExtension = join(dir, "pi-pa", "dist", "pi-extension", "index.js");
@@ -452,24 +468,33 @@ test("managed foreground and background Pi invocations disable skill discovery b
     assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
     assert.equal(args.filter((arg) => /(?:^|\/)\.pi\/extensions(?:\/|$)/.test(arg)).length, 0);
   }
+  // Preserve both original command-transport legs, deferred until a qualified
+  // executor exists. V2 Analyst identity is just as restrictive as V3.
   for (const version of [2, 3]) {
     const binding = parseModeCapabilityBinding({ schemaVersion: `pa-mode-capability-binding/v${version}`, configRoot: dir, configRevision: "a".repeat(40), resourcePath: "teams/analyst.yaml", resourceSha256: "b".repeat(64),
       profile: version === 2 ? "pa-document-policy/v1" : "pa-readonly-document/v1", policy: { version: "pa-mode-capabilities/v1", allow: [] }, repoKey: "example",
       identity: { publicTeam: "analyst", publicMode: "analyze", effectiveTeam: "requirements", effectiveMode: "analyze", actor: "requirements/analyze" }, resources: [{ path: "teams/analyst.yaml", sha256: "b".repeat(64) }] });
     for (const mode of ["foreground", "background"] as const) {
       const opts = { primerPath: primer, deployId: `d-resource-${version}-${mode}`, mode, executionPlan: { ...executionPlan, modeCapabilityBinding: binding } };
-      assert.equal((await adapter.spawn(opts)).exitCode, 0);
-      assert.equal((await adapter.resume({ ...opts, sessionId: `retained-${version}-${mode}` })).exitCode, 0);
-      for (const args of invocations.slice(-2)) {
-        assert.equal(args.includes("--skill"), false, `V${version} must not reopen captured optional skills`);
-        assert.equal(args.includes("--no-skills"), true);
-        assert.equal(args.includes("--no-extensions"), false);
-      }
+      const before = invocations.length;
+      assert.equal((await adapter.spawn(opts)).exitCode, 1, "writer plan cannot erase binding identity");
+      assert.equal((await adapter.resume({ ...opts, sessionId: `retained-${version}-${mode}`, resumedFromDeploymentId })).exitCode, 1);
+      assert.equal(invocations.length, before);
+      await t.test(`V${version} ${mode} original command transport`, { skip: "PAP-334: no qualified confined executor" }, async () => {
+        assert.equal((await adapter.spawn(opts)).exitCode, 0);
+        assert.equal((await adapter.resume({ ...opts, sessionId: `retained-${version}-${mode}`, resumedFromDeploymentId })).exitCode, 0);
+        for (const args of invocations.slice(-2)) {
+          assert.equal(args.includes("--skill"), false, `V${version} must not reopen captured optional skills`);
+          assert.equal(args.includes("--no-skills"), true);
+          assert.equal(args.includes("--no-extensions"), false);
+        }
+      });
     }
   }
 });
 
-test("Pi spawn and resume disable skill discovery while preserving default or custom extension directories", async () => {
+test("Pi spawn and resume disable skill discovery while preserving default or custom extension directories", async (t) => {
+  const resumedFromDeploymentId = nativeResumeFixture(t);
   const dir = mkdtempSync(join(tmpdir(), "pi-user-discovery-"));
   const primer = join(dir, "primer.md");
   writeFileSync(primer, "work");
@@ -491,7 +516,7 @@ test("Pi spawn and resume disable skill discovery while preserving default or cu
       for (const mode of ["foreground", "background"] as const) {
         const opts = { primerPath: primer, deployId: "d-discovery", mode, executionPlan };
         assert.equal((await adapter.spawn(opts)).exitCode, 0);
-        assert.equal((await adapter.resume({ ...opts, sessionId: "retained-session" })).exitCode, 0);
+        assert.equal((await adapter.resume({ ...opts, sessionId: "retained-session", resumedFromDeploymentId })).exitCode, 0);
       }
       assert.equal(calls, 4);
     }
@@ -1093,15 +1118,16 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   const primer = join(mkdtempSync(join(tmpdir(), "pi-close-")), "primer.md"); writeFileSync(primer, "work");
   let spawnedArgs: string[] = []; let spawnedOptions: { cols: number; rows: number } | undefined;
   const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", supervision: { spawnPty: (file, args, options) => { spawnedArgs = args; spawnedOptions = options; return pty as never; }, input: input as never, output: output as never, columns: 100, rows: 40 } });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-close", mode: "foreground", sessionId: "interactive-session" });
+  const sessionId = adapter.allocateSessionId();
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-close", mode: "foreground", sessionId });
   await nextTick();
   input.emit("data", Buffer.from("hello")); pty.emitData("visible\n"); process.stdout.emit("resize"); process.emit("SIGINT"); pty.emitExit(0);
   const result = await resultPromise;
   assert.equal(result.exitCode, 0);
-  assert.equal(result.sessionId, "interactive-session");
+  assert.equal(result.sessionId, sessionId);
   assert.deepEqual({ cols: spawnedOptions?.cols, rows: spawnedOptions?.rows }, { cols: 100, rows: 40 });
   assert.deepEqual(pty.resizes, [[process.stdout.columns ?? 80, process.stdout.rows ?? 24]]);
-  assert.deepEqual(spawnedArgs.slice(0, 2), ["--session-id", "interactive-session"]);
+  assert.deepEqual(spawnedArgs.slice(0, 2), ["--session-id", sessionId]);
   assert.ok(!spawnedArgs.includes("--print"));
   assert.ok(!spawnedArgs.includes("--mode"));
   assert.deepEqual(pty.writes, ["hello"]);
@@ -1109,7 +1135,8 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   assert.deepEqual(output.chunks, ["visible\n"]);
 });
 
-test("PAP-267 AC-3/6: fresh PTY warning presentation is quiet but raw logs, resume history and outcomes survive", async () => {
+test("PAP-267 AC-3/6: fresh PTY warning presentation is quiet but raw logs, resume history and outcomes survive", async (t) => {
+  const resumedFromDeploymentId = nativeResumeFixture(t);
   const id = "48c3aa4b-bc54-4772-944e-17f92103c1c1";
   const warning = `Warning: No project session found with id '${id}'; creating a new session with that id.\r\n`;
   for (const resume of [false, true]) {
@@ -1119,10 +1146,11 @@ test("PAP-267 AC-3/6: fresh PTY warning presentation is quiet but raw logs, resu
       writeFileSync(primerPath, "work"); writeFileSync(history, "existing session history\n");
       const pty = new FakePiPty(), input = new FakePiInput(), output = new FakePiOutput();
       let args: string[] = [];
-      const adapter = new PiAdapter({ cwd: dir, env: {}, versionProbe: () => "1.0.4", nativeRegistryProbe: () => undefined,
+      const adapter = new PiAdapter({ cwd: dir, env: {}, versionProbe: () => "1.0.4", nativeRegistryProbe: () => undefined, sessionIdFactory: () => id,
         supervision: { spawnPty: (_file, argv) => { args = argv; return pty as never; }, input: input as never, output: output as never, persistLine: () => {} } });
-      const opts = { primerPath, logFile, deployId: "d-startup-pty", mode: "foreground" as const, sessionId: id };
-      const running = resume ? adapter.resume(opts) : adapter.spawn(opts);
+      const opts = { primerPath, logFile, deployId: "d-startup-pty", mode: "foreground" as const, sessionId: resume ? id : adapter.allocateSessionId() };
+      if (resume) writeFileSync(join(getDeployPaths(resumedFromDeploymentId).deployDir, "session-id-pi.txt"), id, { mode: 0o600 });
+      const running = resume ? adapter.resume({ ...opts, resumedFromDeploymentId }) : adapter.spawn(opts);
       await nextTick();
       for (const char of warning) pty.emitData(char);
       pty.emitData("real session failure\r\n"); pty.emitExit(7);
@@ -1326,7 +1354,8 @@ test("foreground treats three agent_end markers as turn evidence and keeps the s
     processExists: () => running,
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
   } });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-turns", mode: "foreground", sessionId: "one-live-session" });
+  const sessionId = adapter.allocateSessionId();
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-turns", mode: "foreground", sessionId });
   resultPromise.then(() => { settled = true; });
   await nextTick();
 
@@ -1345,7 +1374,7 @@ test("foreground treats three agent_end markers as turn evidence and keeps the s
   pty.emitExit(0);
   const result = await resultPromise;
   assert.equal(result.exitCode, 0);
-  assert.equal(result.sessionId, "one-live-session");
+  assert.equal(result.sessionId, sessionId);
   assert.equal(input.isRaw, false);
 });
 
@@ -1689,7 +1718,8 @@ test("foreground explicit cancellation waits for verified exit and settles exact
   assert.equal(outcomes, 1);
 });
 
-test("foreground and managed spawn/resume outlive legacy timeoutMs without a timer or termination signal", async () => {
+test("foreground and managed spawn/resume outlive legacy timeoutMs without a timer or termination signal", async (t) => {
+  const resumedFromDeploymentId = nativeResumeFixture(t);
   for (const mode of ["foreground", "dry-run"] as const) for (const resume of [false, true]) {
     const dir = mkdtempSync(join(tmpdir(), "pi-unlimited-")), primer = join(dir, "primer.md"); writeFileSync(primer, "work");
     const pty = new FakePiPty(), child = new FakePiChild(), input = new FakePiInput(), output = new FakePiOutput();
@@ -1702,7 +1732,8 @@ test("foreground and managed spawn/resume outlive legacy timeoutMs without a tim
     } });
     try {
       const opts = { primerPath: primer, deployId: "d-unlimited", mode, timeoutMs: 1 };
-      const running = resume ? adapter.resume({ ...opts, sessionId: "existing-session" }) : adapter.spawn(opts);
+      if (resume) writeFileSync(join(getDeployPaths(resumedFromDeploymentId).deployDir, "session-id-pi.txt"), "existing-session", { mode: 0o600 });
+      const running = resume ? adapter.resume({ ...opts, sessionId: "existing-session", resumedFromDeploymentId }) : adapter.spawn(opts);
       void running.then(() => { settled = true; });
       await new Promise(resolve => setTimeout(resolve, 25));
       assert.equal(timerCount, 0); assert.equal(settled, false); assert.deepEqual(signals, []); assert.deepEqual(pty.signals, []);

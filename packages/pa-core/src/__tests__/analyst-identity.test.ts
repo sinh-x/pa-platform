@@ -92,13 +92,13 @@ test("PAP-316 selector captures exact committed active and transitive resources;
   assert.throws(() => selection.assertCurrent());
 }));
 
-test("PAP-316 read-only admission and generic ticket privilege do not inherit a running Analyst grant", () => {
+test("PAP-334 read-only repository admission remains distinct from authenticated ticket administration", () => {
   assert.equal(classifyRepositoryAccess("analyst", "analyze"), "read-only");
   assert.equal(classifyRepositoryAccess("builder", "implement"), "exclusive-builder");
   const previous = process.env.PA_REGISTRY_DB, root = mkdtempSync(join(tmpdir(), "pap316-privilege-")); closeDb();
   process.env.PA_REGISTRY_DB = join(root, "registry.db");
   try {
     appendRegistryEvent({ deployment_id: "d-316001", team: "analyst", mode: "analyze", runtime: "pi", event: "started", timestamp: "2026-11-17T00:00:00Z" });
-    assert.deepEqual(resolveTrustedTicketMutationContext({ deploymentId: "d-316001" }, false), { team: "analyst", mode: "analyze", privileged: false });
+    assert.deepEqual(resolveTrustedTicketMutationContext({ deploymentId: "d-316001" }, false), { team: "analyst", mode: "analyze", privileged: true });
   } finally { closeDb(); if (previous === undefined) delete process.env.PA_REGISTRY_DB; else process.env.PA_REGISTRY_DB = previous; rmSync(root, { recursive: true, force: true }); }
 });
