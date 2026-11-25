@@ -62,7 +62,7 @@ test("real foreground CLI serves bundled assets without evidence, fails capture 
       child.stdout.on("data", chunk => { stdout += chunk; if (stdout.includes("listening at")) { clearTimeout(timer); resolve(); } });
       child.once("exit", () => { clearTimeout(timer); reject(new Error("dashboard exited before listening")); });
     });
-    const page = await fetch(`http://127.0.0.1:${port}/`); assert.equal(page.status, 200); assert.match(await page.text(), /Session <span>dashboard/);
+    const page = await fetch(`http://127.0.0.1:${port}/`); assert.equal(page.status, 200); assert.match(await page.text(), /<h1>Sessions<\/h1>/);
     const capture = await fetch(`http://127.0.0.1:${port}/v1/sessions`, { headers: { "X-PPA-Sessions": "1" } }); assert.equal(capture.status, 503); assert.deepEqual(await capture.json(), { error: "capture-unavailable" });
     assert.equal(stderr, ""); child.kill("SIGTERM"); assert.equal(await exited, 0);
     await assert.rejects(fetch(`http://127.0.0.1:${port}/`));

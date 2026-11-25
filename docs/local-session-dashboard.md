@@ -16,10 +16,37 @@ alternative. No browser installation, external assets or new dependency is requi
 Deployment, ticket and repository-key filters are exact AND intersections. Filter
 edits apply only when Refresh is selected; the applied filters remain displayed
 with the last successful capture. **Include nonverified candidate diagnostics**
-matches `ppa sessions --all`. Group by scoped HerdR session/workspace/tab (default),
-repository or ticket. Groups sort deterministically; each page displays at most
-100 rows. Every row remains reachable through Previous/Next, up to the shared
-10,000-candidate collection limit. Grouping/pagination never causes collection.
+matches `ppa sessions --all`. **Capture & exact filters** holds these controls,
+the applied filter values, capture timestamps and full coverage reasons.
+
+The selected ticket-first view uses responsive repository columns with one compact
+card per exact ticket association inside each repository. Multiple deployments on
+the same ticket share a card, not a location or process identity. Unknown/withheld
+repositories and no-ticket/withheld-ticket buckets stay explicit. A shared ticket
+ID in different repositories remains separate. The toolbar shows capture age and
+coverage; each card retains the counts of mapped, qualified, unknown, ambiguous
+and unmatched evidence represented by its sessions. Qualified never means unique.
+
+Expand **Sessions** to inspect team/process/location facts, then **Identifiers &
+evidence** for deployment, registry status, exact scoped HerdR IDs, PID and start
+time. Long tab labels are visually truncated only on the card; full labels remain
+in each session's details. Location paths are never inferred from repository or
+ticket grouping, and no activity or completion state is inferred from open/registry
+status. Repository columns are organizational groups, not workflow columns.
+
+**Search this capture** matches deployment, ticket, repository, team/mode and
+observed session/workspace/tab labels, case-insensitively. **Location** selects an
+evidence disposition. These filters and pagination act locally on the last saved
+capture, never collect again, and do not change its applied exact server filters.
+They remain in effect after refresh. The page distinguishes a filtered-empty view
+from a genuinely empty capture. Native details reset closed on a new render.
+
+Groups sort deterministically; each global page renders at most 100 sessions, not
+100 unbounded ticket cards. Pagination is hidden for a one-page result. A ticket
+spanning pages shows its total matching session count and an explicit continuation
+notice; Previous/Next reaches every matching row up to the shared 10,000-candidate
+collection limit. No group is silently truncated. Counts follow the current local
+view filters; capture coverage still describes the complete returned snapshot.
 
 The page marks captures at least 60 seconds old **stale** (a display age threshold,
 not a process-liveness verdict). During refresh, old rows are explicitly previous
@@ -95,8 +122,9 @@ The page must distinguish initial loading, refreshing, last successful capture,
 stale data, unavailable refresh, incomplete coverage and empty filtered results.
 Old rows remain labelled historical on refresh failure, never as a new observation.
 Open means alive, not actively working; registry status stays independent.
-Grouping uses scoped HerdR identity or explicit no-location states, with optional
-repository/ticket grouping. Large views paginate without silently dropping rows.
+Presentation groups exact repository/ticket associations while preserving each
+session's original scoped HerdR identity or explicit no-location state. Large
+views paginate without silently dropping sessions or concealing ticket continuation.
 A capture is an observation window, not a promise that a process has not exited or
 moved since then. Missing or ambiguous locations must not select a pane.
 

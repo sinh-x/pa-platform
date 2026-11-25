@@ -179,7 +179,7 @@
     "packages/pi-pa/src/session-cli.ts": "003d7803d09523c530a97dc6b1f6dd4caa2da6cfa4da6d1964fe5a33c1ba1778",
     "packages/pi-pa/src/session-dashboard-cli.ts": "c3f1bd8fb29e910b4bba9ba2a933b01fd0ec34eb2c6ff9b0b63423576aac2b76",
     "packages/pi-pa/src/session-dashboard-server.ts": "b1d2d31baa91e385d59beb081c396ace5176544ab863e95b9a1a240a1d0ac76b",
-    "packages/pi-pa/src/session-dashboard-page.ts": "1590e5fd3289461f6a94747205fc829ba09dfc0dad3d5fbc6e40f4fec23b325d",
+    "packages/pi-pa/src/session-dashboard-page.ts": "952e6300c8b35726e3d72aeb61cb6cbc594730f831f2d9e9b927f153e826a59e",
     "packages/pi-pa/src/document-cli.ts": "594a9647accc084dadbd5a5aa7958c2684473e726f16a1b664e43e2cd6fc80b5",
     "packages/pi-pa/src/pi-extension/advisory.ts": "c8e59c49e4a6f2a164bfb5a63618284e6d51eddc66f77165c21bf67422925fbd",
     "packages/pi-pa/src/pi-extension/capability-tool.ts": "bd2be6077c2c1dd2bc0c3cff404ad9532406a34ff27af73da4e4fba7d62733ce",
