@@ -222,6 +222,68 @@ compile-cache experiment (7.516/7.183 seconds without; 7.034/7.089 with) showed 
 a small noisy difference and was not adopted. A discovery command failed closed
 in `scout-block.cjs` (exit 70); no bypass was used.
 
-The end-to-end runtime goal remains unfinished. Next steps need an uninterrupted,
-controlled-load whole-lane profile and investigation of the actual 5 ms policy
-benchmark failure, not another claim that narrowed coverage is full optimization.
+The end-to-end runtime goal remained unfinished at that point. The continuation
+below records newer evidence; it does not turn partial checks into acceptance.
+
+## Updated develop and CLI startup continuation
+
+The operator requested an update from develop. Merge `1a1813b` incorporates
+`origin/develop` at `937c303` (v0.1.184), preserving the PAP-337 phases and adding
+upstream PAP-293 CI/fish driver tests to both root lanes. The single package.json
+conflict was resolved without dropping either side's tests; 34 focused checks
+passed before the merge commit.
+
+On that baseline the complete core code inventory ran serially: 155 files,
+2,596 passing events, 19 skipped, no failed/timed-out/unrun files, in 880.277
+seconds. The unchanged safety-policy benchmark passed separately at 1.953 ms
+against its 5 ms limit. This is an observed recheck, not proof that the merge
+fixed the earlier timing failure. OpenCode passed 125 with one skip; runtime-host
+passed its one test. The standard Pi code lane still reached its 1800-second
+budget and is not green.
+
+File-level profiling identified substantial repeated CLI startup in the native
+read-only helper matrix. `cli.ts` had imported every command handler, deployment
+and foreground machinery before dispatch. The continuation changes startup only:
+
+- Handlers load on their existing routes. Template resource `--version` precedence,
+  original handler arguments/callbacks, messages, streams and exit ownership remain.
+- `board`, `branch validate` and `repository inspect` use the same read-only helper
+  capability without loading unrelated deployment machinery. Mutating commands
+  stay on the full deployment-hook path.
+- The capability and its three supporting functions move to `readonly-helper.ts`.
+  TypeScript AST comparison verified all four function bodies byte-for-byte equal
+  to the merge baseline. `deploy.ts` re-exports the same implementations, not a
+  second guard or a permissive substitute. There is no authorization cache or
+  skipped physical/process/lease/ticket/registry/snapshot/immediate-reread check.
+
+New startup tests use disposable routing-only stubs to prove unloaded handlers,
+version precedence and mutation-route separation. They do not establish native
+authority. The unchanged real built-CLI helper suite still owns its 167-case role,
+negative, lineage and no-lifecycle-effects matrix.
+
+| Workload | Before | After | Actual result |
+| --- | ---: | ---: | --- |
+| Five-role positive matrix, same six tests and isolated TAP command | 56.182 s | 37.831 s | Six passed both times; about 33% lower wall time |
+| Full unchanged helper suite | 594.758 s file profile | 225.786 s isolated TAP | 167 passed in each completed run; different reporters and variable host load limit comparison |
+| Built CLI version, including launcher | 1.721–1.817 s | 0.131–0.134 s | Identical stdout and exit zero |
+
+A later **matched-profiler** full-helper repeat reached its 600-second file budget;
+therefore the single completed full-helper comparison is not a demonstrated
+repeatable 62% SLO or whole-suite improvement. An import-only lazy-dispatch
+experiment did not improve the positive helper matrix (56.830 s), which motivated
+the separate lightweight guard owner. A fresh private Node compile-cache experiment
+also remained inconclusive (68.138/52.995 s) and was not adopted.
+
+After the CLI changes, workspace typecheck and build passed; root driver tests
+passed 70/70; focused CLI/startup/auto/session/recovery/local-review/template tests
+passed 83/83. A final Pi typecheck/build passed after import cleanup. Completion
+generation passed with no generated diff. Four guard-body hashes and normalized
+original handler-call ASTs were checked; all original invocations were retained.
+The 167-case real helper pass is separate from the routing-only stub tests.
+
+Remaining qualification is explicit: handoff-native exceeded its 600-second
+profile budget, the later helper profile repeat was incomplete, and there is no
+complete final-candidate Pi code/full/native/installed/UAT pass. Prior completed
+file checks and partial retries do not substitute for those gates. Do not count
+larger diagnostic budgets as a speedup or silently remove the expensive cases.
+The measured positive-matrix gain is the scoped optimization established here.
