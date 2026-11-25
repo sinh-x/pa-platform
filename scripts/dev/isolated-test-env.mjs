@@ -15,7 +15,6 @@ export function createTestEnvironment(root, source = process.env) {
     XDG_DATA_HOME: join(root, 'data'),
     XDG_CACHE_HOME: join(root, 'cache'),
     XDG_STATE_HOME: join(root, 'state'),
-    PA_PLATFORM_HOME: join(root, 'platform'),
     PA_PLATFORM_CONFIG: join(root, 'config/pa-platform'),
     PA_PLATFORM_DATA: join(root, 'data/pa-platform'),
     PA_AI_USAGE_HOME: join(root, 'usage'),
@@ -43,7 +42,7 @@ export async function runIsolated(command, args, { env = process.env, cwd = proc
   const onInt = () => interrupt('SIGINT'), onTerm = () => interrupt('SIGTERM');
   try {
     const isolated = createTestEnvironment(root, env);
-    for (const key of ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'PA_PLATFORM_HOME', 'PA_PLATFORM_CONFIG', 'PA_PLATFORM_DATA', 'PA_AI_USAGE_HOME', 'PI_CODING_AGENT_DIR']) mkdirSync(isolated[key], { recursive: true });
+    for (const key of ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'PA_PLATFORM_CONFIG', 'PA_PLATFORM_DATA', 'PA_AI_USAGE_HOME', 'PI_CODING_AGENT_DIR']) mkdirSync(isolated[key], { recursive: true });
     child = spawn(command, args, { cwd, env: isolated, stdio, detached: grouped });
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
     if (timeoutMs > 0) timer = setTimeout(() => { timedOut = true; interrupt('SIGTERM'); }, timeoutMs);

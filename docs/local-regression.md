@@ -51,6 +51,14 @@ corepack pnpm test
 ```
 
 Code-only success never substitutes for that gate, installed verification or UAT.
+Root `test` and `test:code` now build core once before driver/workspace tests.
+Their internal `test:source` / `test:code:source` entries consume that same-run
+build while retaining fresh workspace fixture environments. Pi source validation,
+bundling, script tests and full/native source discovery are unchanged. Standalone
+workspace `test` still builds its dependency. These internal source entries are
+not independent fresh-build gates and must not be used to claim build/evidence
+reuse across invocations.
+
 Core files remain serial, including the unchanged 500 ms dashboard p95 assertion.
 Do not run timing qualification alongside builds or other test lanes. No parallel
 portable lane is enabled by this change.
@@ -61,6 +69,10 @@ Each launcher allocates a fresh temporary fixture root. It removes inherited
 `PA_`, `PI_`, `PPA_`, `OPA_`, `TREEHOUSE_` and `GIT_` variables, redirects HOME,
 XDG config/data/cache/state, PA config/data/home/usage/registry and Pi agent state,
 and removes `NODE_TEST_CONTEXT` so nested Node test commands actually run.
+It does not inject `PA_PLATFORM_HOME`: the default home remains isolated through
+HOME/config, while an explicit suite-owned `config_dir` keeps its documented
+precedence. Injecting that override initially broke the repository-map fixture;
+the broader follow-up found and corrected this launcher regression.
 Descendants inherit fixture paths; suites can explicitly supply their own fixtures.
 The todo registration unit fixture explicitly uses `createTodoModule({ env: {} })`.
 Production default persistence is unchanged.
@@ -163,3 +175,53 @@ rankings in a supported uninterrupted run; then profile fixture setup and subpro
 counts before proposing reuse or an isolated portable shard. Coordinate any hosted
 CI overlap/provisioning with PAP-293. Numerical full-suite speed targets and exact
 input reuse remain open until comparable whole-lane baselines exist.
+
+## Equal-coverage optimization follow-up
+
+The initial delivery improved isolation and visibility but did not establish a
+runtime optimization. The operator correctly challenged that distinction.
+Commit `67ecc97` adds actual repeated-work reductions:
+
+- Nine utility suites import their owning production modules instead of loading
+  the whole core barrel independently. All non-import statements were verified
+  identical using the TypeScript AST. One public-export identity test checks that
+  the public API still exposes the same implementations. Safety-policy tests
+  subsequently use the same narrow-import approach, without changing any case,
+  warm-up, sample count or performance threshold.
+- Root full/code invocations build core once rather than three times in downstream
+  workspaces. Every original test inventory and native setup step remains;
+  no source check, full entry, external guard or build prerequisite is cached away.
+
+On the same Node/pnpm/lockfile and serial command, the original nine-suite workload
+ran in 13.821 and 13.247 seconds (37 cases: 35 passed, two existing optional
+configuration skips). With narrow imports **including the added export test**, it
+ran in 8.223 and 7.916 seconds (38 cases: 36 passed, the same two skips). Median
+wall time dropped about 40%. This comparison does not rely on focused omission,
+parallelism, a RAM filesystem, shortened timeouts or a compilation cache.
+Three redundant core builds measured 15.364, 15.215 and 15.290 seconds; retaining
+one removes approximately 30 seconds of repeated setup in that environment.
+These are scoped measurements, not a proven whole-suite speedup.
+
+The larger root `test:code` attempt on `67ecc97` still reached its 1800-second
+caller budget after 54 driver tests passed. Core reported a repository-config
+fixture failure (corrected in the launcher) and a safety-policy p95 failure.
+Focused recheck after the config correction: 28 of 29 passed; the unchanged
+5 ms safety-policy limit measured 7.465 ms over 1200 calls and remains a failure.
+The isolation/inventory/projection harness passed all 18 tests after correction.
+Workspace typecheck passed; the subsequent combined typecheck/build command hit
+its 420-second caller budget during build, so no final complete build pass is
+claimed for that attempt. No workspace-code, full/native, installed or human
+acceptance is established by these partial checks.
+
+Host load varied substantially during profiling. A later single native-fixture
+probe measured 42 ms document setup, 7 ms DB backup, 242 ms Git/plan, 12 ms freeze,
+187 ms reader publication and 5 ms origin persistence, much lower than the initial
+loaded-host file totals. That does not justify weakening durability or native
+revalidation. Temporary timing instrumentation was removed. An alternating Node
+compile-cache experiment (7.516/7.183 seconds without; 7.034/7.089 with) showed only
+a small noisy difference and was not adopted. A discovery command failed closed
+in `scout-block.cjs` (exit 70); no bypass was used.
+
+The end-to-end runtime goal remains unfinished. Next steps need an uninterrupted,
+controlled-load whole-lane profile and investigation of the actual 5 ms policy
+benchmark failure, not another claim that narrowed coverage is full optimization.

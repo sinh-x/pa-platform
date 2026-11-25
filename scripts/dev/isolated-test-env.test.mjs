@@ -17,6 +17,9 @@ test('test environments remove ambient identity without mutating their source or
   for (const key of ['PATH', 'NODE_OPTIONS', 'TZ', 'LANG']) assert.equal(env[key], source[key]);
   assert.equal(env.COREPACK_HOME, '/original/.cache/node/corepack');
   assert.equal(env.PA_REGISTRY_DB, '/fixture/registry.db');
+  // HOME/config already isolate the default home; an extra override would mask
+  // suite-owned config_dir and change the repository configuration contract.
+  assert.equal(env.PA_PLATFORM_HOME, undefined);
 });
 
 test('ambient native sentinels survive default todo registration and descendants; fixture persistence works', { timeout: 60000 }, async t => {

@@ -10,6 +10,7 @@ import * as paths from "../paths.js";
 import * as registry from "../registry/index.js";
 import * as repoHealth from "../repo-health/index.js";
 import * as signal from "../signal/index.js";
+import * as safety from "../safety-policy.js";
 import * as skills from "../skills/index.js";
 import * as teams from "../teams/index.js";
 import * as tickets from "../tickets/store.js";
@@ -27,6 +28,7 @@ const unitExportGroups = [
   [registry, "appendEvaluatorResult appendRegistryEvent closeDb"],
   [repoHealth, "getRepoHealthDb insertRepoHealthReport getLatestRepoHealthReport getLatestRepoHealthReportWithBranches listRepoHealthReports rowToRepoHealthReport"],
   [signal, "cleanSignalEntries getSignalPaths isSensitive markSignalNoteAsProcessed parseSignalNoteMarkdown parseSqlcipherRows readCollectorState routeRawSignalNote saveRawNote writeCollectorState writeRoutedMessage"],
+  [safety, "classifyOutputTarget classifyPathOperand classifyShellCommand evaluateSafetyPolicy formatTrashMoveGuidance isBlockedFilePath isDestructiveCommand"],
   [skills, "buildSkillRegistryReport"],
   [teams, "getTeamModel listAgentTeamWorkspaces listTeamConfigs loadTeamConfig validateTeamSkillReferences"],
   [tickets, "TicketStore"],
