@@ -4,9 +4,18 @@
 
 PAP-334 currently delivers independent typed ticket administration and an interim
 fail-closed launch check. **It does not deliver a usable confined Analyst executor.**
-The complete ticket is not accepted. In particular, stopping a launch does not
-satisfy ordinary shared-file access, the eight-stage foreground journey, or the
-forced-effect isolation matrix. Source support is not installed availability.
+On 2026-11-25 Sinh requested a scope split: PAP-334 now covers the delivered typed
+ticket administration and interim fail-closed source behavior. The original full
+confinement outcome and its remaining acceptance are tracked by PAP-338 through
+PAP-344 below. Closing the revised delivery after its develop PR merges does not
+accept that original outcome. In particular, stopping a launch does not satisfy
+ordinary shared-file access, the eight-stage foreground journey, or the forced-effect
+isolation matrix. Source support is not installed availability.
+
+Sinh will perform installation from the retained worktree after integration. This
+source wrap-up does not install or activate anything, and the worktree must not be
+returned/deleted as part of closure. Installing the interim package will reject new
+and resumed protected Analyst execution until the follow-ups qualify an executor.
 
 The required move guarantee remains literal: a denied cross-boundary move must
 preserve both relevant sides through every enabled channel, including arbitrary
@@ -152,7 +161,25 @@ A direct write was rejected and an ordinary shared-file positive succeeded in
 the same fixture. These are intended-cause mechanism counterexamples, not an
 installed security advisory or proof that a replacement mechanism works.
 
-## Remaining implementation and qualification
+## Deferred implementation and qualification
+
+The original requirements are preserved in PAP-334's history. The smaller linked
+follow-ups retain their acceptance rather than treating a scope split as a pass:
+
+| Ticket | Owned deliverable | Dependencies |
+| --- | --- | --- |
+| PAP-338 | Prove a feasible mechanism and implementation contract. | PAP-334 source delivery |
+| PAP-339 | Bind complete trusted topology and race-safe invalidation. | PAP-338 |
+| PAP-340 | Enforce real confined tool/process/host execution and lifecycle. | PAP-339 |
+| PAP-341 | Implement ordinary shared files and all-channel transactional crossings. | PAP-339 |
+| PAP-342 | Run the forced AC2/AC3 matrix with related AC4/AC6 evidence. | PAP-340 and PAP-341 |
+| PAP-343 | Observe the genuine confined foreground AC1 eight-stage journey. | PAP-342 |
+| PAP-344 | Complete universal retained-interface/mode AC5 qualification. | PAP-334 source delivery |
+
+PAP-340 and PAP-341 consume one mechanism/topology contract. Neither can enable a
+half-protected Analyst before their combined scope is qualified. PAP-317's supported
+provenance owner and PAP-331's existing tool-exposure work remain related owners,
+not duplicated protocols or implicitly expanded/closed tickets.
 
 A usable executor still needs technically enforced transactional shared-file
 semantics, complete registry/worktree/Git-storage topology, alias and inherited

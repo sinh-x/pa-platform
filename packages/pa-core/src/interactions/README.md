@@ -451,3 +451,18 @@ No public actor/privilege field or new operation is accepted. The existing combi
 owner test again publishes/queues once while holding synthetic implementation
 success uncertain. Its hash is renewed for this semantic repair. Generic
 administration still cannot take over the native owner's unsettled operation.
+
+## PAP-334 scope split and integration handoff
+
+On 2026-11-25 Sinh explicitly revised PAP-334 to the delivered independent typed
+administration and interim fail-closed source slice, with PR integration into
+`develop`. The original unfinished requirements remain in linked follow-ups:
+PAP-338 mechanism feasibility, PAP-339 trusted topology, PAP-340 confined execution,
+PAP-341 transactional shared files, PAP-342 forced AC2/AC3 qualification, PAP-343
+foreground AC1 observation, and PAP-344 remaining universal AC5 availability.
+Closing the revised delivery after a verified PR merge does not convert source
+checks, deferred cases, or launch rejection into original confinement acceptance.
+See [the maintained contract](../../../../docs/analyst-repository-isolation.md).
+Sinh will perform installation from the retained worktree. This integration
+instruction is not agent installation, selector activation, native-effect
+approval, worktree return, or human UAT.
