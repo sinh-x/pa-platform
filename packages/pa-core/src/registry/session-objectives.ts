@@ -48,11 +48,18 @@ export function readSessionObjectivePreviews(deploymentIds: string[]): Record<st
       // materializing all raw objectives in a single large array.
       for (let offset = 0; offset < ids.length; offset += 500) {
         const batch = ids.slice(offset, offset + 500);
-        const statement = db.prepare(`SELECT deployment_id AS id, substr(objective, 1, ?) AS objective
+        const statement = db.prepare(`SELECT deployment_id AS id, substr(CAST(objective AS BLOB), 1, ?) AS objectiveBytes
           FROM deployments WHERE runtime = 'pi' AND binary = 'ppa' AND deployment_id IN (${batch.map(() => "?").join(",")})`);
-        for (const raw of statement.iterate(OBJECTIVE_SOURCE_LIMIT + 1, ...batch)) {
-          const row = raw as { id: string; objective: unknown };
-          result[row.id] = screenSessionObjective(row.objective, patterns);
+        for (const raw of statement.iterate(OBJECTIVE_SOURCE_LIMIT * 4 + 1, ...batch)) {
+          const row = raw as { id: string; objectiveBytes: unknown };
+          let value = row.objectiveBytes;
+          if (Buffer.isBuffer(value)) {
+            // SQLite text substr stops at NUL. Read bounded bytes instead so a
+            // control or secret suffix cannot disappear before screening.
+            try { value = new TextDecoder("utf-8", { fatal: true }).decode(value); }
+            catch { result[row.id] = { state: "withheld", reason: "sensitive-or-private" }; continue; }
+          }
+          result[row.id] = screenSessionObjective(value, patterns);
         }
       }
       return result;

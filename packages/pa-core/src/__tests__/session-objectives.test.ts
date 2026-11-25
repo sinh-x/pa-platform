@@ -35,10 +35,11 @@ test("exact existing-only registry reads are fresh, exclude other runtimes, neve
     const db = getDb();
     const add = db.prepare("INSERT INTO deployments (deployment_id, team, runtime, binary, objective) VALUES (?, 'fixture', ?, ?, ?)");
     add.run("d-000001", "pi", "ppa", "Build the session dashboard"); add.run("d-000002", "pi", "ppa", "password=" + "synthetic-value");
-    add.run("d-000003", "pi", "ppa", "Build dashboard. ".repeat(400)); add.run("d-000004", "pi", "ppa", null); add.run("d-ffffff", "opencode", "opa", "Do not show this objective");
+    add.run("d-000003", "pi", "ppa", "Build dashboard. ".repeat(400)); add.run("d-000004", "pi", "ppa", null); add.run("d-000005", "pi", "ppa", "Build views" + "\u0000" + "hidden control suffix"); add.run("d-000006", "pi", "ppa", Buffer.from([0xc3, 0x28])); add.run("d-ffffff", "opencode", "opa", "Do not show this objective");
     db.pragma("wal_checkpoint(TRUNCATE)"); closeDb();
-    const before = readFileSync(process.env.PA_REGISTRY_DB), result = readSessionObjectivePreviews(["d-000001", "d-000002", "d-000003", "d-000004", "d-ffffff"]);
+    const before = readFileSync(process.env.PA_REGISTRY_DB), result = readSessionObjectivePreviews(["d-000001", "d-000002", "d-000003", "d-000004", "d-000005", "d-000006", "d-ffffff"]);
     assert.equal(result["d-000001"]!.state, "available"); assert.equal(result["d-000002"]!.state, "withheld"); assert.equal(result["d-000003"]!.state, "withheld");
+    assert.equal(result["d-000005"]!.state, "withheld"); assert.equal(result["d-000006"]!.state, "withheld");
     assert.equal(result["d-000004"]!.state, "unavailable"); assert.equal(result["d-ffffff"]!.state, "unavailable");
     assert.ok(!JSON.stringify(result).includes("synthetic-value")); assert.ok(!JSON.stringify(result).includes("Do not show")); assert.deepEqual(readFileSync(process.env.PA_REGISTRY_DB), before);
     // Backup the disposable fixture before changing its existing data.

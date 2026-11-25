@@ -130,9 +130,11 @@ recorded metadata observed after the inventory window, not proof of the exact
 current process instructions or current activity. Missing/unreadable metadata
 preserves the inventory and produces an explicit unavailable state.
 
-The reader bounds selections to 10,000 exact IDs, 500 deployment IDs per SQL batch and
-4,097 source characters per streamed row. Inputs exceeding 4,096 JavaScript code
-units or containing structured metadata are wholly withheld. Complete bounded
+The reader bounds selections to 10,000 exact IDs, 500 deployment IDs per SQL batch
+and 16,385 source bytes per streamed row. It reads BLOB bytes and decodes strict
+UTF-8 rather than using SQLite text slicing, which can hide content after NUL.
+Invalid UTF-8, inputs exceeding 4,096 JavaScript code units, and structured metadata
+are wholly withheld. Complete bounded
 input is screened before truncation, using built-in/local sensitive patterns and
 the existing secret masker; path/slash-bearing values, controls, JWT-looking or
 long opaque strings are also conservatively withheld. Screening/policy failure
