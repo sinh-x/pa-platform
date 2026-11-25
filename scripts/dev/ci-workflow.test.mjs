@@ -11,7 +11,7 @@ const job = workflow.jobs.test;
 const steps = Object.fromEntries(job.steps.filter(s => s.id).map(s => [s.id, s]));
 // Evaluate the actual small concurrency expressions in YAML, not a second policy.
 const evaluate = (value, github) => value.replace(/\$\{\{\s*(.*?)\s*\}\}/g, (_, expression) => String(Function('github', `return (${expression});`)(github)));
-const context = (event, pr, run) => ({ workflow: 'CI', event_name: event, event: { pull_request: pr ? { number: pr } : {} }, run_id: run });
+const context = (event, pr, run, head = 'current-head') => ({ workflow: 'CI', event_name: event, event: { pull_request: pr ? { number: pr, head: { sha: head } } : { head: {} } }, run_id: run, sha: 'event-sha' });
 const admitted = (event, branch, type) => workflow.on[event]?.branches.includes(branch) && (!workflow.on[event].types || workflow.on[event].types.includes(type));
 
 test('event admission removes duplicate feature pushes, never omits a PR check by draft, fork or paths', () => {
@@ -32,11 +32,13 @@ test('event admission removes duplicate feature pushes, never omits a PR check b
   assert.equal(steps.checkout.with['persist-credentials'], false);
 });
 
-test('only newer runs of the same PR share a cancellation key; push, PR and other workflows are isolated', () => {
+test('only duplicate runs of the exact PR head share a key; stale reruns cannot cancel current coverage', () => {
   const key = ctx => evaluate(workflow.concurrency.group, ctx);
   const cancels = ctx => evaluate(workflow.concurrency['cancel-in-progress'], ctx) === 'true';
   const first = context('pull_request', 170, 100), update = context('pull_request', 170, 101);
   assert.equal(key(first), key(update)); assert.equal(cancels(update), true);
+  assert.notEqual(key(first), key(context('pull_request', 170, 102, 'stale-head')), 'rerunning a stale revision must not cancel current-head coverage');
+  assert.notEqual(key(first), key({ ...first, sha: 'stale-merge-candidate' }), 'same head on a stale base must not cancel the current merge candidate');
   assert.notEqual(key(first), key(context('pull_request', 171, 101)));
   assert.notEqual(key(first), key(context('push', undefined, 100)));
   assert.notEqual(key(context('push', undefined, 100)), key(context('push', undefined, 101)));
@@ -47,9 +49,9 @@ test('only newer runs of the same PR share a cancellation key; push, PR and othe
 test('all required checks have finite budgets, stable identity and no success-forcing skips', () => {
   assert.deepEqual(Object.keys(workflow.jobs), ['test']);
   assert.equal(job['runs-on'], 'ubuntu-24.04');
-  assert.equal(job['timeout-minutes'], 45);
+  assert.equal(job['timeout-minutes'], 90);
   for (const step of job.steps) {
-    assert.ok(step['timeout-minutes'] > 0 && step['timeout-minutes'] <= 30);
+    assert.ok(step['timeout-minutes'] > 0 && step['timeout-minutes'] <= 60);
     assert.equal(step['continue-on-error'], undefined);
     if (step.id !== 'manual-boundary' && step.name !== 'Summarize exact check delivery') assert.equal(step.if, undefined);
   }

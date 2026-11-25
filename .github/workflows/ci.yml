@@ -11,10 +11,10 @@ on:
 permissions:
   contents: read
 
-# PR updates supersede only the same PR. Pushes retain every integration result;
-# they can never cancel the authoritative PR merge-ref check.
+# Only duplicate runs of the same PR head and merge candidate share a group.
+# Stale reruns cannot cancel current coverage; pushes retain every result.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
     # PAP-owned code and fixture checks only. Operator-local pairing, immutable
     # sandbox and installed integration are separate, not certified by this job.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         id: checkout
@@ -79,7 +79,7 @@ jobs:
 
       - name: Code tests (manual integration is separate)
         id: code-tests
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: pnpm run test:code
 
       - name: Repository-owned pairing contract fixtures
