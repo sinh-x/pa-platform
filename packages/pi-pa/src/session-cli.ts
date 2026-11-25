@@ -5,6 +5,7 @@ import { sessionDisplayText, type SessionFilters } from "./session-inventory.js"
 export const SESSIONS_USAGE = `Usage: ppa sessions [--all] [--json] [--deployment ID] [--ticket ID] [--repo KEY]
 
 List verified-open local Linux PPA/Pi processes, grouped by HerdR session/workspace/tab.
+For the separate local dashboard: ppa sessions dashboard --help (explicit listener).
 Open means alive, not actively working or completed. Registry status is independent.
 Each call reads fresh evidence. Locations describe an observation window, not a lock.
 

@@ -27,7 +27,7 @@ function layout(t: TestContext) {
   `);
   writeFileSync(join(dist, "readonly-helper.js"), "export function createPiReadonlyHelperCapability(){return {authenticate:()=> 'fixture-only'}}\n");
   writeFileSync(join(dist, "workflow-host.js"), "export function piRetainedTemplateHost(){return undefined}\n");
-  for (const name of ["deploy", "adapter", "native-host", "auto-foreground", "document-cli", "session-cli", "setup"]) {
+  for (const name of ["deploy", "adapter", "native-host", "auto-foreground", "document-cli", "session-cli", "session-dashboard-cli", "setup"]) {
     writeFileSync(join(dist, `${name}.js`), "throw Error('unused-handler-fixture-sentinel');\n");
   }
   return (argv: string[]) => spawnSync(process.execPath, [join(dist, "cli.js"), ...argv], {

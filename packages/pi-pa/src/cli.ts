@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 // foreground, deployment and SDK handlers; their native guards still own effects.
 
 if (process.argv[2] === "sessions") {
-  const { runSessionsCommand } = await import("./session-cli.js");
-  // Read-only route: no deployment hooks, migrations, preflight or session control.
-  process.exitCode = await runSessionsCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
+  const io = { stdout: (s: string) => process.stdout.write(`${s}\n`), stderr: (s: string) => process.stderr.write(`${s}\n`) };
+  if (process.argv[3] === "dashboard") {
+    // Explicit listener resource, separate from the read-only inventory route.
+    const { runSessionDashboardCommand } = await import("./session-dashboard-cli.js");
+    process.exitCode = await runSessionDashboardCommand(process.argv.slice(4), io);
+  } else {
+    const { runSessionsCommand } = await import("./session-cli.js");
+    process.exitCode = await runSessionsCommand(process.argv.slice(3), io);
+  }
 } else if (process.argv[2] === "auto") {
   const { AutoWaitlistStore } = await import("@pa-platform/pa-core");
   const { runAutoCommand } = await import("./auto-cli.js");
