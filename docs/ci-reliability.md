@@ -160,10 +160,18 @@ portable-runtime subprocess check failed; earlier passes do not certify this
 final candidate. No test was deleted, reclassified or weakened in response.
 Independent follow-up review confirmed the concurrency repair and passed all
 16 provisioning/workflow checks, while retaining these qualification gaps.
-Full code-only, full manual/installed and hosted-candidate qualification remain
-unproven until complete successful runs. No PR is opened on this evidence.
-Administrative command evidence is retained with deployment d-fd125a, not
-substituted by this maintained policy document.
+Full code-only, full manual/installed and hosted-candidate qualification were
+not established by those initial runs, and no PR was opened on that evidence.
+
+On the operator's subsequent integration instruction, the feature branch merged
+latest fetched develop `003d6e4` (version 0.1.182) in `2a63445` without conflicts.
+Frozen dependency installation, typecheck, build, the 23 focused CI/inventory
+checks, all 45 pairing fixtures, generated completion diff, actual local fish
+syntax/timing, secrets scan and diff checks then passed. Full code-only hosted
+validation is still required for the actual PR head/merge candidate; these fresh
+local checks do not relabel the historical timeouts or qualify installed/manual
+integration. Administrative command evidence is retained with deployment
+d-fd125a, not substituted by this maintained policy document.
 
 ## Reference contracts
 
