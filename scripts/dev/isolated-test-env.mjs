@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function createTestEnvironment(root, source = process.env) {
-  const env = Object.fromEntries(Object.entries(source).filter(([key]) => !/^(PA_|PI_|PPA_|OPA_|TREEHOUSE_|GIT_)/.test(key)));
+  const env = Object.fromEntries(Object.entries(source).filter(([key]) => !/^(PA_|PI_|PPA_|OPA_|TREEHOUSE_|GIT_|NODE_TEST_CONTEXT$)/.test(key)));
   // Keep the already selected package-manager cache usable without borrowing PA state.
   env.COREPACK_HOME ??= join(source.XDG_CACHE_HOME || join(source.HOME || homedir(), '.cache'), 'node/corepack');
   Object.assign(env, {
@@ -25,7 +25,7 @@ export function createTestEnvironment(root, source = process.env) {
   return env;
 }
 
-export async function runIsolated(command, args, { env = process.env, cwd = process.cwd(), timeoutMs = 0 } = {}) {
+export async function runIsolated(command, args, { env = process.env, cwd = process.cwd(), timeoutMs = 0, stdio = 'inherit' } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) throw new Error('Invalid test timeout');
   // Allocation failure is fatal; never run with the original environment as fallback.
   const root = mkdtempSync(join(tmpdir(), 'pa-regression-'));
@@ -44,7 +44,7 @@ export async function runIsolated(command, args, { env = process.env, cwd = proc
   try {
     const isolated = createTestEnvironment(root, env);
     for (const key of ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'PA_PLATFORM_HOME', 'PA_PLATFORM_CONFIG', 'PA_PLATFORM_DATA', 'PA_AI_USAGE_HOME', 'PI_CODING_AGENT_DIR']) mkdirSync(isolated[key], { recursive: true });
-    child = spawn(command, args, { cwd, env: isolated, stdio: 'inherit', detached: grouped });
+    child = spawn(command, args, { cwd, env: isolated, stdio, detached: grouped });
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
     if (timeoutMs > 0) timer = setTimeout(() => { timedOut = true; interrupt('SIGTERM'); }, timeoutMs);
     const result = await new Promise((resolveResult, reject) => {
@@ -65,7 +65,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (process.argv[2] !== '--' || !process.argv[3]) throw new Error('Usage: isolated-test-env.mjs -- command [arguments]');
   try {
     const result = await runIsolated(process.argv[3], process.argv.slice(4));
-    process.exitCode = result.code ?? (result.signal === 'SIGINT' ? 130 : result.signal === 'SIGTERM' ? 143 : 1);
+    process.exitCode = result.interrupted === 'SIGINT' ? 130 : result.interrupted === 'SIGTERM' ? 143 : result.timedOut ? 1 : result.code ?? (result.signal === 'SIGINT' ? 130 : result.signal === 'SIGTERM' ? 143 : 1);
   } catch {
     console.error('Isolated tests did not complete. Check the test fixture and toolchain; no ambient-environment fallback was attempted.');
     process.exitCode = 1;

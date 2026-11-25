@@ -3,14 +3,16 @@ import test from 'node:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createTestEnvironment, runIsolated } from './isolated-test-env.mjs';
 
 const repo = new URL('../../', import.meta.url);
 
 test('test environments remove ambient identity without mutating their source or toolchain', () => {
-  const source = { HOME: '/original', PATH: '/tools', PA_DEPLOYMENT_ID: 'd-live', PA_ACTIVITY_LOG: '/live/log', PA_UNKNOWN_FUTURE_KEY: 'live', PI_SESSION_ID: 'live', GIT_DIR: '/live/git', TREEHOUSE_PANE_ID: 'live', NODE_OPTIONS: '--no-warnings', TZ: 'Asia/Saigon', LANG: 'en_US.UTF-8' };
+  const source = { HOME: '/original', PATH: '/tools', PA_DEPLOYMENT_ID: 'd-live', PA_ACTIVITY_LOG: '/live/log', PA_UNKNOWN_FUTURE_KEY: 'live', PI_SESSION_ID: 'live', GIT_DIR: '/live/git', TREEHOUSE_PANE_ID: 'live', NODE_OPTIONS: '--no-warnings', NODE_TEST_CONTEXT: 'child-v8', TZ: 'Asia/Saigon', LANG: 'en_US.UTF-8' };
   const env = createTestEnvironment('/fixture', source);
-  for (const key of ['PA_DEPLOYMENT_ID', 'PA_ACTIVITY_LOG', 'PA_UNKNOWN_FUTURE_KEY', 'PI_SESSION_ID', 'GIT_DIR', 'TREEHOUSE_PANE_ID']) assert.equal(env[key], undefined);
+  for (const key of ['PA_DEPLOYMENT_ID', 'PA_ACTIVITY_LOG', 'PA_UNKNOWN_FUTURE_KEY', 'PI_SESSION_ID', 'GIT_DIR', 'TREEHOUSE_PANE_ID', 'NODE_TEST_CONTEXT']) assert.equal(env[key], undefined);
   assert.equal(source.PA_DEPLOYMENT_ID, 'd-live');
   for (const key of ['PATH', 'NODE_OPTIONS', 'TZ', 'LANG']) assert.equal(env[key], source[key]);
   assert.equal(env.COREPACK_HOME, '/original/.cache/node/corepack');
@@ -52,6 +54,12 @@ test('ambient native sentinels survive default todo registration and descendants
   assert.equal(result.timedOut, false);
   names.forEach((name, i) => assert.deepEqual(readFileSync(join(root, name)), before[i]));
   assert.equal(existsSync(JSON.parse(readFileSync(footprint)).home), false);
+});
+
+test('unavailable fixture allocation never falls back to the ambient environment', () => {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./isolated-test-env.mjs', import.meta.url)), '--', process.execPath, '-e', 'process.exit(0)'], { encoding: 'utf8', env: { ...process.env, TMPDIR: '/does-not-exist/pa-fixture-parent' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no ambient-environment fallback/);
 });
 
 test('failure, unavailable executable, timeout and cancellation remain non-successful', async () => {
