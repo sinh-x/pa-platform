@@ -27,7 +27,8 @@ test('ordinary CI has no Nix step and package builds are manual/release-only', (
   assert.deepEqual(packaging.on.push.branches, ['main']);
   assert.ok(Object.hasOwn(packaging.on, 'workflow_dispatch'));
   const pkg = JSON.parse(readFileSync(new URL('packages/pi-pa/package.json', root), 'utf8'));
-  assert.match(pkg.scripts.test, /src\/\*\*\/\*\.test\.ts/);
+  assert.match(pkg.scripts.test, /isolated-test-env\.mjs -- corepack pnpm run test:run/);
+  assert.match(pkg.scripts['test:source:run'], /src\/\*\*\/\*\.test\.ts/);
 });
 
 test('hosted CI checks only this repository and its owned fixtures without external configuration access', () => {
@@ -44,6 +45,33 @@ test('hosted CI checks only this repository and its owned fixtures without exter
   }
   assert.match(commands, /repository-owned fixtures/i);
   assert.match(commands, /operator-local configuration pairing.*separate/i);
+});
+
+test('workspace test gates build core once per invocation without omitting source or native setup', () => {
+  const root = new URL('../../', import.meta.url);
+  const pkg = path => JSON.parse(readFileSync(new URL(path, root), 'utf8'));
+  const scripts = pkg('package.json').scripts;
+  const build = 'corepack pnpm --filter @pa-platform/pa-core build';
+  for (const name of ['test:run', 'test:code:run']) {
+    assert.ok(scripts[name].startsWith(`${build} && node --test `));
+    assert.equal(scripts[name].split(build).length, 2);
+  }
+  assert.match(scripts['test:run'], /-r --workspace-concurrency=1 test:source$/);
+  for (const [name, lane] of [['pa-core', 'test:code'], ['opencode-pa', 'test:source'], ['pi-pa', 'test:code:source'], ['runtime-host', 'test:source']]) {
+    assert.ok(scripts['test:code:run'].includes(`--filter @pa-platform/${name} ${lane}`));
+    const child = pkg(`packages/${name}/package.json`).scripts;
+    assert.match(child['test:source'], /isolated-test-env\.mjs -- /);
+    if (name !== 'pa-core') assert.ok(child['test:run'].startsWith(`${build} && `), 'standalone test still builds its dependency');
+    assert.ok(!child['test:source'].includes(build));
+    if (name === 'pi-pa') {
+      assert.ok(child['test:code:run'].startsWith(`${build} && `));
+      for (const source of ['test:source:run', 'test:code:source:run']) {
+        assert.ok(!child[source].includes(build));
+        for (const required of ['validate-extension-sources.mjs', 'bundle-extension-sources.mjs', 'scripts/**/*.test.mjs', 'PI_PA_PLUGIN_SELECTION=']) assert.ok(child[source].includes(required));
+      }
+      assert.match(child['test:code:source:run'], /run_code_tests\.mjs pi-pa/);
+    }
+  }
 });
 
 test('stale manual inventory fails instead of silently omitting coverage', () => {
@@ -76,7 +104,7 @@ test('full local and installed workflow entry still registers all native groups 
   assert.doesNotMatch(entry.getText(entry), /test\.(?:skip|todo)/);
   assert.doesNotMatch(code.getText(code), /test\.(?:skip|todo)|registerWorkflowMatrixCases/);
   const pkg = JSON.parse(readFileSync(new URL('../../packages/pi-pa/package.json', import.meta.url), 'utf8'));
-  assert.match(pkg.scripts.test, /tsx --test --test-concurrency=1 "src\/\*\*\/\*\.test\.ts"/);
+  assert.match(pkg.scripts['test:source:run'], /tsx --test --test-concurrency=1 "src\/\*\*\/\*\.test\.ts"/);
   const config = JSON.parse(readFileSync(new URL('../../packages/pi-pa/tsconfig.json', import.meta.url), 'utf8'));
   assert.ok(config.exclude.includes('src/__tests__/pi-workflow-code-cases.ts'));
 });

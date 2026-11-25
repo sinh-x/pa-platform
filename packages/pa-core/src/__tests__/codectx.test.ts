@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyzeRepo, deleteGraph, formatExportsResult, generateMarkdown, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../index.js";
+import { analyzeRepo, deleteGraph, formatExportsResult, generateMarkdown, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
 
 test("codectx analyzes, queries, renders, and stores a graph", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-codectx-"));

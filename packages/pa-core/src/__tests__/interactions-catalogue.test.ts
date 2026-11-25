@@ -510,6 +510,37 @@ test("conservative source inventory rejects tracked changes and added CLI comman
   assert.notEqual(createHash("sha256").update(mutated).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
 });
 
+test("PAP-337 startup split tracks the same read-only owner without changing forms, effects or native bindings", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  for (const path of ["packages/pi-pa/src/cli.ts", "packages/pi-pa/src/deploy.ts", "packages/pi-pa/src/readonly-helper.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked CLI/helper owner: ${path}`);
+  }
+  // Lazy loading changes startup dependencies, not any operation's admission.
+  // The conservative hash guard above still rejects all changed tracked bytes.
+  for (const [id, forms] of [
+    ["global.version", ["--version", "-V"]],
+    ["board.list", ["board", "board --project", "board --all", "board --include-archived"]],
+    ["branch.validate", ["branch validate"]],
+    ["repository.inspect", ["repository inspect"]],
+  ] as const) {
+    const row = operation(id);
+    assert.deepEqual(row.cliForms, forms);
+    assert.deepEqual(row.channels, ["cli"]);
+    assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.effectClass, "read");
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.delegationBinding, null);
+  }
+  for (const id of ["branch.create", "repository.quarantine"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "resource");
+    assert.equal(row.targetDisposition, "operator-only");
+    assert.equal(row.nativeBinding, null);
+  }
+  assert.equal(operation("deploy.launch").effectClass, "launch");
+  assert.equal(operation("deploy.launch").nativeBinding, null);
+});
+
 test("PAP-324 naming-policy reconciliation tracks pure matching and observation dependencies without adding effects", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   // Existing actions, aliases, request/result schemas and effect categories are
@@ -534,4 +565,23 @@ test("PAP-303 inventory tracks private observation/lifecycle dependencies withou
     assert.equal([...operation.cliForms, ...operation.nativeForms].some(form => /herdr|pa_peer|peer.request/.test(form)), false,
       "source reconciliation must not invent an available peer request operation");
   }
+});
+
+test("PAP-336 boot module preserves operator-only serve effects and adds no CLI or native forms", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  assert.ok(Object.hasOwn(manifest.sources, "nix/pa-server.nix"), "track the boot service owner imported by flake.nix");
+  const module = readFileSync(resolve(root, "nix/pa-server.nix"), "utf8");
+  assert.match(module, /config = lib\.mkIf cfg\.enable/);
+  assert.ok(module.includes('ExecStart = "${cfg.package}/bin/pa-core serve --host 127.0.0.1 --port ${toString cfg.port}";'));
+  assert.doesNotMatch(module, /--background|--force|--cors|0\.0\.0\.0/);
+  assert.deepEqual(operation("serve.start").cliForms, ["serve", "serve --background", "serve --force", "serve --dev", "serve --host", "serve --port", "serve --cors", "serve --local-review"]);
+  for (const id of ["serve.start", "serve.stop", "serve.restart"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "resource");
+    assert.equal(row.targetDisposition, "operator-only");
+    assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.delegationBinding, null);
+  }
+  assert.equal(operation("serve.status").effectClass, "write", "stale PID cleanup is still not a native observational read");
 });

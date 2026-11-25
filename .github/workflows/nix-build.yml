@@ -16,6 +16,7 @@ on:
       - 'flake.nix'
       - 'flake.lock'
       - 'nix/treehouse.nix'
+      - 'nix/pa-server*.nix'
       - 'scripts/pap-252-*-smoke.*'
       - 'completions/**'
       - '.github/workflows/nix-build.yml'
@@ -45,6 +46,9 @@ jobs:
             echo "::error::run \`bash scripts/dev/version_bump.sh --refresh-hash\` locally, commit flake.nix, and re-push."
             exit 1
           fi
+
+      - name: Check PA server NixOS module contract
+        run: nix build '.#checks.x86_64-linux.pa-server-module' --print-build-logs --no-link
 
       - name: Verify packaged Treehouse runtime contract
         run: nix build '.?submodules=1#checks.x86_64-linux.treehouse-runtime' --print-build-logs

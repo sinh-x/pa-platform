@@ -74,6 +74,15 @@ pa-core serve
 
 Without a deployment adapter hook, `pa-core deploy` returns an explicit error instead of invoking a runtime directly. `pa-core serve` starts the core Agent API server and routes API deployment requests through the configured default adapter when one is provided.
 
+### Opt-in NixOS server service
+
+Import `pa-platform.nixosModules.pa-server` and set `services.pa-server.enable = true`
+with an explicit existing unprivileged `user` to start the packaged server at boot.
+`services.pa-server.port` defaults to `9848` and can be changed declaratively.
+The service stays on `127.0.0.1`; importing it alone does not enable anything or
+open firewall ports. See [configuration, prerequisites and recovery](docs/nixos-pa-server.md).
+Host activation and remote exposure are separate operator decisions.
+
 ## Canonical templates (Pi/PPA only, PAP-270)
 
 `ppa template list/show/render/validate` and native `pa_template` share one selected-config service. They return versioned provenance and unsigned structural drafts, never human decisions, native facts or readiness. Start with `ppa template --help` or `ppa template list --format json`; use the exact selected ID/revision and typed bindings.

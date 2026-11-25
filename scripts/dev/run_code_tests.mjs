@@ -40,17 +40,17 @@ export function partitionTests(files, manual, entries = {}) {
   }
   return { code: [...all.filter(path => path.endsWith('.test.ts') && !Object.hasOwn(manual, path)), ...replacements].sort(), manual: all.filter(path => Object.hasOwn(manual, path)) };
 }
-function discover(root, folder = join(root, 'src')) {
+export function discoverTests(root, folder = join(root, 'src')) {
   return readdirSync(folder, { withFileTypes: true }).flatMap(entry => {
     const path = join(folder, entry.name);
-    return entry.isDirectory() ? discover(root, path) : entry.isFile() && entry.name.endsWith('.ts') ? [relative(root, path).split('\\').join('/')] : [];
+    return entry.isDirectory() ? discoverTests(root, path) : entry.isFile() && entry.name.endsWith('.ts') ? [relative(root, path).split('\\').join('/')] : [];
   });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const name = process.argv[2];
   if (process.argv.length !== 3 || !Object.hasOwn(manualIntegration, name)) throw new Error('Select pa-core or pi-pa code tests');
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../packages', name);
-  const manual = manualIntegration[name], entries = codeOnlyEntries[name], selected = partitionTests(discover(root), manual, entries);
+  const manual = manualIntegration[name], entries = codeOnlyEntries[name], selected = partitionTests(discoverTests(root), manual, entries);
   console.log(`Code-only CI ${name}: ${selected.code.length} source test files; ${selected.manual.length} explicitly deferred manual integration files.`);
   for (const path of selected.manual) console.log(`MANUAL INTEGRATION (not passed/skipped by this lane): ${path}: ${manual[path]}`);
   for (const [full, code] of Object.entries(entries)) console.log(`CODE-ONLY ENTRY: ${code}; full local/installed entry remains ${full}`);

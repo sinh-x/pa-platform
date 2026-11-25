@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildSkillRegistryReport } from "../index.js";
+import { buildSkillRegistryReport } from "../skills/index.js";
 
 test("buildSkillRegistryReport inventories skills and validates metadata", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-skills-"));

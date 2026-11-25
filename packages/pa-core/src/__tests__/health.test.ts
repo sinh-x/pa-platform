@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendRegistryEvent, checkAgents, checkDeployments, checkTickets, closeDb, detectErrorLoops, formatPrimerHealthSummary, generateHealthReport, listHealthSnapshots, parseActivityLog, saveHealthSnapshot, TicketStore } from "../index.js";
+import { appendRegistryEvent, closeDb } from "../registry/index.js";
+import { checkAgents, checkDeployments, checkTickets, detectErrorLoops, formatPrimerHealthSummary, generateHealthReport, listHealthSnapshots, parseActivityLog, saveHealthSnapshot } from "../health/index.js";
+import { TicketStore } from "../tickets/store.js";
 
 function withHealthEnv(fn: (root: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-core-health-"));
