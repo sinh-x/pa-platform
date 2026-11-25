@@ -52,6 +52,7 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
   const capture = options.capture ?? captureSessions;
   const assets = options.assets ?? { html: DASHBOARD_HTML, script: DASHBOARD_SCRIPT, css: DASHBOARD_CSS };
   const sockets = new Set<Socket>();
+  const expiresAt = new WeakMap<Socket, number>();
   let active = false;
   const server = createServer({ maxHeaderSize: DASHBOARD_LIMITS.headerBytes, headersTimeout: headerMs, requestTimeout: headerMs, keepAliveTimeout: 1 });
   server.maxHeadersCount = 0;
@@ -59,6 +60,7 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
   server.on("connection", socket => {
     if (sockets.size >= DASHBOARD_LIMITS.sockets) { socket.destroy(); return; }
     sockets.add(socket);
+    expiresAt.set(socket, performance.now() + overallMs);
     const timer = setTimeout(() => socket.destroy(), overallMs);
     const headerTimer = setTimeout(() => socket.destroy(), headerMs);
     // Each connection admits one request. Even a dribbling peer has an absolute deadline.
@@ -72,6 +74,8 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
     response.on("error", () => request.socket.destroy());
     const send = (status: number, body: string, type = "application/json; charset=utf-8") => {
       if (response.destroyed || response.headersSent) return;
+      // Synchronous local reads can delay timers; never publish their late result.
+      if (performance.now() >= (expiresAt.get(request.socket) ?? 0)) { request.socket.destroy(); return; }
       response.writeHead(status, { ...SECURITY_HEADERS, "Content-Type": type, "Content-Length": Buffer.byteLength(body), Connection: "close" });
       response.end(body);
     };

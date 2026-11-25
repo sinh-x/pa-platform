@@ -1,5 +1,34 @@
 # Local PPA session dashboard
 
+## Use the dashboard
+
+```sh
+ppa sessions dashboard --help
+ppa sessions dashboard --port 8787
+```
+
+Open the printed `http://127.0.0.1:8787/` address manually on the same host. Keep
+this foreground command running. The initial page load captures once; use **Refresh
+capture** for each new observation. Ctrl-C closes only this listener, not any listed
+session. The page requires JavaScript; `ppa sessions` remains the plain-text/JSON
+alternative. No browser installation, external assets or new dependency is required.
+
+Deployment, ticket and repository-key filters are exact AND intersections. Filter
+edits apply only when Refresh is selected; the applied filters remain displayed
+with the last successful capture. **Include nonverified candidate diagnostics**
+matches `ppa sessions --all`. Group by scoped HerdR session/workspace/tab (default),
+repository or ticket. Groups sort deterministically; each page displays at most
+100 rows. Every row remains reachable through Previous/Next, up to the shared
+10,000-candidate collection limit. Grouping/pagination never causes collection.
+
+The page marks captures at least 60 seconds old **stale** (a display age threshold,
+not a process-liveness verdict). During refresh, old rows are explicitly previous
+observations. Failed refreshes retain that same historical capture, filters and
+coverage; they do not become a new empty/current result. Server busy responses
+require waiting for the existing capture to settle. Missing registry evidence
+produces an unavailable view, never an implicit registry reset. Refresh can
+reobserve an exit or move, but the page cannot promise ongoing liveness.
+
 ## Contract and capability map (PAP-286)
 
 The dashboard is a separate read-only reader of PAP-281's exported `captureSessions`
@@ -64,6 +93,20 @@ Grouping uses scoped HerdR identity or explicit no-location states, with optiona
 repository/ticket grouping. Large views paginate without silently dropping rows.
 A capture is an observation window, not a promise that a process has not exited or
 moved since then. Missing or ambiguous locations must not select a pane.
+
+## Messages and compatibility
+
+Previously there was no dashboard route. Now help explains its explicit listener
+and local-process trust, startup reports `Local session dashboard listening at
+http://127.0.0.1:PORT/`, invalid usage starts `Session dashboard not started: invalid
+options.`, and listener failure starts `Session dashboard unavailable: its local
+listener could not be established or retained.` Failure diagnostics use the
+repository's bounded five-field formatter, never raw exceptions. Help, startup,
+usage and listener failures are the affected CLI message categories. The page
+separately explains loading, partial coverage, stale/history, empty and failed
+refresh states. Plain output does not rely on color. The existing inventory table,
+JSON schema, status/stream contract and OPA command surface remain unchanged;
+PPA inventory help only links the new explicit dashboard help.
 
 ## Scope exclusions and qualification
 

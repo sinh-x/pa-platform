@@ -52,6 +52,8 @@ export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   entry("global.help", ["help", "--help", "-h", "<no command>"], "read", "native", "packages/pa-core/src/cli/core-command.ts", "CLI metadata"),
   entry("global.version", ["--version", "-V"], "read", "native", `${pi}cli.ts`, "PPA package identity", { reason: "PPA global version is package metadata, not installed provenance; template --version selects a resource revision." }),
   entry("sessions.list", ["sessions", "sessions --all", "sessions --json", "sessions --deployment", "sessions --ticket", "sessions --repo", "sessions --help"], "read", "native", `${pi}session-cli.ts`, "local Pi session inventory", { reason: "PPA-only fresh bounded local Linux registry/process/HerdR observation. Existing launch evidence only; no activity inference, lifecycle reconciliation, session control or native port. Partial coverage and candidate diagnostics remain explicit. Source discovery is not installed availability or admission." }),
+  entry("sessions.dashboard-help", ["sessions dashboard --help", "sessions dashboard -h"], "read", "native", `${pi}session-dashboard-cli.ts`, "local session dashboard help", { reason: "PPA-only help does not listen or collect. No native dashboard binding or installed availability follows from discovery." }),
+  entry("sessions.dashboard", ["sessions dashboard --port"], "resource", "operator", `${pi}session-dashboard-cli.ts`, "local session dashboard", { reason: "Explicitly starts a dedicated foreground 127.0.0.1 listener; inventory reads are not a listener grant. Local OS processes are trusted, with no separate user authentication. Browser Host/origin/custom-header checks are not local-user isolation. No browser launch, session control, lifecycle reconciliation, registry writes or general Agent API exposure. No native start binding is provided." }),
   ...family("status", "deployment status", [
     ["list", ["status", "status --running", "status --today", "status --team", "status --recent"], "read", "native"],
     ["detail", ["status <deployment>"], "read", "native"],
@@ -331,6 +333,7 @@ const mustNotRead = new Set(["health.save", "status.wait", "deploy.preview", "ev
 // Exact closure for reconciled finite variants, including reads. This is an
 // independent semantic guard, not an executable admission/dispatch table.
 const finiteEffects: Readonly<Record<string, InteractionEffect>> = Object.freeze({
+  "sessions.dashboard": "resource", "sessions.dashboard-help": "read",
   "ticket.native.inspect": "read", "ticket.native.create": "write", "ticket.native.update": "write",
   "ticket.native.set-status": "write", "ticket.native.comment": "write",
   "ticket.status.inspect": "read", "ticket.status.set": "write",
@@ -342,7 +345,7 @@ const finiteEffects: Readonly<Record<string, InteractionEffect>> = Object.freeze
   "phase-report.attach-actual": "write", "phase-report.observe-actual": "write", "ticket.planned-actual": "read", "resource.selected.read": "read",
 });
 const operatorFamilies = new Set(["signal", "repo-setup", "schedule"]);
-const operatorOperations = new Set(["serve.start", "serve.restart"]);
+const operatorOperations = new Set(["serve.start", "serve.restart", "sessions.dashboard"]);
 export function validateInteractionCatalogue(rows: readonly CatalogueEntry[]): string[] {
   const issues = new Set<string>();
   const ids = new Set<string>();

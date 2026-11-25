@@ -89,6 +89,16 @@ test("absolute connection deadline discards a late result, retains admission and
     assert.deepEqual(JSON.parse((await get(server)).body), snapshot);
   } finally { held.resolve(snapshot); await close(server); }
 });
+test("synchronous deadline overrun and oversized projection never publish a successful result", async () => {
+  const snapshot = await captureSessions({}, fixture(), herdr);
+  const server = await startSessionDashboard({ port: 0, deadlines: { overallMs: 40 }, capture: async () => {
+    const until = performance.now() + 60; while (performance.now() < until) { /* Simulated non-preemptible local read. */ }
+    return snapshot;
+  } });
+  try { await assert.rejects(get(server)); } finally { await close(server); }
+  const large = await startSessionDashboard({ port: 0, capture: async () => ({ ...snapshot, scope: "x".repeat(DASHBOARD_LIMITS.responseBytes) } as SessionSnapshot) });
+  try { const result = await get(large); assert.equal(result.status, 503); assert.equal(result.body, '{"error":"response-limit"}'); } finally { await close(large); }
+});
 test("partial headers, oversized headers, duplicate Host, upgrade and CONNECT cannot collect", async () => {
   let reads = 0;
   const server = await startSessionDashboard({ port: 0, deadlines: { headerMs: 50, overallMs: 200 }, capture: async () => { reads++; throw new Error(); } });

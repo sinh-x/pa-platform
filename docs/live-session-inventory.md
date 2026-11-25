@@ -37,7 +37,7 @@ The first version supports local Linux and HerdR protocol 22. It reads at most 1
 
 No HerdR installation, stopped/inaccessible servers, malformed replies, concurrent exits and collection timeouts preserve independently verified process rows with honest location limitations. Partial and empty captures exit 0. Invalid options or a fatal required local metadata read exit nonzero, emit a bounded safe diagnostic to stderr, and emit no inventory rows. Successful JSON is exactly one stdout document with no appended prose.
 
-The command does not start/attach/focus/rename/stop sessions, send input or signals, reconcile deployment lifecycle, modify registry/tickets/configuration, or create a daemon. It uses existing-only read-only registry access and directly connects only to existing current-user local HerdR sockets. There is no remote or dashboard endpoint. The exported `captureSessions` projection is the reuse boundary for separately authorized PAP-286 work; this feature does not implement that dashboard.
+The command does not start/attach/focus/rename/stop sessions, send input or signals, reconcile deployment lifecycle, modify registry/tickets/configuration, or create a daemon. It uses existing-only read-only registry access and directly connects only to existing current-user local HerdR sockets. The list command exposes no remote or dashboard endpoint. Its exported `captureSessions` projection is also used by the separately selected [local read-only dashboard](local-session-dashboard.md) (`ppa sessions dashboard --port PORT`). Starting that foreground listener is explicit and separate from inventory collection.
 
 ## Message examples and verification boundaries
 

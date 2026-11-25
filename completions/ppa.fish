@@ -646,14 +646,17 @@ complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l id -r -d '
 complete -c ppa -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate' -l definition-file -r -d 'Bounded local JSON for static inspection only'
 complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l json -d 'Stable JSON projection'
 
-# Pi-only fresh read-only local session inventory
+# Pi-only fresh read-only local session inventory and explicit local dashboard
 complete -c ppa -n __fish_use_subcommand -a sessions -d 'Verified-open Pi processes and scoped HerdR locations'
-complete -c ppa -n '__fish_seen_subcommand_from sessions' -l all -d 'Include nonverified candidate diagnostics'
-complete -c ppa -n '__fish_seen_subcommand_from sessions' -l json -d 'One ppa-sessions/v1 document'
-complete -c ppa -n '__fish_seen_subcommand_from sessions' -l deployment -r -d 'Exact deployment ID'
-complete -c ppa -n '__fish_seen_subcommand_from sessions' -l ticket -r -d 'Exact current ticket ID'
-complete -c ppa -n '__fish_seen_subcommand_from sessions' -l repo -r -d 'Exact canonical repository key'
-complete -c ppa -n '__fish_seen_subcommand_from sessions' -l help -d 'Show inventory scope and options'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -a dashboard -d 'Explicit foreground loopback dashboard; local-process trust'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -l all -d 'Include nonverified candidate diagnostics'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -l json -d 'One ppa-sessions/v1 document'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -l deployment -r -d 'Exact deployment ID'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -l ticket -r -d 'Exact current ticket ID'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -l repo -r -d 'Exact canonical repository key'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and not __fish_seen_subcommand_from dashboard' -l help -d 'Show inventory scope and options'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and __fish_seen_subcommand_from dashboard' -l port -r -d 'Required explicit loopback port (1–65535)'
+complete -c ppa -n '__fish_seen_subcommand_from sessions; and __fish_seen_subcommand_from dashboard' -l help -d 'Show dashboard trust boundary without listening'
 
 # Pi-only document discovery and unauthenticated local-unverified v2 review
 function __ppa_document_path
