@@ -51,6 +51,7 @@ function nativeEntry(id: string, tool: string, action: string, effect: Interacti
 export const interactionCatalogue: readonly CatalogueEntry[] = Object.freeze([
   entry("global.help", ["help", "--help", "-h", "<no command>"], "read", "native", "packages/pa-core/src/cli/core-command.ts", "CLI metadata"),
   entry("global.version", ["--version", "-V"], "read", "native", `${pi}cli.ts`, "PPA package identity", { reason: "PPA global version is package metadata, not installed provenance; template --version selects a resource revision." }),
+  entry("sessions.list", ["sessions", "sessions --all", "sessions --json", "sessions --deployment", "sessions --ticket", "sessions --repo", "sessions --help"], "read", "native", `${pi}session-cli.ts`, "local Pi session inventory", { reason: "PPA-only fresh bounded local Linux registry/process/HerdR observation. Existing launch evidence only; no activity inference, lifecycle reconciliation, session control or native port. Partial coverage and candidate diagnostics remain explicit. Source discovery is not installed availability or admission." }),
   ...family("status", "deployment status", [
     ["list", ["status", "status --running", "status --today", "status --team", "status --recent"], "read", "native"],
     ["detail", ["status <deployment>"], "read", "native"],
