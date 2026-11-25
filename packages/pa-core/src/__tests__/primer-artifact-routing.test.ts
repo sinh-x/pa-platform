@@ -48,10 +48,20 @@ for (const runtime of ["pi", "opencode"] as const) {
   for (const bare of [false, true]) {
     test(`${runtime} ${bare ? "bare" : "normal"} composition delivers current-deployment administrative routing without changing CWD or omitted resources`, () => fixture(root => {
       const input = options(root, runtime, bare);
-      // Bare composition must not load configured workflows/guides, even without a hook.
-      input.resolveFile = () => { throw new Error("unexpected configured resource read"); };
+      const sharedGuides = [
+        "docs/workflow/pi-task-tracking.md",
+        "docs/workflow/design-charter.md",
+        "docs/workflow/html-reporting.md",
+      ];
+      const reads: string[] = [];
+      input.resolveFile = (path) => {
+        assert.ok(bare && sharedGuides.includes(path), `unexpected configured resource read: ${path}`);
+        reads.push(path);
+        return join(root, "absent-shared-guide.md");
+      };
       const cwd = process.cwd();
       const primer = generatePrimer(input);
+      assert.deepEqual(reads, bare ? sharedGuides : []);
       const artifacts = join(getDeployPaths(input.templateVars!.DEPLOY_ID).deployDir, "artifacts");
       const issue = bare ? "no-ticket" : "PAP-316";
       assert.ok(primer.includes(`Administrative artifacts: \`${artifacts}\``), "actual composition is missing the current deployment artifact destination");

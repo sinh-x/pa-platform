@@ -123,7 +123,7 @@
     "packages/pi-pa/src/pi-extension/ticket-status-tool.ts": "495b9e0f02ef0a7bd0ac109865f8cd0de181cf6d0969aeef84d849343c3937e9",
     "packages/pa-core/src/deploy/control.ts": "3016b951ce08e6a8af23ede97768b9c8c1873941bd7644d994e5ccdcd96c988f",
     "packages/pa-core/src/interactions/tickets.ts": "0294e72623b1127fa4f49842bd141470b01e7e3580f6cb037d43ef1785b572f0",
-    "packages/pa-core/src/primer/index.ts": "5deff1994e6a672e3dd3668cffee027cf25c2df5d3099c51904180bd4a18da46",
+    "packages/pa-core/src/primer/index.ts": "1259fe1bb930ed511d5b94ed73056b17d487e16917979f95b6eef48fd89a91f7",
     "packages/pa-core/src/repos.ts": "cf7c8338947e88685e5d31ee1f6608e122c2d534310be6e1dc186657470c2d4d",
     "packages/pa-core/src/sensitive-patterns.ts": "c7d7d939a5eeeb8c140f38fcbc616534ac9089a20e8bd6280bf22eb07e71ee00",
     "packages/pa-core/src/tickets/validate.ts": "76c2434d10a59cb99aba558947be5b4364b1f7d45d3e5d27bfe7f1440e464af5",
