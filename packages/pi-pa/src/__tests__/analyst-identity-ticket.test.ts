@@ -8,7 +8,7 @@ import { closeDb, getDb, TicketStore, resolveTrustedTicketMutationContext, emitS
 import { recordPiProcessIdentity, recordPiReadonlyRoleProcessIdentity } from "../process-identity.js";
 import { executePiTicketStatus, runTicketStatusCommand } from "../ticket-status.js";
 
-for (const generic of [false, true]) test(`${generic ? "PAP-318 v3 public builder spelling" : "PAP-316 v2"}: only authenticated finite ticket-status receives effective privilege`, () => {
+for (const generic of [false, true]) test(`${generic ? "PAP-318 v3 public builder spelling" : "PAP-316 v2"}: authenticated generic ticket administration does not change finite owner identity`, () => {
   const publicTeam = generic ? "builder" : "analyst", publicMode = generic ? "report" : "analyze";
   const prior = { ...process.env }, cwd = process.cwd(), root = mkdtempSync(join(tmpdir(), "pap316-native-ticket-")); closeDb();
   const repo = join(root, "repo"), config = join(root, "config");
@@ -31,23 +31,29 @@ for (const generic of [false, true]) test(`${generic ? "PAP-318 v3 public builde
     let help = "";
     assert.equal(runTicketStatusCommand(["--help"], { stdout: text => { help += text; }, stderr: () => assert.fail("help must not fail") }), 0);
     assert.match(help, /natively bound analyst\/analyze/);
-    const genericContext = resolveTrustedTicketMutationContext(); assert.equal(genericContext.privileged, false);
-    assert.throws(() => new TicketStore(undefined, genericContext).update("EX-001", { status: "done" }), /status transitions/);
+    const genericContext = resolveTrustedTicketMutationContext(); assert.equal(genericContext.privileged, true);
+    const genericStore = new TicketStore(undefined, genericContext);
+    assert.equal(genericStore.update("EX-001", { status: "done", summary: "Generic administration" }).status, "done");
+    assert.throws(() => genericStore.delete("EX-001"), /status transitions/);
     const context = { cwd: repo, mode: "tui" as const, sessionManager: { getSessionId: () => "finite-status" } };
     const request = { schemaVersion: "pa-ticket-status/v1", action: "inspect", project: "example", ticket: "EX-001" };
     const inspected = executePiTicketStatus(JSON.stringify(request), context);
     const set = { ...request, action: "set", requestId: "finite-only", expectedVersion: inspected.version, status: "requirement-review" };
     assert.equal(executePiTicketStatus(JSON.stringify(set), context).status, "requirement-review");
-    assert.equal(store.get("EX-001")!.assignee, "sinh"); assert.equal(resolveTrustedTicketMutationContext().privileged, false);
+    assert.equal(store.get("EX-001")!.assignee, "sinh"); assert.equal(resolveTrustedTicketMutationContext().privileged, true);
     getDb().prepare("UPDATE registry_events SET note=? WHERE deployment_id=? AND event='started'").run(generic ? MODE_CAPABILITY_SESSION : READONLY_DOCUMENT_SESSION, "d-316301");
     assert.throws(() => executePiTicketStatus(JSON.stringify(request), context), /TICKET_STATUS_SESSION/, "a binding cannot be relabeled as another session version");
     getDb().prepare("UPDATE registry_events SET note=? WHERE deployment_id=? AND event='started'").run(generic ? READONLY_DOCUMENT_SESSION : MODE_CAPABILITY_SESSION, "d-316301");
     if (generic) {
       getDb().prepare("UPDATE registry_events SET mode_capability_binding=? WHERE deployment_id=? AND event='started'").run("private-synthetic-invalid", "d-316301");
+      getDb().prepare("UPDATE deployments SET mode_capability_binding=? WHERE deployment_id=?").run("private-synthetic-invalid", "d-316301");
+      assert.equal(resolveTrustedTicketMutationContext().privileged, false, "malformed bindings cannot grant generic ticket administration");
+      assert.throws(() => genericStore.update("EX-001", { status: "done" }), /TICKET_STATUS_SESSION/);
       assert.throws(() => recordPiReadonlyRoleProcessIdentity(process.env, "d-316301", directory, process.pid), error => {
         assert.ok(error instanceof Error); assert.match(error.message, /CAPABILITY_BINDING/); assert.doesNotMatch(error.message, /private-synthetic-invalid/); return true;
       });
       getDb().prepare("UPDATE registry_events SET mode_capability_binding=? WHERE deployment_id=? AND event='started'").run(JSON.stringify(parseModeCapabilityBinding(binding)), "d-316301");
+      getDb().prepare("UPDATE deployments SET mode_capability_binding=? WHERE deployment_id=?").run(JSON.stringify(parseModeCapabilityBinding(binding)), "d-316301");
     }
     process.env.PA_TEAM = "requirements";
     assert.throws(() => executePiTicketStatus(JSON.stringify(request), context), /TICKET_STATUS_SESSION/);

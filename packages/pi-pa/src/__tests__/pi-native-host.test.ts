@@ -166,7 +166,7 @@ test("real managed Pi shell environment enumeration cannot observe or emit the p
       primerPath: primer,
       deployId: "d-managed-env",
       mode: "dry-run",
-      sessionId: "managed-env-session",
+      sessionId: adapter.allocateSessionId(),
       logFile: log,
       env: { [PI_PARENT_LEASE_CAPABILITY_ENV]: sentinel },
       repositoryLease: { canonicalRepoRoot: root, ownershipToken: sentinel },

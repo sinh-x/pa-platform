@@ -22,6 +22,7 @@ export interface BackgroundOwnershipEvidence {
   updatedAt: string;
   childPid?: number;
   error?: string;
+  admissionRejected?: "repository-isolation";
 }
 
 export interface BackgroundOwnershipWaitOptions {
@@ -69,6 +70,7 @@ export function readBackgroundOwnership(path: string): BackgroundOwnershipEviden
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("runner-readiness: background ownership evidence is malformed");
   const row = value as Partial<BackgroundOwnershipEvidence>;
   if (row.schemaVersion !== 1 || typeof row.deploymentId !== "string" || typeof row.ownershipToken !== "string" || !Number.isInteger(row.supervisorPid) || Number(row.supervisorPid) <= 0 || (row.state !== "active" && row.state !== "failed") || typeof row.ready !== "boolean" || typeof row.updatedAt !== "string") throw new Error("runner-readiness: background ownership evidence is malformed");
+  if (row.admissionRejected !== undefined && row.admissionRejected !== "repository-isolation") throw new Error("runner-readiness: background ownership evidence is malformed");
   return row as BackgroundOwnershipEvidence;
 }
 

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendRegistryEvent, closeDb, queryDeploymentStatus, readProcessFingerprint } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, ensureDeployDir, queryDeploymentStatus, readProcessFingerprint } from "@pa-platform/pa-core";
 import { cleanupPiPromptArgs, consumePiPromptArgs, PiPromptCleanupError, piPromptDiagnostic, PI_PROMPT_MAX_BYTES, preparePiPrompt } from "../prompt-transport.js";
 import { createRuntimeStartGate } from "../runtime-start-gate.js";
 import test from "node:test";
@@ -245,20 +245,33 @@ test("PAP-318 preserves the intended Linux single-argument E2BIG baseline at a r
 });
 
 for (const resume of [false, true]) test(`PAP-318 actual shared adapter ${resume ? "supported resume" : "spawn"} delivers incident-sized input intact without an oversized OS argument`, async () => {
-  const root = mkdtempSync(join(tmpdir(), "pap318-primer-"));
+  const root = mkdtempSync(join(tmpdir(), "pap318-primer-")), prior = process.env;
+  closeDb();
   try {
+    // Native resume provenance must be owned by this fixture, not the parent PA deployment.
+    process.env = Object.fromEntries(Object.entries(prior).filter(([key]) => !/^(PA_|PI_)/.test(key)));
+    Object.assign(process.env, { PA_AI_USAGE_HOME: join(root, "usage"), PA_REGISTRY_DB: join(root, "registry.db") });
     const bin = join(root, "bin"), primerPath = join(root, "primer.md"); mkdirSync(bin);
     writeFileSync(primerPath, incident);
-    writeFileSync(join(bin, "pi"), `#!${process.execPath}\nconst crypto=require('node:crypto'); const body=process.argv.at(-1); console.log(JSON.stringify({type:'message',content:JSON.stringify({bytes:Buffer.byteLength(body),sha256:crypto.createHash('sha256').update(body).digest('hex'),maxArg:Math.max(...require('node:fs').readFileSync('/proc/self/cmdline').toString().split('\\0').map(x=>Buffer.byteLength(x)))})}));\n`, { mode: 0o700 });
+    writeFileSync(join(bin, "pi"), `#!${process.execPath}\nconst crypto=require('node:crypto'); const body=process.argv.at(-1); console.log(JSON.stringify({type:'message',content:JSON.stringify({bytes:Buffer.byteLength(body),sha256:crypto.createHash('sha256').update(body).digest('hex'),sessionId:process.argv[process.argv.indexOf('--session-id')+1],maxArg:Math.max(...require('node:fs').readFileSync('/proc/self/cmdline').toString().split('\\0').map(x=>Buffer.byteLength(x)))})}));\n`, { mode: 0o700 });
     const adapter = new PiAdapter({ cwd: root, env: { PATH: bin }, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined });
-    const opts = { primerPath, deployId: "d-primer318", mode: "dry-run" as const };
-    const result = await (resume ? adapter.resume({ ...opts, sessionId: "retained-fixture" }) : adapter.spawn(opts));
+    const opts = { primerPath, deployId: "d-318eee", mode: "dry-run" as const };
+    let sessionId: string;
+    const resumedFromDeploymentId = "d-318ddd";
+    if (resume) {
+      sessionId = "recorded-nonanalyst-primer-fixture";
+      appendRegistryEvent({ deployment_id: resumedFromDeploymentId, team: "coordinator", mode: "coordinate", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+      const directory = ensureDeployDir(resumedFromDeploymentId);
+      writeFileSync(join(directory, adapter.sessionFileName), sessionId, { mode: 0o600 });
+    } else sessionId = adapter.allocateSessionId();
+    const result = await (resume ? adapter.resume({ ...opts, sessionId, resumedFromDeploymentId }) : adapter.spawn({ ...opts, sessionId }));
     assert.equal(result.exitCode, 0, result.errorMessage);
     // The production output projector stores the inert child's digest, not its body.
     const activity = adapter.extractActivity(root);
     const observed = JSON.parse(activity.find(event => event.kind === "text")!.body);
     assert.equal(observed.bytes, Buffer.byteLength(incident)); assert.equal(observed.sha256, digest(incident));
+    assert.equal(observed.sessionId, sessionId, "the real child receives the allocated fresh or owner-recorded original token");
     assert.ok(observed.maxArg < 128 * 1024);
     assert.deepEqual(readdirSync(root).filter(path => path.endsWith(".input")), []);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { closeDb(); process.env = prior; rmSync(root, { recursive: true, force: true }); }
 });

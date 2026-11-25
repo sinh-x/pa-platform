@@ -19,7 +19,7 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
   try {
     for (const path of [repo, usage, config]) mkdirSync(path);
     Object.assign(process.env, { PA_AI_USAGE_HOME: usage, PA_PLATFORM_CONFIG: config, PA_REGISTRY_DB: join(root, "registry.db") });
-    for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_ROGUE_ONE", "PA_REPO", "PA_WORKTREE_ROOT"]) delete process.env[key];
+    for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_ROGUE_ONE", "PA_REPO", "PA_REPO_ROOT", "PA_WORKTREE_ROOT", "PI_SESSION_ID"]) delete process.env[key];
     execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "pipe" });
     writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n other:\n  path: /tmp/unused-policy-companion-no-file-access\n  prefix: OTH\n`);
     writeFileSync(join(repo, "public.txt"), "safe fixture"); writeFileSync(join(root, "outside.txt"), "not admitted");
@@ -70,9 +70,9 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     await assert.rejects(() => session.tools.get("pa_ticket")!.execute("fixture", {}, undefined, undefined, context));
     process.env.PA_MODE = "analyze";
     launch("d-289002", []);
-    const empty = register(); assert.deepEqual(empty.active(), []); assert.equal(empty.tools.has("pa_document"), false); assert.equal(empty.tools.has("pa_workspace"), false);
+    const empty = register(); assert.deepEqual(empty.active(), ["pa_ticket"]); assert.equal(empty.tools.has("pa_document"), false); assert.equal(empty.tools.has("pa_workspace"), false);
     assert.equal(session.emit("tool_call", { toolName: "pa_ticket", input: {} })[0]?.block, true, "old closure rejects another deployment");
-    await assert.rejects(() => empty.tools.get("pa_ticket")!.execute("fixture", {}, undefined, undefined, context));
+    assert.equal(empty.emit("tool_call", { toolName: "pa_ticket", input: {} })[0], undefined, "ticket infrastructure is independent of document selection; the real ticket service still validates each request");
     const baselineCapabilities = MODE_CAPABILITIES.map(c => c.id).filter(id => !["document.handoff", "document.local-review", "web.public-read", "ticket.status", "workflow.request", "decision.request"].includes(id) && !id.startsWith("ordinary."));
     assert.throws(() => parseModeCapabilityPolicy({ version: "pa-mode-capabilities/v1", allow: [...baselineCapabilities, "document.local-review"] }), /CAPABILITY_POLICY_INVALID/);
     launch("d-289003", baselineCapabilities);
@@ -120,7 +120,7 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     await assert.rejects(() => call(companion), /Pi session is shutting down/, "lifecycle rejection precedes native registry authentication on late calls");
     process.env.PA_TEAM = "requirements";
     launch("d-289007", ["capability.discover"]);
-    const discoveryOnly = register(); assert.deepEqual(discoveryOnly.active(), ["pa_capabilities"]);
+    const discoveryOnly = register(); assert.deepEqual(discoveryOnly.active().sort(), ["pa_capabilities", "pa_ticket"].sort());
     assert.equal(discoveryOnly.tools.has("pa_ticket_intake"), false);
     assert.equal(discoveryOnly.emit("tool_call", { toolName: "pa_ticket_intake", input: framing })[0]?.block, true);
     await assert.rejects(() => intake.execute("old-binding", framing, undefined, undefined, context));
@@ -129,7 +129,7 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     launch("d-289004", [], "{}"); assert.throws(() => authenticatePiDocumentCaller(context));
     assert.equal(effects, 1);
     launch("d-289005", ["web.public-read"]);
-    const selectedReader = register(); assert.deepEqual(selectedReader.active(), ["pa_web_read"]);
+    const selectedReader = register(); assert.deepEqual(selectedReader.active().sort(), ["pa_ticket", "pa_web_read"].sort());
     assert.match(selectedReader.tools.get("pa_web_read")!.description, /explicitly user-supplied/);
     const malformed = await selectedReader.tools.get("pa_web_read")!.execute("input", { url: "https://www.public-site.com/", headers: { Authorization: "synthetic" } }, undefined, undefined, context);
     assert.equal(malformed.isError, true); assert.equal(JSON.parse(malformed.content[0].text).code, "WEB_INPUT");
@@ -177,7 +177,7 @@ test("native immutable policy drives exposure and actual custom/builtin/delegate
     assert.equal((await reader.execute("page-2", { url: "https://www.public-site.com/" }, undefined, undefined, switched)).isError, true);
     // Same runtime/config omission: neither registration/exposure nor direct invocation grants the reader.
     launch("d-289006", []);
-    const withoutReader = register(); assert.deepEqual(withoutReader.active(), []);
+    const withoutReader = register(); assert.deepEqual(withoutReader.active(), ["pa_ticket"]);
     assert.equal((await reader.execute("page-3", { url: "https://www.public-site.com/" }, undefined, undefined, context)).isError, true);
     const omitted = createPublicWebTool("d-289006", context.sessionManager.getSessionId());
     const denial = await omitted.execute("page-4", { url: "https://www.public-site.com/" }, undefined, undefined, context);

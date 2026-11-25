@@ -117,7 +117,7 @@ test("native combined start completes actual status/publication/queue owners onc
       return { status: "success", deploymentId: id, team: "builder", mode: "orchestrator" };
     });
     const blocked = await dispatchPiAuto(approved, f.journal, terminal, owner);
-    assert.equal(launches, 1); assert.equal(prompts, 1); assert.equal(blocked.state, "uncertain"); assert.equal(blocked.reason, "uncertain");
+    assert.equal(launches, 1, JSON.stringify(blocked)); assert.equal(prompts, 1); assert.equal(blocked.state, "uncertain"); assert.equal(blocked.reason, "uncertain");
     const ticket = JSON.parse(readFileSync(join(f.usage, "tickets/PAP-1.json"), "utf8"));
     assert.equal(ticket.status, "pending-implementation"); assert.equal(ticket.assignee, "builder/team-manager"); assert.equal(ticket.linkedBranches[0].branch, intent.branch.name);
     for (const member of f.documents.subject(ready.subjectSha256!).members) assert.ok(readFileSync(join(f.usage, documentDestination(f.documents.subject(ready.subjectSha256!), member))).length > 0);

@@ -1,5 +1,6 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, isPlainInteractiveMode, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
+import { assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "../../deploy/repository-isolation.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile, assertNoSensitiveMatch } from "../../sensitive-patterns.js";
 import { basename, resolve } from "node:path";
@@ -268,10 +269,14 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     const team = loadTeamConfig(resolved.request.team);
     const mode = resolveDeployMode(team, resolved.request.mode);
     plainInteractive = !resolved.request.ticketWorktree && isPlainInteractiveMode(mode);
+    if (!resolved.request.dryRun) {
+      assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
+      assertRepositoryIsolationResumeAvailable(resolved.request.resume);
+    }
     assertDeployResumeMode(team, resolved.request.resume, plainInteractive ? mode : undefined);
   }
   catch (error) {
-    if (!(error instanceof DeployModeSelectionError)) throw error;
+    if (!(error instanceof DeployModeSelectionError) && !(error instanceof RepositoryIsolationUnavailableError)) throw error;
     io.stderr(error.message);
     return 1;
   }

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, nowUtc, publishBackgroundOwnership, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, transferRepositoryMutationLease } from "@pa-platform/pa-core";
+import { assertRepositoryIsolationAvailable, assertRepositoryIsolationBindingAvailable, assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, nowUtc, publishBackgroundOwnership, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, transferRepositoryMutationLease } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 
 interface BackgroundConfig {
@@ -12,6 +12,8 @@ interface BackgroundConfig {
   logFile: string;
   deploymentId: string;
   team: string;
+  mode?: string;
+  modeCapabilityBinding?: unknown;
   sessionFileName: string;
   ownershipToken: string;
   ownershipPath: string;
@@ -34,8 +36,8 @@ interface PermissionWaitEvidence {
 
 export async function runBackgroundEntry(configPath: string): Promise<void> {
   const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
-  try { unlinkSync(configPath); } catch { /* preserve launch behavior if already consumed */ }
   let fatalError: unknown;
+  let isolationRejected = false;
   let ready = false;
   let repositoryLeaseTransferred = false;
   const shutdown = new AbortController();
@@ -50,6 +52,12 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
   };
 
   try {
+    assertRepositoryIsolationIngressAvailable([process.env, config.env]);
+    assertRepositoryIsolationAvailable({ team: config.team, mode: config.mode });
+    if (config.modeCapabilityBinding !== undefined) assertRepositoryIsolationBindingAvailable(config.modeCapabilityBinding);
+    if (!config.deploymentId) throw new RepositoryIsolationUnavailableError();
+    assertRepositoryIsolationResumeAvailable(config.deploymentId, "opencode");
+    try { unlinkSync(configPath); } catch { /* preserve launch behavior if already consumed */ }
     if (config.repositoryLease) {
       const fingerprint = readProcessFingerprint(process.pid);
       if (!fingerprint) throw new Error(`runner-readiness: cannot verify repository supervisor PID ${process.pid}`);
@@ -87,15 +95,16 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
+    isolationRejected = error instanceof RepositoryIsolationUnavailableError;
     const finalError = boundedDiagnostic(error instanceof Error ? error.message : String(error));
-    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: finalError }); } catch { /* launcher reports timeout/bootstrap failure */ }
-    emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
+    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: finalError, ...(isolationRejected ? { admissionRejected: "repository-isolation" as const } : {}) }); } catch { /* launcher reports timeout/bootstrap failure */ }
+    if (!isolationRejected) emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
     fatalError = new Error(finalError);
   } finally {
     process.removeListener("SIGTERM", onSigterm);
     process.removeListener("SIGINT", onSigint);
     try {
-      ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
+      if (!isolationRejected) ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
     } finally {
       if (repositoryLeaseTransferred && config.repositoryLease) {
         releaseRepositoryMutationLease({

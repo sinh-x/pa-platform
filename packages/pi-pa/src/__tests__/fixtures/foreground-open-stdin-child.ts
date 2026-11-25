@@ -46,14 +46,15 @@ const adapter = new PiAdapter({
 });
 
 try {
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-open-stdin", mode: "foreground", sessionId: "open-stdin-session" });
+  const sessionId = adapter.allocateSessionId();
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-open-stdin", mode: "foreground", sessionId });
   setTimeout(async () => {
     if (process.env.PAP315_FIXTURE_HERDR_REPORT === "1" && childEnv?.HERDR_SOCKET_PATH) {
       await new Promise<void>((resolve, reject) => {
         const socket = connect(childEnv!.HERDR_SOCKET_PATH!);
         socket.on("error", reject);
         socket.on("connect", () => socket.write(`${JSON.stringify({ id: "fixture-report", method: "pane.report_agent", params: {
-          pane_id: childEnv!.HERDR_PANE_ID, source: "herdr:pi", agent: "pi", seq: 41, state: "idle", agent_session_id: "open-stdin-session",
+          pane_id: childEnv!.HERDR_PANE_ID, source: "herdr:pi", agent: "pi", seq: 41, state: "idle", agent_session_id: sessionId,
         } })}\n`));
         socket.on("data", () => { socket.destroy(); resolve(); });
       });

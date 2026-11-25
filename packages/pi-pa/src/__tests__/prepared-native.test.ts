@@ -554,7 +554,7 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
     writeFileSync(f.ticketPath, JSON.stringify({ ...f.ticket, status: "implementing", title: "Ordinary fixture", linkedBranches: [{ repo: f.caller.repoKey, branch: "feature/PAP-256-fixture", state: "materialized", baseSha: base, headSha: base, sha: base }] }));
     seedOrdinaryTaskBaseline({ ai: f.ai, repo: f.repo, repoKey: f.caller.repoKey, ticket: "PAP-256", branch: "feature/PAP-256-fixture", base });
     Object.assign(process.env, { PA_AI_USAGE_HOME: f.ai, PA_REGISTRY_DB: join(f.ai, "registry.db"), PA_PLATFORM_HOME: f.root });
-    save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+    save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents:\n  - name: team-manager\n    role: Manager\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
     let spawns = 0; let forbidden = 0;
     const treehouse = new TreehouseClient({ run(args, cwd) {
       assert.equal(cwd, f.repo);
@@ -591,7 +591,11 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
 }
 
 test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and own completion use authenticated native ports", () => ordinaryFixture(async (f) => {
-  const directory = join(f.ai, "deployments", f.opts.deployId); const context = { cwd: f.checkout };
+  const directory = join(f.ai, "deployments", f.opts.deployId);
+  const context = { cwd: f.checkout, mode: "tui", sessionManager: { getSessionId: () => f.opts.sessionId!, getCwd: () => f.checkout } };
+  const other = join(f.root, "other"); mkdirSync(other);
+  const configPath = join(f.root, "config/config.yaml");
+  writeFileSync(configPath, readFileSync(configPath, "utf8").replace("repos:\n", `repos:\n  other:\n    path: ${other}\n    prefix: OTH\n`));
   recordPiProcessIdentity(f.opts.deployId, directory, process.pid); f.opts.onPid?.(process.pid);
   const adapter = new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } });
   const runtime = executionRuntime();
@@ -627,12 +631,27 @@ test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and
   await deny("pa_ticket", { action: "comment", id: "PAP-999", content: "wrong ticket" });
   await deny("pa_ticket", { action: "comment", id: "PAP-256", author: "sinh", content: "forged approval" });
   const ticketBeforeDenial = readFileSync(f.ticketPath);
-  await assert.rejects(runtime.tools.get("pa_ticket")!.execute("unguarded-comment", { action: "comment", id: "PAP-999", author: "builder/team-manager", content: "wrong ticket" }, undefined, undefined, context));
+  assert.equal((await runtime.tools.get("pa_ticket")!.execute("unguarded-comment", { action: "comment", id: "PAP-999", author: "builder/team-manager", content: "missing ticket" }, undefined, undefined, context)).isError, true);
   assert.deepEqual(readFileSync(f.ticketPath), ticketBeforeDenial);
   const priorTicket = process.env.PA_TICKET_ID; process.env.PA_TICKET_ID = "PAP-999";
   try { await deny("bash", { command: "ppa bulletin list" }); }
   finally { process.env.PA_TICKET_ID = priorTicket; }
-  await execute("pa_ticket", { action: "comment", id: "PAP-256", author: "builder/team-manager", content: "Startup checked; project command unsupported, preserve state." });
+  assert.notEqual((await execute("pa_ticket", { action: "comment", id: "PAP-256", author: "builder/team-manager", content: "Startup checked; project command unsupported, preserve state." })).isError, true);
+  // Composed replacement tool, real generic native authentication in the linked
+  // execution checkout, and both model-call and lower effect boundaries.
+  const admin = async (input: Record<string, unknown>) => {
+    const result = await execute("pa_ticket", input);
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+  };
+  const created = await admin({ action: "create", project: "other", requestId: "independent-create", fields: { title: "Independent target" } });
+  assert.equal(created.id, "OTH-001");
+  const inspected = await admin({ action: "inspect", project: "other", id: created.id });
+  const updated = await admin({ action: "update", project: "other", id: created.id, expectedVersion: inspected.version, fields: { summary: "Independent update" } });
+  await admin({ action: "set-status", project: "other", id: created.id, requestId: "independent-status", expectedVersion: updated.version, status: "done" });
+  await admin({ action: "comment", project: "other", id: created.id, content: "Independent comment" });
+  assert.deepEqual(session.service.status(session.actor), before, "typed administration cannot advance source execution");
+  assert.equal(f.git(["status", "--porcelain"], f.checkout), sourceBefore);
   assert.match(readFileSync(f.ticketPath, "utf8"), /project command unsupported/);
   const logRelative = `sessions/2026/10/agent-team/2026-10-23-${f.opts.deployId}-builder--builder-agent--PAP-256--preflight-blocked.md`;
   const logPath = join(f.ai, logRelative); const logText = "# Native failure log\nProject phase contract unsupported; preserve source and custody.\n";
@@ -669,13 +688,15 @@ test("PAP-264 ordinary pre-plan startup, denied source work, blocker comment and
   await deny("bash", { command: "ppa bulletin list" });
   await deny("write", { path: cancelledPath, content: logText });
   assert.equal(existsSync(cancelledPath), false);
-  await deny("pa_ticket", { action: "comment", id: "PAP-256", content: "cannot overlap source work" });
+  await deny("pa_ticket", { action: "comment", project: "other", id: created.id, content: "cannot overlap source work" });
+  await assert.rejects(runtime.tools.get("pa_ticket")!.execute("direct-overlap", { action: "comment", project: "other", id: created.id, content: "cannot bypass the source barrier" }, undefined, undefined, context));
   assert.equal(session.service.status(session.actor).operation?.id, "in-flight");
   assert.equal(f.git(["status", "--porcelain"], f.checkout), sourceBefore);
 }, "retained-started-operation"));
 
 test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact ordered checks, first failure/reload/replan and commit", () => ordinaryFixture(async (f) => {
-  const directory = join(f.ai, "deployments", f.opts.deployId); const context = { cwd: f.checkout };
+  const directory = join(f.ai, "deployments", f.opts.deployId);
+  const context = { cwd: f.checkout, mode: "tui", sessionManager: { getSessionId: () => f.opts.sessionId!, getCwd: () => f.checkout } };
   const start = getDeploymentEvents(f.opts.deployId).find((event) => event.event === "started")!;
   assert.equal(start.note, ORDINARY_NATIVE_EXECUTION_START); assert.equal(start.effective_timeout_seconds, 1800);
   assert.equal(existsSync(join(directory, "prepared-consumption.json")), false);

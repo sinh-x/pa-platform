@@ -6,6 +6,7 @@ export * from "./plan.js";
 export * from "./task-snapshot.js";
 export * from "./background-ownership.js";
 export * from "./repository-admission.js";
+export * from "./repository-isolation.js";
 export * from "./ticket-concurrency.js";
 export * from "./prepared-workflow.js";
 export * from "./execution-custody.js";
