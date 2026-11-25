@@ -9,6 +9,7 @@ import { CommittedConfigSource, closeDb, createModeCapabilityBinding, emitPidEve
 import { recordPiProcessIdentity } from "../process-identity.js";
 import { createPiPaModules, createPiSessionLifecycle, registerPiSessionModules, type PiToolDefinition, type PiToolResult } from "../pi-extension/index.js";
 import { createSecureLocalReadTool } from "../pi-extension/local-source-tools.js";
+import { assertPolicyDocumentTool } from "../pi-extension/document-tool.js";
 import { FakeComposedHost, createHostContext } from "./fixtures/pi-composed-host.js";
 
 const resource = "skills/global/method/details.md", locator = `selected-resource:${resource}`;
@@ -85,7 +86,20 @@ for (const capability of ["context.read", "ordinary.read"]) test(`PAP-327 compos
   const binding = f.launch(capability), native = createSecureLocalReadTool();
   let fallbacks = 0;
   const session = await f.host({ ...native, execute: (...args) => { fallbacks++; return native.execute(...args); } });
-  assert.deepEqual(session.active(), selectedCapabilityTools(binding.policy));
+  assert.deepEqual(session.active(), [...selectedCapabilityTools(binding.policy), "pa_ticket"]);
+  assert.ok(session.host.tools.has("pa_ticket"), "native ticket infrastructure is composed independently of document selection");
+  for (const [toolName, input] of [
+    ["bash", { command: "printf denied" }], ["write", { path: join(f.repo, "denied.txt"), content: "denied" }],
+    ["edit", { path: join(f.repo, "ordinary.txt"), oldText: "ordinary", newText: "denied" }],
+    ["pa_document", { request: JSON.stringify({ action: "capabilities" }) }], ["pa_workspace", { request: JSON.stringify({ action: "list" }) }],
+  ] as const) {
+    assert.equal(session.active().includes(toolName), false);
+    assert.equal(blocked(await session.host.dispatch("tool_call", { toolName, input }, session.context)), true, `${toolName} is not granted by pa_ticket infrastructure`);
+    assert.throws(() => assertPolicyDocumentTool(process.env.PA_DEPLOYMENT_ID!, { toolName, input }, session.context), /CAPABILITY_OMITTED/);
+    // Secured built-in replacements may be registered without granting execution.
+    const direct = session.host.tools.get(toolName);
+    if (direct) await assert.rejects(() => direct.execute("infra-no-direct-grant", input, undefined, undefined, session.context), /CAPABILITY_OMITTED/);
+  }
   assert.equal(session.host.tools.get("read")!.parameters, native.parameters, "the final native schema is preserved");
   assert.match(session.host.tools.get("read")!.description, /selected-resource:/);
   assert.equal([...session.host.tools.keys()].filter(name => name.includes("selected") || name === "read").join(","), "read");
@@ -141,7 +155,7 @@ test("PAP-327 composed host: omitted, retained and unselected sessions do not ga
   assert.match(text(await unselected.direct({ path: join(f.repo, "ordinary.txt") })), /ordinary local body/);
 }));
 
-test("PAP-327 real Pi loader/runner registers only read and applies native selected-reference guards", async () => fixture(async f => {
+test("PAP-327 real Pi loader/runner exposes read plus ticket infrastructure and applies native selected-reference guards", async () => fixture(async f => {
   f.launch("context.read");
   const lifecycle = createPiSessionLifecycle(() => {}), errors: string[] = [];
   const loader = new DefaultResourceLoader({ cwd: f.repo, agentDir: join(f.root, "isolated-pi"), settingsManager: SettingsManager.inMemory(),
@@ -163,7 +177,12 @@ test("PAP-327 real Pi loader/runner registers only read and applies native selec
     });
     runner.setUIContext(undefined, "tui"); runner.onError(error => errors.push(error.error));
     await runner.emit({ type: "session_start", reason: "startup" });
-    assert.deepEqual(errors, []); assert.deepEqual(active, ["read"]);
+    assert.deepEqual(errors, []); assert.deepEqual(active, ["read", "pa_ticket"]);
+    assert.ok(runner.getAllRegisteredTools().some(tool => tool.definition.name === "pa_ticket"));
+    for (const toolName of ["bash", "write", "edit", "pa_document", "pa_workspace"]) {
+      assert.equal(active.includes(toolName), false);
+      assert.equal((await runner.emitToolCall({ type: "tool_call", toolName, toolCallId: `infra-no-grant-${toolName}`, input: {} }))?.block, true);
+    }
     const registered = runner.getAllRegisteredTools().filter(tool => tool.definition.name === "read");
     assert.equal(registered.length, 1); assert.match(registered[0]!.definition.description, /selected-resource:/);
     assert.equal(runner.getAllRegisteredTools().some(tool => tool.definition.name.includes("selected")), false);

@@ -8,7 +8,7 @@ import {
   autoMaterialTicketSha256, autoSourceScopeFromRequirements, parseAutoSourceScope, parseReviewEvidenceJson, parseAutoStartIntent, autoStartSha256, documentDestination, documentCompletedOperation,
   documentDecisionRecords, documentRevokedDecisionIds, documentPending, documentPendingAutoReviews, documentRetiredSubjects,
   getAiUsageDir, getTicketsDir, assertLocalFileSource, readArtifactFile, getDeployPaths, getDeploymentEvents, readProcessFingerprint, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, parseReviewMatrixPlan, resolveDeployTimeoutSeconds,
-  resolveRepoExecutionPath, resolveTrustedTicketMutationContext, scanAutoWaitlist, statusVersion, workflowDigest, assertNoSensitiveMatch,
+  resolveRepoExecutionPath, scanAutoWaitlist, statusVersion, workflowDigest, assertNoSensitiveMatch,
   type AutoItem, type AutoStartIntent, type AutoStartCaptureHost, type AutoOwnerObservation, type AutoEffect, type AutoWorkOwner, type DeployRequest,
 } from "@pa-platform/pa-core";
 import { randomUUID } from "node:crypto";
@@ -121,7 +121,11 @@ async function completeApprovedTicketEffects(item: AutoItem, journal: RegistryAu
   terminal.authenticate();
   // The genuine native operator host owns these finite effects. This is not
   // imported actor/privileged JSON, nor an agent role switch.
-  const tickets = new TicketStore(undefined, resolveTrustedTicketMutationContext({ operator: true }, true));
+  // This finite native operator owns its exact approved publication/queue
+  // intent. The generic administration competitor fence must not reject the
+  // same owner's pending effect. Every effect below retains service.authorize
+  // under its native mutex/CAS; no request can supply this internal context.
+  const tickets = new TicketStore(undefined, { privileged: true });
   if (intent.initialStatus === "idea") {
     tickets.setStatusWithIntent(item.ticket, intent.ticketVersion, "requirement-review", "auto/runtime", { scope: item.startSha256!, requestId: `auto-stage-${item.itemId}` },
       { assertCurrent: () => { service.authorize(journal.item(item.itemId), host); } });

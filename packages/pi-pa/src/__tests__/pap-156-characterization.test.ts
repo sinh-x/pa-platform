@@ -382,7 +382,8 @@ test("foreground turn markers retain one live PTY across three turns and unatten
   } });
 
   try {
-    const resultPromise = adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "foreground", sessionId: "pap-159-one-session" });
+    const sessionId = adapter.allocateSessionId();
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "foreground", sessionId });
     resultPromise.then(() => { settled = true; });
     await new Promise<void>((resolve) => setImmediate(resolve));
     for (let turn = 1; turn <= 3; turn += 1) {
@@ -399,7 +400,7 @@ test("foreground turn markers retain one live PTY across three turns and unatten
     pty.emitExit(0);
     const result = await resultPromise;
     assert.equal(result.exitCode, 0);
-    assert.equal(result.sessionId, "pap-159-one-session");
+    assert.equal(result.sessionId, sessionId);
     assert.ok(clock <= fixture.expected.foregroundSettlementWithinMs);
     assert.equal(input.isRaw, false);
   } finally {

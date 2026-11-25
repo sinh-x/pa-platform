@@ -2414,7 +2414,7 @@ test("ticket update --status without new flags continues to work without regress
   });
 });
 
-test("builder implement status updates are rejected before ticket and audit mutation", async () => {
+test("authenticated builder implement can update status and administrative fields together", async () => {
   await withCliEnv(async () => {
     const previousTeam = process.env["PA_TEAM"];
     const previousMode = process.env["PA_MODE"];
@@ -2425,14 +2425,14 @@ test("builder implement status updates are rejected before ticket and audit muta
     appendRegistryEvent({ deployment_id: "d-builder-guard", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00Z" });
     try {
       assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Guard target", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original summary"], { io: capture().io }), 0);
-      const before = new TicketStore().get("PAP-001");
       const auditBefore = new TicketStore().readAudit().length;
-      const rejected = capture();
+      const accepted = capture();
 
-      assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--status", "review-uat", "--summary", "Must not apply"], { io: rejected.io }), 0);
-      assert.match(rejected.stderr.join("\n"), /parent.*(flow|owns).*status/i);
-      assert.deepEqual(new TicketStore().get("PAP-001"), before);
-      assert.equal(new TicketStore().readAudit().length, auditBefore);
+      assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--status", "review-uat", "--summary", "Administrative update"], { io: accepted.io }), 0);
+      assert.equal(accepted.stderr.length, 0);
+      assert.equal(new TicketStore().get("PAP-001")?.status, "review-uat");
+      assert.equal(new TicketStore().get("PAP-001")?.summary, "Administrative update");
+      assert.equal(new TicketStore().readAudit().length, auditBefore + 1);
     } finally {
       if (previousTeam === undefined) delete process.env["PA_TEAM"];
       else process.env["PA_TEAM"] = previousTeam;
@@ -2444,7 +2444,7 @@ test("builder implement status updates are rejected before ticket and audit muta
   });
 });
 
-test("builder implement rejects every status value but allows non-status updates", async () => {
+test("authenticated builder implement can administer every valid status and non-status fields", async () => {
   await withCliEnv(async () => {
     const previousTeam = process.env["PA_TEAM"];
     const previousMode = process.env["PA_MODE"];
@@ -2456,9 +2456,10 @@ test("builder implement rejects every status value but allows non-status updates
     try {
       assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "All statuses", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original"], { io: capture().io }), 0);
       for (const status of ["idea", "requirement-review", "pending-approval", "pending-implementation", "implementing", "review-uat", "done", "rejected", "cancelled"]) {
-        const rejected = capture();
-        assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--status", status], { io: rejected.io }), 0);
-        assert.match(rejected.stderr.join("\n"), /parent flow/);
+        const accepted = capture();
+        assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--status", status], { io: accepted.io }), 0);
+        assert.equal(accepted.stderr.length, 0);
+        assert.equal(new TicketStore().get("PAP-001")?.status, status);
       }
 
       const allowed = capture();

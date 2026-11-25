@@ -503,9 +503,8 @@ export class NativeExecutionSession {
       aiUsageRoot: dirname(dirname(getDeployPaths(this.actor.deploymentId).deployDir)), sourceRoots: [this.contract.repoRoot, this.contract.worktreeRoot] };
   }
   administration(call: PiToolCall, context: unknown): ExecutionAdministration | null {
-    if (!this.#ordinary) return null;
     const request = executionAdministration(call, this.#administrativeIdentity());
-    if (!request) return null;
+    if (!request || !this.#ordinary && request.kind !== "ticket-admin") return null;
     this.assertCaller(context); this.#soleOwner();
     const state = this.service.status(this.actor);
     if (this.#administrationRunning || state.operation !== null || state.pendingRestart !== null || state.restartLaunch !== null) throw workflowError();
@@ -531,7 +530,7 @@ export class NativeExecutionSession {
   async runAdministration(id: string, input: Record<string, unknown>, context: unknown, toolName: "bash" | "write" = "bash"): Promise<{ text: string; exitCode: number }> {
     const call = { toolName, input };
     const request = this.administration(call, context);
-    if (!request || request.kind === "ticket-comment") throw workflowError();
+    if (!request || request.kind === "ticket-admin") throw workflowError();
     const identity = this.#administrativeIdentity();
     return this.executeAdministration(id, call, context, () => runExecutionAdministration(request, identity));
   }

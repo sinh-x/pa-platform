@@ -1,10 +1,57 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import test from "node:test";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { beforeEach } from "node:test";
 import { PA_OPENCODE_BINARY_ENV, resolveBinary, SessionManager, type SessionStreamEvent, type SessionStreamSink, type SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 import { createActivityEvent } from "../activity/index.js";
+import { getDeployPaths } from "../deploy/paths.js";
+import { appendRegistryEvent, closeDb } from "../registry/index.js";
+
+let sessionRoot: string;
+
+// Even the generic default-env tests append lifecycle events. Isolate every
+// test, not just managed-origin tests, without changing production inheritance.
+beforeEach((t) => {
+  const previous = process.env;
+  const root = mkdtempSync(join(tmpdir(), "pa-session-origin-"));
+  sessionRoot = root;
+  closeDb();
+  process.env = {
+    ...previous,
+    PA_PLATFORM_CONFIG: join(root, "config"),
+    PA_PLATFORM_DATA: join(root, "data"),
+    PA_AI_USAGE_HOME: root,
+    PA_REGISTRY_DB: join(root, "registry.db"),
+  };
+  // Remove only the parent launch principal; denial tests install their own.
+  delete process.env.PA_DEPLOYMENT_ID;
+  delete process.env.PA_TEAM;
+  delete process.env.PA_MODE;
+  t.after(() => {
+    try { closeDb(); }
+    finally {
+      process.env = previous;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  mkdirSync(join(root, "config"));
+});
+
+function withSessionEnv(fn: (root: string) => void): void {
+  fn(sessionRoot);
+}
+
+function snapshotFiles(root: string) {
+  return readdirSync(root, { recursive: true, withFileTypes: true }).map(entry => {
+    const path = join(entry.parentPath, entry.name);
+    return { path, content: entry.isFile() ? readFileSync(path) : null };
+  });
+}
 
 class FakeChild extends EventEmitter {
+  readonly pid = 42001;
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
   killed = false;
@@ -62,6 +109,11 @@ test("SessionManager.start spawns opencode with model, --dangerously-skip-permis
   assert.equal(record.model, "openai/gpt-5.5");
   assert.equal(record.status, "running");
   assert.equal(record.startedAt, "2026-08-05T00:00:00.000Z");
+  const activityLogPath = getDeployPaths(record.deploymentId).activityLogPath;
+  assert.equal(activityLogPath, join(sessionRoot, "deployments", record.deploymentId, "activity.jsonl"));
+  assert.match(readFileSync(activityLogPath, "utf8"), /session_started/);
+  mgr.cleanup();
+  assert.match(readFileSync(activityLogPath, "utf8"), /session_stopping/);
 });
 
 test("SessionManager.list returns active session records", () => {
@@ -247,17 +299,30 @@ test("SessionManager.disconnect terminates the opencode child process (auto-clea
   assert.equal(mgr.activeCount, 0);
 });
 
-test("SessionManager.resume spawns opencode with --session flag for existing opencode session id", () => {
-  const { fn, children } = createFakeSpawn();
-  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 3 });
-  const sink = new CapturingSink();
-  const result = mgr.resume({ prompt: "continue", sessionId: "opencode-token-123" }, sink);
+test("SessionManager.resume spawns opencode with --session for an exact recorded managed session", () => {
+  withSessionEnv(() => {
+    const deploymentId = "d-334abc", sessionId = "managed-opencode-session";
+    appendRegistryEvent({ deployment_id: deploymentId, team: "builder", runtime: "opencode", event: "started", timestamp: new Date().toISOString() });
+    const dir = getDeployPaths(deploymentId).deployDir;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "session-id-opencode.txt"), sessionId, { mode: 0o600 });
+    const { fn, children, calls } = createFakeSpawn();
+    const mgr = new SessionManager({ env: {}, spawnFn: fn, maxSessions: 3 });
+    const sink = new CapturingSink();
+    const result = mgr.resume({ prompt: "continue", deploymentId, sessionId }, sink);
 
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(children.length, 1);
-  assert.equal(result.session.status, "running");
-  assert.equal(mgr.activeCount, 1);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.session.status, "running");
+    assert.equal(mgr.activeCount, 1);
+    assert.equal(calls[0]!.args[calls[0]!.args.indexOf("--session") + 1], sessionId);
+    children[0]!.emit("close", 0);
+    assert.equal(mgr.resume({ prompt: "continue again", sessionId }, sink).ok, true, "launcher-bound OPA resumes retain their managed origin");
+    children[1]!.emit("close", 0);
+    appendRegistryEvent({ deployment_id: deploymentId, team: "builder", runtime: "opencode", event: "pid", timestamp: new Date().toISOString(), resumed_from_deployment_id: "d-334def" });
+    assert.equal(mgr.resume({ prompt: "continue", sessionId }, sink).ok, false, "same-server origin must recheck its recorded lineage");
+    assert.equal(calls.length, 2);
+  });
 });
 
 test("SessionManager.cleanup terminates all active sessions", () => {
@@ -329,11 +394,11 @@ test("Pi sessions use the Pi command and retain runtime provenance for cross-run
   const { fn, children, calls } = createFakeSpawn();
   const mgr = new SessionManager({ spawnFn: fn, runtimes: { pi: {} }, maxSessions: 3 });
   const sink = new CapturingSink();
-  const started = mgr.start({ runtime: "pi", sessionId: "pi-native-1", prompt: "Continue" }, sink);
-  assert.equal(started.ok, true);
+  const started = mgr.start({ runtime: "pi", prompt: "Continue" }, sink);
+  assert.equal(started.ok, true); if (!started.ok) return;
   assert.equal(calls[0]?.command, "pi");
-  assert.deepEqual(calls[0]?.args.slice(0, 5), ["--print", "--mode", "json", "--session-id", "pi-native-1"]);
-  const resumed = mgr.resume({ sessionId: "pi-native-1", prompt: "Wrong runtime" }, sink);
+  assert.deepEqual(calls[0]?.args.slice(0, 5), ["--print", "--mode", "json", "--session-id", started.session.id]);
+  const resumed = mgr.resume({ sessionId: started.session.id, prompt: "Wrong runtime" }, sink);
   assert.equal(resumed.ok, false);
   if (!resumed.ok) assert.match(resumed.error, /'ppa'/);
   children[0]?.emit("close", 0);
@@ -636,3 +701,152 @@ test("SessionManager.cleanup removes registered deploy sessions (FR7/AC5)", () =
   assert.equal(children.length, 1, "only the WebSocket session had a child process");
   assert.ok(children[0]?.killed, "WebSocket child was terminated");
 });
+
+for (const runtime of ["pi", "opencode"] as const) {
+  test(`${runtime} default-env manager honors deliberate inherited principals in the isolated fixture`, () => {
+    const deploymentId = "d-334abc";
+    appendRegistryEvent({ deployment_id: deploymentId, team: "analyst", runtime, event: "started", timestamp: new Date().toISOString() });
+    closeDb();
+    for (const principal of [
+      { PA_TEAM: "analyst", PA_MODE: "implement" },
+      { PA_TEAM: "requirements", PA_MODE: "analyze" },
+      { PA_TEAM: "builder", PA_MODE: "implement", PA_DEPLOYMENT_ID: deploymentId },
+    ]) {
+      Object.assign(process.env, principal);
+      const { fn, calls } = createFakeSpawn();
+      const mgr = new SessionManager({ spawnFn: fn, runtimes: { pi: {} } });
+      const sink = new CapturingSink();
+      const before = snapshotFiles(sessionRoot);
+      assert.throws(() => mgr.assertExecutionAvailable({ prompt: "fixture", runtime }), /REPOSITORY_ISOLATION_UNAVAILABLE/);
+      const result = mgr.start({ prompt: "fixture", runtime }, sink);
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.match(result.error, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+      assert.equal(mgr.activeCount, 0);
+      assert.deepEqual(calls, []);
+      assert.deepEqual(sink.events, []);
+      assert.deepEqual(snapshotFiles(sessionRoot), before, "denial must not write lifecycle or registry state");
+      delete process.env.PA_TEAM;
+      delete process.env.PA_MODE;
+      delete process.env.PA_DEPLOYMENT_ID;
+    }
+  });
+
+  test(`${runtime} central ingress rejects restrictive originals, overlays, merged identity and unknown resumes before allocation`, () => {
+    for (const [base, overlay] of [[{ PA_TEAM: "analyst" }, { PA_TEAM: "builder" }], [{ PA_TEAM: "builder" }, { PA_TEAM: "analyst" }], [{ PA_TEAM: "requirements" }, { PA_MODE: "analyze" }]]) {
+      const { fn, calls } = createFakeSpawn();
+      let commands = 0;
+      const mgr = new SessionManager({ env: base, spawnFn: fn, runtimes: { pi: {} }, runtimeCommands: { [runtime]: () => { commands++; throw Error("not admitted"); } } });
+      const sink = new CapturingSink();
+      assert.throws(() => mgr.assertExecutionAvailable({ prompt: "test", runtime, env: overlay }), /REPOSITORY_ISOLATION_UNAVAILABLE/);
+      const result = mgr.start({ prompt: "test", runtime, env: overlay }, sink);
+      assert.equal(result.ok, false); if (result.ok) return;
+      assert.match(result.error, /REPOSITORY_ISOLATION_UNAVAILABLE/); assert.ok(result.error.length <= 2000);
+      assert.equal(mgr.activeCount, 0); assert.equal(calls.length, 0); assert.equal(commands, 0); assert.deepEqual(sink.events, []);
+      // Observational registration remains independent of execution admission.
+      assert.equal(mgr.register("retained", undefined, runtime).ok, true); mgr.cleanup();
+    }
+    const { fn, calls } = createFakeSpawn();
+    const mgr = new SessionManager({ env: {}, spawnFn: fn, runtimes: { pi: {} } });
+    assert.equal(mgr.resume({ prompt: "continue", runtime, sessionId: "unknown-native-session" }, new CapturingSink()).ok, false);
+    assert.equal(mgr.activeCount, 0); assert.equal(calls.length, 0);
+  });
+}
+
+test("Pi same-server launch-bound native origin admits unprotected resume, not caller assertions", () => {
+  withSessionEnv(() => {
+    const { fn, children, calls } = createFakeSpawn();
+    const mgr = new SessionManager({ env: {}, spawnFn: fn, runtimes: { pi: {} } });
+    const sink = new CapturingSink();
+    const started = mgr.start({ prompt: "original", runtime: "pi", env: { PA_TEAM: "builder", PA_MODE: "implement" } }, sink);
+    assert.equal(started.ok, true); if (!started.ok) return;
+    children[0]!.emit("close", 0);
+    assert.equal(mgr.resume({ prompt: "continue", runtime: "pi", sessionId: started.session.id }, sink).ok, true);
+    assert.equal(calls.length, 2);
+    mgr.cleanup();
+    assert.equal(mgr.resume({ prompt: "continue", runtime: "pi", sessionId: started.session.id, env: { PA_TEAM: "analyst" } }, sink).ok, false);
+    assert.equal(calls.length, 2);
+  });
+});
+
+for (const runtime of ["pi", "opencode"] as const) {
+  for (const output of ["id", "sessionID", "regex"] as const) {
+    test(`${runtime} stdout ${output} cannot qualify an old protected session for resume`, () => {
+      withSessionEnv(root => {
+        const sessionId = "old-protected-session", deploymentId = "d-334abc";
+        appendRegistryEvent({ deployment_id: deploymentId, team: "analyst", runtime, event: "started", timestamp: new Date().toISOString() });
+        const dir = getDeployPaths(deploymentId).deployDir;
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `session-id-${runtime}.txt`), sessionId, { mode: 0o600 });
+        const { fn, children, calls } = createFakeSpawn();
+        const mgr = new SessionManager({ env: {}, spawnFn: fn, runtimes: { pi: {} } });
+        const sink = new CapturingSink();
+        assert.equal(mgr.start({ prompt: "ordinary fresh session", runtime }, sink).ok, true);
+        // Two JSON lines force the observational parser's regex fallback on its
+        // concatenated carry. Neither arbitrary top-level ids nor text are authority.
+        const text = output === "regex"
+          ? JSON.stringify({ text: `session: ${sessionId}` }) + '\n{"text":"tail"}\n'
+          : JSON.stringify({ [output]: sessionId }) + "\n";
+        children[0]!.stdout.emit("data", Buffer.from(text));
+        children[0]!.emit("close", 0);
+        assert.ok(sink.events.some(event => event.type === "event"), "output remains observable");
+        const before = snapshotFiles(root), rejectedSink = new CapturingSink();
+        const opts = { prompt: "continue", runtime, sessionId };
+        assert.throws(() => mgr.assertExecutionAvailable(opts), /REPOSITORY_ISOLATION_UNAVAILABLE/);
+        const rejected = mgr.resume(opts, rejectedSink);
+        assert.equal(rejected.ok, false);
+        if (!rejected.ok) assert.match(rejected.error, /^Execution not started: repository-isolation scope is unavailable\./);
+        assert.deepEqual(mgr.list(), []);
+        assert.equal(calls.length, 1);
+        assert.deepEqual(rejectedSink.events, []);
+        assert.deepEqual(snapshotFiles(root), before, "rejection must not write lifecycle logs or allocate deployment state");
+        const next = mgr.start({ prompt: "ordinary fresh session", runtime }, sink);
+        assert.equal(next.ok, true);
+        if (next.ok) assert.equal(next.session.id.split("-").at(-1), "2", "rejection must not allocate a session id");
+        mgr.cleanup();
+      });
+    });
+  }
+}
+
+test("fresh opaque OPA stdout ids without a recorded owner remain explicitly unqualified for resume", () => {
+  withSessionEnv(root => {
+    const { fn, children, calls } = createFakeSpawn();
+    const mgr = new SessionManager({ env: {}, spawnFn: fn });
+    const sink = new CapturingSink();
+    assert.equal(mgr.start({ prompt: "fresh" }, sink).ok, true);
+    children[0]!.stdout.emit("data", Buffer.from('{"sessionID":"opaque-fresh-session"}\n'));
+    children[0]!.emit("close", 0);
+    const before = snapshotFiles(root);
+    const result = mgr.resume({ prompt: "continue", sessionId: "opaque-fresh-session" }, sink);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+    assert.equal(calls.length, 1);
+    assert.equal(mgr.activeCount, 0);
+    assert.deepEqual(snapshotFiles(root), before);
+  });
+});
+
+for (const argument of ["matching", "foreign", "missing", "duplicate"] as const) {
+  test(`Pi custom command ${argument} session-id argument qualifies only an exact launch-bound token`, () => {
+    withSessionEnv(() => {
+      const { fn, children, calls } = createFakeSpawn();
+      const foreignId = "unrelated-native-session";
+      const mgr = new SessionManager({
+        env: {}, spawnFn: fn, runtimes: { pi: {} },
+        runtimeCommands: { pi: ({ session, sessionId, prompt }) => ({ binary: "pi", args: [
+          "--print", "--mode", "json",
+          ...(argument === "missing" ? [] : ["--session-id", argument === "foreign" ? foreignId : sessionId ?? session.id]),
+          ...(argument === "duplicate" ? ["--session-id", foreignId] : []), prompt,
+        ] }) },
+      });
+      const sink = new CapturingSink();
+      const started = mgr.start({ runtime: "pi", prompt: "fresh" }, sink);
+      assert.equal(started.ok, true); if (!started.ok) return;
+      children[0]!.emit("close", 0);
+      assert.equal(mgr.resume({ runtime: "pi", prompt: "continue", sessionId: foreignId }, sink).ok, false);
+      assert.equal(mgr.resume({ runtime: "pi", prompt: "continue", sessionId: started.session.id }, sink).ok, argument === "matching");
+      assert.equal(calls.length, argument === "matching" ? 2 : 1);
+      mgr.cleanup();
+    });
+  });
+}

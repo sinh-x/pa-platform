@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, OpencodeAdapter } from "../adapter.js";
 import { createOpencodeHooks } from "../deploy.js";
 
@@ -248,9 +248,10 @@ fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-08-06T
 
 test("phase 4 regression: opa deploy --resume still fails fast when no session id recorded (foreground TUI not resumable)", async () => {
   await withOpaEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-334007", team: "daily", mode: "plan", runtime: "opencode", event: "started", timestamp: "2026-11-24T00:00:00Z" });
     const stderr: string[] = [];
     const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
-    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", "d-nonexist", "--provider", "minimax"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", "d-334007", "--provider", "minimax"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.equal(code, 1);
     assert.match(stderr.join("\n"), /no opencode session id recorded/);
   });

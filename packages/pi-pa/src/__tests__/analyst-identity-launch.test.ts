@@ -24,6 +24,9 @@ for (const { name, team, mode, legacy, drift, selected } of [
     name: `PAP-329 selected PAPC ${team}/${mode} reaches Pi through the CLI`, team: team!, mode: mode!, legacy: false, drift: false, selected: true,
   })),
 ]) test(name, async t => {
+  // Preserve historical functional assertions for a future qualified executor;
+  // PAP-334's interim Analyst boundary is exercised by repository-isolation-launch.
+  if (team === "analyst") return t.skip("PAP-334: no qualified Analyst executor; functional launch assertions deferred");
   const selectedPath = join(selectedConfigRoot, "teams", `${team}.yaml`);
   if (selected && !existsSync(selectedPath)) return t.skip("external PAPC selected team is unavailable");
   const selectedYaml = selected ? readFileSync(selectedPath, "utf8") : undefined;
@@ -59,7 +62,7 @@ for (const { name, team, mode, legacy, drift, selected } of [
     for (const key of ["PA_DEPLOYMENT_ID", "PA_TEAM", "PA_MODE", "PA_TICKET_ID"]) delete process.env[key];
     process.chdir(repo);
     let spawns = 0, lateCustody: "hooks" | "preflight" | "gate" | undefined;
-    const adapter: RuntimeAdapter = { name: "pi", defaultModel: "", sessionFileName: "fixture", allocateSessionId: () => "disposable-launch",
+    const adapter: RuntimeAdapter = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "disposable-launch",
       installHooks() {
         if (drift) writeFileSync(join(config, "docs/objective.md"), "Changed AFTER immutable selection.\n");
         if (lateCustody === "hooks") writeFileSync(repositoryMutationLeasePath(repo), "late fixture custody");

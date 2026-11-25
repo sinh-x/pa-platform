@@ -95,6 +95,73 @@ test("status owner routes are inventoried without promoting source discovery to 
   }
 });
 
+test("PAP-334 native ticket administration has exact finite forms, authentication owners and no extra effects", () => {
+  const effects = { inspect: "read", create: "write", update: "write", "set-status": "write", comment: "write" } as const;
+  assert.deepEqual(interactionCatalogue.filter(row => row.operationId.startsWith("ticket.native.")).map(row => row.operationId).sort(),
+    Object.keys(effects).map(action => `ticket.native.${action}`).sort());
+  for (const [action, effect] of Object.entries(effects)) {
+    const row = operation(`ticket.native.${action}`);
+    assert.deepEqual(row.nativeForms, [`pa_ticket:${action}`]);
+    assert.deepEqual(row.cliForms, []); assert.deepEqual(row.channels, ["native"]);
+    assert.deepEqual(row.aliases, action === "comment" ? ["pa_ticket:comment(id,author,content)"] : []);
+    assert.equal(row.sourceHandler, "packages/pi-pa/src/pi-extension/ticket-tool.ts");
+    assert.match(row.owner, /ticketAdminService \/ TicketStore; authenticatePiTicketCaller/);
+    assert.equal(row.effectClass, effect);
+    assert.match(row.reason, /any exact registered target project independently of team\/mode/);
+    assert.match(row.reason, /environment labels alone are not authentication/);
+    assert.match(row.reason, /anchor recorder covers all managed teams\/modes/);
+    assert.match(row.reason, /no overlapping source operation or pending restart/);
+    assert.match(row.reason, /never a phase-check pass or failure reset/);
+    assert.match(row.reason, /No source\/Git, workflow, approval, publication, queue, resource or launch authority/);
+    assert.match(row.requiredContext.join(" "), /target need not be the launch ticket/);
+    assert.equal(row.nativeBinding, null); assert.equal(row.delegationBinding, null);
+    assert.equal(row.requestSchemaRef, null); assert.equal(row.resultSchemaRef, null);
+    for (const wrong of ["read", "write", "resource", "launch"] as const) {
+      if (wrong !== effect) assert.ok(validateInteractionCatalogue(interactionCatalogue.map(entry => entry.operationId === row.operationId ? { ...entry, effectClass: wrong } : entry)).includes("effect-regression"));
+    }
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.filter(entry => entry.operationId !== row.operationId)).includes("missing-effect-variant"));
+    assert.ok(validateInteractionCatalogue(interactionCatalogue.map(entry => entry.operationId === row.operationId ? { ...entry, delegationBinding: { owner: "invented", channel: "native" } } : entry)).includes("source-binding-regression"));
+  }
+  assert.match(operation("ticket.native.update").reason, /Arrays replace.*no status, refs, primary, Git/);
+  assert.match(operation("ticket.native.update").reason, /inspect-only, not idempotent replay authority/);
+  assert.match(operation("ticket.native.set-status").reason, /existing durable status-intent owner/);
+  assert.match(operation("ticket.native.comment").reason, /configured same-team agent, never identity or permission/);
+});
+
+test("PAP-334 generic and selected status owners stay distinct from unchanged finite intake", () => {
+  const generic = operation("ticket.lifecycle");
+  assert.deepEqual(generic.cliForms, ["ticket update --status", "ticket update --assignee", "ticket update --force"]);
+  assert.equal(generic.effectClass, "write"); assert.deepEqual(generic.nativeForms, []);
+  assert.match(generic.reason, /authenticated REST PATCH \/api\/tickets\/:id/);
+  assert.match(generic.reason, /independent of team\/mode or document profile/);
+  assert.match(generic.reason, /Completed history is not a blanket stage restriction/);
+  assert.match(generic.reason, /Deletion restrictions remain separate/);
+  for (const action of ["inspect", "set"]) {
+    const row = operation(`ticket.status.${action}`);
+    assert.match(row.reason, /selected finite effective-identity admission/);
+    assert.match(row.reason, /Any exact registered target project/);
+    assert.match(row.reason, /checks remain stricter than generic administration/);
+    assert.deepEqual(row.nativeForms, [`pa_ticket_status:${action}`]);
+  }
+  const intake = interactionCatalogue.filter(row => row.operationId.startsWith("ticket.intake."));
+  assert.deepEqual(intake.map(row => row.operationId).sort(), ["capabilities", "inspect", "reuse", "create", "patch-planning"].map(action => `ticket.intake.${action}`).sort());
+  for (const row of intake) {
+    assert.deepEqual(row.nativeForms, [`pa_ticket_intake:${row.operationId.slice("ticket.intake.".length)}`]);
+    assert.deepEqual(row.cliForms, []); assert.deepEqual(row.channels, ["native"]);
+    assert.equal(row.effectClass, ["create", "patch-planning"].some(action => row.operationId.endsWith(`.${action}`)) ? "write" : "read");
+    assert.match(row.owner, /v4 or explicitly policy-selected ticket.intake/);
+  }
+  assert.match(operation("ticket.intake.patch-planning").owner, /no other current\/historical deployment association/);
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  // Only CLI command files are auto-discovered by the guard below. Imported
+  // services/authentication/barrier owners require explicit manifest coverage.
+  for (const path of ["packages/pa-core/src/tickets/admin-service.ts", "packages/pa-core/src/tickets/index.ts",
+    "packages/pa-core/src/agent-api/routes/tickets.ts", "packages/pi-pa/src/ticket-session.ts",
+    "packages/pi-pa/src/native-execution-administration.ts", "packages/pi-pa/src/native-execution-tools.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked PAP-334 administration/authentication/barrier source: ${path}`);
+  }
+});
+
 test("native-only owners are accounted for without inventing CLI commands or grants", () => {
   for (const id of ["ticket.intake.create", "document.native.confirm", "document.native.branch-inspect", "workspace.run", "workflow.native.request-step", "decision.native.adopt", "preparation.retry", "execution.report", "phase-report.observe-delivery", "feature.update", "borrow.approval"]) {
     const row = operation(id);
@@ -200,9 +267,9 @@ test("general server review opt-in remains an operator resource, never decision 
   }
 });
 
-test("Analyst identity, own-deployment sources and review convergence retain finite effect owners", () => {
-  assert.match(operation("deploy.launch").reason, /analyst\/analyze.*v2/);
-  assert.match(operation("deploy.launch").reason, /no generic ticket privilege/i);
+test("historical Analyst selection, own-deployment sources and review convergence retain finite effect owners", () => {
+  assert.match(operation("deploy.launch").reason, /Historical analyst\/analyze v2 bindings remain selection contracts only/);
+  assert.match(operation("deploy.launch").reason, /ticket administration grants no workflow, source\/Git, branch or approval authority/i);
   for (const action of ["inspect", "set"]) {
     assert.match(operation(`ticket.status.${action}`).reason, /natively bound analyst\/analyze/);
   }
@@ -216,11 +283,9 @@ test("Analyst identity, own-deployment sources and review convergence retain fin
   assert.match(operation("handoff.review").reason, /original request.*canonical.*decision/);
   assert.match(operation("handoff.review").reason, /detachment.*not.*Cancel/);
   assert.match(operation("handoff.review").reason, /v1.*foreground/);
-  const store = readFileSync(resolve(root, "packages/pa-core/src/tickets/store.ts"), "utf8");
-  assert.match(store, /privileged: deployment\.team !== "analyst"/);
   const session = readFileSync(resolve(root, "packages/pi-pa/src/document-session.ts"), "utf8");
   assert.match(session, /documentTicketMutationContext\(caller: PiDocumentCaller, tool: "pa_document" \| "pa_handoff" \| "pa_ticket_status"\)/);
-  assert.match(session, /if \(!capabilityToolSelected\(caller\.capabilities\.policy, tool\)\) throw new DocumentPackageError\("DOCUMENT_AUTHORITY"\)/);
+  assert.match(session, /if \(caller\.capabilities && !capabilityToolSelected\(caller\.capabilities\.policy, tool\)\) throw new DocumentPackageError\("DOCUMENT_AUTHORITY"\)/);
 });
 
 test("PAP-316 inventory covers selection, source intake and real bridge ingress owners", () => {
@@ -240,7 +305,7 @@ test("PAP-316 inventory covers selection, source intake and real bridge ingress 
 
 test("PAP-329 ordinary startup changes admission, not public forms, effects or native authority", () => {
   const launch = operation("deploy.launch"), resume = operation("deploy.resume");
-  assert.match(launch.reason, /Profile-free interactive modes.*without native workflow, ticket, branch or approval admission/);
+  assert.match(launch.reason, /Profile-free interactive modes.*without native workflow, branch or approval admission/);
   assert.match(launch.reason, /Sensitive-command\/data safeguards.*retained checkout custody still apply/);
   assert.match(launch.reason, /no native document or builder tools/);
   assert.match(resume.reason, /same team, mode, runtime, ticket and physical roots/);
@@ -259,8 +324,8 @@ test("PAP-329 ordinary startup changes admission, not public forms, effects or n
   }
 });
 
-test("PAP-318 reconciles bounded transport and explicit v3 profile admission without new public effects", () => {
-  assert.match(operation("deploy.launch").reason, /Explicit v3 pa-readonly-document\/v1/);
+test("PAP-318 retains bounded transport and v3 selection contracts without claiming current execution admission", () => {
+  assert.match(operation("deploy.launch").reason, /Explicit v3 pa-readonly-document\/v1 execution is blocked/);
   assert.match(operation("deploy.launch").reason, /missing mode\/default cannot fall through/);
   assert.match(operation("deploy.launch").reason, /bounded prompt references/);
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8"));
@@ -268,6 +333,99 @@ test("PAP-318 reconciles bounded transport and explicit v3 profile admission wit
     assert.ok(Object.hasOwn(manifest.sources, path), `untracked PAP-318 admission/transport/lifecycle dependency: ${path}`);
   }
   for (const row of interactionCatalogue) assert.equal(row.nativeForms.some(form => /pa_prompt|pa_readonly_profile/.test(form)), false);
+});
+
+test("PAP-334 P2b catalogue describes interim rejection, not working confinement, execution or adoption", () => {
+  const launch = operation("deploy.launch"), resume = operation("deploy.resume"), preview = operation("deploy.preview"), rogue = operation("deploy.rogue-one");
+  assert.match(launch.reason, /^Protected execution is not started\./);
+  assert.match(launch.reason, /interim static fail-closed checker \(REPOSITORY_ISOLATION_UNAVAILABLE\)/);
+  for (const row of [launch, resume]) {
+    assert.match(row.reason, /public Analyst in all modes, legacy requirements\/analyze and (?:the )?existing v3 pa-readonly-document\/v1/);
+    assert.match(row.reason, /no usable confined executor or scope-grant override/);
+    assert.match(row.reason, /not working execution or adoption/);
+    assert.match(row.reason, /not universal route qualification or installed availability/);
+    assert.equal(row.effectClass, "launch");
+    assert.equal(row.targetDisposition, "native-supported", "source routing intent remains distinct from protected execution admission");
+    assert.deepEqual(row.channels, ["cli"]); assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null); assert.equal(row.delegationBinding, null);
+    assert.equal(row.requestSchemaRef, null); assert.equal(row.resultSchemaRef, null);
+    assert.doesNotMatch(row.reason, /v3 pa-readonly-document\/v1 starts bind|analyst\/analyze retains its fixed v2 binding/);
+  }
+  assert.match(launch.reason, /Profile-free interactive modes outside these protected selections/);
+  assert.match(launch.reason, /all v1\/v2\/v3 capability bindings.*plan.environment, original environments and their merged overlays/);
+  assert.match(launch.reason, /writer label cannot erase protected evidence/);
+  assert.match(launch.reason, /Pi spawn accepts only an adapter-issued single-use fresh session ID/);
+  assert.match(launch.reason, /not installed session-store race qualification/);
+  assert.match(launch.reason, /Raw Pi\/OPA runners, including the executable entrypoint, check inside their lifecycle before consuming configuration, runtime spawn or custody transfer/);
+  assert.match(launch.reason, /retaining rejected configurations and existing claims rather than emitting terminal registry reconciliation/);
+  assert.match(resume.reason, /cannot be reclassified as rogue-one/);
+  assert.match(resume.reason, /raw current\/start\/event rows and every resumed ancestor in one read transaction/);
+  assert.match(resume.reason, /retained requirements-document-\* or readonly-document-policy\/\* note refuses downgrade even with a writer label or missing binding/);
+  assert.match(resume.reason, /Missing, unreadable or malformed native prior evidence fails closed/);
+  assert.match(resume.reason, /existing-files-only registry reads do not initialize a database or allocate missing WAL\/SHM sidecars/);
+  assert.match(resume.reason, /Direct adapter resume requires the native prior deployment ID, not just a session token/);
+  assert.match(resume.reason, /private runtime-specific session-owner.ts readers share safe existing-file I\/O and bind the exact recorded token and runtime to that native ID/);
+  assert.match(resume.reason, /Eligible nonAnalyst fresh\/resume paths retain existing admission using native prior evidence for resume/);
+  assert.match(resume.reason, /Rejection does not upgrade, terminate or reconcile existing sessions/);
+  assert.equal(preview.effectClass, "write");
+  assert.match(preview.reason, /Source dry-runs remain static inspection and may produce private launch artifacts/);
+  assert.match(preview.reason, /Actual Pi\/OPA adapters still reject protected execution even with mode dry-run/);
+  assert.match(preview.reason, /not pure reads, execution admission or adoption/);
+  assert.equal(rogue.effectClass, "launch"); assert.equal(rogue.targetDisposition, "operator-only");
+  assert.match(rogue.reason, /Selecting rogue-one cannot reclassify a protected retained resume/);
+  for (const row of interactionCatalogue) {
+    assert.equal([...row.cliForms, ...row.nativeForms, ...row.aliases].some(form => /repository-isolation|scope-grant|pa_sandbox/.test(form)), false,
+      "the interim checker adds no public executor, isolation selector or override form");
+  }
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  // CLI auto-discovery does not cover imported checks, raw lineage/session
+  // readers, runner lifecycle evidence or the two API admission boundaries.
+  for (const path of ["packages/pa-core/src/deploy/repository-isolation.ts", "packages/pa-core/src/deploy/index.ts",
+    "packages/pa-core/src/cli/commands/deploy.ts", "packages/pi-pa/src/deploy.ts", "packages/pi-pa/src/adapter.ts",
+    "packages/opencode-pa/src/deploy.ts", "packages/opencode-pa/src/adapter.ts", "packages/pa-core/src/index.ts",
+    "packages/pa-core/src/registry/index.ts", "packages/pa-core/src/registry/db.ts", "packages/pa-core/src/mode-capabilities.ts",
+    "packages/pi-pa/src/session-owner.ts", "packages/opencode-pa/src/session-owner.ts",
+    "packages/pi-pa/src/background-runner.ts", "packages/opencode-pa/src/background-runner.ts",
+    "packages/pa-core/src/deploy/background-ownership.ts", "packages/pa-core/src/agent-api/index.ts",
+    "packages/pa-core/src/agent-api/ws/session-hub.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked PAP-334 isolation check/export/ingress dependency: ${path}`);
+  }
+  const isolation = readFileSync(resolve(root, "packages/pa-core/src/deploy/repository-isolation.ts"), "utf8");
+  assert.match(isolation, /queryReadonlyIsolationLineage\(deploymentId, runtime\)/);
+  assert.match(isolation, /prior\.note\?\.startsWith\("requirements-document-"\) \|\| prior\.note\?\.startsWith\("readonly-document-policy\/"\)/);
+  assert.match(isolation, /assertRepositoryIsolationBindingAvailable\(JSON\.parse\(prior\.binding\)\)/);
+  assert.match(isolation, /const binding = parseModeCapabilityBinding\(value\)/);
+  assert.match(isolation, /const environments = \[\.\.\.sources, plan\?\.environment\]/);
+  assert.match(isolation, /if \(requiresRepositoryIsolation\(selection\)\) throw new RepositoryIsolationUnavailableError\(\)/);
+  assert.match(isolation, /catch \{ throw new RepositoryIsolationUnavailableError\(\); \}/);
+  assert.match(readFileSync(resolve(root, "packages/pa-core/src/deploy/index.ts"), "utf8"), /export \* from "\.\/repository-isolation\.js"/);
+});
+
+test("PAP-334 P2b API owner reasons keep provenance finite without advertising new commands or grants", () => {
+  for (const id of ["deploy.resume", "serve.start", "serve.restart"]) {
+    const row = operation(id);
+    assert.match(row.reason, /before runtime preflight/);
+    assert.match(row.reason, /before (?:session )?allocation/);
+    assert.match(row.reason, /including default-command fallback/);
+    assert.match(row.reason, /Stdout session hints never grant resume provenance/);
+    assert.match(row.reason, /matching launch-bound native session argument with retained origin or an exact recorded managed session/);
+    assert.match(row.reason, /Unknown opaque API resumes remain unavailable/);
+    assert.match(row.reason, /(?:known launch-bound or recorded nonAnalyst API continuations remain admitted|known launch-bound\/recorded continuations retain existing admission)/);
+    assert.deepEqual(row.channels, ["cli"]); assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null); assert.equal(row.delegationBinding, null);
+    assert.equal(row.requestSchemaRef, null); assert.equal(row.resultSchemaRef, null);
+  }
+  for (const id of ["serve.start", "serve.restart"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "resource"); assert.equal(row.targetDisposition, "operator-only");
+    assert.match(row.reason, /no working confined executor, installed availability or universal route qualification/);
+  }
+  const hub = readFileSync(resolve(root, "packages/pa-core/src/agent-api/ws/session-hub.ts"), "utf8");
+  assert.match(hub, /this\.assertExecutionAvailable\(opts\)/);
+  assert.match(hub, /readRecordedRuntimeSession\(id, `session-id-\$\{runtime\}\.txt`\) !== opts\.sessionId/);
+  assert.match(hub, /flagIndex === args\.lastIndexOf\(sessionFlag\) && args\[flagIndex \+ 1\] === nativeId/);
+  assert.doesNotMatch(hub, /nativeSessionOrigins\.set\((?:nativeSessionId|session\.sessionIdParser)/,
+    "stdout parser observations must not qualify native resume origin");
 });
 
 test("PAP-298 selected host changes existing launch/resume mechanics, not public commands or grants", () => {
@@ -321,7 +479,24 @@ test("managed Pi skills and protected-review extensions retain independent launc
   assert.match(capabilities, /return binding\?\.schemaVersion === "pa-mode-capability-binding\/v2" \|\| binding\?\.schemaVersion === "pa-mode-capability-binding\/v3";/);
 });
 
-test("conservative source inventory rejects any changed or added dispatch source pending semantic reconciliation", () => {
+test("Rogue-One shared guides preserve the existing launch form and add no native bindings or authority", () => {
+  const row = operation("deploy.rogue-one");
+  assert.deepEqual(row.cliForms, ["deploy rogue-one"]);
+  assert.deepEqual(row.channels, ["cli"]);
+  assert.deepEqual(row.nativeForms, []);
+  assert.equal(row.effectClass, "launch");
+  assert.equal(row.targetDisposition, "operator-only");
+  assert.equal(row.nativeBinding, null);
+  assert.equal(row.delegationBinding, null);
+  assert.equal(row.requestSchemaRef, null);
+  assert.equal(row.resultSchemaRef, null);
+  assert.match(row.reason, /Pi and OpenCode bare primers include only the shared task-tracking, system-design and HTML-reporting guides/);
+  assert.match(row.reason, /without configured team\/mode guides or skills/);
+  assert.match(row.reason, /adds no commands, aliases, native bindings, runtime permissions or approval authority/);
+  assert.match(row.reason, /cannot reclassify a protected retained resume/);
+});
+
+test("conservative source inventory rejects tracked changes and added CLI command files pending semantic reconciliation", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   const commandDir = "packages/pa-core/src/cli/commands";
   const files = readdirSync(resolve(root, commandDir)).filter(name => name.endsWith(".ts")).map(name => `${commandDir}/${name}`);
