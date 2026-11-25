@@ -375,6 +375,9 @@
         }));
     in
     {
+      nixosModules.pa-server = import ./nix/pa-server.nix { inherit self; };
+      nixosModules.default = self.nixosModules.pa-server;
+
       lib.mkPaPlatform = paPlatformFor;
       # Qualification inputs only. No default wrapper/PATH/launcher selection.
       lib.selectedPiHostFor = selectedPiHostFor;
