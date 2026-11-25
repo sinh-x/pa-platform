@@ -566,3 +566,22 @@ test("PAP-303 inventory tracks private observation/lifecycle dependencies withou
       "source reconciliation must not invent an available peer request operation");
   }
 });
+
+test("PAP-336 boot module preserves operator-only serve effects and adds no CLI or native forms", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  assert.ok(Object.hasOwn(manifest.sources, "nix/pa-server.nix"), "track the boot service owner imported by flake.nix");
+  const module = readFileSync(resolve(root, "nix/pa-server.nix"), "utf8");
+  assert.match(module, /config = lib\.mkIf cfg\.enable/);
+  assert.ok(module.includes('ExecStart = "${cfg.package}/bin/pa-core serve --host 127.0.0.1 --port ${toString cfg.port}";'));
+  assert.doesNotMatch(module, /--background|--force|--cors|0\.0\.0\.0/);
+  assert.deepEqual(operation("serve.start").cliForms, ["serve", "serve --background", "serve --force", "serve --dev", "serve --host", "serve --port", "serve --cors", "serve --local-review"]);
+  for (const id of ["serve.start", "serve.stop", "serve.restart"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "resource");
+    assert.equal(row.targetDisposition, "operator-only");
+    assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.delegationBinding, null);
+  }
+  assert.equal(operation("serve.status").effectClass, "write", "stale PID cleanup is still not a native observational read");
+});

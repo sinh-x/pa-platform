@@ -519,6 +519,7 @@ See [Configuration](./configuration.md) for the full environment variable refere
 
 ## Cross-References
 
+- [NixOS PA server service](../nixos-pa-server.md) — opt-in boot service, existing-user prerequisites, configurable local port and systemd supervision
 - [Auth & Security](./auth-security.md) — CORS, path traversal guards, security considerations
 - [Configuration](./configuration.md) — environment variables and config files
 - [CLI Reference](./cli-reference.md) — full CLI command reference
