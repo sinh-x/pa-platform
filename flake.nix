@@ -463,6 +463,9 @@
             { option = "enableLavishAxi"; tool = "lavish-axi"; version = "0.1.67"; }
           ];
         in {
+          pa-server-module = import ./nix/pa-server-check.nix {
+            inherit self nixpkgs pkgs system;
+          };
           treehouse-runtime = pkgs.runCommand "ppa-treehouse-runtime" {
             nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
           } ''
