@@ -7,6 +7,7 @@ import { captureSessions, type SessionSnapshot } from "../session-capture.js";
 import { DASHBOARD_LIMITS, parseDashboardQuery, startSessionDashboard } from "../session-dashboard-server.js";
 import type { InventoryHost } from "../session-inventory.js";
 import type { HerdrSource } from "../session-herdr-source.js";
+import { DASHBOARD_HTML, DASHBOARD_SCRIPT, DASHBOARD_CSS } from "../session-dashboard-page.js";
 
 const fp = { pid: 42, startTimeTicks: "123", bootId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" };
 function fixture(): InventoryHost {
@@ -42,7 +43,8 @@ test("HTTP and CLI capture are factually identical, fresh, minimized and exact-f
     assert.equal(JSON.parse((await get(server, "/v1/sessions?ticket=PAP-287")).body).rows.length, 0);
     host.candidates = () => ({ complete: true, candidates: [] });
     assert.equal(JSON.parse((await get(server)).body).rows.length, 0); assert.equal(reads, 3);
-    const page = await get(server, "/"); assert.equal(page.status, 200); assert.match(page.headers["content-type"]!, /text\/html/); assert.equal(reads, 3);
+    const page = await get(server, "/"); assert.equal(page.status, 200); assert.match(page.headers["content-type"]!, /text\/html/); assert.equal(page.body, DASHBOARD_HTML);
+    assert.equal((await get(server, "/dashboard.js")).body, DASHBOARD_SCRIPT); assert.equal((await get(server, "/dashboard.css")).body, DASHBOARD_CSS); assert.equal(reads, 3);
   } finally { await close(server); }
 });
 test("reject hostile methods/hosts/origins/headers/routes and filters before capture", async () => {

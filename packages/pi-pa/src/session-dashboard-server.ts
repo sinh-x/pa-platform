@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
 import { captureSessions } from "./session-capture.js";
+import { DASHBOARD_HTML, DASHBOARD_SCRIPT, DASHBOARD_CSS } from "./session-dashboard-page.js";
 import { parseSessionsArgs } from "./session-cli.js";
 import type { SessionFilters } from "./session-inventory.js";
 
@@ -49,7 +50,7 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
   const headerMs = deadline(options.deadlines?.headerMs, DASHBOARD_LIMITS.headerMs);
   const overallMs = deadline(options.deadlines?.overallMs, DASHBOARD_LIMITS.overallMs);
   const capture = options.capture ?? captureSessions;
-  const assets = options.assets ?? { html: "<!doctype html><html lang=\"en\"><title>PPA sessions</title><p>Dashboard page unavailable.</p></html>", script: "", css: "" };
+  const assets = options.assets ?? { html: DASHBOARD_HTML, script: DASHBOARD_SCRIPT, css: DASHBOARD_CSS };
   const sockets = new Set<Socket>();
   let active = false;
   const server = createServer({ maxHeaderSize: DASHBOARD_LIMITS.headerBytes, headersTimeout: headerMs, requestTimeout: headerMs, keepAliveTimeout: 1 });
