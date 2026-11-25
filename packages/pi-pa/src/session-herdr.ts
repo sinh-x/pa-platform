@@ -31,26 +31,41 @@ function sameLineage(a: Lineage, b: Lineage): boolean {
 const scope = (endpoint: HerdrEndpoint) => JSON.stringify([endpoint.name, endpoint.socketPath, endpoint.identity]);
 interface Hit { endpoint: HerdrEndpoint; pane: HerdrPane; foreground: ProcessFingerprint }
 
+/** Fixed, bounded read concurrency, not one unbounded promise per pane. */
+async function eachBounded<T>(items: T[], visit: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(8, items.length) }, async () => {
+    while (next < items.length) await visit(items[next++]!);
+  }));
+}
+
 /** Read-only, same-window projection. No CWD/title joins, cached matches or activity inference. */
 export async function captureHerdrLocations(anchors: Map<string, ProcessFingerprint>, source: HerdrSource, read: ProcessReader, deadline: number, clock = Date.now): Promise<HerdrCapture> {
   const mappings = new Map<string, SessionMapping>(), reasons = new Set<string>();
   if (anchors.size === 0) return { mappings, complete: true, reasons: [] };
   const initial = new Map([...anchors].map(([key, anchor]) => [key, lineage(anchor, read)]));
   if ([...initial.values()].some(chain => !chain.complete)) reasons.add("process-lineage-incomplete");
+  // Discovery cannot consume the entire observation window and starve direct
+  // rechecks. Keep the last third of the remaining budget for verification.
+  const remaining = Math.max(0, deadline - clock());
+  const discoveryDeadline = deadline - Math.ceil(remaining / 3);
   let roster;
-  try { roster = await source.roster(deadline); } catch { roster = { endpoints: [], complete: false, reasons: ["herdr-roster-unavailable"] }; }
+  try { roster = await source.roster(discoveryDeadline); } catch { roster = { endpoints: [], complete: false, reasons: ["herdr-roster-unavailable"] }; }
   for (const reason of roster.reasons) reasons.add(reason);
   if (!roster.complete) reasons.add("herdr-coverage-incomplete");
   const hits = new Map<string, Hit[]>();
   let panesObserved = 0;
   for (const endpoint of roster.endpoints) {
-    if (clock() >= deadline) { reasons.add("herdr-budget-exhausted"); break; }
+    if (clock() >= discoveryDeadline) { reasons.add("herdr-budget-exhausted"); break; }
     let panes: HerdrPane[];
-    try { panes = await source.snapshot(endpoint, deadline); } catch { reasons.add("herdr-snapshot-unavailable"); continue; }
-    for (const pane of panes) {
-      if (clock() >= deadline || panesObserved++ >= 1024) { reasons.add("herdr-pane-budget-exhausted"); break; }
+    try { panes = await source.snapshot(endpoint, discoveryDeadline); } catch { reasons.add("herdr-snapshot-unavailable"); continue; }
+    const selected = panes.slice(0, Math.max(0, 1024 - panesObserved));
+    if (selected.length < panes.length) reasons.add("herdr-pane-budget-exhausted");
+    panesObserved += selected.length;
+    await eachBounded(selected, async pane => {
+      if (clock() >= discoveryDeadline) { reasons.add("herdr-pane-budget-exhausted"); return; }
       let foreground: number[];
-      try { foreground = await source.foreground(endpoint, pane.paneId, deadline); } catch { reasons.add("herdr-process-info-unavailable"); continue; }
+      try { foreground = await source.foreground(endpoint, pane.paneId, discoveryDeadline); } catch { reasons.add("herdr-process-info-unavailable"); return; }
       for (const pid of new Set(foreground)) {
         // Recycled pane foreground PIDs cannot match an old ancestry sample.
         const observed = read(pid);
@@ -62,20 +77,22 @@ export async function captureHerdrLocations(anchors: Map<string, ProcessFingerpr
           hits.set(key, list);
         }
       }
-    }
+    });
   }
   // Every reported match needs a second topology/foreground/lineage read. A
   // competing first observation that cannot settle withholds the location.
   const stable = new Map<string, Hit[]>(), unsettled = new Set<string>();
-  const snapshots = new Map<string, HerdrPane[]>();
-  for (const [key, list] of hits) {
+  // Share the in-flight topology recheck as well as its result. Concurrent hits
+  // in one endpoint must not create repeated independent snapshot requests.
+  const snapshots = new Map<string, Promise<HerdrPane[]>>();
+  await eachBounded([...hits], async ([key, list]) => {
     for (const hit of list) {
       if (clock() >= deadline) { unsettled.add(key); reasons.add("herdr-recheck-budget-exhausted"); continue; }
       try {
         const endpointKey = scope(hit.endpoint);
         let panes = snapshots.get(endpointKey);
-        if (!panes) { panes = await source.snapshot(hit.endpoint, deadline); snapshots.set(endpointKey, panes); }
-        const pane = panes.find(value => value.paneId === hit.pane.paneId);
+        if (!panes) { panes = source.snapshot(hit.endpoint, deadline); snapshots.set(endpointKey, panes); }
+        const pane = (await panes).find(value => value.paneId === hit.pane.paneId);
         if (!pane || JSON.stringify(pane) !== JSON.stringify(hit.pane)) throw new Error();
         const pids = await source.foreground(hit.endpoint, pane.paneId, deadline);
         const observed = read(hit.foreground.pid), chain = lineage(anchors.get(key)!, read);
@@ -84,7 +101,7 @@ export async function captureHerdrLocations(anchors: Map<string, ProcessFingerpr
         stable.set(key, [...(stable.get(key) ?? []), hit]);
       } catch { unsettled.add(key); reasons.add("herdr-match-changed-or-unavailable"); }
     }
-  }
+  });
   // Roster churn prevents claiming uniqueness across previously inspected owners.
   try {
     const final = await source.roster(deadline);

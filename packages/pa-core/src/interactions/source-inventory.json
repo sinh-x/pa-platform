@@ -173,7 +173,7 @@
     "packages/pa-core/src/registry/session-inventory.ts": "94074609cc5f09744fbed33c3318694f7c5e4e716a177ac5e0dd99320ddccc83",
     "packages/pi-pa/src/session-inventory.ts": "6f09686071f65ba83eb49a90a103996e4e45c50709daa5e692d47ea115ad3491",
     "packages/pi-pa/src/session-process.ts": "1f5841b4e6bcc5db5a5aaff10220e2e772f1fbfc2b06ae1f1e929106fe6f28f1",
-    "packages/pi-pa/src/session-herdr.ts": "9f2698015967fc87b5f37d7e260bf0986cd8d4f369d417dd6a2f28a6b535df4b",
+    "packages/pi-pa/src/session-herdr.ts": "a4e872098e28cdf6698021759cae26941e3fe719cc7f1c884104cb397aa40062",
     "packages/pi-pa/src/session-herdr-source.ts": "a9c9b300d726c47958239653b537ea935bd1025dde5620a118cd70fdf67d418e",
     "packages/pi-pa/src/session-capture.ts": "6b5ff742bb6bc0a95d105f49c2c6b3baafb9327db842c06b9b148130f4ab75b1",
     "packages/pi-pa/src/session-cli.ts": "003d7803d09523c530a97dc6b1f6dd4caa2da6cfa4da6d1964fe5a33c1ba1778",
