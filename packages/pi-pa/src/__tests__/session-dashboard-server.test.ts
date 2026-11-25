@@ -8,6 +8,7 @@ import { DASHBOARD_LIMITS, parseDashboardQuery, startSessionDashboard } from "..
 import type { InventoryHost } from "../session-inventory.js";
 import type { HerdrSource } from "../session-herdr-source.js";
 import { DASHBOARD_HTML, DASHBOARD_SCRIPT, DASHBOARD_CSS } from "../session-dashboard-page.js";
+import { loadSensitivePatterns, screenSessionObjective } from "@pa-platform/pa-core";
 
 const fp = { pid: 42, startTimeTicks: "123", bootId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" };
 function fixture(): InventoryHost {
@@ -46,6 +47,36 @@ test("HTTP and CLI capture are factually identical, fresh, minimized and exact-f
     const page = await get(server, "/"); assert.equal(page.status, 200); assert.match(page.headers["content-type"]!, /text\/html/); assert.equal(page.body, DASHBOARD_HTML);
     assert.equal((await get(server, "/dashboard.js")).body, DASHBOARD_SCRIPT); assert.equal((await get(server, "/dashboard.css")).body, DASHBOARD_CSS); assert.equal(reads, 3);
   } finally { await close(server); }
+});
+test("dashboard envelope adds only screened metadata for captured IDs; inventory v1 remains unchanged", async () => {
+  const snapshot = await captureSessions({}, fixture(), herdr); let metadataReads = 0;
+  const patterns = loadSensitivePatterns("/nonexistent/objective-fixture-policy.yaml"); let rawObjective = "Build the dashboard view";
+  const server = await startSessionDashboard({ port: 0, capture: async () => snapshot, objectivePreviews: ids => {
+    metadataReads++; assert.deepEqual(ids, ["d-000001"]);
+    return { "d-000001": screenSessionObjective(rawObjective, patterns), "d-000002": { state: "available", preview: "unrelated", text: "unrelated", truncated: false } };
+  } });
+  try {
+    const legacy = await get(server); assert.deepEqual(JSON.parse(legacy.body), snapshot); assert.equal(metadataReads, 0); assert.ok(!legacy.body.includes("objective"));
+    const enriched = await get(server, "/v1/dashboard"); assert.equal(enriched.status, 200);
+    const data = JSON.parse(enriched.body); assert.equal(data.schemaVersion, "ppa-session-dashboard/v1"); assert.deepEqual(data.inventory, snapshot);
+    assert.equal(data.objectives.byDeployment["d-000001"].preview, rawObjective); assert.deepEqual(Object.keys(data.objectives.byDeployment), ["d-000001"]);
+    assert.ok(Number.isFinite(Date.parse(data.objectives.capture.endedAt))); assert.equal(enriched.headers["cache-control"], "no-store");
+    rawObjective = "password=" + "synthetic-sensitive-value";
+    const withheld = await get(server, "/v1/dashboard"); assert.equal(JSON.parse(withheld.body).objectives.byDeployment["d-000001"].state, "withheld");
+    assert.ok(!withheld.body.includes("synthetic-sensitive-value")); assert.equal(metadataReads, 2);
+  } finally { await close(server); }
+});
+test("dashboard metadata failure preserves inventory; all data guards and shared capture admission remain", async () => {
+  const snapshot = await captureSessions({}, fixture(), herdr), held = deferred<SessionSnapshot>(), entered = deferred<void>(); let captures = 0, reads = 0;
+  const server = await startSessionDashboard({ port: 0, capture: async () => { captures++; if (captures === 1) { entered.resolve(); return held.promise; } return snapshot; }, objectivePreviews: () => { reads++; throw new Error("private objective infrastructure"); } });
+  try {
+    for (const [headers, method, status] of [[{ Cookie: "synthetic=1" }, "GET", 400], [{ Origin: "https://untrusted.example" }, "GET", 403], [{ "X-PPA-Sessions": "0" }, "GET", 403], [{}, "POST", 405]] as const) assert.equal((await get(server, "/v1/dashboard", headers, method)).status, status);
+    assert.equal((await get(server, "/v1/dashboard?objective=true")).status, 400); assert.equal(captures, 0); assert.equal(reads, 0);
+    const first = get(server, "/v1/dashboard"); await entered.promise; assert.equal((await get(server)).body, '{"error":"busy"}');
+    held.resolve(snapshot); const result = JSON.parse((await first).body); assert.deepEqual(result.inventory, snapshot);
+    assert.deepEqual(result.objectives.byDeployment["d-000001"], { state: "unavailable", reason: "metadata-unavailable" }); assert.equal(reads, 1);
+    assert.ok(!JSON.stringify(result).includes("private objective"));
+  } finally { held.resolve(snapshot); await close(server); }
 });
 test("browser navigation and static assets ignore ambient cookies without relaxing data or origin guards", async () => {
   let reads = 0;

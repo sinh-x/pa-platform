@@ -53,6 +53,7 @@ export * from "./readonly-helper-context.js";
 export * from "./interactive.js";
 export * from "./registry/index.js";
 export * from "./registry/session-inventory.js";
+export * from "./registry/session-objectives.js";
 export { TicketPlanningIntentError } from "./tickets/planning-intent.js";
 export { AutoDraftTicketAppendError, parseAutoDraftTicketAppend, autoDraftTicketVersion, type AutoDraftTicketAppend, type AutoDraftTicketAppendHooks } from "./tickets/auto-draft-append.js";
 export * from "./tickets/index.js";

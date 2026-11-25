@@ -101,14 +101,48 @@ no-referrer and a restrictive CSP/frame policy. No objectives, environment, laun
 arguments, private process fingerprints or socket paths are added to the shared
 projection. No dashboard data, browser filters or history is persisted.
 
+## Screened objective metadata
+
+Sinh requested per-deployment objective previews on 2026-11-26 and selected compact
+card previews with longer screened text in details. This extends the dashboard
+reading scope only. The existing `ppa sessions` CLI and `GET /v1/sessions`
+`ppa-sessions/v1` contract remain objective-free and unchanged.
+
+`GET /v1/dashboard` returns `ppa-session-dashboard/v1`: `inventory` is the exact
+shared snapshot, and `objectives` contains a separate metadata capture start/end
+and a `byDeployment` map for only those captured deployment IDs. It uses the same
+custom header, Host/origin/cookie/body guards, capture admission slot, deadlines,
+no-store policy and response cap. No arbitrary objective-selection route exists.
+
+Objective metadata comes from the existing registry's recorded objective, never
+process arguments, environment, terminal content or launch-file backfill. It is
+recorded metadata observed after the inventory window, not proof of the exact
+current process instructions or current activity. Missing/unreadable metadata
+preserves the inventory and produces an explicit unavailable state.
+
+The reader bounds selections to 10,000 exact IDs, 500 deployment IDs per SQL batch and
+4,097 source characters per streamed row. Inputs exceeding 4,096 JavaScript code
+units or containing structured metadata are wholly withheld. Complete bounded
+input is screened before truncation, using built-in/local sensitive patterns and
+the existing secret masker; path/slash-bearing values, controls, JWT-looking or
+long opaque strings are also conservatively withheld. Screening/policy failure
+never falls back to raw text. Available text is normalized to one line, limited to
+1,024 code units, with a 180-unit preview and explicit truncation. Withheld and
+unavailable results contain no prefix or source value. This conservative screen
+can hide benign objectives and does not guarantee identification of all private
+natural-language content. Local-process trust remains unchanged; do not publish
+or forward this listener. No real objective text belongs in reports or logs.
+
 ## Transport and refresh
 
 `GET /` serves a bundled page; `/dashboard.js` and `/dashboard.css` are its only
 assets. `GET /v1/sessions` requires `X-PPA-Sessions: 1`. Allowed query parameters
 are `deployment`, `ticket`, `repo` and `all=true|false`, each once. Exact AND filters
 use the CLI validator; unknown or duplicate parameters fail before collection.
-Success is exactly the shared `ppa-sessions/v1` JSON, not a second projection.
-Failures use bounded fixed codes, never arbitrary exceptions.
+The sessions route returns exactly the shared `ppa-sessions/v1` JSON. The dashboard
+route separately wraps it with screened objective metadata as described above;
+process/location facts are not duplicated or reclassified. Failures use bounded
+fixed codes, never arbitrary exceptions.
 
 Each accepted refresh captures anew. No polling, cache, background collector or
 lifecycle repair exists. At most one capture runs per server; overlapping requests

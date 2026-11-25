@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
+import { readSessionObjectivePreviews } from "@pa-platform/pa-core";
+import { addDashboardObjectives } from "./session-dashboard-capture.js";
 import { captureSessions } from "./session-capture.js";
 import { DASHBOARD_HTML, DASHBOARD_SCRIPT, DASHBOARD_CSS } from "./session-dashboard-page.js";
 import { parseSessionsArgs } from "./session-cli.js";
@@ -11,6 +13,7 @@ export interface DashboardServerOptions {
   /** Zero is test-only; the CLI requires an explicit port from 1 through 65535. */
   port: number;
   capture?: typeof captureSessions;
+  objectivePreviews?: typeof readSessionObjectivePreviews;
   assets?: DashboardAssets;
   /** Test seams can shorten, never extend production deadlines. */
   deadlines?: { headerMs?: number; overallMs?: number };
@@ -95,7 +98,7 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
     const split = raw.indexOf("?"), path = split === -1 ? raw : raw.slice(0, split);
     // Browsers share cookies across ports on 127.0.0.1. Static assets contain
     // no inventory and ignore ambient cookies; never use, reflect or persist them.
-    if (path !== "/v1/sessions") {
+    if (path !== "/v1/sessions" && path !== "/v1/dashboard") {
       if (split !== -1) { reject(404, "route"); return; }
       if (path === "/") send(200, assets.html, "text/html; charset=utf-8");
       else if (path === "/dashboard.js") send(200, assets.script, "text/javascript; charset=utf-8");
@@ -114,7 +117,7 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
       try {
         const snapshot = await capture(filters);
         if (response.destroyed || request.socket.destroyed) return;
-        const body = JSON.stringify(snapshot);
+        const body = JSON.stringify(path === "/v1/dashboard" ? addDashboardObjectives(snapshot, options.objectivePreviews) : snapshot);
         if (Buffer.byteLength(body) > DASHBOARD_LIMITS.responseBytes) { reject(503, "response-limit"); return; }
         send(200, body);
       } catch { reject(503, "capture-unavailable"); }
