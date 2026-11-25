@@ -60,7 +60,11 @@ function fixture(options: NativeActualFixtureOptions = {}) {
   const receiptRef = evidence.publish("report-receipt", { actor: actorId, source: captured, receipt });
   const payload = { actor: actorId, report: receiptRef, plannedReference: plan.reference, binding: { repository: plan.repository, ticket: plan.ticket, subjectSha256: plan.subjectSha256, revision: 3, manifestSha256: plan.manifestSha256, candidateSha: sha }, observations: [{ ac: "AC-01", observation: "Print not checked.", disposition: "unverified", difference: "Unverified", impact: "Unknown", owner: "Builder" }], actualOnly: [], deliveries: [], human: [] };
   const index = evidence.publish("planned-actual", payload); const locator = service.publishPlannedActualLocator(receipt, index);
-  const native = nativePlannedActualHost(authority); const projectionHost = { ...native, resolvePlan: async () => plan };
+  const native = nativePlannedActualHost(authority);
+  // This report fixture supplies its own Planned resolver and has no standalone
+  // Planned journal. Do not consult the operator's registry for discovery; real
+  // native journal discovery is exercised by the document fixtures below.
+  const projectionHost = { ...native, resolvePlan: async () => plan, discoverPlans: async () => ({ references: [], issues: [] }) };
   const tickets = join(root, "tickets"); mkdirSync(tickets);
   writeFileSync(join(tickets, "TEST-1.json"), JSON.stringify({ id: "TEST-1", project: "test", title: "Fixture", doc_refs: [], status: "implementing", assignee: "builder/team-manager" }));
   return { root, authority, evidence, payload, locator, projectionHost, native, ticketStore: new TicketStore(tickets), service, receipt, receiptRef, report, captured, ownerPath };
@@ -230,6 +234,12 @@ test("native ticket/report owner exercise: authenticated metadata attachment and
     assert.equal(f.ticketStore.get("TEST-1")?.status, "implementing");
     const discovered = await tool.execute("discover", { action: "read", id: "TEST-1", plannedActual: true }, undefined, undefined, {});
     assert.match(JSON.stringify(discovered), /selection-required/);
+    const discoveryFailure = await projectPlannedActual(f.ticketStore.get("TEST-1")!, undefined, undefined, {
+      ...f.projectionHost, discoverPlans: async () => ({ references: [], issues: [{ state: "unknown" as const }] }),
+    });
+    assert.equal(discoveryFailure.state, "unknown", "valid attachment must not suppress independent discovery failure");
+    assert.deepEqual(discoveryFailure.issues, [{ state: "unknown" }]);
+    assert.equal(discoveryFailure.choices?.length, 1, "the attached choice remains visible without claiming complete discovery");
     const planOnly = await tool.execute("plan-only", { action: "read", id: "TEST-1", reference: plan.reference }, undefined, undefined, {});
     assert.match(JSON.stringify(planOnly), /selection-required/);
     await assert.rejects(tool.execute("bad-selector", { action: "read", id: "TEST-1", candidate: sha }, undefined, undefined, {}));
