@@ -47,6 +47,28 @@ test("HTTP and CLI capture are factually identical, fresh, minimized and exact-f
     assert.equal((await get(server, "/dashboard.js")).body, DASHBOARD_SCRIPT); assert.equal((await get(server, "/dashboard.css")).body, DASHBOARD_CSS); assert.equal(reads, 3);
   } finally { await close(server); }
 });
+test("browser navigation and static assets ignore ambient cookies without relaxing data or origin guards", async () => {
+  let reads = 0;
+  const snapshot = await captureSessions({}, fixture(), herdr);
+  const server = await startSessionDashboard({ port: 0, capture: async () => { reads++; return snapshot; } });
+  const cookie = "unrelated-local-service=synthetic-fixture";
+  try {
+    for (const [path, body, site] of [["/", DASHBOARD_HTML, "none"], ["/dashboard.js", DASHBOARD_SCRIPT, "same-origin"], ["/dashboard.css", DASHBOARD_CSS, "same-origin"]] as const) {
+      const result = await get(server, path, { Cookie: cookie, "Sec-Fetch-Site": site });
+      assert.equal(result.status, 200, path); assert.equal(result.body, body);
+      assert.equal(result.headers["cache-control"], "no-store"); assert.equal(result.headers["set-cookie"], undefined);
+      assert.ok(!JSON.stringify(result).includes(cookie));
+      assert.equal((await get(server, path, { Cookie: cookie, Origin: "https://untrusted.example" })).status, 403);
+      assert.equal((await get(server, path, { Cookie: cookie, "Sec-Fetch-Site": "same-site" })).status, 403);
+      assert.equal((await get(server, path, { Cookie: cookie, Authorization: "synthetic" })).status, 400);
+    }
+    assert.equal(reads, 0, "static requests never collect, with or without cookies");
+    assert.equal((await get(server, "/v1/sessions", { Cookie: cookie })).status, 400);
+    assert.equal((await get(server, "/v1/sessions", { "X-PPA-Sessions": "0" })).status, 403);
+    assert.equal(reads, 0, "cookie-bearing or unmarked requests cannot collect");
+    assert.deepEqual(JSON.parse((await get(server)).body), snapshot); assert.equal(reads, 1);
+  } finally { await close(server); }
+});
 test("reject hostile methods/hosts/origins/headers/routes and filters before capture", async () => {
   let reads = 0;
   const server = await startSessionDashboard({ port: 0, capture: async () => { reads++; throw new Error("private"); } });

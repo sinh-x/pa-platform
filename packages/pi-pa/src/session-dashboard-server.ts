@@ -87,12 +87,14 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
     if (!exact("host", host)) { reject(400, "host"); return; }
     if ((headers(request, "origin").length && !exact("origin", origin))
       || (headers(request, "sec-fetch-site").length && !["same-origin", "none"].some(value => exact("sec-fetch-site", value)))) { reject(403, "origin"); return; }
-    if (["authorization", "proxy-authorization", "cookie", "transfer-encoding", "trailer", "expect", "upgrade", "content-encoding"].some(key => headers(request, key).length)
+    if (["authorization", "proxy-authorization", "transfer-encoding", "trailer", "expect", "upgrade", "content-encoding"].some(key => headers(request, key).length)
       || (headers(request, "content-length").length && !exact("content-length", "0"))) { reject(400, "headers"); return; }
     if (request.method !== "GET") { reject(405, "method"); return; }
     const raw = request.url ?? "";
     if (raw.length > 1024 || !raw.startsWith("/") || raw.startsWith("//") || raw.includes("#")) { reject(400, "route"); return; }
     const split = raw.indexOf("?"), path = split === -1 ? raw : raw.slice(0, split);
+    // Browsers share cookies across ports on 127.0.0.1. Static assets contain
+    // no inventory and ignore ambient cookies; never use, reflect or persist them.
     if (path !== "/v1/sessions") {
       if (split !== -1) { reject(404, "route"); return; }
       if (path === "/") send(200, assets.html, "text/html; charset=utf-8");
@@ -101,6 +103,8 @@ export async function startSessionDashboard(options: DashboardServerOptions): Pr
       else reject(404, "route");
       return;
     }
+    // The data route keeps its cookie-free contract; the bundled fetch omits credentials.
+    if (headers(request, "cookie").length) { reject(400, "headers"); return; }
     if (!exact("x-ppa-sessions", "1")) { reject(403, "request-header"); return; }
     const filters = parseDashboardQuery(split === -1 ? "" : raw.slice(split + 1));
     if (!filters) { reject(400, "filters"); return; }

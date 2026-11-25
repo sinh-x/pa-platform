@@ -62,8 +62,14 @@ header, so a cross-origin page cannot trigger collection through an image/form o
 simple request. There is no CORS/preflight grant. These checks constrain browsers;
 they are not authentication against local programs that can forge headers.
 
-Only GET is supported, with no request body, credentials, cookies, control routes,
-file routes, terminal contents or scrollback. All output uses no-store, nosniff,
+Only GET is supported, with no request body, authorization credentials, control
+routes, file routes, terminal contents or scrollback. The static page, script and
+CSS ignore incidental browser cookies: cookies for `127.0.0.1` can come from other
+local ports. They are never used for identity, reflected, stored or set by this
+server. Do not clear unrelated browser cookies to use the dashboard. The inventory
+JSON route still rejects cookies; its bundled fetch uses `credentials: "omit"`.
+Host, origin/fetch-site and custom-header guards remain unchanged.
+All output uses no-store, nosniff,
 no-referrer and a restrictive CSP/frame policy. No objectives, environment, launch
 arguments, private process fingerprints or socket paths are added to the shared
 projection. No dashboard data, browser filters or history is persisted.
