@@ -1,48 +1,96 @@
 name: CI
+run-name: CI ${{ github.event_name }} ${{ github.event.pull_request.head.sha || github.sha }} (attempt ${{ github.run_attempt }})
 
 on:
   push:
-    branches: [main, develop, feature/**]
+    branches: [main, develop]
   pull_request:
     branches: [main, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# Only duplicate runs of the same PR head and merge candidate share a group.
+# Stale reruns cannot cancel current coverage; pushes retain every result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     # PAP-owned code and fixture checks only. Operator-local pairing, immutable
     # sandbox and installed integration are separate, not certified by this job.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        id: checkout
+        timeout-minutes: 5
         with:
           submodules: recursive
           fetch-depth: 0
+          persist-credentials: false
+
+      # Fail fast on infrastructure, before spending minutes on source tests.
+      - name: Provision pinned fish (bounded infrastructure recovery)
+        id: fish-provision
+        timeout-minutes: 8
+        run: bash scripts/dev/provision-ci-fish.sh
 
       - uses: pnpm/action-setup@v4
+        id: pnpm
+        timeout-minutes: 3
 
       - uses: actions/setup-node@v4
+        id: node
+        timeout-minutes: 3
         with:
           node-version: '22'
           cache: 'pnpm'
 
+      - name: Record tool versions
+        id: versions
+        timeout-minutes: 1
+        run: |
+          node --version
+          pnpm --version
+          fish --version
+
       - name: Validate pinned Pi extension sources
+        id: extension-sources
+        timeout-minutes: 1
         run: node packages/pi-pa/scripts/validate-extension-sources.mjs
 
       - name: Install dependencies
+        id: dependencies
+        timeout-minutes: 5
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
+        id: typecheck
+        timeout-minutes: 5
         run: pnpm run typecheck
 
       - name: Build
+        id: build
+        timeout-minutes: 5
         run: pnpm run build
 
       - name: Code tests (manual integration is separate)
+        id: code-tests
+        timeout-minutes: 60
         run: pnpm run test:code
 
       - name: Repository-owned pairing contract fixtures
+        id: pairing-fixtures
+        timeout-minutes: 3
         run: pnpm run test:paired-gate
 
       - name: Record manual integration boundary
+        id: manual-boundary
+        if: always()
+        timeout-minutes: 1
         shell: bash
         run: |
           printf '%s\n' 'Hosted CI checks PAP code and repository-owned fixtures only.' >> "$GITHUB_STEP_SUMMARY"
@@ -53,18 +101,31 @@ jobs:
           printf '%s\n' 'All 16 native workflow integration cases remain mandatory locally via pi-workflow-runtime.test.ts; this lane uses its explicit portable entry, not skipped native tests.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check generated completions
+        id: generated-completions
+        timeout-minutes: 1
         run: |
           pnpm run completions
           git diff --exit-code -- completions/pa-core.fish completions/opa.fish completions/ppa.fish
 
-      - name: Install fish
-        run: sudo apt-get update && sudo apt-get install -y fish
-
       - name: Check fish completions
+        id: fish-syntax
+        timeout-minutes: 1
         run: |
           for completion in completions/{pa-core,opa,ppa}.fish; do
             fish --no-execute "$completion"
           done
 
       - name: Check fish completion timing
+        id: fish-timing
+        timeout-minutes: 2
         run: pnpm run completions:timing
+
+      - name: Summarize exact check delivery
+        if: always()
+        timeout-minutes: 1
+        env:
+          CI_STEPS: ${{ toJSON(steps) }}
+          CI_JOB_STATUS: ${{ job.status }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/dev/summarize-ci.mjs

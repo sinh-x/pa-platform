@@ -30,6 +30,7 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 - `advisory-runtime.md` documents PAP-277's result contract, gate inventory, new-run integrity and retained compatibility.
 - `PAP-277-qualification.md` records the exact installed verifier/PAPC interface and separates source checks from unproven rollout acceptance.
 
+- [CI reliability and check delivery](ci-reliability.md) documents bounded fish provisioning, PR coverage, truthful check summaries and owner-managed merge/exception policy.
 - `release-process.md` documents version bumping, tagging, and CI release expectations.
 - `prepared-autonomous-runtime.md` records PAP-256's inactive core preparation/capacity implementation and remaining delivery boundaries.
 - `opencode-primer-parity-matrix.md` records the PAP-022 Old PA versus pa-platform primer-generation audit.
