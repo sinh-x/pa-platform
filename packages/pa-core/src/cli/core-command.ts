@@ -117,7 +117,10 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout("");
   io.stdout("Commands:");
   if (binaryName === "ppa" || binaryName === "opa") io.stdout("  operation           Factual capabilities/checks; explicit pa-operation-result/v1 format");
-  if (binaryName === "ppa") io.stdout("  template            Selected canonical templates (unsigned, read-only)");
+  if (binaryName === "ppa") {
+    io.stdout("  template            Selected canonical templates (unsigned, read-only)");
+    io.stdout("  sessions            List verified-open local Pi processes and scoped HerdR locations");
+  }
   io.stdout("  artifact            Render companions; owned review requires selected managed runtime");
   io.stdout("  status              Show deployment status and activity");
   io.stdout("  deploy              Deploy a team configuration");

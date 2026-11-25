@@ -646,6 +646,15 @@ complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l id -r -d '
 complete -c ppa -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from validate' -l definition-file -r -d 'Bounded local JSON for static inspection only'
 complete -c ppa -n '__fish_seen_subcommand_from workflow decision' -l json -d 'Stable JSON projection'
 
+# Pi-only fresh read-only local session inventory
+complete -c ppa -n __fish_use_subcommand -a sessions -d 'Verified-open Pi processes and scoped HerdR locations'
+complete -c ppa -n '__fish_seen_subcommand_from sessions' -l all -d 'Include nonverified candidate diagnostics'
+complete -c ppa -n '__fish_seen_subcommand_from sessions' -l json -d 'One ppa-sessions/v1 document'
+complete -c ppa -n '__fish_seen_subcommand_from sessions' -l deployment -r -d 'Exact deployment ID'
+complete -c ppa -n '__fish_seen_subcommand_from sessions' -l ticket -r -d 'Exact current ticket ID'
+complete -c ppa -n '__fish_seen_subcommand_from sessions' -l repo -r -d 'Exact canonical repository key'
+complete -c ppa -n '__fish_seen_subcommand_from sessions' -l help -d 'Show inventory scope and options'
+
 # Pi-only document discovery and unauthenticated local-unverified v2 review
 function __ppa_document_path
     set -l words (commandline -opc)

@@ -22,8 +22,12 @@ import { runAutoShortlistForeground, runAutoShortlistReadCommand } from "./auto-
 import { runAutoForeground } from "./auto-foreground.js";
 import { piAutoForegroundHooks } from "./auto-runtime.js";
 import { publishAutoNotice, runAutoBackgroundCommand } from "./auto-background.js";
+import { runSessionsCommand } from "./session-cli.js";
 
-if (process.argv[2] === "auto") {
+if (process.argv[2] === "sessions") {
+  // Read-only route: no deployment hooks, migrations, preflight or session control.
+  process.exitCode = await runSessionsCommand(process.argv.slice(3), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) });
+} else if (process.argv[2] === "auto") {
   process.exitCode = process.argv[3] === "policy"
     ? await runPiAutoPolicyCommand(process.argv.slice(4), { stdout: s => process.stdout.write(`${s}\n`), stderr: s => process.stderr.write(`${s}\n`) })
     : process.argv[3] === "shortlist"

@@ -4,7 +4,7 @@ Use `develop` for integration and `main` for releases.
 
 ## Develop Auto Patch Bumps
 
-After CI passes for a PR-originated push to `develop`, the `version-bump` workflow runs `corepack pnpm bump:patch:ci` and commits only deterministic package version edits back to `develop` with `[skip version-bump]` in the commit message.
+When a PR targeting `develop` closes as merged, `version-bump.yml` runs `corepack pnpm run bump:ci-patch` and commits only deterministic package version edits back to `develop`. It does not independently wait for or verify CI: the merge/check policy must be enforced before merging. The exact `Version-Bump-Source: PR #NUMBER MERGE_SHA` commit trailer prevents duplicate bumps on reruns, and the merged-PR event prevents a bot-push loop. The serialized job uses the normal GitHub token; do not add a credential merely to trigger workflows on its push.
 
 The auto bump path is intentionally not a release path. It does not generate a changelog, create a release commit, create a git tag, or push tags.
 
@@ -204,6 +204,11 @@ Manual releases are the boundary for publishing from `main` and creating tags.
 Use `corepack pnpm bump:refresh-hash` when only the Nix dependency hash needs to be refreshed outside a version release.
 
 ## CI Expectations
+
+See [CI reliability and check delivery](ci-reliability.md) for event coverage,
+bounded provisioning, required-check recommendations and attributable infrastructure
+exceptions. Neither a draft PR nor an operator exception turns failed or incomplete
+checks into passes.
 
 CI verifies PAP-owned typecheck, build, code tests, pairing-contract fixtures,
 generated completions, Fish syntax and completion timing. It checks out only this
