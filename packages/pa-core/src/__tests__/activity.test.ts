@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendActivityEvent, createActivityEvent, getActivityLogPath, readActivityEvents, readDeploymentActivity, summarizeActivity, writeActivityEvents } from "../index.js";
+import { appendActivityEvent, createActivityEvent, getActivityLogPath, readActivityEvents, readDeploymentActivity, summarizeActivity, writeActivityEvents } from "../activity/index.js";
 
 test("activity module writes, reads, and summarizes standard events", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-activity-"));

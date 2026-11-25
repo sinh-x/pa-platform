@@ -510,6 +510,37 @@ test("conservative source inventory rejects tracked changes and added CLI comman
   assert.notEqual(createHash("sha256").update(mutated).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
 });
 
+test("PAP-337 startup split tracks the same read-only owner without changing forms, effects or native bindings", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  for (const path of ["packages/pi-pa/src/cli.ts", "packages/pi-pa/src/deploy.ts", "packages/pi-pa/src/readonly-helper.ts"]) {
+    assert.ok(Object.hasOwn(manifest.sources, path), `untracked CLI/helper owner: ${path}`);
+  }
+  // Lazy loading changes startup dependencies, not any operation's admission.
+  // The conservative hash guard above still rejects all changed tracked bytes.
+  for (const [id, forms] of [
+    ["global.version", ["--version", "-V"]],
+    ["board.list", ["board", "board --project", "board --all", "board --include-archived"]],
+    ["branch.validate", ["branch validate"]],
+    ["repository.inspect", ["repository inspect"]],
+  ] as const) {
+    const row = operation(id);
+    assert.deepEqual(row.cliForms, forms);
+    assert.deepEqual(row.channels, ["cli"]);
+    assert.deepEqual(row.nativeForms, []);
+    assert.equal(row.effectClass, "read");
+    assert.equal(row.nativeBinding, null);
+    assert.equal(row.delegationBinding, null);
+  }
+  for (const id of ["branch.create", "repository.quarantine"]) {
+    const row = operation(id);
+    assert.equal(row.effectClass, "resource");
+    assert.equal(row.targetDisposition, "operator-only");
+    assert.equal(row.nativeBinding, null);
+  }
+  assert.equal(operation("deploy.launch").effectClass, "launch");
+  assert.equal(operation("deploy.launch").nativeBinding, null);
+});
+
 test("PAP-324 naming-policy reconciliation tracks pure matching and observation dependencies without adding effects", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   // Existing actions, aliases, request/result schemas and effect categories are

@@ -21,8 +21,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-public-web.mjs",
-    "test": "node scripts/build-public-web.mjs && tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
-    "test:code": "node ../../scripts/dev/run_code_tests.mjs pa-core",
+    "test": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:run",
+    "test:run": "node scripts/build-public-web.mjs && tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
+    "test:source": "node ../../scripts/dev/isolated-test-env.mjs -- tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
+    "test:code": "node ../../scripts/dev/isolated-test-env.mjs -- node ../../scripts/dev/run_code_tests.mjs pa-core",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

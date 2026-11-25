@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, listImprovementCandidates, listKnowledgeBoundaries } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb } from "../registry/index.js";
+import { listImprovementCandidates, listKnowledgeBoundaries } from "../knowledge/index.js";
 
 test("knowledge boundaries map each item type once", () => {
   const boundaries = listKnowledgeBoundaries();

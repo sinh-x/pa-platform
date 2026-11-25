@@ -20,8 +20,14 @@
     "validate:sources": "node scripts/validate-extension-sources.mjs",
     "bundle:extensions": "node scripts/bundle-extension-sources.mjs",
     "build": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && tsc -p tsconfig.json",
-    "test": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"scripts/**/*.test.mjs\" && PI_PA_PLUGIN_SELECTION='{\"pi-vimmode\":true,\"proper-base\":true}' node scripts/bundle-extension-sources.mjs && tsx --test --test-concurrency=1 \"src/**/*.test.ts\" && node scripts/bundle-extension-sources.mjs",
-    "test:code": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"scripts/**/*.test.mjs\" && PI_PA_PLUGIN_SELECTION='{\"pi-vimmode\":true,\"proper-base\":true}' node scripts/bundle-extension-sources.mjs && node ../../scripts/dev/run_code_tests.mjs pi-pa && node scripts/bundle-extension-sources.mjs",
+    "test": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:run",
+    "test:run": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm run test:source:run",
+    "test:source": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:source:run",
+    "test:source:run": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && tsx --test \"scripts/**/*.test.mjs\" && PI_PA_PLUGIN_SELECTION='{\"pi-vimmode\":true,\"proper-base\":true}' node scripts/bundle-extension-sources.mjs && tsx --test --test-concurrency=1 \"src/**/*.test.ts\" && node scripts/bundle-extension-sources.mjs",
+    "test:code": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:code:run",
+    "test:code:run": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm run test:code:source:run",
+    "test:code:source": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:code:source:run",
+    "test:code:source:run": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && tsx --test \"scripts/**/*.test.mjs\" && PI_PA_PLUGIN_SELECTION='{\"pi-vimmode\":true,\"proper-base\":true}' node scripts/bundle-extension-sources.mjs && node ../../scripts/dev/run_code_tests.mjs pi-pa && node scripts/bundle-extension-sources.mjs",
     "typecheck": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
