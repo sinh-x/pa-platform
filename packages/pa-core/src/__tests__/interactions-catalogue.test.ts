@@ -479,6 +479,23 @@ test("managed Pi skills and protected-review extensions retain independent launc
   assert.match(capabilities, /return binding\?\.schemaVersion === "pa-mode-capability-binding\/v2" \|\| binding\?\.schemaVersion === "pa-mode-capability-binding\/v3";/);
 });
 
+test("Rogue-One shared guides preserve the existing launch form and add no native bindings or authority", () => {
+  const row = operation("deploy.rogue-one");
+  assert.deepEqual(row.cliForms, ["deploy rogue-one"]);
+  assert.deepEqual(row.channels, ["cli"]);
+  assert.deepEqual(row.nativeForms, []);
+  assert.equal(row.effectClass, "launch");
+  assert.equal(row.targetDisposition, "operator-only");
+  assert.equal(row.nativeBinding, null);
+  assert.equal(row.delegationBinding, null);
+  assert.equal(row.requestSchemaRef, null);
+  assert.equal(row.resultSchemaRef, null);
+  assert.match(row.reason, /Pi and OpenCode bare primers include only the shared task-tracking, system-design and HTML-reporting guides/);
+  assert.match(row.reason, /without configured team\/mode guides or skills/);
+  assert.match(row.reason, /adds no commands, aliases, native bindings, runtime permissions or approval authority/);
+  assert.match(row.reason, /cannot reclassify a protected retained resume/);
+});
+
 test("conservative source inventory rejects tracked changes and added CLI command files pending semantic reconciliation", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   const commandDir = "packages/pa-core/src/cli/commands";
