@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { isBlockedFilePath } from "./safety-policy.js";
+import { SecurityPolicyError } from "./security-policy.js";
 import { getSensitiveFilename, loadSensitivePatterns, type SensitivePatternSet } from "./sensitive-patterns.js";
 
 /** Trusted implementation metadata, NEVER a model/request-provided exemption. */
@@ -28,7 +29,7 @@ const localSourceFailureReasons = {
 export type LocalSourceFailureClass = keyof typeof localSourceFailureReasons;
 export class SourceContentSecurityError extends Error {
   readonly failureClass?: LocalSourceFailureClass;
-  constructor(readonly code: SourceContentCode, failureClass?: LocalSourceFailureClass) {
+  constructor(readonly code: SourceContentCode, failureClass?: LocalSourceFailureClass, policyError?: SecurityPolicyError) {
     const reasons: Record<SourceContentCode, string> = {
       LOCAL_SOURCE_UNAVAILABLE: "A complete stable local read could not be established; the source may be absent or changed, or the read interrupted. No unexamined content is delivered.",
       LOCAL_SOURCE_UNSUPPORTED_FILE: "The source is not a supported regular file or qualified selected-Pi document. Ordinary reads require a regular file with exactly one link. Multi-link text is limited to finite selected-Pi documentation with its native selected-host binding and immutable-file checks. No content is delivered.",
@@ -46,13 +47,14 @@ export class SourceContentSecurityError extends Error {
     const resume = range
       ? "Request a valid line range; source admission, stability and complete content checks run again. No source or policy change is needed solely to correct the range."
       : "Retry only after the owner establishes permitted source access and a working policy. If the underlying tool may already have changed state, inspect that same operation first; withholding output is not proof that its effect was absent.";
-    super(`${range ? "The requested lines were not returned." : "Local content is unavailable through this check."}\nCondition: The requested local content cannot be delivered.\nSource: Source-aware local content security (${code}${observed ? `; ${observed}` : ""}).\nReason: ${observed ? localSourceFailureReasons[observed] : reasons[code]}\nCorrection: ${correction}\nResume Action: ${resume}`);
+    super(policyError instanceof SecurityPolicyError ? policyError.message : `${range ? "The requested lines were not returned." : "Local content is unavailable through this check."}\nCondition: The requested local content cannot be delivered.\nSource: Source-aware local content security (${code}${observed ? `; ${observed}` : ""}).\nReason: ${observed ? localSourceFailureReasons[observed] : reasons[code]}\nCorrection: ${correction}\nResume Action: ${resume}`);
     this.failureClass = observed;
   }
 }
 const fail = (code: SourceContentCode): never => { throw new SourceContentSecurityError(code); };
 function patternsOrFail(patterns?: SensitivePatternSet): SensitivePatternSet {
-  try { return patterns ?? loadSensitivePatterns(); } catch { return fail("LOCAL_CONTENT_POLICY"); }
+  try { return patterns ?? loadSensitivePatterns(); }
+  catch (error) { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY", undefined, error instanceof SecurityPolicyError ? error : undefined); }
 }
 function matches(regex: RegExp, value: string): boolean {
   // A shared /g or /y regex must not make admission depend on prior calls.
@@ -71,7 +73,10 @@ export function assertLocalFileSource(path: string, patterns?: SensitivePatternS
     check(resolve(path));
     try { check(realpathSync(path)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  } catch (error) { if (error instanceof SourceContentSecurityError) throw error; fail("LOCAL_CONTENT_POLICY"); }
+  } catch (error) {
+    if (error instanceof SourceContentSecurityError) throw error;
+    throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY", undefined, error instanceof SecurityPolicyError ? error : undefined);
+  }
 }
 export interface SourceContentProjection {
   readonly source: SecurityContentSource["kind"];

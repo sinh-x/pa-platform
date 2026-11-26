@@ -28,9 +28,10 @@ in pkgs.runCommand "pa-selected-pi-document-qualification-${host.pi.version}" {
   nativeBuildInputs = [ pkgs.pkgsStatic.stdenv.cc host.node ];
   passthru = { inherit fixturePi foundation; productionEnabled = false; };
 } ''
-  mkdir -p "$out/lib" "$out/bin" work/packages/pa-core/src work/packages/pi-pa/src/pi-extension work/packages/pi-pa/runtime
-  cp ${../packages/pa-core/src}/{local-source-file,immutable-document-policy,source-content-security,sensitive-patterns,safety-policy,paths}.ts work/packages/pa-core/src/
-  cp ${../packages/pi-pa/src/pi-extension}/{bound-local-read,local-read-paths,local-image-type,local-content-security}.ts work/packages/pi-pa/src/pi-extension/
+  mkdir -p "$out/lib" "$out/bin" work/packages/pa-core/src/activity work/packages/pi-pa/src/pi-extension work/packages/pi-pa/runtime
+  cp ${../packages/pa-core/src}/{local-source-file,immutable-document-policy,source-content-security,sensitive-patterns,safety-policy,security-policy,paths,time}.ts work/packages/pa-core/src/
+  cp ${../packages/pa-core/src/activity/index.ts} work/packages/pa-core/src/activity/index.ts
+  cp ${../packages/pi-pa/src/pi-extension}/{bound-local-read,local-read-paths,local-image-type,local-content-security,source-guard-coverage}.ts work/packages/pi-pa/src/pi-extension/
   cp ${../packages/pi-pa/runtime/local-source-core.ts} work/packages/pi-pa/runtime/local-source-core.ts
   cp ${../packages/pi-pa/runtime/selected-document-qualification.mjs} work/packages/pi-pa/runtime/qualify.mjs
   ln -s ${foundation}/share/pa-platform/node_modules work/node_modules
@@ -40,6 +41,10 @@ in pkgs.runCommand "pa-selected-pi-document-qualification-${host.pi.version}" {
     --external:./selection.mjs \
     --banner:js="import { createRequire as nodeCreateRequire } from 'node:module'; const require = nodeCreateRequire(import.meta.url);" \
     --outfile="$out/lib/doc-qualify.mjs"
+  # Bundling rebases import.meta.url to lib/doc-qualify.mjs, not the source tree.
+  mkdir -p "$out/lib/policies"
+  cp ${../packages/pa-core/src/policies/security-defaults.v1.yaml} "$out/lib/policies/security-defaults.v1.yaml"
+  cmp "$out/lib/policies/security-defaults.v1.yaml" ${foundation}/share/pa-platform/packages/pa-core/dist/policies/security-defaults.v1.yaml
   nodeExecutable="$(readlink -f ${host.node}/bin/node)"
   cat > selection.h <<EOF
   #define SELECTED_ENTRY "$out/bin/qualify-selected-documents"
