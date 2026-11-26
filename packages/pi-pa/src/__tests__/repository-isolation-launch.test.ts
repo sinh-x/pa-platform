@@ -148,6 +148,10 @@ for (const runtime of ["pi", "opencode"] as const) test(`PAP-334 ${runtime} prot
     const result = await adapter.resume({ ...opts, mode: background ? "background" : "foreground", sessionId: "PRIVATE_INPUT", resumedFromDeploymentId });
     assert.equal(result.exitCode, 1); assertBlocker(result.errorMessage);
     const request = { team: "rogue-one", resume: resumedFromDeploymentId ?? "d-missing", background };
+    if (runtime === "pi") {
+      const stopped = await createPiHooks(forbiddenAdapter(runtime, [])).deployPreflight!(request);
+      assertBlocker(stopped?.reason);
+    }
     const launch = runtime === "pi" ? await deployWithPi(request, forbiddenAdapter(runtime, [])) : await deployWithOpencode(request, forbiddenAdapter(runtime, []));
     assert.equal(launch.status, "failed"); assert.equal(launch.deploymentId, undefined); assertBlocker(launch.reason);
     const stderr: string[] = [];

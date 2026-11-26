@@ -14,6 +14,8 @@ export const CONFIG_RESOURCE_ROOTS = "(?:teams|skills|docs|primers|policies|cont
 export const CONFIG_RESOURCE_PREFIX = new RegExp(`^${CONFIG_RESOURCE_ROOTS}/`);
 const ROOT = CONFIG_RESOURCE_PREFIX;
 const FILE = /^[A-Za-z0-9_./-]+\.[A-Za-z0-9]+$/;
+const MAX_SELECTOR_LENGTH = 4096;
+const MAX_EVALUATION_STEPS = 8192;
 type Value = string | number | Value[] | { external: true };
 const EXTERNAL = Object.freeze({ external: true as const });
 interface Module { source: TS.SourceFile; constants: Map<string, TS.Expression>; imports: Map<string, { path: string; name: string }>; fs: Map<string, string>; fsNamespaces: Set<string> }
@@ -22,6 +24,7 @@ interface Module { source: TS.SourceFile; constants: Map<string, TS.Expression>;
  * selectors fail closed. Caller-owned input files are not configuration. */
 export class ConfigScriptDependencies {
   private readonly modules = new Map<string, Module>();
+  private evaluationSteps = 0;
   constructor(private readonly read: (path: string, optional: boolean) => string | null) {}
   private relative(from: string, target: string): string {
     if (!FILE.test(target) || target.startsWith("/") || target.split("/").some(part => part.toLowerCase() === ".git")) return fail();
@@ -71,11 +74,11 @@ export class ConfigScriptDependencies {
     return module;
   }
   private value(node: TS.Expression, path: string, depth = 0): Value {
-    if (depth > 32) return fail();
+    if (++this.evaluationSteps > MAX_EVALUATION_STEPS || depth > 32) return fail();
     const ts = compiler();
     const next = (value: TS.Expression, owner = path) => this.value(value, owner, depth + 1);
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text.length <= MAX_SELECTOR_LENGTH ? node.text : fail();
+    if (ts.isNumericLiteral(node)) return Number.isFinite(Number(node.text)) ? Number(node.text) : fail();
     if (ts.isParenthesizedExpression(node)) return next(node.expression);
     if (ts.isArrayLiteralExpression(node) && node.elements.length <= 256) return node.elements.map(element => next(element));
     if (ts.isIdentifier(node)) {
@@ -96,16 +99,28 @@ export class ConfigScriptDependencies {
     }
     if (ts.isTemplateExpression(node)) {
       let result = node.head.text;
-      for (const span of node.templateSpans) { const value = next(span.expression); if (typeof value !== "string" && typeof value !== "number") return fail(); result += value + span.literal.text; }
+      if (result.length > MAX_SELECTOR_LENGTH) return fail();
+      for (const span of node.templateSpans) {
+        const value = next(span.expression);
+        if (typeof value !== "string" && typeof value !== "number") return fail();
+        if (result.length + String(value).length + span.literal.text.length > MAX_SELECTOR_LENGTH) return fail();
+        result += value + span.literal.text;
+      }
       return result;
     }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const left = next(node.left), right = next(node.right);
-      if ((typeof left === "string" || typeof left === "number") && (typeof right === "string" || typeof right === "number")) return `${left}${right}`;
+      if (typeof left === "number" && typeof right === "number") return Number.isFinite(left + right) ? left + right : fail();
+      if ((typeof left === "string" || typeof left === "number") && (typeof right === "string" || typeof right === "number")) {
+        if (String(left).length + String(right).length > MAX_SELECTOR_LENGTH) return fail();
+        return `${left}${right}`;
+      }
     }
     return fail();
   }
   references(path: string, text: string): string[] {
+    // Depth alone does not bound repeated constant expansion or concatenation.
+    this.evaluationSteps = 0;
     const ts = compiler();
     const module = this.module(path, text), resources = new Set<string>();
     const dependency = (target: string) => { const value = this.dependency(path, target); if (value) resources.add(value); };

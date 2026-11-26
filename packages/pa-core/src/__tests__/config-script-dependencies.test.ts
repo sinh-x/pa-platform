@@ -36,6 +36,26 @@ test("comments, regular expressions and quoted code examples do not become JavaS
   assert.deepEqual(source({}).references("scripts/check.mjs", body), ["scripts/library.mjs"]);
 });
 
+test("static selector addition preserves numeric JavaScript semantics rather than retaining a different file", () => {
+  const body = 'const one=1; new URL(`../docs/value-${one+one}.md`,import.meta.url); new URL("../docs/value-"+("2"+3)+".md",import.meta.url);';
+  assert.deepEqual(new Set(source({}).references("scripts/check.mjs", body)), new Set(["docs/value-2.md", "docs/value-23.md"]));
+});
+
+test("constant expansion has a shared work budget and bounds strings before concatenation", () => {
+  const repeated = ['const v0="x";', ...Array.from({ length: 11 }, (_, index) => `const v${index+1}=v${index}+v${index};`)].join("\n");
+  const bodies = [
+    `${repeated}\nnew URL("../docs/"+v11+".md",import.meta.url);`,
+    `new URL("../docs/"+"${"x".repeat(4096)}"+".md",import.meta.url);`,
+    `new URL(\`../docs/${"x".repeat(4096)}\u0024{1}.md\`,import.meta.url);`,
+    'new URL(`../docs/value-${1e309}.md`,import.meta.url);',
+  ];
+  for (const body of bodies) {
+    const reader = source({});
+    assert.throws(() => reader.references("scripts/check.mjs", body), ConfigScriptDependencyError);
+    assert.deepEqual(reader.references("scripts/next.mjs", 'new URL("../docs/next.md",import.meta.url);'), ["docs/next.md"], "work budget resets per captured script");
+  }
+});
+
 test("constant cycles and malformed code reject within finite parsing bounds", () => {
   for (const body of ['const item=item; new URL(item,import.meta.url);', 'const item = ;', 'const paths=[]; new URL(paths[9],import.meta.url);'])
     assert.throws(() => source({}).references("scripts/check.mjs", body), ConfigScriptDependencyError);

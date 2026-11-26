@@ -535,6 +535,10 @@ export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHook
 
 function selectPiTeamConfig(request: DeployRequest) {
   if (isRogueOneTeam(request.team)) {
+    // Native lineage remains restrictive even if a protected prior is relabelled
+    // as Rogue-One. Inspect it before route/config/repository selection, without
+    // allocating or allowing a live configuration error to hide that blocker.
+    if (!request.dryRun) assertRepositoryIsolationResumeAvailable(request.resume, "pi");
     if (request.background || (request.invocationChannel ?? "cli") !== "cli") throw new RogueOneConfigError("route");
     const repository = resolveRepoExecutionPath(request.repo, process.cwd(), { allowLinkedWorktreeCwd: request.repo === undefined });
     const rogueConfig = request.resume ? RogueOneConfig.resume(request.resume, request, { runtime: "pi", repoKey: repository.repoKey, repoRoot: repository.repoRoot, worktreeRoot: repository.worktreeRoot, ticket: request.ticket }) : undefined;

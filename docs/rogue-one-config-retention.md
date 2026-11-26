@@ -64,7 +64,11 @@ it adds the compiler's production footprint, not a new evaluator or native grant
 Supported `.js`, `.mjs` and `.cjs` graphs include literal relative module imports,
 exports and local `require` calls, config-root literal resource data, and file URLs
 resolved from local/imported `const` strings/arrays, literal indexes, concatenation
-and template expressions. External npm/absolute module resolution is unavailable.
+and template expressions. Numeric addition retains JavaScript numeric semantics;
+it is not treated as string concatenation. Selector evaluation is limited to
+8,192 steps per script, depth 32 and 4,096 characters per constructed string;
+concatenation is checked before allocating its result. The AST walk permits
+200,000 nodes per script. External npm/absolute module resolution is unavailable.
 Built-in Node modules remain current runtime dependencies, not saved credentials
 or frozen native policy. Delegating loaders/process modules and opaque CommonJS
 filesystem loading are unsupported.
@@ -83,7 +87,10 @@ fixture's entire original configuration directory. It does not delete live PAPC.
 The original immutable native start binds the versioned snapshot's digest to its
 deployment/runtime/repository/mode/pair context. A manifest/hash or filesystem mode
 alone does not establish origin or same-UID confinement. The recorded native
-runtime session and protected ancestry are checked separately.
+runtime session and protected ancestry are checked separately. Native lineage
+inspection precedes Rogue-One configuration/repository selection and unsupported
+route rejection, including the PPA preflight hook. A caller cannot hide a protected
+or missing original lineage behind a different team selector or config error.
 
 Projection and archive writes are absent-only and read back before use. An existing
 matching result can be reconciled after a lost acknowledgement; a partial,

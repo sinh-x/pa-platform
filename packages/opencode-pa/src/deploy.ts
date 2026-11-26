@@ -130,6 +130,8 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   try {
     assertMatchingRuntime(adapter.name, "opencode");
     if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "opencode");
+    // Route rejection must not mask native protected/missing resume provenance.
+    if (isRogueOneTeam(request.team) && !request.dryRun) assertRepositoryIsolationResumeAvailable(request.resume, "opencode");
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
   }

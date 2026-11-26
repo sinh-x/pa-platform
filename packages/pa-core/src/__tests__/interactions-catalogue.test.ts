@@ -479,7 +479,7 @@ test("managed Pi skills and protected-review extensions retain independent launc
   assert.match(capabilities, /return binding\?\.schemaVersion === "pa-mode-capability-binding\/v2" \|\| binding\?\.schemaVersion === "pa-mode-capability-binding\/v3";/);
 });
 
-test("Rogue-One shared guides preserve the existing launch form and add no native bindings or authority", () => {
+test("Rogue-One configured retention preserves the launch form, native exception and null native bindings", () => {
   const row = operation("deploy.rogue-one");
   assert.deepEqual(row.cliForms, ["deploy rogue-one"]);
   assert.deepEqual(row.channels, ["cli"]);
@@ -490,8 +490,12 @@ test("Rogue-One shared guides preserve the existing launch form and add no nativ
   assert.equal(row.delegationBinding, null);
   assert.equal(row.requestSchemaRef, null);
   assert.equal(row.resultSchemaRef, null);
-  assert.match(row.reason, /Pi and OpenCode bare primers include only the shared task-tracking, system-design and HTML-reporting guides/);
-  assert.match(row.reason, /without configured team\/mode guides or skills/);
+  assert.match(row.reason, /Foreground PPA CLI uses selected PAPC interactive mode\/pair\/objective\/guides\/agents\/skills/);
+  assert.match(row.reason, /does not add ordinary vacancy, Git-status, lease, workflow or final-review admission/);
+  assert.match(row.reason, /preserve original resources and effective overrides on resume/);
+  assert.match(row.reason, /without live-PAPC fallback/);
+  assert.match(row.reason, /OPA, background, Agent API deployment and WebSocket Rogue-One execution are explicitly unsupported/);
+  assert.match(row.reason, /operator API authentication still precedes rejection/);
   assert.match(row.reason, /adds no commands, aliases, native bindings, runtime permissions or approval authority/);
   assert.match(row.reason, /cannot reclassify a protected retained resume/);
 });
