@@ -91,6 +91,18 @@ test('report preserves failure, skipped and cancelled outcomes and cannot certif
   assert.doesNotMatch(hostile, /\n\| injected|`code`/);
 });
 
+test('metadata-only version bump does not cache an unpopulated pnpm store', () => {
+  const bump = load(read('.github/workflows/version-bump.yml'));
+  const bumpSteps = bump.jobs['bump-patch'].steps;
+  const node = bumpSteps.find(step => step.uses === 'actions/setup-node@v4');
+  assert.equal(node.with['node-version'], '22');
+  assert.equal(node.with.cache, undefined, 'cold runners have no dependency store to save after a metadata-only bump');
+  assert.equal(node.with['cache-dependency-path'], undefined);
+  assert.equal(bumpSteps.some(step => step.uses?.startsWith('actions/cache@')), false);
+  assert.equal(bumpSteps.find(step => step.name === 'Bump patch version').run, 'corepack pnpm run bump:ci-patch');
+  for (const step of bumpSteps) assert.equal(step['continue-on-error'], undefined, 'do not hide post-job failures');
+});
+
 test('version bump keeps merged-develop admission, serialization and exact rerun guards', () => {
   const bump = load(read('.github/workflows/version-bump.yml'));
   assert.deepEqual(bump.on, { pull_request: { types: ['closed'], branches: ['develop'] } });
