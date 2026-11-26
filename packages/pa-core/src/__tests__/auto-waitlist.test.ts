@@ -182,21 +182,50 @@ test("scan storage is refused inside a registered product repository", () => {
   assert.equal(existsSync(join(root, "pa-platform/auto")), false);
 });
 const worker = fileURLToPath(new URL("./fixtures/auto-scan-worker.mts", import.meta.url));
-function launchWorker() { return spawn(process.execPath, ["--import=tsx", worker, usage, root], { env: process.env, stdio: ["ignore", "pipe", "pipe"] }); }
-async function waitFor(path: string) { for (let i = 0; i < 200 && !existsSync(path); i++) await new Promise(r => setTimeout(r, 10)); assert.ok(existsSync(path)); }
-test("real process overlap admits one scanner and coalesces the other", async () => {
-  const first = launchWorker(); let out = ""; first.stdout.on("data", b => out += b); const firstExit = once(first, "exit");
+function launchWorker(hold = true) { return spawn(process.execPath, ["--import=tsx", worker, usage, root, hold ? "hold" : "no-hold"], { env: process.env, stdio: ["pipe", "pipe", "pipe", "ipc"] }); }
+async function waitForProducer(child: ReturnType<typeof launchWorker>, exited: Promise<unknown>) {
+  await Promise.race([
+    once(child, "message", { signal: AbortSignal.timeout(10_000) }).then(([message]) => assert.equal(message, "producer-started")),
+    exited.then(() => { throw new Error("Fixture worker exited before producer readiness."); }),
+  ]);
+}
+async function waitForWorkerExit(exited: ReturnType<typeof once>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await waitFor(join(root, "producer-started")); const second = launchWorker(); let secondOut = ""; second.stdout.on("data", b => secondOut += b);
-    const [secondCode] = await once(second, "exit"); const [firstCode] = await firstExit;
-    assert.equal(firstCode, 0); assert.equal(secondCode, 0); assert.match(secondOut, /busy-or-unsettled/); assert.match(out, /idle/);
+    return await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Fixture worker did not exit before its deadline.")), 10_000);
+        timer.unref();
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+test("real process overlap admits one scanner and coalesces the other", async () => {
+  const first = launchWorker(); let out = ""; first.stdout.on("data", b => out += b); const firstExit = once(first, "close");
+  let second: ReturnType<typeof launchWorker> | undefined, secondExit: ReturnType<typeof once> | undefined;
+  try {
+    await waitForProducer(first, firstExit);
+    // Deliberately exceed the old fixed hold: even a late-starting contender
+    // must overlap the explicitly held producer, rather than racing its timer.
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    second = launchWorker(false); let secondOut = ""; second.stdout.on("data", b => secondOut += b);
+    secondExit = once(second, "close");
+    const [secondCode] = await waitForWorkerExit(secondExit);
+    assert.equal(secondCode, 0); assert.match(secondOut, /busy-or-unsettled/);
+    assert.equal(first.exitCode, null, "producer remains held until contention is observed");
     assert.equal(readFileSync(join(root, "producer-started"), "utf8"), "started\n");
-  } finally { if (first.exitCode === null) first.kill("SIGKILL"); }
+    first.stdin.end(Buffer.from([1])); const [firstCode] = await waitForWorkerExit(firstExit);
+    assert.equal(firstCode, 0); assert.match(out, /idle/);
+  } finally {
+    for (const child of [first, second]) if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await Promise.allSettled([firstExit, ...(secondExit ? [secondExit] : [])]);
+  }
 });
 test("crashed scanner retains unsettled identity and never silently starts a replacement", async () => {
-  const child = launchWorker(), exit = once(child, "exit");
-  try { await waitFor(join(root, "producer-started")); child.kill("SIGKILL"); await exit; }
-  finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+  const child = launchWorker(), exit = once(child, "close");
+  try { await waitForProducer(child, exit); child.kill("SIGKILL"); await waitForWorkerExit(exit); }
+  finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await Promise.allSettled([exit]); }
   let called = false; const view = new AutoWaitlistStore().scan(() => { called = true; return snapshot(); });
   assert.equal(called, false); assert.equal(view.scan, "busy-or-unsettled");
 });
