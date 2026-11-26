@@ -340,7 +340,7 @@ test("PAP-334 P2b catalogue describes interim rejection, not working confinement
   assert.match(launch.reason, /^Protected execution is not started\./);
   assert.match(launch.reason, /interim static fail-closed checker \(REPOSITORY_ISOLATION_UNAVAILABLE\)/);
   for (const row of [launch, resume]) {
-    assert.match(row.reason, /public Analyst in all modes, legacy requirements\/analyze and (?:the )?existing v3 pa-readonly-document\/v1/);
+    assert.match(row.reason, /public Analyst (?:outside the bounded ordinary foreground Pi analyst\/analyze route|protected history), legacy requirements\/analyze and (?:the )?existing v3 pa-readonly-document\/v1/);
     assert.match(row.reason, /no usable confined executor or scope-grant override/);
     assert.match(row.reason, /not working execution or adoption/);
     assert.match(row.reason, /not universal route qualification or installed availability/);
@@ -396,7 +396,11 @@ test("PAP-334 P2b catalogue describes interim rejection, not working confinement
   assert.match(isolation, /assertRepositoryIsolationBindingAvailable\(JSON\.parse\(prior\.binding\)\)/);
   assert.match(isolation, /const binding = parseModeCapabilityBinding\(value\)/);
   assert.match(isolation, /const environments = \[\.\.\.sources, plan\?\.environment\]/);
-  assert.match(isolation, /if \(requiresRepositoryIsolation\(selection\)\) throw new RepositoryIsolationUnavailableError\(\)/);
+  assert.match(isolation, /requiresRepositoryIsolation\(selection\) && !\(selection\.instructionOnly === true/);
+  assert.match(isolation, /queryReadonlyOrdinaryResume\(deploymentId\)/);
+  assert.match(operation("deploy.launch").reason, /PAP-347 admits only resolved profile-free interactive analyst\/analyze through foreground Pi\/PPA/);
+  assert.match(operation("deploy.launch").reason, /Instructions can fail: no sandbox or technical write-prevention guarantee/);
+  assert.match(operation("deploy.resume").reason, /no retained binding, note or custody/);
   assert.match(isolation, /catch \{ throw new RepositoryIsolationUnavailableError\(\); \}/);
   assert.match(readFileSync(resolve(root, "packages/pa-core/src/deploy/index.ts"), "utf8"), /export \* from "\.\/repository-isolation\.js"/);
 });

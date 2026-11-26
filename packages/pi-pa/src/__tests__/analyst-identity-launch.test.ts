@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { appendRegistryEvent, closeDb, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, parseTeamYamlContent, queryDeploymentStatus, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, queryReadonlyOrdinaryResume, readRecordedRuntimeSession, appendRegistryEvent, closeDb, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, parseTeamYamlContent, queryDeploymentStatus, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { createPiHooks, deployWithPi } from "../deploy.js";
 import { PiAdapter } from "../adapter.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
@@ -83,7 +83,35 @@ for (const { name, team, mode, legacy, drift, selected } of [
       async resume(options) {
         assert.ok(team === "builder" || team === "analyst");
         assert.equal(options.executionPlan?.treehouse, undefined);
-        if (team === "analyst") return actualAdapter.resume(options);
+        if (team === "analyst") {
+          // The synthetic child cannot publish a real PID. Exercise the existing
+          // launch gate here; production adapter supervision owns it in live use.
+          const selection = assertRepositoryIsolationIngressAvailable([options.env], options.executionPlan, true);
+          assert.equal(selection.instructionOnly, true);
+          assertRepositoryIsolationResumeAvailable(options.resumedFromDeploymentId, "pi", selection);
+          const prior = queryReadonlyOrdinaryResume(options.resumedFromDeploymentId!);
+          assert.equal(prior.repo_root, options.executionPlan?.repoRoot);
+          assert.equal(prior.worktree_root, options.executionPlan?.worktreeRoot);
+          assert.equal(prior.repo, options.executionPlan?.repositoryCwd);
+          assert.equal(prior.ticket_id || undefined, options.executionPlan?.ticket);
+          assert.equal(readRecordedRuntimeSession(options.resumedFromDeploymentId!, "session-id-pi.txt"), options.sessionId);
+          const startsBefore = runtimeStarts;
+          for (const change of [
+            { sessionId: "wrong-session" },
+            { executionPlan: { ...options.executionPlan!, ticket: "EX-999" } },
+            { executionPlan: { ...options.executionPlan!, worktreeRoot: root } },
+            { executionPlan: { ...options.executionPlan!, repoRoot: root } },
+            { env: { ...options.env!, PA_TEAM: "builder" } },
+          ]) {
+            const denied = await actualAdapter.resume({ ...options, ...change, beforeRuntimeStart: undefined });
+            assert.equal(denied.exitCode, 1);
+            assert.match(denied.errorMessage!, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+            assert.equal(runtimeStarts, startsBefore);
+          }
+          await Promise.resolve(); // production PID observation happens after startup mutex returns
+          options.beforeRuntimeStart?.(process.pid);
+          return actualAdapter.resume({ ...options, beforeRuntimeStart: undefined });
+        }
         assert.equal(options.sessionId, "disposable-launch");
         return { sessionId: options.sessionId, exitCode: 0, metadata: { sessionId: options.sessionId } };
       },
@@ -138,7 +166,23 @@ for (const { name, team, mode, legacy, drift, selected } of [
             assert.equal(interceptToolCall({ toolName: "read", input: { path: ".env" } }).allowed, false);
           } finally { process.env = launcherEnv; }
         }
-        if (team === "analyst") return actualAdapter.spawn(options);
+        if (team === "analyst") {
+          for (const change of [
+            { mode: "background" as const },
+            { executionPlan: undefined },
+            { executionPlan: { ...options.executionPlan!, invocation_channel: "api" as const } },
+            { executionPlan: { ...options.executionPlan!, repositoryAdmission: { ...options.executionPlan!.repositoryAdmission, plainInteractive: undefined } } },
+            { env: { ...options.env!, PA_MODE: "other" } },
+            { env: { ...options.env!, PA_TEAM: "rogue-one" } },
+          ]) {
+            const denied = await actualAdapter.spawn({ ...options, ...change, beforeRuntimeStart: undefined });
+            assert.equal(denied.exitCode, 1);
+            assert.match(denied.errorMessage!, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+            assert.equal(runtimeStarts, 0);
+          }
+          options.beforeRuntimeStart?.(process.pid);
+          return actualAdapter.spawn({ ...options, beforeRuntimeStart: undefined });
+        }
         return { sessionId: options.sessionId!, exitCode: 0, metadata: { sessionId: options.sessionId! } };
       } };
     Object.assign(adapter, { async preflight() {

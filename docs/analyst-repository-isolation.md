@@ -49,9 +49,30 @@ pair through its owners before any future installed or foreground qualification.
 
 ## Interim execution behavior
 
-The following existing selections require isolation and currently cannot start:
+PAP-347 restores **instruction-only ordinary foreground Pi `analyst/analyze`**
+fresh starts and proven matching ordinary resumes. The selected mode must be
+profile-free interactive configuration; shared `ppa` CLI, Pi preflight/deploy and
+the actual Pi adapter all check that route. Optional tickets do not acquire Builder
+custody. No force, background, API, OpenCode, ticket-worktree or legacy/profile
+route is enabled by this exception. A raw adapter/environment selector without the
+ordinary immutable plan is insufficient.
 
-- Public `analyst`, in every mode.
+The primer prohibits product/repository/configuration/test edits, source/Git writes,
+commits, role switching to implement and implementation launches. Analysis/report
+artifacts outside repositories use offered ordinary tools and their existing
+privacy, sensitive-command and native custody checks. Deliberate tool settings
+are not changed. **Instructions can fail: this is not a sandbox or technical
+write-prevention guarantee.** PAP-338 remains the owner of future safe technical
+read-only support; its failed and unqualified evidence is not a pass here.
+
+Resumes must retain a completely ordinary native lineage with matching role,
+runtime, binary, roots, ticket and private recorded session. Protected custody,
+bindings, notes, malformed/missing ancestors or identity conflicts cannot be
+translated into an ordinary session. No history migration or fresh fallback occurs.
+
+The following existing selections still require isolation and cannot start:
+
+- Public `analyst` outside that bounded ordinary Pi route.
 - Historical `requirements/analyze`.
 - The existing `pa-readonly-document/v1` profile, regardless of public team name.
 - Retained protected v1/v2/v3 bindings and document-protocol evidence, including
@@ -163,8 +184,12 @@ installed security advisory or proof that a replacement mechanism works.
 
 ## Deferred implementation and qualification
 
-The original requirements are preserved in PAP-334's history. The smaller linked
-follow-ups retain their acceptance rather than treating a scope split as a pass:
+The original requirements are preserved in PAP-334's history. The following table
+is the historical split, not a new active dependency plan. PAP-338 now retains the
+consolidated future confinement outcome and unqualified proof work. PAP-347 does
+not close or rewrite it or require its qualification for instruction-only execution.
+The smaller linked follow-ups retain their acceptance rather than treating a scope
+split as a pass:
 
 | Ticket | Owned deliverable | Dependencies |
 | --- | --- | --- |
