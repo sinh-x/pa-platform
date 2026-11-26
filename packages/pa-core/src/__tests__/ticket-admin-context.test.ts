@@ -9,6 +9,7 @@ import { appendRegistryEvent, closeDb } from "../registry/index.js";
 import { parseModeCapabilityBinding } from "../mode-capabilities.js";
 import { resolveTrustedTicketMutationContext, TicketStore } from "../tickets/store.js";
 import { statusVersion } from "../tickets/status-intent.js";
+import { RegistryDocumentJournal } from "../registry/documents.js";
 import type { CreateTicketInput, Ticket, UpdateTicketInput } from "../tickets/types.js";
 
 const input: CreateTicketInput = { project: "other", title: "Cross-project administration", summary: "", description: "", status: "idea", priority: "medium", type: "task", estimate: "S", assignee: "sinh", from: "", to: "", tags: [], blockedBy: [], comments: [], doc_refs: [] };
@@ -65,6 +66,36 @@ for (const [team, mode] of modes) test(`PAP-334 ${team}/${mode}: generic CLI and
       const persisted = store.get(createdTicket.id)!;
       for (const [key, value] of Object.entries(patch)) assert.deepEqual(Reflect.get(persisted, key), value, key);
       assert.equal(persisted.project, "other");
+    } finally { api.cleanup(); }
+  });
+});
+
+test("PAP-352 REST keeps the original typed custody reason in its existing error field and status", async () => {
+  await fixture(async () => {
+    const id = "d-352030", competitor = "d-352031"; started(id, "builder", "implement");
+    const store = new TicketStore(), ticket = store.create(input), before = store.get(ticket.id), audit = store.readAudit();
+    appendRegistryEvent({ deployment_id: competitor, team: "builder", mode: "implement", event: "started", ticket_id: ticket.id, timestamp: "2026-11-24T00:00:01Z" });
+    const credential = "inert-diagnostic-fixture";
+    const api = createAgentApiApp({ ticketMutationAuth: { deploymentId: id, credential } });
+    const headers = { "content-type": "application/json", Authorization: ["Bearer", credential].join(" "), "X-PA-Deployment-ID": id };
+    const call = () => api.app.request(`/api/tickets/${ticket.id}`, { method: "PATCH", headers, body: JSON.stringify({ status: "review-uat" }) });
+    try {
+      for (const scenario of ["active", "missing-pid", "present-pid", "document-unreadable"] as const) {
+        if (scenario === "missing-pid") appendRegistryEvent({ deployment_id: competitor, team: "builder", event: "completed", timestamp: "2026-11-24T00:00:02Z", status: "partial" });
+        if (scenario === "present-pid") appendRegistryEvent({ deployment_id: competitor, team: "builder", event: "pid", timestamp: "2026-11-24T00:00:03Z", pid: process.pid });
+        const original = RegistryDocumentJournal.prototype.events;
+        if (scenario === "document-unreadable") RegistryDocumentJournal.prototype.events = () => { throw Error("private upstream fixture"); };
+        try {
+          const response = await call(); assert.equal(response.status, 400);
+          const body = await response.json() as { error: string; code: string };
+          assert.deepEqual(Object.keys(body).sort(), ["code", "error"]); assert.equal(body.code, "UPDATE_FAILED");
+          const expected = scenario === "active" ? /registered outside/ : scenario === "missing-pid" ? /no usable process ID/ : scenario === "present-pid" ? /reused ID/ : /document registry could not be inspected/;
+          assert.match(body.error, expected); assert.ok(body.error.length <= 2000);
+          assert.ok(!body.error.includes("private upstream fixture"));
+          for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(body.error.split(`${label}:`).length, 2);
+          assert.deepEqual(store.get(ticket.id), before); assert.deepEqual(store.readAudit(), audit);
+        } finally { RegistryDocumentJournal.prototype.events = original; }
+      }
     } finally { api.cleanup(); }
   });
 });

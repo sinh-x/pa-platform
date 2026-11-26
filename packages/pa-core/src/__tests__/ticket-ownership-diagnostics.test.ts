@@ -16,6 +16,7 @@ import type { WorkflowEffectOwner } from "../workflows/service.js";
 import { assertWorkflowMarkerReferences, assertWorkflowMarkerAvailable } from "../workflows/catalog.js";
 import { JsonWorkflowError, digest } from "../workflows/contracts.js";
 import { WorkflowMarkerError } from "../workflows/marker-diagnostic.js";
+import { workflowFailure } from "../workflows/public.js";
 import { bytes } from "./workflow-fixtures.js";
 import { RegistryDocumentJournal } from "../registry/documents.js";
 
@@ -147,6 +148,10 @@ test("marker owner preserves narrower facts and existing workflow codes without 
       assert.equal(error.code, code); assert.match(error.message, new RegExp(reason));
       assert.ok(!error.message.includes("private fixture")); assert.ok(error.message.length <= 2000);
       assert.deepEqual(Object.keys(error), Object.keys(new JsonWorkflowError(code)));
+      const returned = JSON.parse(JSON.stringify(workflowFailure(error)));
+      assert.equal(returned.code, code); assert.equal(returned.ok, false); assert.equal(returned.executionAdmitted, false);
+      assert.equal(returned.diagnostic, error.message, "returned workflow seam preserves original typed cause once");
+      assert.deepEqual(Object.keys(returned), Object.keys(workflowFailure(new JsonWorkflowError(code))));
       return true;
     });
   }

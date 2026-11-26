@@ -78,6 +78,26 @@ refs, tool admission, statuses, exits and discovery availability are unchanged.
 No adapter capabilities or supported command grammar are added. This is an
 implementer reconciliation, not independent coverage or installed qualification.
 
+## P3 propagation qualification (source fixtures only)
+
+No adapter schema or rendering change was needed for this slice: existing seams
+already forward the typed error's message. Tests now assert the actual native
+`pa_ticket` pending-document reply and `pa_ticket_status` process-presence reply,
+its code/error flag, and exactly one envelope. The latter is compared byte-for-byte
+(with terminal newline removed) with actual PPA and OPA CLI subprocess stderr;
+stdout remains empty and exit remains 1. The OPA case is shared CLI delegation,
+**not OpenCode host-hook qualification**. Authenticated REST fixtures check four
+causes in the existing `error` field with unchanged `UPDATE_FAILED` and HTTP 400,
+and unchanged ticket/audit snapshots. Workflow failure JSON retains the marker
+subtype's message and original field set/code.
+
+These are synthetic process/session/host fixtures using candidate-built core,
+not installed runtime journeys or independent comprehension. The broad native
+suite exceeded a 180-second combined timeout after reporting passing cases; its
+result is incomplete, not a pass. Focused reruns are recorded separately in the
+deployment report. Warning/partial-effect/lifecycle and other route families above
+remain unqualified; they are not repaired by these propagation assertions.
+
 ## Completion rule
 
 Generated discovery, semantic attribution, branch/route tests, installed candidate
