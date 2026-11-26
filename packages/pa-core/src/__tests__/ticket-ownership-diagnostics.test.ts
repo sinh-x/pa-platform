@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import fs from "node:fs";
+import childProcess from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -167,6 +168,21 @@ test("marker owner preserves narrower facts and existing workflow codes without 
     const error = denied(() => assertTicketAdminOwner(store, "EX-1", caller), "no matching adopted run");
     assert.ok(!error.message.includes("private fixture"));
   });
+});
+test("custody formatting adds no filesystem probes, writes or process launches", () => {
+  const targets = [
+    ...["readFileSync", "writeFileSync", "lstatSync", "statSync", "openSync", "mkdirSync"].map(key => ({ owner: fs, key })),
+    ...["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"].map(key => ({ owner: childProcess, key })),
+  ];
+  const saved = targets.map(({ owner, key }) => Object.getOwnPropertyDescriptor(owner, key)!); let effects = 0;
+  try {
+    targets.forEach(({ owner, key }) => Object.defineProperty(owner, key, { ...Object.getOwnPropertyDescriptor(owner, key), value: () => { effects++; throw Error("formatter effect"); } }));
+    syncBuiltinESMExports();
+    for (const cause of TICKET_OWNERSHIP_CAUSES) renderTicketOwnershipDiagnostic(cause, "d-352002");
+    renderTicketOwnershipDiagnostic(); assert.equal(effects, 0);
+  } finally {
+    targets.forEach(({ owner, key }, index) => Object.defineProperty(owner, key, saved[index]!)); syncBuiltinESMExports();
+  }
 });
 test("finite custody presentation never evaluates hostile input or leaks arbitrary context", () => {
   for (const cause of [...TICKET_OWNERSHIP_CAUSES, undefined, "\u001b[31m\nReason: private fixture", new Proxy({}, { get() { throw Error("getter"); } })]) {

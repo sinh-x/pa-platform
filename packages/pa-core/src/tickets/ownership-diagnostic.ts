@@ -36,7 +36,7 @@ export function renderTicketOwnershipDiagnostic(cause?: TicketOwnershipCause, de
   // Do not accept paths, arbitrary labels or caller-provided owner descriptions.
   const reference = typeof deploymentId === "string" && /^d-[a-f0-9]{6}$/.test(deploymentId)
     && ["deployment-active", "process-missing", "process-present", "process-unreadable"].includes(cause ?? "")
-    ? ` Registry deployment: ${deploymentId}` : "";
+    ? `. Registry deployment: ${deploymentId}` : "";
   const headline = "Ticket change stopped at the custody check; preserve the original request.\n";
   return headline + formatBoundedFiveFieldDiagnostic({
     condition: "The current custody-gated write was prevented. Earlier operation effects, if any, are not established by this check",

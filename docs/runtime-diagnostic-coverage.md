@@ -98,6 +98,25 @@ result is incomplete, not a pass. Focused reruns are recorded separately in the
 deployment report. Warning/partial-effect/lifecycle and other route families above
 remain unqualified; they are not repaired by these propagation assertions.
 
+## P4 qualification checkpoint — incomplete combined delivery
+
+Workspace typecheck and build passed on `38f04b8`. `corepack pnpm test` was
+attempted with a 480-second bound: the root 71-test group passed, then the core
+suite was interrupted after test 673; no completed workspace result exists. This
+is **incomplete**, not a regression pass. Installed `ppa` and `opa` report 0.1.190,
+but version equality does not bind them to this feature candidate; no installed
+journey or installation was performed. Independent review and human UAT are not run.
+
+Qualification inspection corrected inventory exclusion of `.test.mjs`/`.spec.*`,
+made shell/Python script boundaries explicit, and refused symlinks/special files.
+The resulting conservative inventory has **7,242 candidate sites in 393 files**,
+including 13 script boundaries. External selected configuration/hooks remain a
+separate-owner gap. The inventory test is included in both root regression commands.
+A readability self-review restored sentence separation before a deployment
+reference; only that pure formatter's source pin is renewed for this correction.
+Focused owner/REST/native/CLI tests are rerun after it; full workspace qualification
+remains incomplete. No broad-phase or PAP-352 completion is asserted.
+
 ## Completion rule
 
 Generated discovery, semantic attribution, branch/route tests, installed candidate

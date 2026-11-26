@@ -123,7 +123,7 @@
     "packages/pi-pa/src/pi-host-smoke.ts": "3aa443c07c20a3bcf15f0d5c2094e81ce97fce644657d53de647f973155f75dc",
     "packages/pa-core/src/tickets/status-intent.ts": "eddc5446bc46ef0653c3d051dd56408293cbfb0e4ccbdb5d21e246cb07d823d5",
     "packages/pa-core/src/tickets/status-service.ts": "ac9a4df9f78ba484da1bcdfa7fc45b3bfcc0ddfc87de3cc71ed26278064b908a",
-    "packages/pa-core/src/tickets/ownership-diagnostic.ts": "3e62fe07e50f009eabc5626557cfdf3f33424a470d917245ccb48b211ea7ab11",
+    "packages/pa-core/src/tickets/ownership-diagnostic.ts": "bf27e62916ff9b66783b8d99fbb743207299a6b7f667f35f1c110b6453feaebb",
     "packages/pa-core/src/workflows/catalog.ts": "5848dd7c7f1939e65de9be5f3d2baf3c9d8324750e998103f0f66d3b78b32b78",
     "packages/pa-core/src/workflows/marker-diagnostic.ts": "5b7511958ebedc53176cf729dece9fee19ce62b678aa7d00dded5ac65b2751be",
     "packages/pi-pa/src/ticket-status.ts": "885e5ad5985f0108b1e4d687f2c706da903c13ddc7d00713bb46bfa346f53e93",
