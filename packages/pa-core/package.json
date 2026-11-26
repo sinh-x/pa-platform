@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/pa-core",
-  "version": "0.1.187",
+  "version": "0.1.188",
   "type": "module",
   "description": "Runtime-agnostic core library for PA platform adapters",
   "main": "dist/index.js",
@@ -20,7 +20,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-public-web.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build-security-policy.mjs && node scripts/build-public-web.mjs",
     "test": "node ../../scripts/dev/isolated-test-env.mjs -- corepack pnpm run test:run",
     "test:run": "node scripts/build-public-web.mjs && tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "test:source": "node ../../scripts/dev/isolated-test-env.mjs -- tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",

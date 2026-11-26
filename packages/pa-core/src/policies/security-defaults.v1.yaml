@@ -1,0 +1,55 @@
+# PA-owned generic defaults. Private operator additions stay in sensitive-patterns.yaml.
+schemaVersion: pa-security-defaults/v1
+safety:
+  destructiveCommands:
+    - { pattern: '\brm\b', flags: i }
+    - { pattern: '\brmdir\b', flags: i }
+    - { pattern: '\bunlink\b', flags: i }
+    - { pattern: '\bshred\b', flags: i }
+    - { pattern: '\bdd\b', flags: i }
+    - { pattern: '\btruncate\b', flags: i }
+    - { pattern: '\bfind\b.*\b-delete\b', flags: i }
+    - { pattern: '\bfind\b.*\b-exec\b.*\brm\b', flags: i }
+    - { pattern: '\bxargs\b.*\brm\b', flags: i }
+    - { pattern: '\bgit\s+clean\b.*-f', flags: i }
+    - { pattern: '\bgit\s+push\b.*--force', flags: i }
+    - { pattern: '(?:^|[^>])(?:\d*)>(?:>|[:|])\s*\S', flags: i }
+    - { pattern: '(?:^|[^\d>])\d+>\s*(?!&(?:\d+|-)(?:$|[\s;&|()]))\S', flags: i }
+    - { pattern: '(?:^|[^\d>])>\s*(?!&(?:\d+|-)(?:$|[\s;&|()]))\S', flags: i }
+  blockedFilePatterns:
+    - { pattern: '(^|[\\/])\.env(\.|$)', flags: i }
+    - { pattern: '(^|[\\/])\.ssh[\\/]id_', flags: i }
+    - { pattern: 'credentials', flags: i }
+    - { pattern: 'secrets?.*\.(json|ya?ml)$', flags: i }
+    - { pattern: '[-_]token\.json$', flags: i }
+    - { pattern: '[-_]api[-_]?key\.json$', flags: i }
+    - { pattern: '(^|[\\/])pa-repository-mutation\.(?:lease|borrower)\.json$', flags: i }
+    - { pattern: '(^|[\\/])repository-dirty-borrow\.approval\.json$', flags: i }
+    - { pattern: '(^|[\\/])pi-repository-handoff\.json$', flags: i }
+    - { pattern: '(^|[\\/])pa-ticket-builder-slots([\\/]|$)', flags: i }
+    - { pattern: '(^|[\\/])\.local[\\/]share[\\/]pa-platform[\\/]prepared-autonomy([\\/]|$)', flags: i }
+    - { pattern: '(^|[\\/])\.netrc$', flags: i }
+    - { pattern: '(^|[\\/])\.npmrc$', flags: i }
+    - { pattern: '(^|[\\/])\.pypirc$', flags: i }
+sensitive:
+  filenames:
+    - { pattern: '^\.env(?:\..*)?$', flags: i }
+    - { pattern: '^\.npmrc$', flags: i }
+    - { pattern: '^\.pypirc$', flags: i }
+    - { pattern: '^\.netrc$', flags: i }
+    - { pattern: '^credentials.*\.json$', flags: i }
+    - { pattern: '^secret.*\.json$', flags: i }
+    - { pattern: '^secrets.*\.ya?ml$', flags: i }
+    - { pattern: '^.*token.*\.json$', flags: i }
+    - { pattern: '^.*api-key.*\.json$', flags: i }
+    - { pattern: '^.*api_key.*\.json$', flags: i }
+  paths:
+    - { pattern: '(?:^|[/\\])\.ssh[/\\]id[^/\\]*$', flags: i }
+  contents:
+    - { pattern: '(?:^|\n)\s*(?:(?:seed|mnemonic|recovery)\s+(?:phrase|words?)|backup\s+(?:phrase|words?))\s*[:=-]\s*[a-z]+(?:\s+[a-z]+){11}(?:(?:\s+[a-z]+){3}){0,4}\s*(?:$|\n)', flags: i }
+    - { pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----', flags: '' }
+    - { pattern: '(?:^|\n)\s*ssh-(?:ed25519|rsa|ecdsa)\s+[A-Za-z0-9+/=]+(?:\s+[^\n]*)?(?:$|\n)', flags: '' }
+    - { pattern: '\bbearer\s+[A-Za-z0-9._~+/=-]{16,}\b', flags: i }
+    - { pattern: '\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}\b', flags: '' }
+    - { pattern: '\b\d{5,}:[A-Za-z0-9_-]{35,}\b', flags: '' }
+    - { pattern: '\b(?:api[_-]?key|access[_-]?token|secret[_-]?key)[''\"]?\s*[:=]\s*[''\"]?[^\s''\"]{16,}', flags: i }

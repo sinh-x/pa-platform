@@ -1,4 +1,4 @@
-import { checkSourceContent, loadSensitivePatterns, SourceContentSecurityError, type LocalSourceFile, type SensitivePatternSet } from "@pa-platform/pa-core";
+import { checkSourceContent, loadSensitivePatterns, SecurityPolicyError, SourceContentSecurityError, type LocalSourceFile, type SensitivePatternSet } from "@pa-platform/pa-core";
 import { detectAdmittedImageMimeType } from "./local-image-type.js";
 import { admitLocalReadPaths } from "./local-read-paths.js";
 import { filterLocalToolResult, localContentFailure } from "./local-content-security.js";
@@ -23,7 +23,7 @@ export function bindLocalReadTool(
           const context = rawContext as { cwd: string };
           let patterns: SensitivePatternSet;
           try { patterns = loadSensitivePatterns(); }
-          catch { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY"); }
+          catch (error) { throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY", undefined, error instanceof SecurityPolicyError ? error : undefined); }
           if (signal?.aborted) throw new SourceContentSecurityError("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
           const admittedPaths = admitLocalReadPaths(input.path, context.cwd, patterns);
           let projection: "allow" | "redact" | "withhold" = "allow";

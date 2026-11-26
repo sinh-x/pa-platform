@@ -1,32 +1,18 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, normalize, relative, resolve } from "node:path";
 import { loadSensitivePatterns, type SensitivePatternSet } from "./sensitive-patterns.js";
+import { getSecurityDefaults, SecurityPolicyError } from "./security-policy.js";
 
 export interface SafetyPatterns {
   destructiveCommands: string[];
   blockedFilePatterns: string[];
 }
 
+/** Compatibility shape stays synchronous and enumerable, without eager I/O.
+ * Fresh arrays prevent callers from mutating the private validated baseline. */
 export const PA_SAFETY_PATTERNS: SafetyPatterns = {
-  destructiveCommands: [
-    String.raw`\brm\b`, String.raw`\brmdir\b`, String.raw`\bunlink\b`, String.raw`\bshred\b`,
-    String.raw`\bdd\b`, String.raw`\btruncate\b`, String.raw`\bfind\b.*\b-delete\b`,
-    String.raw`\bfind\b.*\b-exec\b.*\brm\b`, String.raw`\bxargs\b.*\brm\b`,
-    String.raw`\bgit\s+clean\b.*-f`, String.raw`\bgit\s+push\b.*--force`,
-    // Block pathname overwrite/truncation while allowing descriptor duplication and closure.
-    String.raw`(?:^|[^>])(?:\d*)>(?:>|[:|])\s*\S`,
-    String.raw`(?:^|[^\d>])\d+>\s*(?!&(?:\d+|-)(?:$|[\s;&|()]))\S`,
-    String.raw`(?:^|[^\d>])>\s*(?!&(?:\d+|-)(?:$|[\s;&|()]))\S`,
-  ],
-  blockedFilePatterns: [
-    String.raw`(^|[\\/])\.env(\.|$)`, String.raw`(^|[\\/])\.ssh[\\/]id_`, String.raw`credentials`,
-    String.raw`secrets?.*\.(json|ya?ml)$`, String.raw`[-_]token\.json$`, String.raw`[-_]api[-_]?key\.json$`,
-    String.raw`(^|[\\/])pa-repository-mutation\.(?:lease|borrower)\.json$`,
-    String.raw`(^|[\\/])repository-dirty-borrow\.approval\.json$`, String.raw`(^|[\\/])pi-repository-handoff\.json$`,
-    String.raw`(^|[\\/])pa-ticket-builder-slots([\\/]|$)`,
-    String.raw`(^|[\\/])\.local[\\/]share[\\/]pa-platform[\\/]prepared-autonomy([\\/]|$)`,
-    String.raw`(^|[\\/])\.netrc$`, String.raw`(^|[\\/])\.npmrc$`, String.raw`(^|[\\/])\.pypirc$`,
-  ],
+  get destructiveCommands() { return getSecurityDefaults().safety.destructiveCommands.map(entry => entry.pattern); },
+  get blockedFilePatterns() { return getSecurityDefaults().safety.blockedFilePatterns.map(entry => entry.pattern); },
 };
 
 export function isDestructiveCommand(command: string): boolean {
@@ -157,13 +143,14 @@ export function evaluateSafetyPolicy(input: SafetyPolicyInput, options: SafetyPo
   try {
     if (input.kind === "path") return classifyPathOperand(input.value, options);
     return classifyShellCommand(input.value, options);
-  } catch {
-    return deny("sensitive-policy-unavailable", "none", "Local sensitive path rules could not be evaluated; access is not admitted.");
+  } catch (error) {
+    return deny("sensitive-policy-unavailable", "none", error instanceof SecurityPolicyError ? error.message : "Local sensitive path rules could not be evaluated; access is not admitted.");
   }
 }
 
 /** Classify a value already identified as a path-bearing field or operand. */
 export function classifyPathOperand(filePath: string, options: SafetyPolicyOptions = {}): SafetyDecision {
+  getSecurityDefaults();
   if (!filePath || !findBlockedPathAlias(filePath, options.cwd)) return { ...ALLOWED, effect: "read" };
   return deny("protected-path", "read", `Protected path access is not allowed: ${filePath}`, filePath);
 }
@@ -173,6 +160,7 @@ export function classifyPathOperand(filePath: string, options: SafetyPolicyOptio
  * non-shell here-document bodies as path operands.
  */
 export function classifyShellCommand(command: string, options: SafetyPolicyOptions = {}): SafetyDecision {
+  getSecurityDefaults();
   if (!command) return ALLOWED;
   const sources = collectShellSources(command);
   let hasOutput = false;

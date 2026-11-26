@@ -5,3 +5,5 @@ export * from "../../pa-core/src/source-content-security.js";
 export * from "../../pa-core/src/local-source-file.js";
 export * from "../../pa-core/src/immutable-document-policy.js";
 export * from "../../pa-core/src/sensitive-patterns.js";
+export { SecurityPolicyError } from "../../pa-core/src/security-policy.js";
+export { appendActivityEvent, createActivityEvent } from "../../pa-core/src/activity/index.js";

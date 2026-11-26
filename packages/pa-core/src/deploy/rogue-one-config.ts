@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { getPlatformHomeDir, getSkillsDir, getTeamsDir } from "../paths.js";
 import { queryReadonlyDeploymentEvents, queryReadonlyIsolationLineage } from "../registry/index.js";
 import { findSensitiveMatch, getSensitiveFilename } from "../sensitive-patterns.js";
+import { SecurityPolicyError } from "../security-policy.js";
 import { parseReviewEvidenceJson, readReviewEvidenceFile } from "../validation/review-contract.js";
 import { parseTeamYamlContent } from "../yaml-parser.js";
 import type { DeployMode, RuntimeName, TeamConfig } from "../types.js";
@@ -19,8 +20,9 @@ import { agentSkillResource } from "../teams/index.js";
 const VERSION = "pa-rogue-one-config/v1", FILE = "rogue-one-config.json", PREFIX = `${VERSION}:`;
 const MAX_FILE = 1_048_576, MAX_TOTAL = 16 * MAX_FILE, MAX_FILES = 256, MAX_ARCHIVE = 24 * MAX_FILE;
 const hash = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex");
-type Cause = "selection" | "contract" | "resource" | "drift" | "snapshot" | "legacy" | "conflict" | "route";
+type Cause = "selection" | "contract" | "resource" | "drift" | "snapshot" | "legacy" | "conflict" | "route" | "policy";
 const reasons: Record<Cause, string> = {
+  policy: "Required PA-owned security defaults are unavailable; retained configuration cannot replace current security policy.",
   route: "This configured Rogue-One route has no qualified full-retention consumer. Only foreground PPA CLI is supported; OpenCode, background and API launch are unavailable.",
   selection: "The selected mode is missing, unknown or ambiguous.",
   contract: "Rogue-One supports only ticket-optional, profile-free interactive configuration; configured content cannot grant native authority.",
@@ -31,12 +33,17 @@ const reasons: Record<Cause, string> = {
   conflict: "The continuation request conflicts with the original configuration, runtime or repository identity.",
 };
 export class RogueOneConfigError extends Error {
-  constructor(readonly cause: Cause) {
-    super(`Rogue-One configuration is blocked.\nCondition: Configuration validation must succeed before runtime start.\nSource: Native retained-configuration owner.\nReason: ${reasons[cause]}\nCorrection: Ask the runtime/configuration owner to inspect the original selection and retained evidence. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve the original session and partial results.\nResume Action: Recheck the same request only after owner reconciliation. Admission is checked again before any runtime start.`);
+  constructor(readonly cause: Cause, policy?: SecurityPolicyError) {
+    super(cause === "policy" && policy instanceof SecurityPolicyError ? policy.message : `Rogue-One configuration is blocked.\nCondition: Configuration validation must succeed before runtime start.\nSource: Native retained-configuration owner.\nReason: ${reasons[cause]}\nCorrection: Ask the runtime/configuration owner to inspect the original selection and retained evidence. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve the original session and partial results.\nResume Action: Recheck the same request only after owner reconciliation. Admission is checked again before any runtime start.`);
     this.name = "RogueOneConfigError";
   }
 }
 const fail = (cause: Cause): never => { throw new RogueOneConfigError(cause); };
+function propagate(error: unknown, fallback: Cause): never {
+  if (error instanceof RogueOneConfigError) throw error;
+  if (error instanceof SecurityPolicyError) throw new RogueOneConfigError("policy", error);
+  return fail(fallback);
+}
 function path(value: string): string {
   if (typeof value !== "string" || value.length > 4096 || !/^[A-Za-z0-9_./-]+$/.test(value)
     || value.split("/").length > 16 || value.split("/").some(p => !p || p === "." || p === ".." || p.toLowerCase() === ".git")
@@ -49,7 +56,7 @@ function guardOriginalPath(root: string, relative: string): void {
 }
 function body(raw: Uint8Array): string {
   try { const value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw); if (findSensitiveMatch("content", value)) fail("resource"); return value; }
-  catch { return fail("resource"); }
+  catch (error) { return propagate(error, "resource"); }
 }
 export function selectRogueOneMode(team: TeamConfig, requested?: string): DeployMode {
   const id = requested ?? team.default_mode, modes = team.deploy_modes?.filter(mode => mode.id === id);
@@ -185,7 +192,7 @@ export class RogueOneConfig {
   read(relative: string): string { return this.snapshot.files.find(file => file.path === path(relative))?.content ?? fail("resource"); }
   assertCurrent(): void {
     try { this.current(); }
-    catch (error) { if (error instanceof RogueOneConfigError) throw error; fail("snapshot"); }
+    catch (error) { propagate(error, "snapshot"); }
   }
   /** Classify native originals before loading the requested team's configuration.
    * Isolation keeps its existing priority; neither public labels nor live PAPC
@@ -261,7 +268,7 @@ export class RogueOneConfig {
       assertCurrent(); const raw = Buffer.from(JSON.stringify(snapshot));
       if (raw.byteLength > MAX_ARCHIVE) fail("resource");
       return new RogueOneConfig(snapshot, raw, assertCurrent);
-    } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("resource"); }
+    } catch (error) { return propagate(error, "resource"); }
   }
   /** Native immutable start anchors the bytes. A disk manifest/hash alone does
    * not establish native origin. Never accept a caller-supplied digest/note. */
@@ -309,7 +316,7 @@ export class RogueOneConfig {
         if (current.length !== 1 || !isDeepStrictEqual(current[0], start) || hash(retainedRead(join(dir, FILE), MAX_ARCHIVE)) !== hash(raw)) fail("snapshot");
         assertPolicy();
       });
-    } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("snapshot"); }
+    } catch (error) { return propagate(error, "snapshot"); }
   }
   continuation(request: DeployRequest): DeployRequest {
     return { ...request, ...this.snapshot.request, mode: this.snapshot.mode };
@@ -343,6 +350,6 @@ export class RogueOneConfig {
       const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { fsyncSync(fd); } finally { closeSync(fd); }
       this.assertCurrent(); return root;
-    } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("snapshot"); }
+    } catch (error) { return propagate(error, "snapshot"); }
   }
 }

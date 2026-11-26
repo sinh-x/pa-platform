@@ -115,6 +115,9 @@ Original native Rogue-One lineage cannot be resumed through another team's
 same-named mode; classification occurs before adapter configuration selection.
 Filename, original-path and content privacy policies are reapplied at capture,
 resume and immediate admission, including newly sensitive originally absent paths.
+Missing or invalid PA-owned security defaults preserve their fixed package-policy
+guidance; they are not misreported as corrupt original snapshots or missing config
+resources, and retained instructions never replace required security defaults.
 Current credentials, host/tool policy, native custody and protected ancestry are
 not frozen by retained instructions. Preserve uncertain original operations and
 route reconciliation to their native owner; do not delete evidence or blindly

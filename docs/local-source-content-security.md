@@ -55,6 +55,36 @@ presentation. This is not a public-web policy reversal or an approval grant.
   Historical transcripts/audits are NOT rewritten. Prior exposure still needs
   credential-owner review; a new binary cannot retract old model context.
 
+## PA-owned default bundle (PAP-348 D2)
+
+Generic defaults are maintained in
+`packages/pa-core/src/policies/security-defaults.v1.yaml`, using the strict
+`pa-security-defaults/v1` data schema. The core build validates and copies exact
+bytes to `dist/policies/`; Nix checks source/installed byte parity. The finite,
+default-off selected-document qualifier ships the same asset beside its rebased
+bundle. These files contain PA defaults, not AgentKit or private operator rules.
+
+`security-policy.ts` acquires the fixed module-relative regular file on the first
+security-dependent call, validates bounded UTF-8/schema/regex data, and retains
+an immutable module-instance baseline and its public byte digest. Imports do not
+read the asset. Later asset/CWD changes do not hot-reload a validated baseline;
+a failed instance retains a safe failure rather than blindly retrying or falling
+back to ambient/empty rules. Recovery requires owner-supported coherent package
+correction and process-baseline reestablishment, not editing a live asset.
+
+Existing synchronous pattern exports retain their values, order, flags and
+`built-in` labels. Compatibility arrays and regexes are fresh projections.
+Optional private `getConfigDir()/sensitive-patterns.yaml` remains additive and
+per-call, including its existing aliases/filtering/error behavior; it is neither
+packaged nor migrated. Required-default failures use fixed nonsecret guidance;
+source/result and safety owners keep existing public error codes. Output
+withholding never proves an underlying effect did not occur.
+
+This is source/packaging behavior, not installed qualification, original retained
+AgentKit incident closure, extension-discovery changes or OS confinement. No live
+hook is disabled. Installed AK-free replay and same-original-report recovery
+remain separately owned checks.
+
 ## Engineering slices
 
 S1: pa-core source/content check, local source admission and redaction projections.

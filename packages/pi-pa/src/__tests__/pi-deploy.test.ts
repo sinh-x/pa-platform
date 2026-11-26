@@ -24,6 +24,7 @@ import { NIXOS_BASELINE_VERSION, NIXOS_APPROVAL_VERSION, NIXOS_TOOLS, nixosTuple
 import { authorizePiReviewSelection, piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent, withPiReviewCandidateAtMatrixBoundary } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
+import { RogueOneConfig, RogueOneConfigError, SecurityPolicyError } from "@pa-platform/pa-core";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
@@ -972,6 +973,30 @@ test("retained adapter rejects invalid selection and opaque recorded runtime bef
     assert.deepEqual(readFileSync(join(root, "registry.db")), registryBefore, "cold resume inspection never migrates historical records");
     assert.equal(readFileSync(path, "utf8"), "opaque-session\n");
     assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
+  });
+});
+
+test("PAP-349 public Pi handlers preserve fixed required-policy guidance without wrapping or runtime effects", async (t) => {
+  // Fresh-process packaging tests exercise the real missing/invalid loader. Here
+  // the typed owner failure isolates its propagation through both public seams.
+  for (const category of ["unavailable", "invalid"] as const) await withPiEnv(async (root) => {
+    writeRogueOneTeamConfig(root);
+    const expected = new SecurityPolicyError(category).message;
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; } });
+    try {
+      t.mock.method(RogueOneConfig, "capture", () => { throw new RogueOneConfigError("policy", new SecurityPolicyError(category)); });
+      const result = await deployWithPi({ team: "rogue-one", mode: "direct" }, adapter);
+      assert.equal(result.status, "failed"); assert.equal(result.reason, expected); assert.equal(effects, 0);
+      t.mock.restoreAll();
+      const id = "d-349aaa";
+      appendRegistryEvent({ deployment_id: id, event: "started", timestamp: new Date().toISOString(), team: "rogue-one", mode: "direct", rogue_one: true, runtime: "pi", binary: "ppa" });
+      t.mock.method(RogueOneConfig, "resume", () => { throw new RogueOneConfigError("policy", new SecurityPolicyError(category)); });
+      const stopped = await createPiHooks(adapter).deployPreflight!({ team: "rogue-one", mode: "direct", resume: id });
+      assert.equal(stopped?.reason, expected); assert.equal(effects, 0);
+      assert.ok(expected.length <= 2000);
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(expected.split(label).length - 1, 1);
+    } finally { t.mock.restoreAll(); }
   });
 });
 

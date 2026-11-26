@@ -1,4 +1,4 @@
-import { checkSourceContent, loadSensitivePatterns, SourceContentSecurityError, type SensitivePatternSet } from "@pa-platform/pa-core";
+import { checkSourceContent, loadSensitivePatterns, SecurityPolicyError, SourceContentSecurityError, type SensitivePatternSet } from "@pa-platform/pa-core";
 import type { PiExtensionModule, PiToolResult } from "./index.js";
 
 // Native implementation custody, not a source/contentPolicy string in JSON.
@@ -10,7 +10,7 @@ const projectionNotice = "Sensitive local content was redacted. This is a readab
 export const localProgressResult = (): PiToolResult => ({ content: [{ type: "text", text: "Local tool output is being checked; details will be available after completion." }], details: {} });
 
 export function localContentFailure(error: unknown): PiToolResult {
-  const safe = error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_CONTENT_POLICY");
+  const safe = error instanceof SourceContentSecurityError ? error : new SourceContentSecurityError("LOCAL_CONTENT_POLICY", undefined, error instanceof SecurityPolicyError ? error : undefined);
   return { content: [{ type: "text", text: safe.message }], details: { code: safe.code, outputWithheld: true, effectState: "not-established", ...(safe.failureClass ? { failureClass: safe.failureClass } : {}) }, isError: true };
 }
 /** Check presentation strings AND structured/rendering details. Never change an
