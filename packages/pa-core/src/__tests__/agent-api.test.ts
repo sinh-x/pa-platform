@@ -962,10 +962,12 @@ test("rogue-one Agent API deploy requires configured operator identity for OpenC
         body: JSON.stringify({ team: "rogue-one", runtime }),
       });
       assert.equal(accepted.status, 202);
+      const unsupported = await accepted.json() as { status: string; reason: string };
+      assert.equal(unsupported.status, "failed");
+      assert.match(unsupported.reason, /Only foreground PPA CLI is supported/);
     }
 
-    assert.equal(received.length, 2);
-    assert.deepEqual(received.map((request) => [request.runtime, request.invocationChannel]), [["opencode", "agent-api"], ["pi", "agent-api"]]);
+    assert.equal(received.length, 0, "authentication cannot substitute for a qualified full-retention consumer");
     assert.equal(JSON.stringify(received).includes("operator-credential"), false);
     api.cleanup();
   });

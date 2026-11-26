@@ -1,6 +1,7 @@
 import type { ReadOnlyHelperCapability } from "../readonly-helper-context.js";
 import type { ApiRuntimeName, AutonomyLevel, DeploymentStatus, DeployMode, TeamConfig } from "../types.js";
 import { isRogueOneTeam } from "./rogue-one.js";
+import { selectRogueOneMode } from "./rogue-one-config.js";
 import { queryReadonlyOrdinaryResume, queryReadonlyDeploymentStatus } from "../registry/index.js";
 import { assertSupportedRuntime } from "./runtime-config.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
@@ -72,8 +73,8 @@ export class DeployModeSelectionError extends Error {
 
 /** No requested/default substitution. Teams without either selection retain their base profile. */
 export function resolveDeployMode(team: TeamConfig, requestedMode?: string): DeployMode | undefined {
-  // Rogue-one is an intentional fixed bare profile, not a configured-mode fallback.
-  if (isRogueOneTeam(team.name)) return undefined;
+  // Configuration selects content, never the native admission exception.
+  if (isRogueOneTeam(team.name)) return selectRogueOneMode(team, requestedMode);
   const id = requestedMode ?? team.default_mode;
   if (id === undefined) return undefined;
   const matches = team.deploy_modes?.filter((mode) => mode.id === id) ?? [];

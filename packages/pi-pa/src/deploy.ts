@@ -1,5 +1,6 @@
 import { ADVISORY_RUNTIME_VERSION, resolveAdvisoryTaskBaseline, preparedRepositoryTicketReservationPath } from "@pa-platform/pa-core";
 import { readSession } from "./session-owner.js";
+import { RogueOneConfig, RogueOneConfigError } from "@pa-platform/pa-core";
 import { createPiReadonlyHelperCapability, piReviewCheckoutCorrelation, readReviewCandidateTicket, reviewCandidateError } from "./readonly-helper.js";
 export { createPiReadonlyHelperCapability, piReviewCheckoutCorrelation, type PiReadonlyHelperDependencies } from "./readonly-helper.js";
 import { documentSessionVersion, selectsDocumentSession } from "./document-session.js";
@@ -519,7 +520,7 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
         assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
       }
       catch (error) {
-        if (error instanceof DeployModeSelectionError || error instanceof RepositoryIsolationUnavailableError) return { reason: error.message };
+        if (error instanceof RogueOneConfigError || error instanceof DeployModeSelectionError || error instanceof RepositoryIsolationUnavailableError) return { reason: error.message };
         throw error;
       }
       if (team.name !== "requirements" || mode?.id !== "review-auto") return undefined;
@@ -533,18 +534,27 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 
 function selectPiTeamConfig(request: DeployRequest) {
+  if (isRogueOneTeam(request.team)) {
+    if (request.background || (request.invocationChannel ?? "cli") !== "cli") throw new RogueOneConfigError("route");
+    const repository = resolveRepoExecutionPath(request.repo, process.cwd(), { allowLinkedWorktreeCwd: request.repo === undefined });
+    const rogueConfig = request.resume ? RogueOneConfig.resume(request.resume, request, { runtime: "pi", repoKey: repository.repoKey, repoRoot: repository.repoRoot, worktreeRoot: repository.worktreeRoot, ticket: request.ticket }) : undefined;
+    const team = rogueConfig?.team ?? loadTeamConfig(request.team);
+    return { team, mode: resolveDeployMode(team, rogueConfig?.mode.id ?? request.mode), pinned: null, plainInteractive: false, rogueConfig };
+  }
   let configured: TeamConfig | undefined;
   try {
     configured = loadTeamConfig(request.team);
+    if (isRogueOneTeam(configured.name)) throw new RogueOneConfigError("contract");
     const mode = resolveDeployMode(configured, request.mode);
-    if (!request.ticketWorktree && isPlainInteractiveMode(mode)) return { team: configured, mode, pinned: null, plainInteractive: true };
+    if (!request.ticketWorktree && isPlainInteractiveMode(mode)) return { team: configured, mode, pinned: null, plainInteractive: true, rogueConfig: undefined };
   } catch {
     // Legacy continuation can still select its retained configuration if the
     // current configuration is missing or no longer has the requested mode.
   }
   const pinned = pinnedPiWorkflowConfig(request);
   const team = pinned?.team ?? configured ?? loadTeamConfig(request.team);
-  return { team, mode: resolveDeployMode(team, request.mode), pinned, plainInteractive: false };
+  if (isRogueOneTeam(team.name)) throw new RogueOneConfigError("contract");
+  return { team, mode: resolveDeployMode(team, request.mode), pinned, plainInteractive: false, rogueConfig: undefined };
 }
 
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics, dependencies: PiDeployDependencies = {}): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
@@ -579,10 +589,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let team: TeamConfig;
   let pinnedConfig: ReturnType<typeof pinnedPiWorkflowConfig> = null;
   let pinnedConfigRoot: string | undefined;
+  let rogueConfig: RogueOneConfig | undefined;
+  let rogueConfigRoot: string | undefined;
   let mode: ReturnType<typeof resolveDeployMode>;
   let plainInteractive: boolean;
   try {
-    ({ team, mode, pinned: pinnedConfig, plainInteractive } = selectPiTeamConfig(request));
+    ({ team, mode, pinned: pinnedConfig, plainInteractive, rogueConfig } = selectPiTeamConfig(request));
+    if (rogueConfig) {
+      request = rogueConfig.continuation(request);
+      timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
+      if ("error" in timeout) throw new RogueOneConfigError("conflict");
+    } else if (isRogueOneTeam(team.name)) request = { ...request, mode: mode!.id };
     if (plainInteractive) inheritedAttempt = undefined;
     if (!request.dryRun) {
       assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
@@ -595,7 +612,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       && mode?.document_profile !== READONLY_DOCUMENT_PROFILE) throw new ModeCapabilityError("CAPABILITY_PROFILE");
     assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
   } catch (error) {
-    if (error instanceof ModeCapabilityError || error instanceof RepositoryIsolationUnavailableError) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: error.message };
+    if (error instanceof RogueOneConfigError || error instanceof ModeCapabilityError || error instanceof RepositoryIsolationUnavailableError) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: error.message };
     if (error instanceof DeployModeSelectionError) return { status: "failed", team: request.team, mode: null, reason: error.message };
     if (request.team === "analyst") return { status: "failed", team: request.team, mode: request.mode ?? null, reason: new ModeCapabilityError("CAPABILITY_PROFILE").message };
     if (!request.ticketWorktree) throw error;
@@ -659,7 +676,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   };
   let runtimeConfig: ReturnType<typeof resolvePiRuntimeConfig>;
   try {
-    runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL }, requireCompleteCliPair: true }));
+    runtimeConfig = resolvePiRuntimeConfig(rogueConfig?.runtimeConfig ?? resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL }, requireCompleteCliPair: true }));
   } catch (error) {
     const rawReason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(rawReason) : inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
@@ -915,6 +932,12 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
     }
     pinnedConfigRoot = pinnedConfig?.materialize(deployDir);
+    if (isRogueOneTeam(team.name)) {
+      const repository = resolveRepoExecutionPath(planningRequest.repo, planningCwd, { allowLinkedWorktreeCwd: planningRequest.repo === undefined });
+      rogueConfig ??= RogueOneConfig.capture({ deploymentId, runtime: "pi", repoKey: repository.repoKey, repoRoot: repository.repoRoot, worktreeRoot: repository.worktreeRoot, ticket: request.ticket }, { ...request, timeout: timeout.timeout }, team, runtimeConfig);
+      rogueConfig = rogueConfig.forDeployment(deploymentId);
+      rogueConfigRoot = rogueConfig.materialize(deploymentId);
+    }
     plan = resolveExecutionPlan({
       request: { ...planningRequest, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
       teamConfig: team,
@@ -926,7 +949,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       environment: requestedEnvironment,
       timeoutSeconds: timeout.timeout,
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
-      ...(pinnedConfigRoot ? { skillsDir: join(pinnedConfigRoot, "skills/global") } : {}),
+      ...(rogueConfigRoot ? { skillsDir: join(rogueConfigRoot, "skills/global") } : pinnedConfigRoot ? { skillsDir: join(pinnedConfigRoot, "skills/global") } : {}),
       cwd: planningCwd,
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
@@ -985,7 +1008,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const pinned = !plainInteractive && !currentPlan.rogue_one && currentPlan.ticket && (structuredBaseline || ((currentPlan.team === "requirements" || publicAnalyst) && currentPlan.mode === "analyze")) ? readTicketWorkflow(currentPlan.ticket) : null;
     if (pinned && !pinnedConfig) throw new JsonWorkflowError("WORKFLOW_SOURCE", "retained-resource-closure", "workflow-owner");
     if (pinnedConfig) { pinnedConfig.reread(); pinnedConfigRoot = pinnedConfig.materialize(deployDir); }
-    const primer = generatePrimer({ runtime: "pi", requirementsDocument: documentLaunch, ...(modeCapabilities?.resources ? { modeResources: modeCapabilities.resources } : {}), ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\ndeployment_runtime_limit: none\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    if (rogueConfig) rogueConfigRoot = rogueConfig.materialize(deploymentId);
+    const primer = generatePrimer({ runtime: "pi", ...(rogueConfig && rogueConfigRoot ? { rogueOneConfig: { root: rogueConfigRoot, read: (relative: string) => rogueConfig!.read(relative) }, skillsDir: join(rogueConfigRoot, "skills/global"), resolveFile: (relative: string) => { rogueConfig!.read(relative); return join(rogueConfigRoot!, relative); } } : {}), requirementsDocument: documentLaunch, ...(modeCapabilities?.resources ? { modeResources: modeCapabilities.resources } : {}), ...(pinned ? { workflow: workflowPrimerView(pinned) } : {}), ...(pinnedConfigRoot ? { configResourceRoot: pinnedConfigRoot, skillsDir: join(pinnedConfigRoot, "skills/global"), resolveFile: (relative: string) => join(pinnedConfigRoot!, pinnedConfig!.state.resources!.files.some(file => file.path === relative) ? relative : "__missing-retained-config-resource__") } : {}), teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\ndeployment_runtime_limit: none\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
       : primer;
@@ -1122,8 +1146,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: reason, exitCode: 1 });
     return { status: "failed", team: team.name, mode: plan.mode, deploymentId, reason };
   }
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, modeCapabilityBinding: plan.modeCapabilityBinding ? JSON.stringify(plan.modeCapabilityBinding) : undefined, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : readonlyProfile ? mode?.agents ?? team.agents.map(agent => agent.name) : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: documentLaunch ? documentSessionVersion(mode?.document_profile) : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
-    : plan.treehouse?.authority === "orchestrator" && !team.deploy_modes?.some((entry) => entry.id === "implement") ? structuredBaseline ? structuredLaunchNote(ORDINARY_NATIVE_EXECUTION_START, structuredBaseline.authority) : ORDINARY_NATIVE_EXECUTION_START : undefined });
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, modeCapabilityBinding: plan.modeCapabilityBinding ? JSON.stringify(plan.modeCapabilityBinding) : undefined, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? team.agents.filter(agent => !mode?.agents || mode.agents.includes(agent.name)).map(agent => agent.name) : readonlyProfile ? mode?.agents ?? team.agents.map(agent => agent.name) : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: rogueConfig?.note ?? (documentLaunch ? documentSessionVersion(mode?.document_profile) : advisoryLaunch ? ADVISORY_RUNTIME_VERSION : preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
+    : plan.treehouse?.authority === "orchestrator" && !team.deploy_modes?.some((entry) => entry.id === "implement") ? structuredBaseline ? structuredLaunchNote(ORDINARY_NATIVE_EXECUTION_START, structuredBaseline.authority) : ORDINARY_NATIVE_EXECUTION_START : undefined) });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     // The service authenticates durable terminal evidence, never a success-only
     // Boolean. Publish original outcome first and keep it even if handover blocks.
@@ -1356,6 +1380,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (structuredBaseline) rereadStructured();
     selectedTicketWorktree?.reread();
     retainedResume?.reread();
+    if (rogueConfig) rogueConfig.materialize(deploymentId);
     // Preflight/hooks can yield after the native start event. Do not spawn a
     // policy session if its committed selection changed during that interval.
     try { modeCapabilities?.assertCurrent(); }
@@ -1368,7 +1393,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       observedRuntimeFingerprint = readProcessFingerprint(pid);
       publishedPid = pid;
     };
-    const beforeRuntimeStart = modeCapabilities || dependencies.autoLaunch || retainedResume || (plainInteractive && !request.background) ? (pid: number): void => {
+    const beforeRuntimeStart = rogueConfig || modeCapabilities || dependencies.autoLaunch || retainedResume || (plainInteractive && !request.background) ? (pid: number): void => {
+      if (rogueConfig) rogueConfig.materialize(deploymentId);
       // The adapter awaits preflight and may await a stopped native child after
       // the earlier check. Reauthenticate synchronously at admission, directly
       // before the production gate releases that child into runtime code.

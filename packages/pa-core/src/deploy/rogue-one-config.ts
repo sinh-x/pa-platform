@@ -16,8 +16,9 @@ import { assertRepositoryIsolationResumeAvailable, readRecordedRuntimeSession } 
 const VERSION = "pa-rogue-one-config/v1", FILE = "rogue-one-config.json", PREFIX = `${VERSION}:`;
 const MAX_FILE = 1_048_576, MAX_TOTAL = 16 * MAX_FILE, MAX_FILES = 256, MAX_ARCHIVE = MAX_FILE;
 const hash = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex");
-type Cause = "selection" | "contract" | "resource" | "drift" | "snapshot" | "legacy" | "conflict";
+type Cause = "selection" | "contract" | "resource" | "drift" | "snapshot" | "legacy" | "conflict" | "route";
 const reasons: Record<Cause, string> = {
+  route: "This configured Rogue-One route has no qualified full-retention consumer. Only foreground PPA CLI is supported; OpenCode, background and API launch are unavailable.",
   selection: "The selected mode is missing, unknown or ambiguous.",
   contract: "Rogue-One supports only ticket-optional, profile-free interactive configuration; configured content cannot grant native authority.",
   resource: "The selected configuration resource closure is missing, unsafe, unsupported or exceeds its bounds.",
@@ -64,6 +65,19 @@ function references(from: string, value: string): { path: string; optional: bool
     const optional = match[1] === undefined;
     if (!result.has(relative) || !optional) result.set(relative, { path: relative, optional });
   }
+  // Root-relative config references also occur inside commands (for example
+  // `node scripts/check.mjs report.html`), not just whole-code-span links.
+  // Never silently omit such a required supporting file from retention.
+  for (const match of value.matchAll(/(?:^|[\s`"'(])((?:skills|teams|docs|primers|policies|contracts|scripts)\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)/gm)) {
+    const relative = path(match[1]!);
+    if (!result.has(relative)) result.set(relative, { path: relative, optional: true });
+  }
+  for (const match of value.matchAll(/^\s*\[[^\]\n]+\]:\s*<?([^\s>]+)>?/gm)) {
+    const target = match[1]!.split("#")[0]!;
+    if (!target || /^[a-z]+:|^\/|^#/.test(target)) continue;
+    const relative = path(/^(?:skills|teams|docs|primers|policies|contracts|scripts)\//.test(target) ? target : posix.normalize(posix.join(posix.dirname(from), target)));
+    result.set(relative, { path: relative, optional: false });
+  }
   if (from.endsWith(".html")) {
     if (/<script\b|\bon[a-z]+\s*=/i.test(value)) fail("resource");
     for (const match of value.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) {
@@ -88,9 +102,14 @@ function closure(team: TeamConfig, mode: DeployMode, repoKey: string, read: (rel
   const add = (relative: string) => pending.push({ path: path(relative), optional: false });
   const objective = mode.objective ?? team.objective;
   if (typeof objective !== "string") fail("contract");
-  if (!objective.includes("\n") && objective.endsWith(".md")) add(objective);
+  const objectiveFile = !objective.includes("\n") && objective.endsWith(".md");
+  if (objectiveFile) add(objective);
+  for (const value of [objectiveFile ? "" : objective, team.description, team.context?.organization, team.context?.notes, ...Object.values(team.variables ?? {})]) {
+    if (value) pending.push(...references("teams/rogue-one.yaml", value));
+  }
   for (const file of [...team.global_docs ?? [], ...mode.global_docs ?? [], ...mode.project_guides?.[repoKey] ?? []]) add(file);
   for (const agent of team.agents.filter(agent => !mode.agents || mode.agents.includes(agent.name))) {
+    pending.push(...references("teams/rogue-one.yaml", agent.role));
     if (agent.instruction) add(agent.instruction);
     if (agent.skill) add(agent.skill);
   }
@@ -151,12 +170,13 @@ export class RogueOneConfig {
   get note(): string { return `${PREFIX}${hash(this.raw)}`; }
   read(relative: string): string { return this.snapshot.files.find(file => file.path === path(relative))?.content ?? fail("resource"); }
   assertCurrent(): void { this.current(); }
-  static capture(context: RogueOneConfigContext, request: DeployRequest, selected: TeamConfig, runtimeConfig: EffectiveRuntimeConfig): RogueOneConfig {
+  static capture(context: RogueOneConfigContext, request: DeployRequest, selected: TeamConfig, runtimeConfig: EffectiveRuntimeConfig, observeResource?: (relative: string) => void): RogueOneConfig {
     try {
       const root = getPlatformHomeDir();
       if (!isAbsolute(root) || resolve(root) !== root || getTeamsDir() !== join(root, "teams") || getSkillsDir() !== join(root, "skills/global")) fail("contract");
       const observed = new Map<string, { fingerprint: string; content: string }>(), absent = new Set<string>(); let total = 0;
       const read = (relative: string, optional = false): string | null => {
+        path(relative); observeResource?.(relative);
         try {
           const file = physical(root, relative);
           const before = fingerprint(file), raw = readReviewEvidenceFile(file, MAX_FILE, "rogue-one selected configuration"), content = body(raw);

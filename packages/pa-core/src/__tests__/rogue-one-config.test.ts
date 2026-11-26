@@ -94,6 +94,7 @@ test("P1 unanchored and legacy sessions are not upgraded using current PAPC", ()
 test("P1 missing, unsupported, aliased and oversized dependencies fail closed", () => fixture(f => {
   const deep = join(f.config, "docs/deep.md"); rmSync(deep); rejected(f.capture);
   f.file("docs/deep.md", "[Script](../scripts/run.js)"); f.file("scripts/run.js", "import './dynamic.js'"); rejected(f.capture, "resource");
+  f.file("docs/deep.md", "Run `node scripts/run.js report.html`."); rejected(f.capture, "resource");
   rmSync(deep); symlinkSync(join(f.config, "docs/repository.md"), deep); rejected(f.capture);
   rmSync(deep); f.file("docs/deep.md", "x".repeat(1_048_577)); rejected(f.capture);
 }));

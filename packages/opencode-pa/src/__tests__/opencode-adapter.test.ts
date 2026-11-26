@@ -321,7 +321,7 @@ test("OPA generic deployment refuses native auto-draft before allocation or adap
   });
 });
 
-test("opa rogue-one reaches the normal hook/spawn seam with fixed bare evidence", async () => {
+test("opa rogue-one rejects the unqualified configured-retention route before hooks or spawn", async () => {
   await withOpaEnv(async (root, gitState) => {
     writeRogueOneTeamConfig(root);
     let installedPlan: SpawnOpts["executionPlan"];
@@ -333,23 +333,11 @@ test("opa rogue-one reaches the normal hook/spawn seam with fixed bare evidence"
     };
     const warnings: string[] = [];
     const result = await deployWithOpencode({ team: "rogue-one", mode: "implement", repo: "pa-platform", objective: "Direct work" }, adapter, { stderr: (line) => warnings.push(line) });
-    assert.equal(result.status, "success", result.reason);
-    assert.equal(result.mode, "rogue-one");
-    assert.equal(installedPlan, spawned?.executionPlan);
-    assert.equal(spawned?.executionPlan?.rogue_one, true);
-    assert.equal(spawned?.executionPlan?.invocation_channel, "cli");
-    assert.equal(spawned?.executionPlan?.mode, "rogue-one");
-    assert.equal(spawned?.executionPlan?.ticketRequired, false);
-    assert.equal(spawned?.env.PA_ROGUE_ONE, "1");
-    assert.equal(spawned?.env.PA_TICKET_ID, "");
-    assertNonLockingRepositoryAdmission(spawned!.executionPlan!, readFileSync(spawned!.primerPath, "utf8"));
-    assert.match(readFileSync(spawned!.primerPath, "utf8"), /ROGUE-ONE ACTIVE/);
-    assert.doesNotMatch(readFileSync(spawned!.primerPath, "utf8"), /configured workflow|configured objective/);
+    assert.equal(result.status, "failed");
+    assert.match(result.reason ?? "", /Only foreground PPA CLI is supported/);
+    assert.equal(installedPlan, undefined); assert.equal(spawned, undefined);
     assert.equal(gitState.readCommands().some((args) => args[0] === "status"), false);
-    assert.match(warnings.join("\n"), /supplied --mode is ignored/);
-    const started = getDeploymentEvents(result.deploymentId!)[0];
-    assert.equal(started?.rogue_one, true);
-    assert.equal(started?.invocation_channel, "cli");
+    assert.equal(warnings.length, 0);
   });
 });
 

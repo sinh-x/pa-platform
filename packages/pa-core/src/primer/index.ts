@@ -42,6 +42,8 @@ export interface GeneratePrimerOptions {
   ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
   toolReference?: ToolReference;
   rogueOne?: boolean;
+  /** Verified native content projection; not a capability or admission grant. */
+  rogueOneConfig?: { root: string; read(relative: string): string };
   invocationChannel?: DeploymentInvocationChannel;
   /** Derived pinned registry projection, never request/environment authority. Pi only. */
   workflow?: WorkflowPrimerView;
@@ -55,7 +57,8 @@ export interface GeneratePrimerOptions {
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
   assertSupportedRuntime(options.runtime);
-  if (options.rogueOne === true && isRogueOneTeam(options.teamConfig.name)) return generateRogueOnePrimer(options);
+  if (options.rogueOneConfig) options = { ...options, templateVars: { ...options.teamConfig.variables, ...options.templateVars } };
+  if (options.rogueOne === true && isRogueOneTeam(options.teamConfig.name) && !options.rogueOneConfig) return generateRogueOnePrimer(options);
   const mode = selectMode(options.teamConfig, options.mode);
   // Source/report composition grants no native authority. Require V2 capture
   // only for explicit native Analyst composition; production launch admission
@@ -68,7 +71,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       || !isDeepStrictEqual(mode?.capability_policy, binding.policy)) throw new ModeCapabilityError("CAPABILITY_BINDING");
   }
   const budget = options.modeResources ? selectedPrimerBudget(options.modeResources) : undefined;
-  const emitted = budget === undefined ? undefined : new Set<string>([mode?.objective ?? options.teamConfig.objective]);
+  const emitted = budget === undefined && !options.rogueOneConfig ? undefined : new Set<string>([mode?.objective ?? options.teamConfig.objective]);
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
   const skillsDir = options.modeResources ? resolve(options.modeResources.binding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
@@ -125,6 +128,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
       "Retained controlling state and uncertain effects cannot be bypassed through another package. This is capability context, not approval or installed qualification.",
       "",
     ] : []),
+    ...(options.rogueOneConfig ? ["## Retained Configuration", `Original selected configuration is projected at ${options.rogueOneConfig.root}. Resolve config-owned relative references inside that projection, relative to their original file. Never substitute live PAPC. This retains instructions, not native permission or current credentials.`, ""] : []),
     `## Objective`,
     objective,
     ``,
@@ -135,6 +139,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     `## Team`,
     demoteAuthoritativeAdditionalInstructionsHeading(options.teamConfig.description),
+    ...(options.rogueOneConfig && options.teamConfig.context ? [adaptContentForRuntime(demoteAuthoritativeAdditionalInstructionsHeading([options.teamConfig.context.organization, options.teamConfig.context.notes].filter(Boolean).join("\n\n")), options.runtime)] : []),
     ``,
     `## Agents`,
     renderAgents(agents, options, options.runtime, emitted),
@@ -148,6 +153,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `## Skills`,
     renderSkills(skills, skillsDir, options.runtime, options.modeResources, emitted),
     renderCapturedReferences(options, mode, budget !== undefined),
+    ...(options.rogueOne && isRogueOneTeam(options.teamConfig.name) ? ["## Rogue-One Audit Notice", rogueOneAuditNotice(options.invocationChannel ?? "cli")] : []),
   ].filter((part) => part !== "").join("\n");
   if (countAuthoritativeAdditionalInstructionsHeadings(body) !== 1) {
     throw new Error("Primer generation requires exactly one authoritative Additional Instructions heading.");
@@ -410,6 +416,7 @@ function countAuthoritativeAdditionalInstructionsHeadings(content: string): numb
 
 function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
   const rawObjective = mode?.objective ?? options.teamConfig.objective;
+  if (options.rogueOneConfig) return applyTemplateVars(!rawObjective.includes("\n") && rawObjective.endsWith(".md") ? options.rogueOneConfig.read(rawObjective) : rawObjective, options.templateVars ?? {});
   if (options.modeResources) return applyTemplateVars(options.modeResources.read(rawObjective), options.templateVars ?? {});
   if (!mode?.objective) return applyTemplateVars(rawObjective, options.templateVars ?? {});
 
@@ -462,11 +469,16 @@ function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptio
       const content = resolveInstruction(options, agent.instruction);
       lines.push("", `<instruction-file name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(content, runtime)), `</instruction-file>`);
     }
+    if (options.rogueOneConfig && agent.skill && !emitted?.has(agent.skill)) {
+      emitted?.add(agent.skill);
+      lines.push("", `<agent-skill name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(options.rogueOneConfig.read(agent.skill), runtime)), "</agent-skill>");
+    }
     return lines.join("\n");
   }).join("\n\n");
 }
 
 function resolveInstruction(options: GeneratePrimerOptions, instruction: string): string {
+  if (options.rogueOneConfig) return applyTemplateVars(options.rogueOneConfig.read(instruction), options.templateVars ?? {});
   if (options.modeResources) return applyTemplateVars(options.modeResources.read(instruction), options.templateVars ?? {});
   const resolved = options.resolveFile?.(instruction) ?? resolve(getPlatformHomeDir(), instruction);
   if (!existsSync(resolved)) return `(missing instruction: ${instruction})`;

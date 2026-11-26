@@ -6,6 +6,8 @@ import { nowUtc } from "../../time.js";
 import type { ApiRuntimeName } from "../../types.js";
 import type { CoreExecutionHooks } from "../../deploy/control.js";
 import { assertSupportedRuntime } from "../../deploy/runtime-config.js";
+import { RogueOneConfigError } from "../../deploy/rogue-one-config.js";
+import { queryReadonlyIsolationLineage } from "../../registry/index.js";
 import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, readRecordedRuntimeSession, RepositoryIsolationUnavailableError } from "../../deploy/repository-isolation.js";
 
 export type SessionStatus = "running" | "stopping";
@@ -320,10 +322,12 @@ export class SessionManager {
     try {
       const runtime = opts.runtime ?? DEFAULT_RUNTIME;
       assertRepositoryIsolationIngressAvailable([this.env, opts.env]);
+      if ([this.env, opts.env].some(env => env?.PA_TEAM === "rogue-one")) throw new RogueOneConfigError("route");
       const deployments = new Set([opts.deploymentId, this.env["PA_DEPLOYMENT_ID"], opts.env?.["PA_DEPLOYMENT_ID"]].filter((id): id is string => id !== undefined));
       for (const id of deployments) {
         if (!id) throw new RepositoryIsolationUnavailableError();
         assertRepositoryIsolationResumeAvailable(id, runtime);
+        if (queryReadonlyIsolationLineage(id, runtime).some(prior => prior.team === "rogue-one")) throw new RogueOneConfigError("route");
       }
       if (opts.sessionId !== undefined) {
         if (!isBoundedNativeSessionId(opts.sessionId)) throw new RepositoryIsolationUnavailableError();
@@ -331,6 +335,7 @@ export class SessionManager {
         if (origin) {
           if (origin.runtime !== runtime) throw new RepositoryIsolationUnavailableError();
           assertRepositoryIsolationIngressAvailable(origin.environments);
+          if (origin.environments.some(env => env.PA_TEAM === "rogue-one")) throw new RogueOneConfigError("route");
           for (const id of origin.deploymentIds) assertRepositoryIsolationResumeAvailable(id, runtime);
           if ([...deployments].some(id => !origin.deploymentIds.includes(id))) throw new RepositoryIsolationUnavailableError();
         } else {
@@ -338,7 +343,7 @@ export class SessionManager {
           for (const id of deployments) if (readRecordedRuntimeSession(id, `session-id-${runtime}.txt`) !== opts.sessionId) throw new RepositoryIsolationUnavailableError();
         }
       }
-    } catch { throw new RepositoryIsolationUnavailableError(); }
+    } catch (error) { if (error instanceof RogueOneConfigError) throw error; throw new RepositoryIsolationUnavailableError(); }
   }
 
   private createSession(opts: SessionSpawnOptions & { sessionId?: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
@@ -347,7 +352,7 @@ export class SessionManager {
     if (runtimeError) return { ok: false, error: runtimeError, limit: this.maxSessions };
     if (runtime !== DEFAULT_RUNTIME && !this.runtimes[runtime]) return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
     try { this.assertExecutionAvailable(opts); }
-    catch { return { ok: false, error: new RepositoryIsolationUnavailableError().message, limit: this.maxSessions }; }
+    catch (error) { return { ok: false, error: error instanceof RogueOneConfigError ? error.message : new RepositoryIsolationUnavailableError().message, limit: this.maxSessions }; }
     const newId = this.allocateId();
     const model = opts.model ?? this.defaultModel;
     const deploymentId = opts.deploymentId ?? `session-${newId}`;
