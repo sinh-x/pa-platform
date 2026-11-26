@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { SourceContentSecurityError } from "./source-content-security.js";
+import type { LocalSourceUnsupportedCause } from "./local-source-diagnostic.js";
 
 /** Descriptor mechanics input, NOT authenticated provenance or a public grant.
  * Only a fixed-build producer that itself executes the selected Pi may bind it
@@ -8,7 +9,7 @@ export interface SelectedPiDocumentBinding {
   readonly packageRoot: string;
   assertStable(): void;
 }
-const unsupported = (): never => { throw new SourceContentSecurityError("LOCAL_SOURCE_UNSUPPORTED_FILE"); };
+const unsupported = (cause: LocalSourceUnsupportedCause): never => { throw new SourceContentSecurityError("LOCAL_SOURCE_UNSUPPORTED_FILE", undefined, undefined, { cause }); };
 
 /** Pure finite scope: exact README, or a descendant of docs/examples. Neither
  * the store shape nor this membership check authenticates the selected host. */
@@ -16,13 +17,13 @@ export function assertSelectedPiDocumentPath(path: string, packageRoot: string):
   if (typeof packageRoot !== "string" || packageRoot.length > 4096
     || !/^\/nix\/store\/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+(?:\/[^/]+)*$/.test(packageRoot)
     || resolve(packageRoot) !== packageRoot || typeof path !== "string" || resolve(path) !== path
-    || path.includes("\0") || packageRoot.includes("\0")) unsupported();
+    || path.includes("\0") || packageRoot.includes("\0")) unsupported("selected-root");
   if (path === `${packageRoot}/README.md`) return;
   for (const name of ["docs", "examples"]) {
     const prefix = `${packageRoot}/${name}/`;
     if (path.startsWith(prefix) && path.length > prefix.length) return;
   }
-  unsupported();
+  unsupported("selected-scope");
 }
 
 /** Multi-link eligibility is text only: complete fatal UTF-8 decoding; reject
@@ -34,9 +35,9 @@ export function assertImmutableDocumentText(bytes: Uint8Array): void {
   const ascii = prefix.toString("latin1");
   if (ascii.startsWith("GIF") || ascii.startsWith("BM")
     || ascii.startsWith("\x89PNG\r\n\x1a\n") || prefix[0] === 0xff && prefix[1] === 0xd8
-    || ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") unsupported();
+    || ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") unsupported("text-image");
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { return unsupported(); }
-  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/u.test(text)) unsupported();
+  catch { return unsupported("text-utf8"); }
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/u.test(text)) unsupported("text-controls");
 }

@@ -117,6 +117,44 @@ reference; only that pure formatter's source pin is renewed for this correction.
 Focused owner/REST/native/CLI tests are rerun after it; full workspace qualification
 remains incomplete. No broad-phase or PAP-352 completion is asserted.
 
+## Follow-up: unsupported local file diagnostics and affected path
+
+The reader-specific follow-up implements `LOCAL_SOURCE_UNSUPPORTED_FILE`, not a
+blanket permission change for Nix. Existing file/path, descriptor, selected-host,
+immutable metadata, text, stability and cleanup checks retain their order/verdict.
+The deciding branches now preserve finite original observations: nonregular file,
+ordinary multi-link count without a selected binding, selected multi-link alias,
+immutable ownership/link/mode, selected root/scope, image signature, invalid UTF-8
+and forbidden controls. A repeated scope check after a payload read must not claim
+that reading never started. No facts are inferred from arbitrary exceptions.
+
+For this code, the human headline includes the **requested file path**, not a
+resolved target or offending ancestor path, when the original path guards have
+established safe disclosure. The guard reuses its loaded policy for a pure
+content-pattern disclosure check. An opaque in-memory reference prevents raw
+request fields from masquerading as a checked display path; it is neither read
+permission nor a native identity/authority ledger. Controls, bidi/format characters
+and colons are escaped; a reference exceeding 512 UTF-16 units is withheld whole,
+not truncated into another apparent filename. Missing/private/unadmitted references
+explicitly say “File path withheld.” No new path resolution/probe or policy load is
+performed by formatting. Rechecks refresh disclosure only through their original
+path checks, never reusing it after an earlier failed scope check.
+
+The default unknown diagnostic now explicitly says the exact admission predicate
+is unknown, rather than listing possible causes as if observed. Error codes,
+enumerable Error fields and the native `failureClass` behavior are unchanged;
+finite unsupported facts are held privately. The constructor's optional internal
+observation is not a tool argument or a new response field. No alternate-reading,
+permission-repair or copying workaround is recommended.
+
+The three existing source/immutable-owner pins are renewed after branch/contract
+reconciliation, adding only their pure `local-source-diagnostic.ts` dependency.
+Interaction forms, effects, tool selection, null native bindings and unproven
+installed availability remain unchanged. Real ordinary-file tests and inert
+virtual descriptor tests cover cause/phase/disclosure/cleanup; virtual selected
+metadata is not genuine installed selected-host qualification. The historical
+unspecified Nix documents remain undiagnosed.
+
 ## Completion rule
 
 Generated discovery, semantic attribution, branch/route tests, installed candidate

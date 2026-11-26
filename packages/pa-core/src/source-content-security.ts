@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { localSourceDiagnosticReference, normalizeUnsupportedObservation, renderUnsupportedLocalSource, type LocalSourceDiagnosticReference, type LocalSourceUnsupportedObservation } from "./local-source-diagnostic.js";
 import { isAbsolute, resolve } from "node:path";
 import { isBlockedFilePath } from "./safety-policy.js";
 import { SecurityPolicyError } from "./security-policy.js";
@@ -29,7 +30,10 @@ const localSourceFailureReasons = {
 export type LocalSourceFailureClass = keyof typeof localSourceFailureReasons;
 export class SourceContentSecurityError extends Error {
   readonly failureClass?: LocalSourceFailureClass;
-  constructor(readonly code: SourceContentCode, failureClass?: LocalSourceFailureClass, policyError?: SecurityPolicyError) {
+  #unsupportedObservation?: LocalSourceUnsupportedObservation;
+  get unsupportedObservation(): LocalSourceUnsupportedObservation | undefined { return this.#unsupportedObservation; }
+  constructor(readonly code: SourceContentCode, failureClass?: LocalSourceFailureClass, policyError?: SecurityPolicyError, observation?: LocalSourceUnsupportedObservation) {
+    const unsupported = code === "LOCAL_SOURCE_UNSUPPORTED_FILE" ? normalizeUnsupportedObservation(observation) : undefined;
     const reasons: Record<SourceContentCode, string> = {
       LOCAL_SOURCE_UNAVAILABLE: "A complete stable local read could not be established; the source may be absent or changed, or the read interrupted. No unexamined content is delivered.",
       LOCAL_SOURCE_UNSUPPORTED_FILE: "The source is not a supported regular file or qualified selected-Pi document. Ordinary reads require a regular file with exactly one link. Multi-link text is limited to finite selected-Pi documentation with its native selected-host binding and immutable-file checks. No content is delivered.",
@@ -47,8 +51,9 @@ export class SourceContentSecurityError extends Error {
     const resume = range
       ? "Request a valid line range; source admission, stability and complete content checks run again. No source or policy change is needed solely to correct the range."
       : "Retry only after the owner establishes permitted source access and a working policy. If the underlying tool may already have changed state, inspect that same operation first; withholding output is not proof that its effect was absent.";
-    super(policyError instanceof SecurityPolicyError ? policyError.message : `${range ? "The requested lines were not returned." : "Local content is unavailable through this check."}\nCondition: The requested local content cannot be delivered.\nSource: Source-aware local content security (${code}${observed ? `; ${observed}` : ""}).\nReason: ${observed ? localSourceFailureReasons[observed] : reasons[code]}\nCorrection: ${correction}\nResume Action: ${resume}`);
+    super(policyError instanceof SecurityPolicyError ? policyError.message : code === "LOCAL_SOURCE_UNSUPPORTED_FILE" ? renderUnsupportedLocalSource(unsupported) : `${range ? "The requested lines were not returned." : "Local content is unavailable through this check."}\nCondition: The requested local content cannot be delivered.\nSource: Source-aware local content security (${code}${observed ? `; ${observed}` : ""}).\nReason: ${observed ? localSourceFailureReasons[observed] : reasons[code]}\nCorrection: ${correction}\nResume Action: ${resume}`);
     this.failureClass = observed;
+    this.#unsupportedObservation = unsupported;
   }
 }
 const fail = (code: SourceContentCode): never => { throw new SourceContentSecurityError(code); };
@@ -62,7 +67,7 @@ function matches(regex: RegExp, value: string): boolean {
 }
 /** Call BEFORE opening a local file. Check logical and physical identity, not
  * just content or the caller's path spelling. Missing allowed files stay missing. */
-export function assertLocalFileSource(path: string, patterns?: SensitivePatternSet): void {
+export function assertLocalFileSource(path: string, patterns?: SensitivePatternSet): LocalSourceDiagnosticReference | undefined {
   if (typeof path !== "string" || !path || path.length > 4096 || path.includes("\0") || !isAbsolute(path)) return fail("CONTENT_SOURCE_INVALID");
   const checked = patternsOrFail(patterns);
   const check = (candidate: string) => {
@@ -77,6 +82,7 @@ export function assertLocalFileSource(path: string, patterns?: SensitivePatternS
     if (error instanceof SourceContentSecurityError) throw error;
     throw new SourceContentSecurityError("LOCAL_CONTENT_POLICY", undefined, error instanceof SecurityPolicyError ? error : undefined);
   }
+  return localSourceDiagnosticReference(path, checked);
 }
 export interface SourceContentProjection {
   readonly source: SecurityContentSource["kind"];
