@@ -62,6 +62,7 @@ for (const binaryName of ["pa-core", "ppa", "opa"]) test(`PAP-334 ${binaryName} 
   const effects: string[] = [];
   const before = snapshot(root);
   for (const [team, mode] of protectedSelections) for (const flags of [[], ["--background"], ["--resume", "d-private"], ["--force"]]) {
+    if (binaryName === "ppa" && team === "analyst" && mode === "analyze" && flags.length === 0) continue; // PAP-347 ordinary route tested through actual adapter separately.
     const stdout: string[] = [], stderr: string[] = [];
     assert.equal(await runCoreCommand(["deploy", team, "--mode", mode, "--repo", "/PRIVATE_INPUT/missing", "--ticket", "EX-404", "--objective", privateInput, ...flags], {
       binaryName, io: { stdout: line => stdout.push(line), stderr: line => stderr.push(line) }, hooks: {
@@ -83,14 +84,15 @@ for (const binaryName of ["pa-core", "ppa", "opa"]) test(`PAP-334 ${binaryName} 
 
 for (const runtime of ["pi", "opencode"] as const) test(`PAP-334 direct ${runtime} launcher rejects protected selections before prompt, preflight and runtime effects`, () => fixture(async root => {
   const effects: string[] = [], adapter = forbiddenAdapter(runtime, effects), before = snapshot(root);
-  for (const [team, mode] of protectedSelections) for (const controls of [{}, { background: true }, { resume: "d-private" }, { force: true }]) {
+  for (const [team, mode] of protectedSelections) for (const controls of [{}, { background: true }, { resume: "d-private" }, { force: true }, { invocationChannel: "api" as const }, { ticketWorktree: true }]) {
+    if (runtime === "pi" && team === "analyst" && mode === "analyze" && Object.keys(controls).length === 0) continue;
     const request = { team, mode, repo: "/PRIVATE_INPUT/missing", ticket: "EX-404", objective: privateInput, ...controls };
     const result = runtime === "pi" ? await deployWithPi(request, adapter) : await deployWithOpencode(request, adapter);
     assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined); assertBlocker(result.reason);
     assert.deepEqual(snapshot(root), before);
   }
   if (runtime === "pi") {
-    const stopped = await createPiHooks(adapter).deployPreflight!({ team: "analyst", mode: "analyze" });
+    const stopped = await createPiHooks(adapter).deployPreflight!({ team: "analyst-other", mode: "investigate" });
     assertBlocker(stopped?.reason);
   }
   assert.deepEqual(effects, []);
