@@ -10,7 +10,7 @@ import { validateReviewCheckoutCorrelationEvidence, type ReviewCheckoutCorrelati
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
 import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryBranchTransitionPolicy, RepositoryGitSnapshot } from "./repository-admission.js";
 import type { PaEnvKey } from "../primer/index.js";
-import { isRogueOneTeam, ROGUE_ONE_MODE, type DeploymentInvocationChannel } from "./rogue-one.js";
+import { isRogueOneTeam, type DeploymentInvocationChannel } from "./rogue-one.js";
 
 export interface ExecutionPlanSkill {
   name: string;
@@ -145,17 +145,18 @@ export function withAuthoritativeRepositoryAdmission(
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
   assertSupportedRuntime(options.runtime);
   if (options.request.runtime !== undefined) assertMatchingRuntime(options.request.runtime, options.runtime);
+  if (isRogueOneTeam(options.request.team) !== isRogueOneTeam(options.teamConfig.name)) throw new DeployModeSelectionError("execution plan");
   const rogueOne = isRogueOneTeam(options.request.team) && isRogueOneTeam(options.teamConfig.name);
   const mode = resolveDeployMode(options.teamConfig, options.request.mode);
-  if (!rogueOne && options.mode !== undefined && options.mode.id !== mode?.id) {
+  if (options.mode !== undefined && options.mode.id !== mode?.id) {
     throw new DeployModeSelectionError("execution plan");
   }
   const plainPrior = assertDeployResumeMode(options.teamConfig, options.request.resume, options.request.ticketWorktree ? undefined : mode);
-  const modeName = rogueOne ? ROGUE_ONE_MODE : mode?.id ?? "default";
+  const modeName = mode?.id ?? "default";
   const invocationChannel: DeploymentInvocationChannel = options.request.invocationChannel ?? "cli";
   const capabilityBinding = options.modeCapabilityBinding ? parseModeCapabilityBinding(options.modeCapabilityBinding) : undefined;
   const readonlyProfile = mode?.document_profile === READONLY_DOCUMENT_PROFILE;
-  const plainInteractive = isPlainInteractiveMode(mode) && !options.request.ticketWorktree && !options.treehouse && !options.reviewCheckout && !options.ticketWorktreeSelection;
+  const plainInteractive = !rogueOne && isPlainInteractiveMode(mode) && !options.request.ticketWorktree && !options.treehouse && !options.reviewCheckout && !options.ticketWorktreeSelection;
   if (options.teamConfig.deploy_modes?.some(entry => entry.document_profile === READONLY_DOCUMENT_PROFILE) && !readonlyProfile) throw new ModeCapabilityError("CAPABILITY_PROFILE");
   if (readonlyProfile && (rogueOne || capabilityBinding?.schemaVersion !== "pa-mode-capability-binding/v3" || options.request.force || options.allowDirtyInheritedBorrow
     || options.runtime !== "pi" || !modeCapabilityRouteMatches(capabilityBinding, options.teamConfig.name, modeName))) throw new ModeCapabilityError("CAPABILITY_PROFILE");
@@ -182,7 +183,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   const skillsDir = hasModeResources(capabilityBinding) ? resolve(capabilityBinding.configRoot, "skills/global") : options.skillsDir ?? getSkillsDir();
   // V3 skill bodies (including references) are captured in the primer. Do not
   // hand mutable paths to Pi's independent skill loader; the adapter is unchanged.
-  const skills = (rogueOne || readonlyProfile ? [] : mode?.skills ?? []).map((skill) => {
+  const skills = (readonlyProfile ? [] : mode?.skills ?? []).map((skill) => {
     const resource = `skills/global/${skill.name}/SKILL.md`;
     const path = capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? resolve(capabilityBinding.configRoot, resource) : resolve(skillsDir, skill.name, "SKILL.md");
     if (capabilityBinding?.schemaVersion === "pa-mode-capability-binding/v2" ? !capabilityBinding.resources.some(file => file.path === resource) : !existsSync(path)) {
@@ -194,7 +195,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
   }
-  const branchTransitionPolicy = !plainInteractive && options.runtime === "pi" && options.request.ticket
+  const branchTransitionPolicy = !rogueOne && !plainInteractive && options.runtime === "pi" && options.request.ticket
     ? resolveBranchTransitionPolicy(repository.repo, options.request.ticket)
     : undefined;
   const repositoryAdmission = resolveRepositoryAdmissionEvidence({
@@ -295,12 +296,10 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(rogueOne ? { rogue_one: true as const } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
-    objective: rogueOne
-      ? options.request.objective ?? "No user objective was provided."
-      : options.request.objective ?? mode?.objective ?? options.teamConfig.objective,
+    objective: options.request.objective ?? mode?.objective ?? options.teamConfig.objective,
     ...(options.request.objective ? { userObjectiveOverride: options.request.objective } : {}),
     skills: Object.freeze(skills),
-    memoryDocuments: Object.freeze(rogueOne ? [] : [
+    memoryDocuments: Object.freeze([
       ...(options.teamConfig.global_docs ?? []),
       ...(mode?.global_docs ?? []),
       ...(mode?.project_guides?.[repository.repoKey] ?? []),

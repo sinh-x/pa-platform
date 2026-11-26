@@ -181,6 +181,12 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** Existing agent skill names and explicit config-owned Markdown paths share
+ * one content locator. Resource owners still validate membership and paths. */
+export function agentSkillResource(skill: string): string {
+  return skill.endsWith(".md") ? skill : `skills/global/${skill}/SKILL.md`;
+}
+
 function collectTeamFileReferences(teamConfig: TeamConfig): Array<{ context: string; reference: string; kind: MissingTeamSkillReference["kind"] }> {
   const refs: Array<{ context: string; reference: string; kind: MissingTeamSkillReference["kind"] }> = [];
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -24,6 +24,7 @@ import { NIXOS_BASELINE_VERSION, NIXOS_APPROVAL_VERSION, NIXOS_TOOLS, nixosTuple
 import { authorizePiReviewSelection, piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent, withPiReviewCandidateAtMatrixBoundary } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
+import { RogueOneConfig, RogueOneConfigError, SecurityPolicyError } from "@pa-platform/pa-core";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { recordPiProcessIdentity } from "../process-identity.js";
@@ -975,19 +976,67 @@ test("retained adapter rejects invalid selection and opaque recorded runtime bef
   });
 });
 
+test("PAP-349 public Pi handlers preserve fixed required-policy guidance without wrapping or runtime effects", async (t) => {
+  // Fresh-process packaging tests exercise the real missing/invalid loader. Here
+  // the typed owner failure isolates its propagation through both public seams.
+  for (const category of ["unavailable", "invalid"] as const) await withPiEnv(async (root) => {
+    writeRogueOneTeamConfig(root);
+    const expected = new SecurityPolicyError(category).message;
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; } });
+    try {
+      t.mock.method(RogueOneConfig, "capture", () => { throw new RogueOneConfigError("policy", new SecurityPolicyError(category)); });
+      const result = await deployWithPi({ team: "rogue-one", mode: "direct" }, adapter);
+      assert.equal(result.status, "failed"); assert.equal(result.reason, expected); assert.equal(effects, 0);
+      t.mock.restoreAll();
+      const id = "d-349aaa";
+      appendRegistryEvent({ deployment_id: id, event: "started", timestamp: new Date().toISOString(), team: "rogue-one", mode: "direct", rogue_one: true, runtime: "pi", binary: "ppa" });
+      t.mock.method(RogueOneConfig, "resume", () => { throw new RogueOneConfigError("policy", new SecurityPolicyError(category)); });
+      const stopped = await createPiHooks(adapter).deployPreflight!({ team: "rogue-one", mode: "direct", resume: id });
+      assert.equal(stopped?.reason, expected); assert.equal(effects, 0);
+      assert.ok(expected.length <= 2000);
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.equal(expected.split(label).length - 1, 1);
+    } finally { t.mock.restoreAll(); }
+  });
+});
+
 function writeRogueOneTeamConfig(root: string): void {
+  mkdirSync(join(root, "docs"), { recursive: true });
+  mkdirSync(join(root, "skills/global/rogue-fixture"), { recursive: true });
+  writeFileSync(join(root, "docs/shared.md"), "Rogue shared guide fixture");
+  writeFileSync(join(root, "docs/agent.md"), "Rogue selected agent fixture");
+  writeFileSync(join(root, "skills/global/rogue-fixture/SKILL.md"), "Rogue selected skill fixture\n[Support](support.md)");
+  writeFileSync(join(root, "skills/global/rogue-fixture/support.md"), "Original skill support fixture");
   writeFileSync(join(root, "teams", "rogue-one.yaml"), [
     "name: rogue-one",
-    "description: configured workflow must be omitted",
+    "description: configured team fixture",
     "default_mode: direct",
-    "objective: configured objective must be omitted",
-    "agents: []",
+    "objective: configured objective fixture",
+    "global_docs: [docs/shared.md]",
+    "agents:",
+    "  - name: selected-agent",
+    "    role: selected role",
+    "    instruction: docs/agent.md",
+    "    skill: rogue-fixture",
+    "  - name: unselected-agent",
+    "    role: unselected role",
+    "    instruction: docs/missing-unselected.md",
     "deploy_modes:",
     "  - id: direct",
     "    label: Direct",
+    "    mode_type: interactive",
+    "    agents: [selected-agent]",
+    "    global_docs: [docs/shared.md]",
+    "    skills: [{name: rogue-fixture, inject-as: reference}]",
+    "    provider: openai",
+    "    model: openai/gpt-6.2-sol",
+    "    require_ticket: false",
+    "  - id: alternative",
+    "    label: Alternative",
+    "    mode_type: interactive",
+    "    agents: []",
     "    provider: openai",
     "    model: openai/gpt-6.1-sol",
-    "    require_ticket: true",
   ].join("\n"));
 }
 
@@ -1067,7 +1116,7 @@ async function startHeldOrchestrator(ticket = "PAP-198"): Promise<{
   return { opts: opts!, release, result };
 }
 
-test("ppa rogue-one reaches the normal hook/spawn seam with fixed bare evidence", async () => {
+test("ppa rogue-one reaches the hook/spawn seam with captured configured content and native exception", async () => {
   await withPiEnv(async (root, gitState) => {
     writeRogueOneTeamConfig(root);
     let installedPlan: SpawnOpts["executionPlan"];
@@ -1077,9 +1126,9 @@ test("ppa rogue-one reaches the normal hook/spawn seam with fixed bare evidence"
       onSpawn: (opts) => { spawned = opts; },
     });
     const warnings: string[] = [];
-    const result = await deployWithPi({ team: "rogue-one", mode: "implement", repo: "pa-platform", objective: "Direct work" }, adapter, { stderr: (line) => warnings.push(line) });
+    const result = await deployWithPi({ team: "rogue-one", mode: "direct", repo: "pa-platform", objective: "Direct work" }, adapter, { stderr: (line) => warnings.push(line) });
     assert.equal(result.status, "success");
-    assert.equal(result.mode, "rogue-one");
+    assert.equal(result.mode, "direct");
     assert.equal(installedPlan, spawned?.executionPlan);
     assert.equal(spawned?.executionPlan?.rogue_one, true);
     assert.equal(spawned?.executionPlan?.invocation_channel, "cli");
@@ -1088,11 +1137,167 @@ test("ppa rogue-one reaches the normal hook/spawn seam with fixed bare evidence"
     assert.equal(spawned?.executionPlan?.repositoryAdmission.ownershipIntent, "none");
     assert.equal(gitState.readCommands().some((args) => args[0] === "status"), false);
     assert.match(readFileSync(spawned!.primerPath, "utf8"), /ROGUE-ONE ACTIVE/);
-    assert.doesNotMatch(readFileSync(spawned!.primerPath, "utf8"), /configured workflow|configured objective/);
-    assert.match(warnings.join("\n"), /supplied --mode is ignored/);
+    const primer = readFileSync(spawned!.primerPath, "utf8");
+    assert.match(primer, /configured objective fixture/); assert.match(primer, /Rogue selected agent fixture/); assert.match(primer, /Rogue selected skill fixture/);
+    assert.doesNotMatch(primer, /unselected role|missing-unselected/);
+    assert.equal(primer.split("Rogue shared guide fixture").length - 1, 1);
+    assert.equal(spawned?.env.PA_PROVIDER, "openai-codex"); assert.equal(spawned?.env.PA_MODEL, "gpt-6.2-sol");
+    assert.equal(spawned?.env.PA_MODE, "direct"); assert.equal(spawned?.executionPlan?.skills.length, 1);
+    assert.match(spawned!.executionPlan!.skills[0]!.path, /rogue-one-config\/skills\/global\/rogue-fixture\/SKILL.md$/);
+    assert.equal(warnings.length, 0);
     const started = getDeploymentEvents(result.deploymentId!)[0];
     assert.equal(started?.rogue_one, true);
     assert.equal(started?.invocation_channel, "cli");
+    assert.deepEqual(started?.agents, ["selected-agent"]); assert.match(started?.note ?? "", /^pa-rogue-one-config\/v1:/);
+  });
+});
+
+test("PAP-349 rogue-one selection is configuration-causal and complete CLI pair wins", async () => {
+  await withPiEnv(async (root) => {
+    writeRogueOneTeamConfig(root); const seen: SpawnOpts[] = [];
+    const adapter = stubAdapter({ onSpawn: opts => { seen.push(opts); } });
+    assert.equal((await deployWithPi({ team: "rogue-one", repo: "pa-platform" }, adapter)).status, "success");
+    assert.equal(seen.at(-1)?.env.PA_MODEL, "gpt-6.2-sol");
+    assert.equal((await deployWithPi({ team: "rogue-one", mode: "alternative", repo: "pa-platform" }, adapter)).status, "success");
+    assert.equal(seen.at(-1)?.env.PA_MODE, "alternative"); assert.equal(seen.at(-1)?.env.PA_MODEL, "gpt-6.1-sol");
+    const file = join(root, "teams/rogue-one.yaml"); writeFileSync(file, readFileSync(file, "utf8").replace("default_mode: direct", "default_mode: alternative"));
+    assert.equal((await deployWithPi({ team: "rogue-one", repo: "pa-platform" }, adapter)).status, "success");
+    assert.equal(seen.at(-1)?.env.PA_MODE, "alternative");
+    assert.equal((await deployWithPi({ team: "rogue-one", repo: "pa-platform", provider: "openai", model: "openai/gpt-6.2-sol" }, adapter)).status, "success");
+    assert.equal(seen.at(-1)?.env.PA_MODEL, "gpt-6.2-sol");
+    const activity = readFileSync(join(root, "deployments", seen.at(-1)!.deployId, "activity.jsonl"), "utf8"); assert.match(activity, /"resolution":"cli"/);
+  });
+});
+
+test("PAP-349 rogue-one CLI resume uses all original resources after live team/guide/skill deletion", async () => {
+  await withPiEnv(async (root, gitState) => {
+    writeRogueOneTeamConfig(root); let fresh: SpawnOpts | undefined, resumed: SpawnOpts | undefined;
+    const adapter = stubAdapter({ onSpawn: opts => { fresh = opts; }, onResume: opts => { resumed = opts; } });
+    const initial = await deployWithPi({ team: "rogue-one", repo: "pa-platform", objective: "Original user work", timeout: 60 }, adapter);
+    assert.equal(initial.status, "success", initial.reason); assert.ok(fresh);
+    for (const directory of ["teams", "docs", "skills"]) rmSync(join(root, directory), { recursive: true });
+    const errors: string[] = [];
+    const code = await runCoreCommand(["deploy", "rogue-one", "--resume", initial.deploymentId!, "--repo", "pa-platform"], { binaryName: "ppa", hooks: createPiHooks(adapter), io: { stdout: () => {}, stderr: value => errors.push(value) } });
+    assert.equal(code, 0, errors.join("\n")); assert.ok(resumed);
+    assert.equal(resumed.env.PA_MODEL, "gpt-6.2-sol"); assert.equal(resumed.env.PA_MODE, "direct");
+    assert.equal(resumed.executionPlan?.timeoutSeconds, 60);
+    const primer = readFileSync(resumed.primerPath, "utf8");
+    for (const marker of ["Original user work", "configured objective fixture", "Rogue shared guide fixture", "Rogue selected agent fixture"]) assert.ok(primer.includes(marker), marker);
+    assert.equal(readFileSync(join(resumed.executionPlan!.skills[0]!.path, "../support.md"), "utf8"), "Original skill support fixture");
+    assert.equal(gitState.readCommands().some(args => args[0] === "status"), false);
+  });
+});
+
+for (const original of ["valid", "legacy", "tampered", "identity-tampered"] as const) {
+  test(`PAP-349 ${original} native Rogue-One cannot resume as a same-mode helper before config or effects`, async t => {
+    await withPiEnv(async root => {
+      writeRogueOneTeamConfig(root);
+      let id: string;
+      if (original === "legacy") {
+        id = "d-349abc";
+        mkdirSync(getDeployPaths(id).deployDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(getDeployPaths(id).deployDir, "session-id-pi.txt"), "legacy-fixture-session", { mode: 0o600 });
+        appendRegistryEvent({ deployment_id: id, team: "rogue-one", mode: "direct", rogue_one: true, runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+      } else {
+        const initial = await deployWithPi({ team: "rogue-one", repo: "pa-platform" }, stubAdapter({}));
+        assert.equal(initial.status, "success", initial.reason); assert.ok(initial.deploymentId);
+        id = initial.deploymentId;
+        const archive = join(getDeployPaths(id).deployDir, "rogue-one-config.json");
+        if (original === "tampered") {
+          chmodSync(archive, 0o600); writeFileSync(archive, `${readFileSync(archive, "utf8")} `); chmodSync(archive, 0o400);
+        } else if (original === "identity-tampered") {
+          getDb().prepare("UPDATE deployments SET team = ? WHERE deployment_id = ?").run("helper", id);
+        }
+      }
+      const blocked = original === "identity-tampered" ? /REPOSITORY_ISOLATION_UNAVAILABLE/ : /continuation request conflicts/;
+      for (const modeType of ["work", "interactive"] as const) {
+        writeFileSync(join(root, "teams/helper.yaml"), `name: helper\ndescription: fixture\nobjective: Help\nagents: []\ndefault_mode: direct\ndeploy_modes:\n  - id: direct\n    label: Direct\n    mode_type: ${modeType}\n`);
+        const effects: string[] = [];
+        const adapter = stubAdapter({ preflight: async () => { effects.push("preflight"); }, onInstall: () => effects.push("hooks"), onDescribe: () => effects.push("tools"),
+          onSpawn: () => effects.push("spawn"), onResume: () => effects.push("resume") });
+        adapter.allocateSessionId = () => { effects.push("session-allocation"); return "forbidden"; };
+        const dependencies: PiDeployDependencies = { observeOperation: operation => effects.push(operation) };
+        const start = getDeploymentEvents(id); closeDb();
+        const registry = readFileSync(join(root, "registry.db")), deployments = readdirSync(join(root, "deployments"));
+        const archive = join(getDeployPaths(id).deployDir, "rogue-one-config.json");
+        const retainedBytes = existsSync(archive) ? readFileSync(archive) : undefined;
+        let configReads = 0;
+        const originalRead = fs.readFileSync;
+        const read = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+          if (String(args[0]).startsWith(join(root, "teams") + "/")) configReads++;
+          return originalRead(...args);
+        });
+        syncBuiltinESMExports();
+        try {
+          const request = { team: "helper", mode: "direct", repo: "pa-platform", resume: id };
+          const result = await deployWithPi(request, adapter, undefined, dependencies);
+          assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+          assert.match(result.reason ?? "", blocked);
+          const preflight = await createPiHooks(adapter, dependencies).deployPreflight?.(request);
+          assert.match(preflight?.reason ?? "", blocked);
+          const opa = await deployWithOpencode(request, { ...adapter, name: "opencode", sessionFileName: "session-id-opencode.txt" });
+          assert.equal(opa.status, "failed"); assert.equal(opa.deploymentId, undefined);
+          assert.match(opa.reason ?? "", blocked);
+          assert.equal(configReads, 0, "no current-team or retained workflow config fallback");
+        } finally { read.mock.restore(); syncBuiltinESMExports(); }
+        // The core CLI has a separate static team-selection read before this
+        // adapter's preflight. It must still reject before allocation or start.
+        const errors: string[] = [];
+        const code = await runCoreCommand(["deploy", "helper", "--mode", "direct", "--resume", id, "--repo", "pa-platform"], {
+          binaryName: "ppa", hooks: createPiHooks(adapter, dependencies), io: { stdout: () => {}, stderr: value => errors.push(value) },
+        });
+        const cliBlocker = modeType === "interactive" && original !== "identity-tampered" ? /deployment mode selection rejected/ : blocked;
+        assert.equal(code, 1); assert.match(errors.join("\n"), cliBlocker);
+        assert.deepEqual(effects, []);
+        closeDb();
+        assert.deepEqual(readFileSync(join(root, "registry.db")), registry);
+        assert.deepEqual(readdirSync(join(root, "deployments")), deployments);
+        assert.deepEqual(getDeploymentEvents(id), start);
+        if (retainedBytes) assert.deepEqual(readFileSync(archive), retainedBytes);
+      }
+    });
+  });
+}
+
+test("PAP-349 non-Rogue originals cannot be relabelled Rogue-One and protected isolation retains priority", async () => {
+  for (const team of ["helper", "analyst"] as const) await withPiEnv(async root => {
+    const id = "d-349abc";
+    mkdirSync(getDeployPaths(id).deployDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(getDeployPaths(id).deployDir, "session-id-pi.txt"), "original-fixture-session", { mode: 0o600 });
+    appendRegistryEvent({ deployment_id: id, team, mode: "direct", event: "started", timestamp: new Date().toISOString(), runtime: "pi" });
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => effects++, onDescribe: () => effects++, onSpawn: () => effects++, onResume: () => effects++ });
+    const before = readdirSync(join(root, "deployments"));
+    const result = await deployWithPi({ team: "rogue-one", repo: "missing-repository", resume: id, background: true }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.match(result.reason ?? "", team === "analyst" ? /REPOSITORY_ISOLATION_UNAVAILABLE/ : /continuation request conflicts/);
+    assert.equal(effects, 0); assert.deepEqual(readdirSync(join(root, "deployments")), before);
+  });
+});
+
+test("PAP-349 rogue-one rejects bad selection, pair, authority and unsupported consumers before runtime spawn", async () => {
+  await withPiEnv(async root => {
+    writeRogueOneTeamConfig(root); let effects = 0;
+    const adapter = stubAdapter({ onSpawn: () => { effects++; }, onResume: () => { effects++; } });
+    for (const patch of [{ mode: "unknown" }, { provider: "openai" }, { provider: "unsupported", model: "other" }, { provider: "openai", model: "other/model" }, { background: true }, { invocationChannel: "agent-api" as const }]) {
+      const result = await deployWithPi({ team: "rogue-one", repo: "pa-platform", ...patch }, adapter); assert.equal(result.status, "failed", JSON.stringify(patch));
+    }
+    const file = join(root, "teams/rogue-one.yaml");
+    writeFileSync(join(root, "teams/near-match.yaml"), readFileSync(file, "utf8"));
+    assert.equal((await deployWithPi({ team: "near-match", repo: "pa-platform" }, adapter)).status, "failed");
+    writeFileSync(file, readFileSync(file, "utf8").replace("require_ticket: false", "require_ticket: true"));
+    assert.equal((await deployWithPi({ team: "rogue-one", repo: "pa-platform" }, adapter)).status, "failed");
+    assert.equal(effects, 0);
+  });
+});
+
+test("PAP-349 rogue-one preflight source drift rejects without spawning or replacing captured bytes", async () => {
+  await withPiEnv(async root => {
+    writeRogueOneTeamConfig(root); let spawns = 0;
+    const adapter = stubAdapter({ preflight: async () => { writeFileSync(join(root, "docs/shared.md"), "Changed during preflight"); }, onSpawn: () => { spawns++; } });
+    const result = await deployWithPi({ team: "rogue-one", repo: "pa-platform" }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(spawns, 0);
+    assert.match(result.reason ?? "", /changed during capture/);
   });
 });
 

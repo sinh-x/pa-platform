@@ -12,15 +12,14 @@ export function isRogueOneTeam(team: string): boolean {
   return team === ROGUE_ONE_TEAM;
 }
 
-export function rogueOneModeWarning(team: string, suppliedMode: string | undefined): string | undefined {
-  if (!isRogueOneTeam(team) || suppliedMode === undefined) return undefined;
-  return `Warning: supplied --mode is ignored for rogue-one; fixed mode '${ROGUE_ONE_MODE}' is used.`;
+/** Kept for adapter compatibility: valid configured selection is no longer ignored. */
+export function rogueOneModeWarning(_team: string, _suppliedMode: string | undefined): string | undefined {
+  return undefined;
 }
 
 /** Normalize adapter-facing evidence without introducing a user-facing flag. */
 export function normalizeRogueOneDeployRequest(request: DeployRequest): DeployRequest {
-  if (!isRogueOneTeam(request.team)) return request;
-  return { ...request, mode: ROGUE_ONE_MODE };
+  return request;
 }
 
 export function rogueOneAuditNotice(channel: DeploymentInvocationChannel): string {

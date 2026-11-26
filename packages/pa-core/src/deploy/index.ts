@@ -12,3 +12,4 @@ export * from "./prepared-workflow.js";
 export * from "./execution-custody.js";
 export * from "./execution-restart.js";
 export * from "./rogue-one.js";
+export * from "./rogue-one-config.js";

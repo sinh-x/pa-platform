@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { assertDeployResumeMode, DeployModeSelectionError, isRogueOneTeam, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
+import { assertDeployResumeMode, DeployModeSelectionError, RogueOneConfigError, isRogueOneTeam, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks as AgentApiHooks, DeployRequest } from "../../deploy/index.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { SessionManager } from "../ws/session-hub.js";
@@ -17,6 +17,9 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
     if (isRogueOneTeam(parsed.request.team) && !authorization?.isOperatorAuthorized(c.req.header("Authorization"), c.req.header("X-PA-Deployment-ID"))) {
       return c.json({ error: "Rogue-one deployment requires configured operator identity", code: "FORBIDDEN" }, 403);
     }
+    // Preserve operator authentication above. No API path may silently omit
+    // configured capture/full-retention; this consumer is not qualified yet.
+    if (isRogueOneTeam(parsed.request.team)) return c.json({ status: "failed", reason: new RogueOneConfigError("route").message, team: parsed.request.team, mode: parsed.request.mode ?? null }, 202);
     try {
       const controlResponse = resolveControlOnlyResponse(parsed.request);
       if (controlResponse) return c.json(controlResponse, 202);

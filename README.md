@@ -44,11 +44,15 @@ PAPC-066 is a recommended follow-up for separately approved configuration cleanu
 
 Before a separately authorized rollout, record the candidate/base, lockfile, package output and paired-config SHAs. Rollback uses the prior matched source/package/config pair under operator authority; preserve registry/log/session bytes and live holders, and never convert sessions or infer permission to resume unsupported runtimes. No automatic host uninstall, credential migration, worktree return or history rewrite is performed.
 
-### Rogue-One bare deployment
+### PAPC-configured Rogue-One deployment
 
-Exact team selection `ppa|opa deploy rogue-one` activates a fixed `rogue-one` bare profile; there is no bypass flag. It omits PA workflow/review primer content and bypasses ticket, Git-status, repository-lease, workflow-approval, and final-review admission. It does **not** bypass registered repository identity, sensitive-input or runtime/provider validation, adapter hooks and permissions, runtime tool/host constraints, logging, or registry lifecycle. A supplied `--mode` is ignored with a warning.
+Foreground `ppa deploy rogue-one` selects PAPC's default mode, or the explicit `--mode`, including its provider/model, objective, guides, selected agent instructions and skills. Only ticket-optional, profile-free interactive modes are supported. A complete CLI provider/model pair overrides the mode; absent pairs retain the adapter default. Configured instructions never grant native capabilities.
 
-Rogue-one intentionally does not serialize repository mutation, so concurrent or dirty-checkout work can overwrite other work. The Agent API supports rogue-one only for OpenCode/Pi and requires `Authorization: Bearer <PA_AGENT_API_OPERATOR_CREDENTIAL>`; credentials are not persisted in rogue audit evidence.
+Exact native Rogue-One identity still bypasses ticket, Git-status, repository-lease, workflow-approval and final-review admission. Registered repository identity, privacy, runtime/provider validation, adapter hooks, current credentials, host/tool constraints, logging and native custody remain active. Concurrent or dirty-checkout mutation is not serialized and can overwrite other work.
+
+Fresh launches capture bounded selected working-tree configuration and literal config-owned text/static-HTML dependencies. Native start evidence binds the retained snapshot digest. Resume uses only the original configuration, normalized pair and overrides; missing, conflicting, tampered or unverifiable legacy evidence blocks continuation without live-PAPC fallback. Static JavaScript helper imports and finite file-URL/supporting dependencies are retained without evaluating code; unresolved dynamic selectors and unsupported helpers reject. See [the resource-retention contract](docs/rogue-one-config-retention.md) for bounds, reference-only semantics and recovery. Read-only projection modes and hashes are not a same-UID sandbox.
+
+Configured Rogue-One through OPA, background deployment, Agent API deployment and WebSocket session execution is unavailable until those consumers support full retention. These routes reject before runtime spawn; operator API authentication still applies. Source tests do not establish installed qualification or human acceptance.
 
 ### Pi Adapter
 

@@ -21,8 +21,9 @@ const rogueTeam: TeamConfig = {
     id: "direct",
     label: "Direct",
     objective: "mode.md",
-    require_ticket: true,
-    skills: [{ name: "missing-workflow-skill", "inject-as": "global-skill" }],
+    require_ticket: false,
+    mode_type: "interactive",
+    skills: [],
     global_docs: ["MODE GUIDE MUST NOT APPEAR"],
   }],
 };
@@ -51,21 +52,19 @@ function withRegisteredRepo<T>(fn: (root: string, repo: string) => T): T {
   }
 }
 
-test("rogue-one activation is exact and supplied mode normalization is bounded", () => {
+test("rogue-one activation is exact and configured mode is not rewritten or warned ignored", () => {
   assert.equal(isRogueOneTeam("rogue-one"), true);
   for (const nearMatch of ["Rogue-One", "rogue_one", "rogue-one-extra", " rogue-one"]) assert.equal(isRogueOneTeam(nearMatch), false);
-  assert.equal(normalizeRogueOneDeployRequest({ team: "rogue-one", mode: "implement" }).mode, "rogue-one");
+  assert.equal(normalizeRogueOneDeployRequest({ team: "rogue-one", mode: "direct" }).mode, "direct");
   assert.equal(normalizeRogueOneDeployRequest({ team: "builder", mode: "implement" }).mode, "implement");
-  const warning = rogueOneModeWarning("rogue-one", "implement");
-  assert.match(warning ?? "", /supplied --mode is ignored.*fixed mode 'rogue-one'/);
-  assert.ok((warning?.length ?? 0) <= 2_000);
+  assert.equal(rogueOneModeWarning("rogue-one", "direct"), undefined);
 });
 
-test("rogue-one execution plan is fixed, immutable, ticket-free, and performs zero Git or lease operations", () => {
+test("configured rogue-one execution plan remains immutable, ticket-free and performs zero Git or lease operations", () => {
   withRegisteredRepo((root, repo) => {
     const operations: RepositoryAdmissionOperation[] = [];
     const plan = resolveExecutionPlan({
-      request: { team: "rogue-one", mode: "implement", objective: "Ship directly", repo, invocationChannel: "agent-api", force: true },
+      request: { team: "rogue-one", mode: "direct", objective: "Ship directly", repo, invocationChannel: "agent-api", force: true },
       teamConfig: rogueTeam,
       mode: rogueTeam.deploy_modes![0],
       runtime: "pi",
@@ -80,7 +79,7 @@ test("rogue-one execution plan is fixed, immutable, ticket-free, and performs ze
     });
 
     assert.equal(plan.team, "rogue-one");
-    assert.equal(plan.mode, "rogue-one");
+    assert.equal(plan.mode, "direct");
     assert.equal(plan.rogue_one, true);
     assert.equal(plan.invocation_channel, "agent-api");
     assert.equal(plan.ticketRequired, false);
@@ -89,9 +88,9 @@ test("rogue-one execution plan is fixed, immutable, ticket-free, and performs ze
     assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
     assert.deepEqual(operations, []);
     assert.deepEqual(plan.skills, []);
-    assert.deepEqual(plan.memoryDocuments, []);
+    assert.deepEqual(plan.memoryDocuments, ["GLOBAL GUIDE MUST NOT APPEAR", "MODE GUIDE MUST NOT APPEAR"]);
     assert.equal(plan.objective, "Ship directly");
-    assert.equal(plan.environment.PA_MODE, "rogue-one");
+    assert.equal(plan.environment.PA_MODE, "direct");
     assert.equal(plan.environment.PA_ROGUE_ONE, "1");
     assert.equal(Object.isFrozen(plan), true);
   });

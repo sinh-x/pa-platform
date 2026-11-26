@@ -123,22 +123,26 @@ export function createDefaultOpencodeHooks(): CoreExecutionHooks {
   return createOpencodeHooks();
 }
 
-import { modeCapabilityDiagnostic } from "@pa-platform/pa-core";
+import { modeCapabilityDiagnostic, RogueOneConfig, RogueOneConfigError } from "@pa-platform/pa-core";
 
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter(), diagnostics?: DeployDiagnostics) {
   let priorSession: string | undefined;
   try {
     assertMatchingRuntime(adapter.name, "opencode");
     if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "opencode");
+    // Native original classification precedes route rejection and current config.
+    RogueOneConfig.assertResumeTeam(request, "opencode");
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
   }
+  if (isRogueOneTeam(request.team)) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: new RogueOneConfigError("route").message };
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
   const teamConfig = loadTeamConfig(request.team);
+  if (isRogueOneTeam(teamConfig.name)) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: new RogueOneConfigError("contract").message };
   let selectedMode: DeployMode | undefined;
   try {
     selectedMode = resolveDeployMode(teamConfig, request.mode);

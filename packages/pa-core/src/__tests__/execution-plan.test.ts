@@ -10,6 +10,7 @@ import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { repositoryMutationLeasePath, type RepositoryAdmissionOperation, type RepositoryGitSnapshot } from "../deploy/repository-admission.js";
 import type { TeamConfig } from "../types.js";
 import { READONLY_DOCUMENT_PROFILE, parseModeCapabilityBinding, parseModeCapabilityPolicy } from "../mode-capabilities.js";
+import { RogueOneConfigError } from "../deploy/rogue-one-config.js";
 
 function team(skill?: string): TeamConfig {
   return {
@@ -33,7 +34,9 @@ test("strict mode resolution rejects unknown explicit/default and retired select
   assert.equal(resolveDeployMode(directOnly, "orchestrator"), orchestrator);
   assert.equal(resolveDeployMode(team(), "implement")?.id, "implement", "old configured bootstrap remains distinct");
   assert.equal(resolveDeployMode({ ...team(), default_mode: undefined, deploy_modes: undefined }), undefined);
-  assert.equal(resolveDeployMode({ ...directOnly, name: "rogue-one", default_mode: "unused" }, "implement"), undefined, "fixed bare rogue-one is intentional");
+  assert.throws(() => resolveDeployMode({ ...directOnly, name: "rogue-one", default_mode: "unused" }, "implement"), RogueOneConfigError);
+  const rogueMode = { id: "direct", label: "Direct", mode_type: "interactive" as const, require_ticket: false };
+  assert.equal(resolveDeployMode({ ...directOnly, name: "rogue-one", default_mode: "direct", deploy_modes: [rogueMode] }), rogueMode, "Rogue-One now honors configured selection without ordinary admission");
   for (const id of ["implement", "private-sentinel", "", "\u0000private-sentinel", "x".repeat(5000)]) {
     for (const explicit of [true, false]) {
       assert.throws(() => resolveDeployMode(explicit ? directOnly : { ...directOnly, default_mode: id }, explicit ? id : undefined), (error: unknown) => {

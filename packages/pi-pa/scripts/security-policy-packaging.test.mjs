@@ -126,6 +126,55 @@ test("build rejects invalid source without copying over a prior validated dist a
   assert.deepEqual(readFileSync(output), asset, "failed build retains old bytes but never establishes package success");
 }));
 
+test("Rogue-One capture and native resume preserve missing/invalid packaged-policy guidance in fresh processes", () => fixture(directory => {
+  const entry = join(directory, "rogue-entry.ts");
+  writeFileSync(entry, [
+    `export {RogueOneConfig,RogueOneConfigError} from ${JSON.stringify(join(root, "packages/pa-core/src/deploy/rogue-one-config.ts"))};`,
+    `export {SecurityPolicyError} from ${JSON.stringify(join(root, "packages/pa-core/src/security-policy.ts"))};`,
+    `export {parseTeamYamlContent} from ${JSON.stringify(join(root, "packages/pa-core/src/yaml-parser.ts"))};`,
+    `export {appendRegistryEvent,closeDb} from ${JSON.stringify(join(root, "packages/pa-core/src/registry/index.ts"))};`,
+    `export {getDeployPaths} from ${JSON.stringify(join(root, "packages/pa-core/src/deploy/paths.ts"))};`,
+  ].join("\n"));
+  buildSync({ entryPoints: [entry], outfile: join(directory, "rogue-policy.mjs"), bundle: true, packages: "external", platform: "node", format: "esm", target: "node22", logLevel: "silent" });
+  symlinkSync(join(root, "packages/pa-core/node_modules"), join(directory, "node_modules"), "dir");
+  mkdirSync(join(directory, "policies")); writeFileSync(join(directory, "policies/security-defaults.v1.yaml"), asset);
+  const setup = `
+    import assert from 'node:assert/strict';
+    import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';
+    Object.assign(process.env,{PA_PLATFORM_HOME:process.cwd()+'/config',PA_PLATFORM_CONFIG:process.cwd()+'/user',PA_AI_USAGE_HOME:process.cwd()+'/usage',PA_REGISTRY_DB:process.cwd()+'/registry.db'});
+    delete process.env.PA_PLATFORM_TEAMS; delete process.env.PA_PLATFORM_SKILLS;
+    const p=await import('./rogue-policy.mjs');
+    const context={deploymentId:'d-349aaa',runtime:'pi',repoKey:'fixture',repoRoot:'/fixture/repo',worktreeRoot:'/fixture/worktree'};
+    const pair={provider:'openai-codex',model:'gpt-6.2-sol',source:'mode'};
+    const team=p.parseTeamYamlContent(JSON.stringify({name:'rogue-one',description:'Fixture',objective:'Original objective',agents:[],default_mode:'direct',deploy_modes:[{id:'direct',label:'Direct',mode_type:'interactive'}]}));
+    const capture=()=>p.RogueOneConfig.capture(context,{team:'rogue-one'},team,pair);
+  `;
+  run(directory, setup + `
+    mkdirSync('./config/teams',{recursive:true});writeFileSync('./config/teams/rogue-one.yaml',JSON.stringify(team));
+    const captured=capture(), dir=p.getDeployPaths(context.deploymentId).deployDir;
+    mkdirSync(dir,{recursive:true,mode:0o700});captured.materialize(context.deploymentId);
+    writeFileSync(dir+'/session-id-pi.txt','original-session',{mode:0o600});
+    p.appendRegistryEvent({deployment_id:context.deploymentId,event:'started',timestamp:new Date().toISOString(),team:'rogue-one',mode:'direct',rogue_one:true,runtime:'pi',binary:'ppa',invocation_channel:'cli',repo:context.worktreeRoot,repo_root:context.repoRoot,worktree_root:context.worktreeRoot,provider:pair.provider,models:{team:pair.model},note:captured.note});
+    p.closeDb();
+  `);
+  const policy = join(directory, "policies/security-defaults.v1.yaml");
+  for (const category of ["unavailable", "invalid"]) {
+    if (category === "unavailable") rmSync(policy); else writeFileSync(policy, "invalid");
+    run(directory, setup + `
+      const expected=new p.SecurityPolicyError(${JSON.stringify(category)}).message;
+      const archive=p.getDeployPaths(context.deploymentId).deployDir+'/rogue-one-config.json', before=readFileSync(archive);
+      for(const attempt of [capture,()=>p.RogueOneConfig.resume(context.deploymentId,{team:'rogue-one'},context)]) {
+        assert.throws(attempt,error=>{
+          assert.ok(error instanceof p.RogueOneConfigError);assert.equal(error.cause,'policy');assert.equal(error.message,expected);
+          assert.ok(error.message.length<=2000);for(const label of ['Condition:','Source:','Reason:','Correction:','Resume Action:'])assert.equal(error.message.split(label).length-1,1);
+          return true;
+        });
+      }
+      assert.deepEqual(readFileSync(archive),before,'policy failure never rewrites original snapshot');p.closeDb();
+    `);
+  }
+}));
+
 test("finite selected-document bundle includes actual security source closure and resolves rebased shipped asset", () => fixture(directory => {
   const nix = readFileSync(join(root, "nix/selected-pi-document-qualification.nix"), "utf8");
   // Materialize ONLY the actual Nix copy closure. Missing source copies/exports

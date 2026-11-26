@@ -1,4 +1,4 @@
-import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, isPlainInteractiveMode, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
+import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, isPlainInteractiveMode, isRogueOneTeam, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { repositoryIsolationSelection, assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "../../deploy/repository-isolation.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
@@ -182,7 +182,9 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   }
   io.stdout("");
   io.stdout("Rogue-one:");
-  io.stdout(`  ${binaryName} deploy rogue-one activates the fixed bare profile; no bypass flag is used.`);
+  io.stdout(binaryName === "ppa"
+    ? "  Foreground ppa deploy rogue-one uses the selected PAPC mode and instructions while retaining its native admission exception; no bypass flag is used."
+    : "  Configured Rogue-One launch is available only through foreground PPA CLI; this adapter has no qualified full-retention consumer.");
   io.stdout("  It bypasses PA ticket/Git/lease/workflow/review admission, not identity, sensitive-input, runtime, hook, host, tool, logging, or registry boundaries.");
 }
 
@@ -257,6 +259,9 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     reject(resolved.error);
     return 1;
   }
+  // Retained Rogue-One timeout selection belongs to its original snapshot.
+  // Do not turn an omitted CLI override into a conflicting synthesized value.
+  if (isRogueOneTeam(resolved.request.team) && validated.request.timeout === undefined) delete resolved.request.timeout;
   if (!hooks.deploy) {
     reject("Deployment execution requires an adapter hook");
     return 1;
@@ -266,15 +271,23 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   // Keep the request (and binaryName) intact: a missing selection is not a default rewrite.
   let plainInteractive: boolean;
   try {
-    const team = loadTeamConfig(resolved.request.team);
-    const mode = resolveDeployMode(team, resolved.request.mode);
-    plainInteractive = !resolved.request.ticketWorktree && isPlainInteractiveMode(mode);
-    if (!resolved.request.dryRun) {
-      const selection = repositoryIsolationSelection(team, mode, resolved.request, binaryName === "ppa" ? "pi" : "opencode");
-      assertRepositoryIsolationAvailable(selection);
-      assertRepositoryIsolationResumeAvailable(resolved.request.resume, undefined, selection);
+    if (isRogueOneTeam(resolved.request.team)) {
+      // The adapter preflight owns original snapshot selection on resume.
+      // Loading live PAPC here would prevent full-retention continuation.
+      plainInteractive = false;
+      if (!resolved.request.dryRun) assertRepositoryIsolationResumeAvailable(resolved.request.resume);
+    } else {
+      const team = loadTeamConfig(resolved.request.team);
+      if (isRogueOneTeam(team.name)) throw new DeployModeSelectionError("execution plan");
+      const mode = resolveDeployMode(team, resolved.request.mode);
+      plainInteractive = !resolved.request.ticketWorktree && isPlainInteractiveMode(mode);
+      if (!resolved.request.dryRun) {
+        const selection = repositoryIsolationSelection(team, mode, resolved.request, binaryName === "ppa" ? "pi" : "opencode");
+        assertRepositoryIsolationAvailable(selection);
+        assertRepositoryIsolationResumeAvailable(resolved.request.resume, undefined, selection);
+      }
+      assertDeployResumeMode(team, resolved.request.resume, plainInteractive ? mode : undefined);
     }
-    assertDeployResumeMode(team, resolved.request.resume, plainInteractive ? mode : undefined);
   }
   catch (error) {
     if (!(error instanceof DeployModeSelectionError) && !(error instanceof RepositoryIsolationUnavailableError)) throw error;

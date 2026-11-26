@@ -483,7 +483,7 @@ test("managed Pi skills and protected-review extensions retain independent launc
   assert.match(capabilities, /return binding\?\.schemaVersion === "pa-mode-capability-binding\/v2" \|\| binding\?\.schemaVersion === "pa-mode-capability-binding\/v3";/);
 });
 
-test("Rogue-One shared guides preserve the existing launch form and add no native bindings or authority", () => {
+test("Rogue-One configured retention preserves the launch form, native exception and null native bindings", () => {
   const row = operation("deploy.rogue-one");
   assert.deepEqual(row.cliForms, ["deploy rogue-one"]);
   assert.deepEqual(row.channels, ["cli"]);
@@ -494,8 +494,12 @@ test("Rogue-One shared guides preserve the existing launch form and add no nativ
   assert.equal(row.delegationBinding, null);
   assert.equal(row.requestSchemaRef, null);
   assert.equal(row.resultSchemaRef, null);
-  assert.match(row.reason, /Pi and OpenCode bare primers include only the shared task-tracking, system-design and HTML-reporting guides/);
-  assert.match(row.reason, /without configured team\/mode guides or skills/);
+  assert.match(row.reason, /Foreground PPA CLI uses selected PAPC interactive mode\/pair\/objective\/guides\/agents\/skills/);
+  assert.match(row.reason, /does not add ordinary vacancy, Git-status, lease, workflow or final-review admission/);
+  assert.match(row.reason, /preserve original resources and effective overrides on resume/);
+  assert.match(row.reason, /without live-PAPC fallback/);
+  assert.match(row.reason, /OPA, background, Agent API deployment and WebSocket Rogue-One execution are explicitly unsupported/);
+  assert.match(row.reason, /operator API authentication still precedes rejection/);
   assert.match(row.reason, /adds no commands, aliases, native bindings, runtime permissions or approval authority/);
   assert.match(row.reason, /cannot reclassify a protected retained resume/);
 });
@@ -512,6 +516,20 @@ test("conservative source inventory rejects tracked changes and added CLI comman
   const baseline = readFileSync(resolve(root, "packages/pa-core/src/cli/core-command.ts"));
   const mutated = Buffer.concat([baseline, Buffer.from('\n// fixture: new unlisted dispatch\n')]);
   assert.notEqual(createHash("sha256").update(mutated).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
+});
+
+test("PAP-349 dependency inventory survives release version bumps without ignoring dependency changes", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  // Version Bump owns these package versions. The lockfile already captures the
+  // core production dependency selection without pinning mutable release bytes.
+  for (const file of ["package.json", "packages/pa-core/package.json", "packages/opencode-pa/package.json", "packages/pi-pa/package.json"])
+    assert.equal(Object.hasOwn(manifest.sources, file), false, `release version file must not invalidate source inventory: ${file}`);
+  const lock = readFileSync(resolve(root, "pnpm-lock.yaml"), "utf8");
+  assert.equal(createHash("sha256").update(lock).digest("hex"), manifest.sources["pnpm-lock.yaml"]);
+  const core = JSON.parse(readFileSync(resolve(root, "packages/pa-core/package.json"), "utf8"));
+  assert.equal(typeof core.dependencies.typescript, "string", "AST parser is a production dependency");
+  assert.match(lock, /packages\/pa-core:[\s\S]*?\n      typescript:\n        specifier:/);
+  assert.notEqual(createHash("sha256").update(`${lock}\n# synthetic dependency drift\n`).digest("hex"), manifest.sources["pnpm-lock.yaml"]);
 });
 
 test("PAP-337 startup split tracks the same read-only owner without changing forms, effects or native bindings", () => {

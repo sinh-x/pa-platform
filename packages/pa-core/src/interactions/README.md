@@ -497,3 +497,38 @@ See [the maintained contract](../../../../docs/analyst-repository-isolation.md).
 Sinh will perform installation from the retained worktree. This integration
 instruction is not agent installation, selector activation, native-effect
 approval, worktree return, or human UAT.
+
+## PAP-349 — configured Rogue-One retention
+
+This reconciliation supersedes the earlier fixed-bare/nonselection description
+of `deploy.rogue-one`. Its CLI form, launch effect, operator-only disposition and
+null native/delegation/schema bindings are unchanged. Foreground PPA CLI now
+selects compatible PAPC modes/pairs/instructions and preserves original verified
+configuration/resources/overrides through native snapshot continuation. It keeps
+the exact native admission exception, not ordinary interactive vacancy admission.
+Protected ancestry, current credentials/privacy/hooks and native custody remain
+current; configured content is not permission. Unverifiable legacy, crossed roots,
+conflicting overrides, tamper or unsupported dependency closure reject without a
+live-PAPC fallback. OPA, background, API deployment and WebSocket Rogue-One
+execution explicitly reject until their full-retention consumers qualify. API
+operator authentication still precedes rejection. Source support is not installed
+availability, independent Review or human UAT; PAPC-110 owns configuration adoption.
+
+Implementer reconciliation inspected the changed core selection/plan/primer/CLI
+and exports, Pi/OPA launch consumers and Agent API session boundary. Focused tests
+exercise configured selection and pair causality, exact native identity, actual
+retained skill paths and selected-agent events, deletion-proof continuation,
+resource/native faults and unsupported API/OPA/WebSocket rejection. No new public
+command, flag, native grant, delegation binding or snapshot RPC was introduced.
+The manifest renews those eight changed tracked sources and explicitly adds the
+Rogue-One selection/snapshot/script owners, shared parser/agent-skill locator,
+API deployment rejection, and the lockfile's compiler dependency selection. The
+mutable core package version is intentionally not byte-pinned: automatic patch
+bumps change it without changing dependencies. Regression coverage keeps the
+production compiler declaration and lockfile guard explicit. Native Rogue-One
+originals reject cross-team continuation before adapter configuration selection;
+current filename/original-path/content privacy checks also apply to retention.
+Static selectors reject shadowing, array mutation/escape, filesystem re-exports
+and unverified CWD-relative paths instead of accepting incomplete retained bytes.
+Hash renewal follows these semantic assertions; it does not weaken the
+conservative source guard or claim complete interaction parity.
