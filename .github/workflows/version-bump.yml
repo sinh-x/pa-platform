@@ -23,10 +23,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      # This metadata-only job never installs dependencies or populates a store.
+      # setup-node's post-job cache save fails on a cold runner with no store.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'pnpm'
 
       - name: Check whether this PR was already bumped
         id: rerun-guard
