@@ -29,7 +29,7 @@ in pkgs.runCommand "pa-selected-pi-document-qualification-${host.pi.version}" {
   passthru = { inherit fixturePi foundation; productionEnabled = false; };
 } ''
   mkdir -p "$out/lib" "$out/bin" work/packages/pa-core/src/activity work/packages/pi-pa/src/pi-extension work/packages/pi-pa/runtime
-  cp ${../packages/pa-core/src}/{local-source-file,immutable-document-policy,source-content-security,sensitive-patterns,safety-policy,security-policy,paths,time}.ts work/packages/pa-core/src/
+  cp ${../packages/pa-core/src}/{local-source-file,local-source-diagnostic,immutable-document-policy,source-content-security,sensitive-patterns,safety-policy,security-policy,paths,time}.ts work/packages/pa-core/src/
   cp ${../packages/pa-core/src/activity/index.ts} work/packages/pa-core/src/activity/index.ts
   cp ${../packages/pi-pa/src/pi-extension}/{bound-local-read,local-read-paths,local-image-type,local-content-security,source-guard-coverage}.ts work/packages/pi-pa/src/pi-extension/
   cp ${../packages/pi-pa/runtime/local-source-core.ts} work/packages/pi-pa/runtime/local-source-core.ts

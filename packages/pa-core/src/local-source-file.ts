@@ -1,4 +1,5 @@
 import fs, { type BigIntStats } from "node:fs";
+import type { LocalSourceDiagnosticReference, LocalSourceUnsupportedCause } from "./local-source-diagnostic.js";
 import { basename, dirname } from "node:path";
 import { assertImmutableDocumentText, assertSelectedPiDocumentPath, type SelectedPiDocumentBinding } from "./immutable-document-policy.js";
 import { assertLocalFileSource, MAX_LOCAL_SECURITY_BYTES, SourceContentSecurityError, type LocalSourceFailureClass } from "./source-content-security.js";
@@ -51,6 +52,17 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
   const ownedDirectories: number[] = [];
   let fd: number | undefined, closed = false;
   let failureClass: LocalSourceFailureClass = "source-open";
+  let reference: LocalSourceDiagnosticReference | undefined;
+  let readState: "not-started" | "attempted" = "not-started";
+  const withUnsupportedContext = (error: unknown): unknown => {
+    if (error instanceof SourceContentSecurityError && error.code === "LOCAL_SOURCE_UNSUPPORTED_FILE" && error.unsupportedObservation) {
+      return new SourceContentSecurityError(error.code, undefined, undefined, { ...error.unsupportedObservation, reference, readState });
+    }
+    return error;
+  };
+  const unsupported = (cause: LocalSourceUnsupportedCause, links?: bigint, entry?: "file" | "ancestor"): never => {
+    throw new SourceContentSecurityError("LOCAL_SOURCE_UNSUPPORTED_FILE", undefined, undefined, { cause, reference, links, entry, readState });
+  };
   const close = () => {
     if (closed) return;
     closed = true;
@@ -69,17 +81,20 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
       try { binding.assertStable(); } catch (error) { unavailable(error, "read-publication"); }
       assertSelectedPiDocumentPath(path, binding.packageRoot);
     }
-    assertLocalFileSource(path, patterns);
+    const requestedReference = assertLocalFileSource(path, patterns);
     const physical = fs.realpathSync(path);
-    assertLocalFileSource(physical, patterns);
+    const physicalReference = assertLocalFileSource(physical, patterns);
+    if (requestedReference && physicalReference) reference = requestedReference;
     const immutableMetadata = (entry: string, observed: BigIntStats) => {
       if (!binding) return;
-      if (observed.uid !== 0n || observed.nlink === 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      const kind = entry === physical ? "file" : "ancestor";
+      if (observed.uid !== 0n) unsupported("immutable-owner", undefined, kind);
+      if (observed.nlink === 0n) unsupported("immutable-unlinked", undefined, kind);
       if (entry === "/nix/store") {
-        if ((observed.mode & 0o022n) !== 0n && !((observed.mode & 0o1000n) !== 0n && (observed.mode & 0o002n) === 0n)) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+        if ((observed.mode & 0o022n) !== 0n && !((observed.mode & 0o1000n) !== 0n && (observed.mode & 0o002n) === 0n)) unsupported("store-directory-mode", undefined, kind);
       } else if (entry.startsWith("/nix/store/")) {
-        if ((observed.mode & 0o222n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
-      } else if ((observed.mode & 0o022n) !== 0n) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+        if ((observed.mode & 0o222n) !== 0n) unsupported("store-entry-writable", undefined, kind);
+      } else if ((observed.mode & 0o022n) !== 0n) unsupported("ancestor-writable", undefined, kind);
     };
     const root = fs.openSync("/", fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
     ownedDirectories.push(root);
@@ -99,27 +114,32 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     fd = fs.openSync(`/proc/self/fd/${parent}/${basename(physical)}`, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     failureClass = "source-stat";
     const before = fs.fstatSync(fd, { bigint: true });
-    if (!before.isFile()) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+    if (!before.isFile()) unsupported("not-regular");
     if (before.nlink === 0n) fail("LOCAL_SOURCE_UNAVAILABLE");
     if (before.nlink !== 1n) {
       // Only the private selected-Pi route may consider multi-link text. Its
       // finite scope/lifetime was checked above; ordinary ingress never retries
       // through that route merely because this file lives in the Nix store.
-      if (!binding || physical !== path) fail("LOCAL_SOURCE_UNSUPPORTED_FILE");
+      if (!binding) unsupported("ordinary-multiple-links", before.nlink);
+      if (physical !== path) unsupported("selected-alias", before.nlink);
       for (const directory of directories) immutableMetadata(directory.path, directory.stat);
       immutableMetadata(physical, before);
     }
     if (before.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
     const assertStable = () => {
       try {
+        // A failed earlier scope/lifetime recheck cannot reuse stale disclosure
+        // evidence. Refresh only from the path checks this function already owns.
+        reference = undefined;
         if (signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
         if (closed) fail("LOCAL_SOURCE_UNAVAILABLE");
         if (binding) {
           try { binding.assertStable(); } catch (error) { unavailable(error, "read-publication"); }
           assertSelectedPiDocumentPath(path, binding.packageRoot);
         }
-        assertLocalFileSource(path, patterns);
-        assertLocalFileSource(physical, patterns);
+        const requestedReference = assertLocalFileSource(path, patterns);
+        const physicalReference = assertLocalFileSource(physical, patterns);
+        if (requestedReference && physicalReference) reference = requestedReference;
         if (fs.realpathSync(path) !== physical) fail("LOCAL_SOURCE_UNAVAILABLE");
         for (let index = 0; index < directories.length; index++) {
           const directory = directories[index]!;
@@ -130,7 +150,7 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
         const after = fs.fstatSync(fd!, { bigint: true });
         if (after.size > BigInt(MAX_LOCAL_SECURITY_BYTES)) fail("LOCAL_CONTENT_LIMIT");
         if (!sameFile(before, after) || !sameFile(before, fs.lstatSync(`/proc/self/fd/${parent}/${basename(physical)}`, { bigint: true }))) fail("LOCAL_SOURCE_UNAVAILABLE");
-      } catch (error) { unavailable(error, "source-stat"); }
+      } catch (error) { unavailable(withUnsupportedContext(error), "source-stat"); }
     };
     // Validate path association before reading, not only before publication.
     assertStable();
@@ -139,6 +159,7 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     failureClass = "source-read";
     while (length < bytes.length) {
       if (signal?.aborted) fail("LOCAL_SOURCE_UNAVAILABLE", "cancelled");
+      readState = "attempted";
       const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
       if (count === 0) break;
       length += count;
@@ -151,6 +172,8 @@ function acquirePinnedSource(path: string, patterns?: SensitivePatternSet, signa
     return { bytes: complete, assertStable, close };
   } catch (error) {
     close();
-    return unavailable(error, failureClass);
+    // Preserve original facts and read reach even when a repeated scope check
+    // fails after reading. Only the originally admitted path may be disclosed.
+    return unavailable(withUnsupportedContext(error), failureClass);
   }
 }

@@ -65,9 +65,23 @@ test("native-first and actual CLI subprocess-first share status owner, CAS, repl
       emitStartedEvent({ deploymentId: otherId, team: "builder", mode: "implement", ticketId: ticket.id, runtime: "pi", repo, repoRoot: repo, worktreeRoot: repo });
       emitPidEvent({ deploymentId: otherId, team: "builder", pid: process.pid });
       emitCompletedEvent({ deploymentId: otherId, team: "builder", status: "success" });
-      assert.equal((await call({ ...request, requestId: `${first}-owner-conflict`, expectedVersion: JSON.parse((await call(inspect)).content[0].text).version })).details.code, "TICKET_STATUS_OWNER");
+      const blockedNative = await call({ ...request, requestId: `${first}-owner-conflict`, expectedVersion: JSON.parse((await call(inspect)).content[0].text).version });
+      assert.equal(blockedNative.details.code, "TICKET_STATUS_OWNER");
+      assert.equal(blockedNative.isError, true);
+      const diagnostic = blockedNative.content[0].text;
+      assert.match(diagnostic, /process entry still exists/);
+      assert.match(diagnostic, /reused ID; identity and release are unproven/);
+      assert.ok(diagnostic.includes(`Registry deployment: ${otherId}`));
+      for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(diagnostic.split(`${label}:`).length, 2);
       const blockedLegacy = spawnSync(process.execPath, [`--import=${import.meta.resolve("tsx")}`, cli, "ticket", "update", ticket.id, "--status", "done"], { cwd: repo, env: process.env, encoding: "utf8" });
       assert.equal(blockedLegacy.status, 1); assert.match(blockedLegacy.stderr, /TICKET_STATUS_OWNER/);
+      assert.equal(blockedLegacy.stdout, ""); assert.equal(blockedLegacy.stderr.trim(), diagnostic);
+      // The actual OPA CLI delegates this same generic administrative command.
+      // This source subprocess is not installed OpenCode host-hook qualification.
+      const opaCli = fileURLToPath(new URL("../../../opencode-pa/src/cli.ts", import.meta.url));
+      const blockedOpa = spawnSync(process.execPath, [`--import=${import.meta.resolve("tsx")}`, opaCli, "ticket", "update", ticket.id, "--status", "done"], { cwd: repo, env: process.env, encoding: "utf8" });
+      assert.equal(blockedOpa.status, 1); assert.equal(blockedOpa.stdout, "");
+      assert.equal(blockedOpa.stderr.trim(), diagnostic);
       assert.equal(store.get(ticket.id)!.status, "requirement-review");
       // Keep each iteration's foreign owner on its own target.
     }

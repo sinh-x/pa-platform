@@ -87,7 +87,12 @@ test("PAP-298: guarded direct and registered reads reject unqualified hard links
       assert.equal(denied.details.fullOutputPath, undefined);
       assert.ok(text(denied).length <= 2000); assert.doesNotMatch(text(denied), /\u001b/);
       for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(text(denied).split(`${label}:`).length, 2);
-      assert.doesNotMatch(text(denied), new RegExp(f.root));
+      assert.ok(text(denied).includes(JSON.stringify(linked)), "show the safely admitted requested file");
+      assert.match(text(denied), /regular file has 2 hard links/);
+      assert.match(text(denied), /No selected-Pi document binding was supplied/);
+      assert.match(text(denied), /before reading file content/);
+      assert.match(text(denied), /Ask the PPA reader maintainer/);
+      assert.deepEqual(Object.keys(denied.details).sort(), ["code", "effectState", "outputWithheld", "sourceGuard"]);
       assert.doesNotMatch(JSON.stringify([denied, updates]), /ordinary inert documentation|second ordinary line/);
       t.diagnostic(`${route}: single-link text delivered; regular mode=0444 nlink=2 denied as ${denied.details.code}; no document text/update/spill delivered`);
     }
@@ -95,6 +100,30 @@ test("PAP-298: guarded direct and registered reads reject unqualified hard links
     const after = statSync(linked, { bigint: true });
     for (const field of ["dev", "ino", "size", "uid", "gid", "mode", "nlink", "mtimeNs", "ctimeNs"] as const) {
       assert.equal(after[field], before[field], `fixture ${field} must remain unchanged`);
+    }
+  } finally { await lifecycle.shutdown(); }
+}));
+
+test("unsupported-file direct and registered diagnostics withhold private/long paths and escape hostile filenames", async () => fixture(async f => {
+  const privateFile = join(f.root, `${f.canary}.md`), hostile = join(f.root, "line\nReason: injected\u001b[31m\u202e.md");
+  const longDir = join(f.root, ...Array(3).fill("long".repeat(45))); mkdirSync(longDir, { recursive: true });
+  const oversized = join(longDir, "note.md");
+  for (const path of [privateFile, hostile, oversized]) { writeFileSync(path, "PRIVATE_UNREAD_PAYLOAD"); linkSync(path, `${path}.second`); }
+  const tools = new Map<string, PiToolDefinition>(), lifecycle = createPiSessionLifecycle(() => {});
+  registerPiSessionModules({ registerTool: tool => tools.set(tool.name, tool) }, lifecycle, [registerLocalSourceToolsModule]);
+  try {
+    for (const tool of [createSecureLocalReadTool(), tools.get("read")!]) {
+      for (const path of [privateFile, hostile, oversized]) {
+        const result = await invoke(tool, { path }, f.context), output = text(result);
+        assert.equal(result.isError, true); assert.equal(result.details.code, "LOCAL_SOURCE_UNSUPPORTED_FILE");
+        assert.equal(result.details.effectState, "not-established"); assert.equal(result.details.outputWithheld, true);
+        assert.deepEqual(Object.keys(result.details).sort(), ["code", "effectState", "outputWithheld", "sourceGuard"]);
+        assert.match(output, /regular file has 2 hard links/); assert.ok(output.length <= 2000);
+        if (path === hostile) { assert.match(output, /\\nReason\\u003a/); assert.doesNotMatch(output, /[\u001b\u202e]/); }
+        else { assert.match(output, /File path withheld/); assert.ok(!output.includes(f.root)); }
+        assert.doesNotMatch(JSON.stringify(result), /PRIVATE_UNREAD_PAYLOAD|INERT_LOCAL_CANARY_/);
+        for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(output.split(`${label}:`).length, 2);
+      }
     }
   } finally { await lifecycle.shutdown(); }
 }));

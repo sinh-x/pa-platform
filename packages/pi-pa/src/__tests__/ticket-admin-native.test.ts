@@ -142,7 +142,15 @@ test("real native document publication and its own queue intent remain distinct 
     TicketStore.prototype.update = () => { throw Error("Synthetic interruption before native queue"); };
     assert.equal((await document({ action: "queue", ...coordinates, expectedRevision: revision() })).ok, false);
   } finally { TicketStore.prototype.update = update; }
-  assert.equal((await generic("Cannot overwrite the pending queue owner")).details.code, "TICKET_STATUS_OWNER");
+  const pendingReply = await generic("Cannot overwrite the pending queue owner");
+  assert.equal(pendingReply.details.code, "TICKET_STATUS_OWNER"); assert.equal(pendingReply.isError, true);
+  const pendingText = pendingReply.content[0]!.text;
+  assert.match(pendingText, /Document replay found pending publication or queue effects/);
+  assert.match(pendingText, /competing-deployment checks were not evaluated/);
+  assert.match(pendingText, /original document operation owner/);
+  assert.ok(pendingText.length <= 2000);
+  assert.deepEqual(Object.keys(pendingReply.details), ["code"]);
+  for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(pendingText.split(`${label}:`).length, 2);
   const queued = await document({ action: "queue", ...coordinates, expectedRevision: revision() }); assert.equal(queued.ok, true, JSON.stringify(queued));
   assert.equal(new TicketStore().get(id)!.status, "pending-implementation");
   assert.notEqual((await generic("Settled native queue is not a blanket stage fence")).isError, true);

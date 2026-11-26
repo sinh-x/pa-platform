@@ -1,4 +1,5 @@
 import { lstatSync } from "node:fs";
+import { WorkflowMarkerError } from "./marker-diagnostic.js";
 import { getRegistryDbPath } from "../paths.js";
 import { openReadonlyRegistryDatabase } from "../registry/db.js";
 import { RegistryWorkflowJournal } from "../registry/workflows.js";
@@ -29,10 +30,10 @@ export function withExistingWorkflowJournal<T>(read: (journal: RegistryWorkflowJ
   } finally { db.close(); }
 }
 export function assertWorkflowMarkerReferences(refs: unknown, runId: string | null): void {
-  if (refs !== undefined && !Array.isArray(refs)) reject("WORKFLOW_UNCERTAIN");
+  if (refs !== undefined && !Array.isArray(refs)) throw new WorkflowMarkerError("WORKFLOW_UNCERTAIN", "marker-shape");
   const markers = (Array.isArray(refs) ? refs : []).filter(ref => ref && typeof ref === "object" && ref.type === "workflow");
-  if (!runId && markers.length) reject("WORKFLOW_UNCERTAIN");
-  if (markers.length > 1 || markers.some(ref => ref.path !== `registry-workflow:${runId}`)) reject("WORKFLOW_CONFLICT");
+  if (!runId && markers.length) throw new WorkflowMarkerError("WORKFLOW_UNCERTAIN", "marker-unpaired");
+  if (markers.length > 1 || markers.some(ref => ref.path !== `registry-workflow:${runId}`)) throw new WorkflowMarkerError("WORKFLOW_CONFLICT", "marker-conflict");
 }
 export function assertWorkflowMarkerAvailable(repoKey: string, ticket: string, found: boolean, store = new TicketStore(), runId?: string): void {
   const record = store.get(ticket);
@@ -41,18 +42,18 @@ export function assertWorkflowMarkerAvailable(repoKey: string, ticket: string, f
   // Draft snapshots/decisions alone do not freeze independent graph preparation.
   let registryPresent = false;
   try { lstatSync(getRegistryDbPath()); registryPresent = true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") reject("WORKFLOW_UNCERTAIN"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new WorkflowMarkerError("WORKFLOW_UNCERTAIN", "registry-read"); }
   if (registryPresent) {
     const db = openReadonlyRegistryDatabase(true);
     try {
       const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_events'").get();
-      if (table && db.prepare("SELECT 1 FROM document_events WHERE repo_key = ? AND ticket = ? AND json_extract(body, '$.data.kind') = 'intent' LIMIT 1").get(repoKey, ticket)) reject("WORKFLOW_CONFLICT");
+      if (table && db.prepare("SELECT 1 FROM document_events WHERE repo_key = ? AND ticket = ? AND json_extract(body, '$.data.kind') = 'intent' LIMIT 1").get(repoKey, ticket)) throw new WorkflowMarkerError("WORKFLOW_CONFLICT", "document-intent");
     } finally { db.close(); }
   }
   if (!found) {
-    if (record?.doc_refs.some(ref => ref.type === "workflow")) reject("WORKFLOW_UNCERTAIN");
+    if (record?.doc_refs.some(ref => ref.type === "workflow")) throw new WorkflowMarkerError("WORKFLOW_UNCERTAIN", "marker-unpaired");
     return; // unselected legacy identity remains with its original owner
   }
-  if (record?.project !== repoKey) reject("WORKFLOW_AUTHORITY");
+  if (record?.project !== repoKey) throw new WorkflowMarkerError("WORKFLOW_AUTHORITY", "project-mismatch");
   if (runId) assertWorkflowMarkerReferences(record.doc_refs, runId);
 }
