@@ -10,6 +10,28 @@ import { createHarness, runHarness } from "./workflow_installed_harness.mjs";
 import { cleanEnvironment, digest, git, implementationFiles, physicalFile } from "./workflow_installed_support.mjs";
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 const events = () => [...DOCUMENT_CASES.map(([, owner, name]) => ({ type: "test:pass", data: { name, file: join("/fixture/harness", owner.replace(/\.ts$/, ".js")), details: { type: "test" } } })), { type: "test:summary", data: { success: true, counts: { passed: DOCUMENT_CASES.length, failed: 0, cancelled: 0, skipped: 0, todo: 0 } } }];
+// CI must retain the original denial, but identify failed pinned case IDs before
+// the disposable directory is removed. Never print raw child errors/stderr,
+// arbitrary test titles, paths or payloads as a diagnosis.
+function failedDocumentCaseIds(raw, directory) {
+  try {
+    if (typeof raw !== "string") return "event framing unavailable";
+    const rows = raw.trim().split("\n").map(line => JSON.parse(line));
+    const ids = DOCUMENT_CASES.filter(([, owner, name]) => rows.some(row => row?.type === "test:fail"
+      && row.data?.name === name && row.data?.file === join(directory, owner.replace(/\.ts$/, ".js")))).map(([id]) => id);
+    return ids.length ? ids.join(", ") : "no failed pinned case identified; child failure remains unclassified";
+  } catch { return "event framing unavailable"; }
+}
+test("document harness failure diagnostics name only exact pinned case IDs and never raw child context", () => {
+  const rows = events(); rows[0].type = "test:fail"; rows[1].type = "test:fail";
+  rows[0].data.details = { error: { message: "PRIVATE_FIXTURE_CONTEXT" } };
+  assert.equal(failedDocumentCaseIds(rows.map(row => JSON.stringify(row)).join("\n"), "/fixture/harness"), "extensible-contract, contract-negatives");
+  rows[0].data.name = "PRIVATE_FIXTURE_CONTEXT"; rows[1].data.file = "/foreign/PRIVATE_FIXTURE_CONTEXT.js";
+  assert.doesNotMatch(failedDocumentCaseIds(rows.map(row => JSON.stringify(row)).join("\n"), "/fixture/harness"), /PRIVATE_FIXTURE_CONTEXT/);
+  assert.equal(failedDocumentCaseIds("PRIVATE_FIXTURE_CONTEXT", "/fixture/harness"), "event framing unavailable");
+  const all = events().map(row => ({ ...row, type: "test:fail" }));
+  assert.ok(failedDocumentCaseIds(all.map(row => JSON.stringify(row)).join("\n"), "/fixture/harness").length <= 2000);
+});
 test("PAP-283 installed accounting requires all 45 exact document owners, not advisory cases or caller totals", () => {
   assert.equal(DOCUMENT_CASES.length, 45); assert.equal(new Set(initialDocumentCases().map(r => r.id)).size, initialDocumentCases().length);
   assert.equal(accountDocumentCases(events(), "/fixture/harness").cases.length, 45);
@@ -43,7 +65,7 @@ test("document installed verifier rejects source/config/result/skip overrides an
   const report = JSON.parse(run.stdout); assert.equal(report.status, "blocked"); assert.equal(report.installationPerformed, false); assert.equal(report.enablementPerformed, false); assert.equal(report.humanApproval, false); assert.equal(report.humanUat, false);
   assert.ok(report.cases.every(row => row.status === "not-run")); assert.deepEqual(report.cases.map(r => r.id), initialDocumentCases().map(r => r.id)); assert.equal(git(root, "status", "--porcelain=v2", "--untracked-files=all"), before);
 });
-test("source-built document driver unit runs the pinned 45-case harness and default entry mechanics without an installed-pass claim", async () => {
+test("source-built document driver unit runs the pinned 45-case harness and default entry mechanics without an installed-pass claim", async t => {
   const scratch = mkdtempSync(join(tmpdir(), "pap283-driver-unit-")), directory = join(scratch, "harness");
   try {
     // No public source-mode exists. This internal harness/driver unit is NOT
@@ -61,7 +83,15 @@ test("source-built document driver unit runs the pinned 45-case harness and defa
     const loader = new URL("./workflow_import_register.mjs", import.meta.url); loader.searchParams.set("frame", frame);
     const env = { ...cleanEnvironment(), NODE_OPTIONS: `--import=${loader.href}`, HOME: join(scratch, "home"), PA_PLATFORM_CONFIG: join(scratch, "config"), PA_AI_USAGE_HOME: join(scratch, "usage"), PA_REGISTRY_DB: join(scratch, "registry.db"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...(process.env.PA_SQLITE_NATIVE_BINDING ? { PA_SQLITE_NATIVE_BINDING: process.env.PA_SQLITE_NATIVE_BINDING } : {}) };
     for (const name of ["HOME", "PA_PLATFORM_CONFIG", "PA_AI_USAGE_HOME"]) mkdirSync(env[name], { recursive: true });
-    const result = runHarness({ directory, harness, env, reporter: fileURLToPath(new URL("./workflow_test_reporter.mjs", import.meta.url)), evidenceRoot: scratch, account: accountDocumentCases });
+    let result;
+    try {
+      result = runHarness({ directory, harness, env, reporter: fileURLToPath(new URL("./workflow_test_reporter.mjs", import.meta.url)), evidenceRoot: scratch, account: accountDocumentCases });
+    } catch (error) {
+      let summary = "event evidence unavailable";
+      try { summary = failedDocumentCaseIds(readFileSync(join(scratch, "native-test-events.jsonl"), "utf8"), directory); } catch { /* no raw alternate-reader fallback */ }
+      t.diagnostic(`Failed pinned document cases: ${summary}. Original qualification failure is preserved; child error bodies are withheld.`);
+      throw error;
+    }
     assert.equal(result.cases.length, 45); assert.equal(result.tests.skipped, 0); assert.equal(result.tests.failed, 0);
     const bin = join(scratch, "bin"); mkdirSync(bin);
     for (const [binary, pkg] of [["ppa", "pi-pa"], ["opa", "opencode-pa"]]) writeFileSync(join(bin, binary), `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' '${join(root, `packages/${pkg}/dist/cli.js`).replaceAll("'", "'\\''")}' "$@"\n`, { mode: 0o700 });
