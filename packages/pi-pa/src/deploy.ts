@@ -516,7 +516,8 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
         if (!request.dryRun) {
           const selection = repositoryIsolationSelection(team, mode, request, "pi");
           assertRepositoryIsolationAvailable(selection);
-          assertRepositoryIsolationResumeAvailable(request.resume, "pi", selection);
+          // Ordinary history keeps runtime diagnostics with the session reader.
+          assertRepositoryIsolationResumeAvailable(request.resume, selection.instructionOnly ? "pi" : undefined, selection);
         }
         assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
       }
@@ -610,7 +611,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (!request.dryRun) {
       const selection = repositoryIsolationSelection(team, mode, request, "pi");
       assertRepositoryIsolationAvailable(selection);
-      assertRepositoryIsolationResumeAvailable(request.resume, "pi", selection);
+      // Rogue-One already checked its exact native runtime before selection;
+      // other historical routes keep runtime diagnostics with readSession.
+      assertRepositoryIsolationResumeAvailable(request.resume, selection.instructionOnly ? "pi" : undefined, selection);
     }
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
     // A profile-only team has no generic base route. Missing mode/default must

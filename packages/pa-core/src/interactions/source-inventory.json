@@ -137,7 +137,7 @@
     "packages/pa-core/src/tickets/validate.ts": "76c2434d10a59cb99aba558947be5b4364b1f7d45d3e5d27bfe7f1440e464af5",
     "packages/pa-core/src/types.ts": "8e9da3c739f6f89fceeb75035832e02b6129d6fbe7b0c5ce1e9dcdc3a7b04738",
     "packages/pa-core/src/yaml-parser.ts": "6b200242f989cde99a97c877a673955d36df65c7221e0bbbb7e526a47f451dc2",
-    "packages/pi-pa/src/deploy.ts": "b61132d334111062514d872d0b211c216eaf4ab5417dcd774f19363409ca2c6b",
+    "packages/pi-pa/src/deploy.ts": "9ec176c59f5a0e0635eb475c2a46e91cc073a6cd3f42a172efb23e1872acf167",
     "packages/pi-pa/src/readonly-helper.ts": "f6f15ec7a855baa5ff3a2ce3c4205f7bba19ec6760b7419ce206fa278e149103",
     "packages/opencode-pa/src/deploy.ts": "ec3af6a4ad6bf265ec4c64bf2ce2df6097e1d96bbf3643e8d0ac8cbdb43e2339",
     "packages/pi-pa/src/document-confirmation-native.ts": "9372fe16478708160a0e656a712de446a27428e6f0e73596f733acf2e244da1c",
