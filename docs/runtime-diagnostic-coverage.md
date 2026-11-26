@@ -44,7 +44,7 @@ request had no effects. Downstream checks after the decisive branch are not run.
 | Workflow read failure | Replay/lookup did not return usable evidence | Availability unknown, not a verified live owner; workflow runtime maintainer inspects original lineage |
 | Pending document | Document journal replay returned pending effects | Original document owner reconciles; later deployment checks not evaluated |
 | Document/registry probe failure | Existing record could not be read/replayed | Availability unknown; PA registry/document maintainer inspects, not an approval loop |
-| Marker rejection (status) | Existing workflow marker guard rejected | Preserve that guard's typed facts where available; otherwise marker eligibility unproven, not a guessed pending document |
+| Marker rejection (status/admin read) | Existing marker owner supplies typed list-shape, missing-run, conflicting-marker, project-mismatch, registry-read or document-intent facts | Each known branch retains its own reason and workflow code; document intent does not assert live execution; arbitrary lower failures remain explicitly unproven |
 | Too many competing records | More than 256 competing records were returned | Bounded process checks were not run; registry maintainer establishes available custody |
 | Active/nonterminal record | Registry state outside terminal release labels | Registry reports unreleased competing work; wait for supported owning lifecycle, not a verified process identity |
 | Terminal without PID | No PID available for required release probe | Process release unknown; registry/process maintainer inspects original record |
@@ -55,6 +55,28 @@ request had no effects. Downstream checks after the decisive branch are not run.
 Waiting/asking has impact **none**, actor **operator**, no new approval to ask/wait;
 any repair needs its own authority. All resume conditions require proven eligible
 custody and fresh admission, preserving original intent and effect uncertainty.
+
+## P2 source reconciliation
+
+The ticket ownership slice now preserves distinct constants at the original guard
+branches, without adding probes or changing verdict/order. A found process entry is
+not process identity; absent process entries still allow the existing release path.
+The registered competing deployment ID is included only in its existing public
+`d-` plus six hexadecimal form, never a PID/path/record body. Original operation
+effects remain distinct from the current blocked custody-gated write.
+
+The existing workflow marker owner now throws a `JsonWorkflowError` subtype carrying
+its original finite cause privately. Existing code/gate/owner fields remain; marker
+checks, SQL, order and cleanup are unchanged. The status owner maps those facts,
+not exception text. Other raw infrastructure failures retain existing workflow
+contracts and are not guessed into marker conflicts.
+
+After branch tests and contract reconciliation, source-inventory renews only the
+two changed ticket status digests and adds their pure formatter plus the existing
+marker owner and its typed diagnostic. Interaction forms, null bindings/schema
+refs, tool admission, statuses, exits and discovery availability are unchanged.
+No adapter capabilities or supported command grammar are added. This is an
+implementer reconciliation, not independent coverage or installed qualification.
 
 ## Completion rule
 

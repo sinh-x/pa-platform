@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import type { TicketOwnershipCause } from "./ownership-diagnostic.js";
+import { WorkflowMarkerError, type WorkflowMarkerCause } from "../workflows/marker-diagnostic.js";
 import { lstatSync } from "node:fs";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { modeCapabilitySessionMatches, capabilityToolSelected, parseModeCapabilityBinding, type ModeCapabilityBinding } from "../mode-capabilities.js";
@@ -28,46 +30,72 @@ export function parseTicketStatusRequest(raw: string): TicketStatusRequest {
       || typeof row.expectedVersion !== "string" || !/^[a-f0-9]{64}$/.test(row.expectedVersion) || !TICKET_STATUSES.includes(row.status as TicketStatus)))) return statusFail("TICKET_STATUS_INPUT");
   return row as unknown as TicketStatusRequest;
 }
+const markerCauses: Record<WorkflowMarkerCause, TicketOwnershipCause> = {
+  "record-read": "ticket-read", "registry-read": "marker-registry-read", "document-intent": "marker-document-intent",
+  "marker-shape": "marker-shape", "marker-unpaired": "marker-unpaired", "marker-conflict": "marker-conflict", "project-mismatch": "marker-project",
+};
+function ownerFailure(error: unknown, fallback: TicketOwnershipCause): never {
+  let cause = fallback;
+  try { if (error instanceof WorkflowMarkerError) cause = markerCauses[error.markerCause] ?? fallback; } catch { /* Untrusted faults cannot supply facts. */ }
+  return statusFail("TICKET_STATUS_OWNER", cause);
+}
+function missingEntry(error: unknown): boolean {
+  try { return (error as NodeJS.ErrnoException)?.code === "ENOENT"; } catch { return false; }
+}
 /** Live or unknown competing ownership blocks mutation, never safe inspection.
  * A terminal label alone does not release a live/reused/unreadable PID. */
 export function assertTicketStatusOwner(store: TicketStore, ticket: string, caller: TicketStatusCaller): void {
+  let cause: TicketOwnershipCause = "workflow-read";
   try {
-    if (readTicketWorkflow(ticket)) return statusFail("TICKET_STATUS_OWNER");
+    if (readTicketWorkflow(ticket)) { cause = "workflow-retained"; return statusFail("TICKET_STATUS_OWNER", cause); }
+    cause = "marker-unproven";
     assertWorkflowMarkerAvailable(caller.repoKey, ticket, false, store);
-    assertTicketCompetingDeployments(ticket, caller);
-  } catch { return statusFail("TICKET_STATUS_OWNER"); }
+  } catch (error) { return ownerFailure(error, cause); }
+  assertTicketCompetingDeployments(ticket, caller);
 }
 /** Generic administration is stage/role independent. Retained workflow records,
  * decisions and completed publications are history, not live custody. Reuse the
  * owning journal replayers so corrupt/unknown and unsettled effects still fail
  * closed; never import their approvals as administrative authority. */
 export function assertTicketAdminOwner(store: TicketStore, ticket: string, caller: TicketStatusCaller): void {
+  let cause: TicketOwnershipCause = "ticket-read";
   try {
     const record = store.get(ticket);
-    if (!record || record.project !== caller.repoKey) return statusFail("TICKET_STATUS_OWNER");
+    if (!record || record.project !== caller.repoKey) { cause = "ticket-scope"; return statusFail("TICKET_STATUS_OWNER", cause); }
+    cause = "workflow-read";
     const workflow = readTicketWorkflow(ticket);
-    if (workflow?.pending.length) return statusFail("TICKET_STATUS_OWNER");
+    if (workflow?.pending.length) { cause = "workflow-pending"; return statusFail("TICKET_STATUS_OWNER", cause); }
+    cause = "document-read";
     let present = false;
     try { lstatSync(getRegistryDbPath()); present = true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    catch (error) { if (!missingEntry(error)) throw error; }
     if (present) {
       const db = openReadonlyRegistryDatabase(true);
       try {
         const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_events'").get();
-        if (table && documentPending(new RegistryDocumentJournal(db).events(caller.repoKey, ticket)).length) return statusFail("TICKET_STATUS_OWNER");
+        if (table && documentPending(new RegistryDocumentJournal(db).events(caller.repoKey, ticket)).length) {
+          cause = "document-pending"; return statusFail("TICKET_STATUS_OWNER", cause);
+        }
       } finally { db.close(); }
     }
-    assertTicketCompetingDeployments(ticket, caller);
-  } catch { return statusFail("TICKET_STATUS_OWNER"); }
+  } catch (error) { return ownerFailure(error, cause); }
+  assertTicketCompetingDeployments(ticket, caller);
 }
 function assertTicketCompetingDeployments(ticket: string, caller: TicketStatusCaller): void {
-    const others = getDeploymentsByTicketId(ticket).filter(s => s.deploy_id !== caller.deploymentId);
-    if (others.length > 256) return statusFail("TICKET_STATUS_OWNER");
-    for (const other of others) {
-      if (!["success", "partial", "failed", "crashed", "dead"].includes(other.status) || !other.pid) return statusFail("TICKET_STATUS_OWNER");
-      try { lstatSync(`/proc/${other.pid}`); return statusFail("TICKET_STATUS_OWNER"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return statusFail("TICKET_STATUS_OWNER"); }
+  let others: ReturnType<typeof getDeploymentsByTicketId>;
+  try { others = getDeploymentsByTicketId(ticket).filter(s => s.deploy_id !== caller.deploymentId); }
+  catch { return statusFail("TICKET_STATUS_OWNER", "deployment-read"); }
+  if (others.length > 256) return statusFail("TICKET_STATUS_OWNER", "deployment-limit");
+  for (const other of others) {
+    if (!["success", "partial", "failed", "crashed", "dead"].includes(other.status)) return statusFail("TICKET_STATUS_OWNER", "deployment-active", other.deploy_id);
+    if (!other.pid) return statusFail("TICKET_STATUS_OWNER", "process-missing", other.deploy_id);
+    try { lstatSync(`/proc/${other.pid}`); }
+    catch (error) {
+      if (!missingEntry(error)) return statusFail("TICKET_STATUS_OWNER", "process-unreadable", other.deploy_id);
+      continue;
     }
+    return statusFail("TICKET_STATUS_OWNER", "process-present", other.deploy_id);
+  }
 }
 /** Trusted adapters authenticate under the actual shared ticket mutex. This
  * request cannot supply caller identity, an actor, decisions or callbacks. */

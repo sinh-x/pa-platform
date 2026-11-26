@@ -1,4 +1,5 @@
 import { readdirSync } from "node:fs";
+import { renderTicketOwnershipDiagnostic, type TicketOwnershipCause } from "./ownership-diagnostic.js";
 import { isDeepStrictEqual } from "node:util";
 import { AdvisoryFiles } from "../operations/files.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
@@ -8,7 +9,7 @@ import { isCanonicalTicketId } from "./validate.js";
 export const TICKET_STATUSES: readonly TicketStatus[] = Object.freeze([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
 export type TicketStatusCode = "TICKET_STATUS_ROUTE" | "TICKET_STATUS_INPUT" | "TICKET_STATUS_SESSION" | "TICKET_STATUS_OWNER" | "TICKET_STATUS_STALE" | "TICKET_STATUS_CONFLICT" | "TICKET_STATUS_UNCERTAIN";
 export class TicketStatusError extends Error {
-  constructor(readonly code: TicketStatusCode) {
+  constructor(readonly code: TicketStatusCode, ownershipCause?: TicketOwnershipCause, deploymentId?: string) {
     const reasons: Record<TicketStatusCode, string> = {
       TICKET_STATUS_ROUTE: "This selected requirements session must use its finite status owner, not a legacy status update or soft-delete route. Use the Pi ticket-status interface with an inspected version and original request ID.",
       TICKET_STATUS_INPUT: "The bounded status-only request or lifecycle precondition is invalid. No actor, approval or unrelated field is accepted.",
@@ -18,10 +19,10 @@ export class TicketStatusError extends Error {
       TICKET_STATUS_CONFLICT: "The original request identity is already bound to different content. Existing evidence is preserved.",
       TICKET_STATUS_UNCERTAIN: "The ticket, original intent or audit cannot establish a settled result. A partial effect is possible.",
     };
-    super(`Ticket status has no proven successful result; preserve the original request.\nCondition: The administrative status request is blocked or unsettled.\nSource: Ticket status owner (${code}).\nReason: ${reasons[code]}\nCorrection: Inspect the same ticket and original request with its runtime owner. Impact: read-only. Actor: agent or operator. New approval: not required for inspection. Prerequisite: preserve the original request ID, expected version and content; do not delete evidence or create a replacement intent.\nResume Action: Reconcile uncertain work through the original owner before retrying. After a proven stale precondition, inspect current content before a new status decision. Every effect rechecks caller, lifecycle and ownership; status is not publication, queue or acceptance.`);
+    super(code === "TICKET_STATUS_OWNER" ? renderTicketOwnershipDiagnostic(ownershipCause, deploymentId) : `Ticket status has no proven successful result; preserve the original request.\nCondition: The administrative status request is blocked or unsettled.\nSource: Ticket status owner (${code}).\nReason: ${reasons[code]}\nCorrection: Inspect the same ticket and original request with its runtime owner. Impact: read-only. Actor: agent or operator. New approval: not required for inspection. Prerequisite: preserve the original request ID, expected version and content; do not delete evidence or create a replacement intent.\nResume Action: Reconcile uncertain work through the original owner before retrying. After a proven stale precondition, inspect current content before a new status decision. Every effect rechecks caller, lifecycle and ownership; status is not publication, queue or acceptance.`);
   }
 }
-export const statusFail = (code: TicketStatusCode): never => { throw new TicketStatusError(code); };
+export const statusFail = (code: TicketStatusCode, ownershipCause?: TicketOwnershipCause, deploymentId?: string): never => { throw new TicketStatusError(code, ownershipCause, deploymentId); };
 export const statusVersion = (ticket: Ticket): string => creationDigest(ticket);
 export interface TicketStatusHooks { assertCurrent(): void; assertCandidate?(ticket: Ticket): void; afterPersist?(stage: "intent" | "ticket" | "audit"): void }
 export interface TicketStatusIntent extends TicketCreateIntentIdentity {
