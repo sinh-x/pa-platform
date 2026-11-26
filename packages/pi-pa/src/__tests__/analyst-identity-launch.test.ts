@@ -4,8 +4,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { appendRegistryEvent, closeDb, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, parseTeamYamlContent, queryDeploymentStatus, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, queryReadonlyOrdinaryResume, readRecordedRuntimeSession, appendRegistryEvent, closeDb, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, parseTeamYamlContent, queryDeploymentStatus, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { createPiHooks, deployWithPi } from "../deploy.js";
+import { PiAdapter } from "../adapter.js";
 import { registerDocumentModule } from "../pi-extension/document-tool.js";
 import { createPiExecutionModule, createPiPhaseReportModule } from "../pi-extension/prepared-workflow.js";
 import { interceptToolCall } from "../pi-extension/safety.js";
@@ -20,13 +21,15 @@ for (const { name, team, mode, legacy, drift, selected } of [
   ...[["coordinator", "coordinate"], ["analyst", "analyze"], ["builder", "implement"], ["review", "verify"], ["rollout", "rollout"], ["evidence-lab", "investigate"]].map(([team, mode]) => ({
     name: `PAP-329 launches ordinary ${team}/${mode} without legacy workflow authority`, team: team!, mode: mode!, legacy: false, drift: false, selected: false,
   })),
+  { name: "PAP-347 ordinary ticketless Analyst reaches the actual Pi adapter and resumes", team: "analyst", mode: "analyze", legacy: false, drift: false, selected: false },
+  { name: "PAP-347 CLI ordinary Analyst traverses shared admission, Pi hooks and actual adapter", team: "analyst", mode: "analyze", legacy: false, drift: false, selected: false },
   ...managedRoutes.map(([team, mode]) => ({
     name: `PAP-329 selected PAPC ${team}/${mode} reaches Pi through the CLI`, team: team!, mode: mode!, legacy: false, drift: false, selected: true,
   })),
 ]) test(name, async t => {
-  // Preserve historical functional assertions for a future qualified executor;
-  // PAP-334's interim Analyst boundary is exercised by repository-isolation-launch.
-  if (team === "analyst") return t.skip("PAP-334: no qualified Analyst executor; functional launch assertions deferred");
+  // Legacy protected Analyst assertions still need a qualified executor. The
+  // ordinary instruction-only route is independently supported by PAP-347.
+  if (team === "analyst" && legacy) return t.skip("protected Analyst executor remains unqualified (PAP-338)");
   const selectedPath = join(selectedConfigRoot, "teams", `${team}.yaml`);
   if (selected && !existsSync(selectedPath)) return t.skip("external PAPC selected team is unavailable");
   const selectedYaml = selected ? readFileSync(selectedPath, "utf8") : undefined;
@@ -41,7 +44,7 @@ for (const { name, team, mode, legacy, drift, selected } of [
     writeFileSync(join(config, "config.yaml"), `repos:\n example:\n  path: ${repo}\n  prefix: EX\n`);
     writeFileSync(join(config, "docs/objective.md"), "Captured public objective.\n");
     writeFileSync(join(config, "docs/completion.md"), "Captured PUBLIC completion, not the legacy fragment.\n");
-    const ticket = legacy || team === "coordinator" || team === "evidence-lab" ? undefined : "EX-1";
+    const ticket = legacy || name.includes("ticketless") || team === "coordinator" || team === "evidence-lab" ? undefined : "EX-1";
     writeFileSync(join(config, `teams/${team}.yaml`), `name: ${team}\nobjective: fallback must not load\nagents: []\ndefault_mode: ${mode}\nglobal_docs: [docs/completion.md]\ndeploy_modes:\n - id: ${mode}\n   label: Analyze\n   provider: openai\n   model: fixture\n${legacy ? "   objective: docs/objective.md\n   document_profile: pa-document-policy/v1\n   capability_policy: {version: pa-mode-capabilities/v1, allow: []}\n" : `   objective: Plain PAPC objective.\n   mode_type: interactive\n${team === "coordinator" ? "" : "   require_ticket: true\n"}`}`);
     if (selectedTeam && selectedYaml) {
       writeFileSync(join(config, `teams/${team}.yaml`), selectedYaml);
@@ -62,16 +65,54 @@ for (const { name, team, mode, legacy, drift, selected } of [
     for (const key of ["PA_DEPLOYMENT_ID", "PA_TEAM", "PA_MODE", "PA_TICKET_ID"]) delete process.env[key];
     process.chdir(repo);
     let spawns = 0, lateCustody: "hooks" | "preflight" | "gate" | undefined;
-    const adapter: RuntimeAdapter = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "disposable-launch",
+    let runtimeStarts = 0;
+    const actualAdapter = new PiAdapter({ cwd: repo, env: {}, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+      runCommand(args, options) {
+        runtimeStarts++;
+        assert.ok(args.includes("--session-id"));
+        assert.equal(options?.cwd, repo);
+        assert.equal(options?.env?.PA_TEAM, "analyst");
+        return { status: 0, stdout: "", stderr: "" };
+      } });
+    const adapter: RuntimeAdapter = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => team === "analyst" ? actualAdapter.allocateSessionId() : "disposable-launch",
       installHooks() {
         if (drift) writeFileSync(join(config, "docs/objective.md"), "Changed AFTER immutable selection.\n");
         if (lateCustody === "hooks") writeFileSync(repositoryMutationLeasePath(repo), "late fixture custody");
       },
       describeTools: () => ({ runtime: "pi", markdown: "Disposable source tools." }), extractActivity: () => [],
       async resume(options) {
-        assert.equal(team, "builder");
-        assert.equal(options.sessionId, "disposable-launch");
+        assert.ok(team === "builder" || team === "analyst");
         assert.equal(options.executionPlan?.treehouse, undefined);
+        if (team === "analyst") {
+          // The synthetic child cannot publish a real PID. Exercise the existing
+          // launch gate here; production adapter supervision owns it in live use.
+          const selection = assertRepositoryIsolationIngressAvailable([options.env], options.executionPlan, true);
+          assert.equal(selection.instructionOnly, true);
+          assertRepositoryIsolationResumeAvailable(options.resumedFromDeploymentId, "pi", selection);
+          const prior = queryReadonlyOrdinaryResume(options.resumedFromDeploymentId!);
+          assert.equal(prior.repo_root, options.executionPlan?.repoRoot);
+          assert.equal(prior.worktree_root, options.executionPlan?.worktreeRoot);
+          assert.equal(prior.repo, options.executionPlan?.repositoryCwd);
+          assert.equal(prior.ticket_id || undefined, options.executionPlan?.ticket);
+          assert.equal(readRecordedRuntimeSession(options.resumedFromDeploymentId!, "session-id-pi.txt"), options.sessionId);
+          const startsBefore = runtimeStarts;
+          for (const change of [
+            { sessionId: "wrong-session" },
+            { executionPlan: { ...options.executionPlan!, ticket: "EX-999" } },
+            { executionPlan: { ...options.executionPlan!, worktreeRoot: root } },
+            { executionPlan: { ...options.executionPlan!, repoRoot: root } },
+            { env: { ...options.env!, PA_TEAM: "builder" } },
+          ]) {
+            const denied = await actualAdapter.resume({ ...options, ...change, beforeRuntimeStart: undefined });
+            assert.equal(denied.exitCode, 1);
+            assert.match(denied.errorMessage!, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+            assert.equal(runtimeStarts, startsBefore);
+          }
+          await Promise.resolve(); // production PID observation happens after startup mutex returns
+          options.beforeRuntimeStart?.(process.pid);
+          return actualAdapter.resume({ ...options, beforeRuntimeStart: undefined });
+        }
+        assert.equal(options.sessionId, "disposable-launch");
         return { sessionId: options.sessionId, exitCode: 0, metadata: { sessionId: options.sessionId } };
       },
       async spawn(options) {
@@ -102,6 +143,11 @@ for (const { name, team, mode, legacy, drift, selected } of [
             assert.equal(options.env?.PA_MODEL, "gpt-6.2-sol");
           } else assert.match(primer, /Plain PAPC objective/);
           assert.equal(options.executionPlan?.ticketRequired, false);
+          if (team === "analyst") {
+            assert.match(primer, /instruction-only/i);
+            assert.match(primer, /Do not edit.*repository|Do not.*repository.*edit/i);
+            assert.match(primer, /not.*(?:sandbox|confinement)|no.*(?:sandbox|confinement)/i);
+          }
           assert.doesNotMatch(primer, /Effective native identity and audit actor|status transitions belong to the parent flow/i);
           const launcherEnv = process.env;
           process.env = { ...launcherEnv, ...options.env };
@@ -119,6 +165,23 @@ for (const { name, team, mode, legacy, drift, selected } of [
             assert.equal(interceptToolCall({ toolName: "bash", input: { command: "rm fixture.txt" } }).allowed, false);
             assert.equal(interceptToolCall({ toolName: "read", input: { path: ".env" } }).allowed, false);
           } finally { process.env = launcherEnv; }
+        }
+        if (team === "analyst") {
+          for (const change of [
+            { mode: "background" as const },
+            { executionPlan: undefined },
+            { executionPlan: { ...options.executionPlan!, invocation_channel: "api" as const } },
+            { executionPlan: { ...options.executionPlan!, repositoryAdmission: { ...options.executionPlan!.repositoryAdmission, plainInteractive: undefined } } },
+            { env: { ...options.env!, PA_MODE: "other" } },
+            { env: { ...options.env!, PA_TEAM: "rogue-one" } },
+          ]) {
+            const denied = await actualAdapter.spawn({ ...options, ...change, beforeRuntimeStart: undefined });
+            assert.equal(denied.exitCode, 1);
+            assert.match(denied.errorMessage!, /REPOSITORY_ISOLATION_UNAVAILABLE/);
+            assert.equal(runtimeStarts, 0);
+          }
+          options.beforeRuntimeStart?.(process.pid);
+          return actualAdapter.spawn({ ...options, beforeRuntimeStart: undefined });
         }
         return { sessionId: options.sessionId!, exitCode: 0, metadata: { sessionId: options.sessionId! } };
       } };
@@ -162,7 +225,7 @@ for (const { name, team, mode, legacy, drift, selected } of [
       lateCustody = undefined;
     }
     let result!: Awaited<ReturnType<typeof deployWithPi>>;
-    if (selected) {
+    if (selected || name.includes("CLI")) {
       const hooks = createPiHooks(adapter), output: string[] = [], errors: string[] = [];
       const code = await runCoreCommand(["deploy", team, "--mode", mode, "--repo", "example", ...(ticket ? ["--ticket", ticket] : [])], {
         binaryName: "ppa", io: { stdout: line => output.push(line), stderr: line => errors.push(line) },
@@ -185,7 +248,8 @@ for (const { name, team, mode, legacy, drift, selected } of [
       assert.equal(started.ticket_id || undefined, ticket);
       // The fixture exits cleanly without an operator staging task completion.
       assert.equal(queryDeploymentStatus(result.deploymentId)?.status, "partial");
-      if (team === "builder") {
+      if (team === "builder" || team === "analyst") {
+        if (team === "analyst") assert.equal(runtimeStarts, 1, "actual adapter reaches the synthetic child seam");
         const retained = "d-329abc";
         appendRegistryEvent({ ...started, deployment_id: retained, repository_slot: "implement" });
         const retainedEvents = getDeploymentEvents(retained);
@@ -199,6 +263,7 @@ for (const { name, team, mode, legacy, drift, selected } of [
         const resumed = getDeploymentEvents(continued.deploymentId!).find(event => event.event === "started");
         assert.equal(resumed?.resumed_from_deployment_id, result.deploymentId);
         assert.deepEqual(getDeploymentEvents(result.deploymentId), originalEvents);
+        if (team === "analyst") assert.equal(runtimeStarts, 2, "actual adapter resumes the recorded native session");
       }
     }
     assert.ok(getDeployPaths(result.deploymentId).deployDir.startsWith(usage));

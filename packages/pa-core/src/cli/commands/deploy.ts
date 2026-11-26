@@ -1,6 +1,6 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, isPlainInteractiveMode, isRogueOneTeam, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
-import { assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "../../deploy/repository-isolation.js";
+import { repositoryIsolationSelection, assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "../../deploy/repository-isolation.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile, assertNoSensitiveMatch } from "../../sensitive-patterns.js";
 import { basename, resolve } from "node:path";
@@ -282,8 +282,9 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
       const mode = resolveDeployMode(team, resolved.request.mode);
       plainInteractive = !resolved.request.ticketWorktree && isPlainInteractiveMode(mode);
       if (!resolved.request.dryRun) {
-        assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
-        assertRepositoryIsolationResumeAvailable(resolved.request.resume);
+        const selection = repositoryIsolationSelection(team, mode, resolved.request, binaryName === "ppa" ? "pi" : "opencode");
+        assertRepositoryIsolationAvailable(selection);
+        assertRepositoryIsolationResumeAvailable(resolved.request.resume, undefined, selection);
       }
       assertDeployResumeMode(team, resolved.request.resume, plainInteractive ? mode : undefined);
     }

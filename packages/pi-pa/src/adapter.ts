@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readSession } from "./session-owner.js";
-import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
+import { assertRepositoryIsolationIngressAvailable, assertRepositoryIsolationResumeAvailable, queryReadonlyOrdinaryResume, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -263,10 +263,15 @@ export class PiAdapter implements RuntimeAdapter {
     // a protected immutable plan, and a direct/legacy resume needs native scope.
     // No probe, prompt snapshot, runtime process or output file precedes this.
     try {
-      assertRepositoryIsolationIngressAvailable([this.env, opts.env, env], plan);
+      const selection = assertRepositoryIsolationIngressAvailable([this.env, opts.env, env], plan, opts.mode === "foreground");
       if (resumeId !== undefined) {
         if (!resumedFromDeploymentId) throw new RepositoryIsolationUnavailableError();
-        assertRepositoryIsolationResumeAvailable(resumedFromDeploymentId, "pi");
+        assertRepositoryIsolationResumeAvailable(resumedFromDeploymentId, "pi", selection);
+        if (selection.instructionOnly) {
+          const prior = queryReadonlyOrdinaryResume(resumedFromDeploymentId);
+          if (prior.repo_root !== plan!.repoRoot || prior.worktree_root !== plan!.worktreeRoot || prior.repo !== plan!.repositoryCwd
+            || (prior.ticket_id || undefined) !== plan!.ticket) throw new RepositoryIsolationUnavailableError();
+        }
         if (!resumeId || readSession(resumedFromDeploymentId, this.sessionFileName) !== resumeId) throw new RepositoryIsolationUnavailableError();
         id = resumeId;
       } else {

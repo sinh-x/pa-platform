@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type RepositoryChildSettlementResult } from "@pa-platform/pa-core";
 import { observeReadonlyRepositoryTicketSlot, readReviewEvidenceFile } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
-import { assertMatchingRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup, assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
+import { assertMatchingRuntime, isPlainInteractiveMode, queryReadonlyDeploymentStatus, withOrdinaryRepositoryStartup, repositoryIsolationSelection, assertRepositoryIsolationAvailable, assertRepositoryIsolationResumeAvailable, RepositoryIsolationUnavailableError } from "@pa-platform/pa-core";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -514,8 +514,9 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
       try {
         ({ team, mode } = selectPiTeamConfig(request));
         if (!request.dryRun) {
-          assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
-          assertRepositoryIsolationResumeAvailable(request.resume);
+          const selection = repositoryIsolationSelection(team, mode, request, "pi");
+          assertRepositoryIsolationAvailable(selection);
+          assertRepositoryIsolationResumeAvailable(request.resume, "pi", selection);
         }
         assertDeployResumeMode(team, request.resume, request.ticketWorktree ? undefined : mode);
       }
@@ -607,8 +608,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     } else if (isRogueOneTeam(team.name)) request = { ...request, mode: mode!.id };
     if (plainInteractive) inheritedAttempt = undefined;
     if (!request.dryRun) {
-      assertRepositoryIsolationAvailable({ team: team.name, mode: mode?.id, documentProfile: mode?.document_profile });
-      assertRepositoryIsolationResumeAvailable(request.resume);
+      const selection = repositoryIsolationSelection(team, mode, request, "pi");
+      assertRepositoryIsolationAvailable(selection);
+      assertRepositoryIsolationResumeAvailable(request.resume, "pi", selection);
     }
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
     // A profile-only team has no generic base route. Missing mode/default must

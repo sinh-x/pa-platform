@@ -1,5 +1,36 @@
 # PA interaction foundation (PAP-282)
 
+## PAP-347 bounded ordinary Analyst reconciliation
+
+This supersedes only the historical blanket public-Analyst rejection below.
+`deploy.launch`/`deploy.resume` keep their existing forms, launch effect, owner
+disposition, null bindings/schema references and unproven installed availability.
+The shared PPA CLI, Pi preflight/deploy and actual adapter now distinguish resolved
+ordinary foreground Pi `analyst/analyze` from protected execution. Optional tickets
+remain correlation, not Builder custody. Force, background, API, OPA, ticket-worktree,
+legacy/profile and raw environment-only routes retain rejection. No new command,
+selector, tool grant, generic forwarding, privacy exception or native record writer
+is introduced. The primer carries no-repository/source/Git-write and no-implementation
+instructions with an explicit instruction-only, non-sandbox limit; PAP-338 remains
+future technical protection.
+
+The ordinary plan now retains its existing profile classification as
+`repositoryAdmission.plainInteractive`; the adapter requires that classification,
+foreground/non-locking/no-custody evidence and agreement of all identity sources.
+Ordinary resumes reuse raw complete ordinary lineage plus original recorded session,
+roots, ticket, Pi/PPA and role checks. Protected notes/bindings/custody and uncertain
+history reject without migration or a fresh fallback. Tests exercise ordinary
+shared CLI/hooks/actual adapter code through synthetic process/probe seams, as well
+as omitted-plan, conflicting-env, excluded-route, wrong-root/ticket/token and native
+ancestry negatives. Production PID supervision remains unchanged; the synthetic
+child fixture explicitly models the gate without claiming real PID qualification.
+
+After this forms/effects/owner reconciliation and negative coverage, six changed
+tracked source digests are renewed: core CLI deploy, repository admission/isolation,
+primer composition, Pi deploy and Pi adapter. No other tracked owner is renewed.
+This is implementer reconciliation, not independent Review, installed qualification,
+agent behavior or human acceptance. Source-inventory tests only detect byte drift.
+
 This directory contains a **partial implementation**, not the completed
 PAP-282 interface or an adopted-profile claim. Installed disposable observations
 for the existing trial are recorded in
