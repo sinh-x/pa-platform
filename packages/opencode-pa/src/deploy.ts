@@ -123,15 +123,15 @@ export function createDefaultOpencodeHooks(): CoreExecutionHooks {
   return createOpencodeHooks();
 }
 
-import { modeCapabilityDiagnostic, RogueOneConfigError } from "@pa-platform/pa-core";
+import { modeCapabilityDiagnostic, RogueOneConfig, RogueOneConfigError } from "@pa-platform/pa-core";
 
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter(), diagnostics?: DeployDiagnostics) {
   let priorSession: string | undefined;
   try {
     assertMatchingRuntime(adapter.name, "opencode");
     if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "opencode");
-    // Route rejection must not mask native protected/missing resume provenance.
-    if (isRogueOneTeam(request.team) && !request.dryRun) assertRepositoryIsolationResumeAvailable(request.resume, "opencode");
+    // Native original classification precedes route rejection and current config.
+    RogueOneConfig.assertResumeTeam(request, "opencode");
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
   }

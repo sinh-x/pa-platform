@@ -534,6 +534,7 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 
 function selectPiTeamConfig(request: DeployRequest) {
+  RogueOneConfig.assertResumeTeam(request, "pi");
   if (isRogueOneTeam(request.team)) {
     // Native lineage remains restrictive even if a protected prior is relabelled
     // as Rogue-One. Inspect it before route/config/repository selection, without

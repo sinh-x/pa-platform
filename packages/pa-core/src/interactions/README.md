@@ -491,6 +491,13 @@ resource/native faults and unsupported API/OPA/WebSocket rejection. No new publi
 command, flag, native grant, delegation binding or snapshot RPC was introduced.
 The manifest renews those eight changed tracked sources and explicitly adds the
 Rogue-One selection/snapshot/script owners, shared parser/agent-skill locator,
-API deployment rejection, and compiler dependency declarations/lockfile. Hash
-renewal follows these semantic assertions; it does not weaken the conservative
-source guard or claim complete interaction parity.
+API deployment rejection, and the lockfile's compiler dependency selection. The
+mutable core package version is intentionally not byte-pinned: automatic patch
+bumps change it without changing dependencies. Regression coverage keeps the
+production compiler declaration and lockfile guard explicit. Native Rogue-One
+originals reject cross-team continuation before adapter configuration selection;
+current filename/original-path/content privacy checks also apply to retention.
+Static selectors reject shadowing, array mutation/escape, filesystem re-exports
+and unverified CWD-relative paths instead of accepting incomplete retained bytes.
+Hash renewal follows these semantic assertions; it does not weaken the
+conservative source guard or claim complete interaction parity.

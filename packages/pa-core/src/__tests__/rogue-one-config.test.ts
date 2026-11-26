@@ -188,6 +188,61 @@ test("larger native JSON envelopes do not widen existing Review defaults or allo
   assert.throws(() => parseReviewEvidenceJson(Buffer.from('{"x":1,"x":2}'), "fixture", 24 * 1_048_576));
 });
 
+function sensitivePolicy(root: string, field: "filenames" | "paths" | "contents", pattern: string): void {
+  mkdirSync(join(root, "user"), { recursive: true });
+  writeFileSync(join(root, "user/sensitive-patterns.yaml"), `${field}: [${JSON.stringify(pattern)}]\n`);
+}
+const regexLiteral = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("PAP-349 capture rejects sensitive filenames even when JSON content is harmless", () => fixture(f => {
+  f.file("docs/global.md", "[Synthetic example](credentials.json)");
+  f.file("docs/credentials.json", '{"example":true}');
+  rejected(f.capture, "resource");
+}));
+
+for (const field of ["filenames", "paths", "contents"] as const) {
+  test(`PAP-349 capture applies configured ${field} guards to original resources`, () => fixture(f => {
+    const pattern = field === "filenames" ? "^deep[.]md$" : field === "paths" ? `^${regexLiteral(join(f.config, "docs/deep.md"))}$` : "Original deep dependency";
+    sensitivePolicy(f.root, field, pattern);
+    rejected(f.capture, "resource");
+  }));
+
+  test(`PAP-349 current ${field} policy is rechecked at capture admission, resume and retained admission`, () => fixture(f => {
+    const captured = f.capture(); f.start(captured);
+    const archive = join(getDeployPaths(f.context.deploymentId).deployDir, "rogue-one-config.json"), original = readFileSync(archive);
+    const retained = RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context);
+    const pattern = field === "filenames" ? "^deep[.]md$" : field === "paths" ? `^${regexLiteral(join(f.config, "docs/deep.md"))}$` : "Original deep dependency";
+    sensitivePolicy(f.root, field, pattern);
+    rejected(() => captured.assertCurrent(), "resource");
+    rmSync(f.config, { recursive: true }); // No live source is needed for retained-policy admission.
+    rejected(() => RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context), "resource");
+    rejected(() => retained.assertCurrent(), "resource");
+    assert.deepEqual(readFileSync(archive), original, "policy rejection preserves original private evidence");
+  }));
+}
+
+test("PAP-349 retained policy checks use the native original path, not the private projection", () => fixture(f => {
+  const captured = f.capture(); f.start(captured);
+  sensitivePolicy(f.root, "paths", `^${regexLiteral(join(getDeployPaths(f.context.deploymentId).deployDir, "rogue-one-config"))}/`);
+  rmSync(f.config, { recursive: true });
+  const retained = RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context);
+  retained.assertCurrent();
+  assert.equal(retained.read("docs/deep.md"), "Original deep dependency");
+}));
+
+test("PAP-349 policy changes also guard originally absent paths and bound policy-load errors", () => fixture(f => {
+  const captured = f.capture(); f.start(captured);
+  const retained = RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context);
+  sensitivePolicy(f.root, "filenames", "^absent[.]md$");
+  rejected(() => captured.assertCurrent(), "resource");
+  rejected(() => retained.assertCurrent(), "resource");
+  rejected(() => RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context), "resource");
+  sensitivePolicy(f.root, "paths", "[");
+  for (const check of [f.capture, () => captured.assertCurrent(), () => retained.assertCurrent(), () => RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context)]) {
+    assert.throws(check, error => error instanceof RogueOneConfigError && error.message.length <= 2000 && !error.message.includes(f.root));
+  }
+}));
+
 test("P1 diagnostics are bounded, plain and schema-owned", () => {
   const error = new RogueOneConfigError("snapshot");
   assert.ok(error.message.length <= 2000);

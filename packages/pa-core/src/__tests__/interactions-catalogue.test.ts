@@ -514,6 +514,20 @@ test("conservative source inventory rejects tracked changes and added CLI comman
   assert.notEqual(createHash("sha256").update(mutated).digest("hex"), manifest.sources["packages/pa-core/src/cli/core-command.ts"]);
 });
 
+test("PAP-349 dependency inventory survives release version bumps without ignoring dependency changes", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
+  // Version Bump owns these package versions. The lockfile already captures the
+  // core production dependency selection without pinning mutable release bytes.
+  for (const file of ["package.json", "packages/pa-core/package.json", "packages/opencode-pa/package.json", "packages/pi-pa/package.json"])
+    assert.equal(Object.hasOwn(manifest.sources, file), false, `release version file must not invalidate source inventory: ${file}`);
+  const lock = readFileSync(resolve(root, "pnpm-lock.yaml"), "utf8");
+  assert.equal(createHash("sha256").update(lock).digest("hex"), manifest.sources["pnpm-lock.yaml"]);
+  const core = JSON.parse(readFileSync(resolve(root, "packages/pa-core/package.json"), "utf8"));
+  assert.equal(typeof core.dependencies.typescript, "string", "AST parser is a production dependency");
+  assert.match(lock, /packages\/pa-core:[\s\S]*?\n      typescript:\n        specifier:/);
+  assert.notEqual(createHash("sha256").update(`${lock}\n# synthetic dependency drift\n`).digest("hex"), manifest.sources["pnpm-lock.yaml"]);
+});
+
 test("PAP-337 startup split tracks the same read-only owner without changing forms, effects or native bindings", () => {
   const manifest = JSON.parse(readFileSync(new URL("../interactions/source-inventory.json", import.meta.url), "utf8")) as { sources: Record<string, string> };
   for (const path of ["packages/pi-pa/src/cli.ts", "packages/pi-pa/src/deploy.ts", "packages/pi-pa/src/readonly-helper.ts"]) {

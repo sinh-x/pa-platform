@@ -61,10 +61,18 @@ when a selected JavaScript helper requires discovery. No config script is import
 or evaluated during capture. This avoids a second ad-hoc JavaScript tokenizer;
 it adds the compiler's production footprint, not a new evaluator or native grant.
 
-Supported `.js`, `.mjs` and `.cjs` graphs include literal relative module imports,
-exports and local `require` calls, config-root literal resource data, and file URLs
-resolved from local/imported `const` strings/arrays, literal indexes, concatenation
-and template expressions. Numeric addition retains JavaScript numeric semantics;
+Supported JavaScript graphs include literal relative named/side-effect imports,
+direct declaration exports, config-root literal resource data, and file URLs
+resolved from unambiguous local/imported `const` strings and flat primitive arrays,
+literal indexes, concatenation and template expressions. Shadowed bindings,
+mutated/escaped arrays reject rather than guessing. Local namespace/default
+imports, re-exports, dynamic imports and CommonJS `require` are unsupported;
+these can expose shared selectors outside the named-binding graph. Computed
+property names other than numeric literal reads or finite immutable for-of
+dictionary keys, and opaque process/reflection loaders, are also unsupported.
+File URLs resolve relative to their module, independently of config-root data
+locators. Filesystem string paths depend on runtime CWD and are unsupported;
+only verified file URLs or explicit caller-input paths are accepted. Numeric addition retains JavaScript numeric semantics;
 it is not treated as string concatenation. Selector evaluation is limited to
 8,192 steps per script, depth 32 and 4,096 characters per constructed string;
 concatenation is checked before allocating its result. The AST walk permits
@@ -74,7 +82,7 @@ or frozen native policy. Delegating loaders/process modules and opaque CommonJS
 filesystem loading are unsupported.
 
 ES-module filesystem readers may use explicit caller input (`process.argv`) or
-finite captured paths/file URLs. Directory discovery, unresolved file/module/URL
+finite captured file URLs. Directory discovery, unresolved file/module/URL
 selectors, rebinding filesystem readers, `eval`, function construction and unknown
 supporting resource types reject. This is a bounded dependency grammar, not a
 JavaScript sandbox or proof about arbitrary code. The real PAPC report checker,
@@ -103,6 +111,10 @@ Resume consumes only the original verified configuration/resources/pair/override
 Changing or deleting live PAPC does not refresh those instructions. Conflicting
 requests, unknown/tampered/incomplete snapshots, crossed roots or missing legacy
 evidence block continuation without migration or a current-config fallback.
+Original native Rogue-One lineage cannot be resumed through another team's
+same-named mode; classification occurs before adapter configuration selection.
+Filename, original-path and content privacy policies are reapplied at capture,
+resume and immediate admission, including newly sensitive originally absent paths.
 Current credentials, host/tool policy, native custody and protected ancestry are
 not frozen by retained instructions. Preserve uncertain original operations and
 route reconciliation to their native owner; do not delete evidence or blindly

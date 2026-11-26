@@ -3,8 +3,8 @@ import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpa
 import { isAbsolute, join, posix, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { getPlatformHomeDir, getSkillsDir, getTeamsDir } from "../paths.js";
-import { queryReadonlyDeploymentEvents } from "../registry/index.js";
-import { findSensitiveMatch } from "../sensitive-patterns.js";
+import { queryReadonlyDeploymentEvents, queryReadonlyIsolationLineage } from "../registry/index.js";
+import { findSensitiveMatch, getSensitiveFilename } from "../sensitive-patterns.js";
 import { parseReviewEvidenceJson, readReviewEvidenceFile } from "../validation/review-contract.js";
 import { parseTeamYamlContent } from "../yaml-parser.js";
 import type { DeployMode, RuntimeName, TeamConfig } from "../types.js";
@@ -42,6 +42,10 @@ function path(value: string): string {
     || value.split("/").length > 16 || value.split("/").some(p => !p || p === "." || p === ".." || p.toLowerCase() === ".git")
     || !CONFIG_RESOURCE_PREFIX.test(value)) fail("resource");
   return value;
+}
+function guardOriginalPath(root: string, relative: string): void {
+  const original = join(root, path(relative));
+  if (findSensitiveMatch("path", original) || findSensitiveMatch("filename", getSensitiveFilename(original))) fail("resource");
 }
 function body(raw: Uint8Array): string {
   try { const value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw); if (findSensitiveMatch("content", value)) fail("resource"); return value; }
@@ -179,14 +183,43 @@ export class RogueOneConfig {
     return Object.freeze(this.snapshot.files.map(({ path, sha256 }) => Object.freeze({ path, sha256 })));
   }
   read(relative: string): string { return this.snapshot.files.find(file => file.path === path(relative))?.content ?? fail("resource"); }
-  assertCurrent(): void { this.current(); }
+  assertCurrent(): void {
+    try { this.current(); }
+    catch (error) { if (error instanceof RogueOneConfigError) throw error; fail("snapshot"); }
+  }
+  /** Classify native originals before loading the requested team's configuration.
+   * Isolation keeps its existing priority; neither public labels nor live PAPC
+   * can turn a Rogue-One lineage into a generic historical continuation. */
+  static assertResumeTeam(request: Pick<DeployRequest, "team" | "resume">, runtime: RuntimeName): void {
+    if (!request.resume) return;
+    let rogue = request.team === "rogue-one";
+    let starts: ReturnType<typeof queryReadonlyDeploymentEvents>;
+    let lineage: ReturnType<typeof queryReadonlyIsolationLineage>;
+    try {
+      const events = queryReadonlyDeploymentEvents(request.resume, true);
+      rogue ||= events.some(event => event.team === "rogue-one" || event.rogue_one || event.note?.startsWith("pa-rogue-one-config/"));
+      starts = events.filter(event => event.event === "started");
+      lineage = queryReadonlyIsolationLineage(request.resume);
+      rogue ||= lineage.some(prior => prior.team === "rogue-one" || prior.note?.startsWith("pa-rogue-one-config/"));
+    } catch {
+      // Generic historical requests retain strict mode selection precedence.
+      // Their existing admission still rejects unavailable lineage afterwards.
+      if (!rogue) return;
+      assertRepositoryIsolationResumeAvailable(request.resume, request.team === "rogue-one" ? runtime : undefined);
+      return fail("snapshot");
+    }
+    if (!rogue) return;
+    assertRepositoryIsolationResumeAvailable(request.resume, request.team === "rogue-one" ? runtime : undefined);
+    if (starts.length !== 1) fail("snapshot");
+    if (request.team !== "rogue-one" || starts[0]!.team !== "rogue-one" || lineage.some(prior => prior.team !== "rogue-one")) fail("conflict");
+  }
   static capture(context: RogueOneConfigContext, request: DeployRequest, selected: TeamConfig, runtimeConfig: EffectiveRuntimeConfig, observeResource?: (relative: string) => void): RogueOneConfig {
     try {
       const root = getPlatformHomeDir();
       if (!isAbsolute(root) || resolve(root) !== root || getTeamsDir() !== join(root, "teams") || getSkillsDir() !== join(root, "skills/global")) fail("contract");
       const observed = new Map<string, { fingerprint: string; content: string }>(), absent = new Set<string>(); let total = 0;
       const read = (relative: string, optional = false): string | null => {
-        path(relative); observeResource?.(relative);
+        guardOriginalPath(root, relative); observeResource?.(relative);
         try {
           const file = physical(root, relative);
           const before = fingerprint(file), raw = readReviewEvidenceFile(file, MAX_FILE, "rogue-one selected configuration"), content = body(raw);
@@ -210,10 +243,12 @@ export class RogueOneConfig {
       const assertCurrent = () => {
         if (getPlatformHomeDir() !== root || getTeamsDir() !== join(root, "teams") || getSkillsDir() !== join(root, "skills/global")) fail("drift");
         for (const [relative, old] of observed) {
+          guardOriginalPath(root, relative);
           const file = physical(root, relative);
           if (fingerprint(file) !== old.fingerprint || body(readReviewEvidenceFile(file, MAX_FILE, "rogue-one capture recheck")) !== old.content) fail("drift");
         }
         for (const relative of absent) {
+          guardOriginalPath(root, relative);
           try { lstatSync(physical(root, relative)); }
           catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
           fail("drift");
@@ -252,11 +287,16 @@ export class RogueOneConfig {
       if (request.team !== "rogue-one" || request.mode !== undefined && request.mode !== value.mode) fail("conflict");
       for (const key of ["objective", "provider", "model", "teamModel", "agentModel", "timeout", "autonomy"] as const) if (request[key] !== undefined && request[key] !== value.request[key]) fail("conflict");
       if (!Array.isArray(value.files) || !Array.isArray(value.absent) || value.files.length + value.absent.length > MAX_FILES) fail("snapshot");
+      const assertPolicy = () => {
+        for (const file of value.files) { guardOriginalPath(value.configRoot, file.path); body(Buffer.from(file.content)); }
+        for (const relative of value.absent) guardOriginalPath(value.configRoot, relative);
+      };
+      assertPolicy();
       const files = new Map<string, string>(); let total = 0;
       for (const file of value.files) {
         const raw = Buffer.from(file.content); total += raw.byteLength;
         if (raw.byteLength > MAX_FILE || total > MAX_TOTAL || hash(raw) !== file.sha256 || files.has(path(file.path))) fail("snapshot");
-        body(raw); files.set(file.path, file.content);
+        files.set(file.path, file.content);
       }
       if (new Set(value.absent).size !== value.absent.length || value.absent.some(relative => files.has(path(relative)))) fail("snapshot");
       const read = (relative: string, optional: boolean) => files.get(relative) ?? (optional && value.absent.includes(relative) ? null : fail("snapshot"));
@@ -267,6 +307,7 @@ export class RogueOneConfig {
         if (readRecordedRuntimeSession(id, `session-id-${context.runtime}.txt`) !== session) fail("snapshot");
         const current = queryReadonlyDeploymentEvents(id, true).filter(event => event.event === "started");
         if (current.length !== 1 || !isDeepStrictEqual(current[0], start) || hash(retainedRead(join(dir, FILE), MAX_ARCHIVE)) !== hash(raw)) fail("snapshot");
+        assertPolicy();
       });
     } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("snapshot"); }
   }
