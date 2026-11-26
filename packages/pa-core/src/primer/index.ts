@@ -675,6 +675,11 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
   if (isPlainInteractiveMode(mode)) return [
     "## Deployment Instructions",
     `Use only tools exposed in the current ${runtime === "pi" ? "Pi" : "OpenCode"} session. Follow the selected team instructions for task policy.`,
+    ...(runtime === "pi" && teamConfig.name === "analyst" && mode?.id === "analyze" ? [
+      "Analyst execution is instruction-only: runtime confinement and repository-write prevention are not established. This is not a read-only sandbox; instructions can fail. PAP-338 retains future technical read-only support.",
+      "Do not edit product, repository, configuration or test files; do not implement, commit or perform source/Git writes, switch roles to implement, or launch implementation. Refuse requests to edit and commit, including self-improvement requests. Read and analyze instead, following the selected ordered Analyst workflow and asking the operator when input is required.",
+      "Use offered ordinary file tools only for authorized current-producer analysis/report artifacts outside repositories. Preserve deliberate tool omissions and privacy/sensitive-command denials; do not enable tools or substitute a writer. Native ticket, decision, log and publication records stay with their existing authenticated owners. Report actual blockers and next owner/action; tool availability grants no repository-write authority.",
+    ] : []),
   ].join("\n");
   const executionStyle = mode?.solo === true ? "solo"
     : mode?.solo === false ? "team"

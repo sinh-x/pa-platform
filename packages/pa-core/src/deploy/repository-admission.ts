@@ -167,6 +167,8 @@ export interface RepositoryBranchTransitionPolicy {
 }
 
 export interface RepositoryAdmissionEvidence {
+  /** Retained resolved profile classification; not an environment capability. */
+  readonly plainInteractive?: true;
   readonly access: RepositoryAccess;
   readonly launchMode: RepositoryAdmissionLaunchMode;
   readonly ownershipIntent: RepositoryOwnershipIntent;
@@ -1021,7 +1023,7 @@ export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdm
   const launchMode: RepositoryAdmissionLaunchMode = options.dryRun ? "dry-run" : options.background ? "background" : "foreground";
   if (options.plainInteractive) {
     if (launchMode !== "dry-run") assertOrdinaryCheckoutVacant(worktreeRoot);
-    return Object.freeze({ access: "non-locking", launchMode, ownershipIntent: "none", force: Boolean(options.force) });
+    return Object.freeze({ plainInteractive: true, access: "non-locking", launchMode, ownershipIntent: "none", force: Boolean(options.force) });
   }
   const access = classifyRepositoryAccess(options.team, options.mode);
   if (access !== "exclusive-builder") {
