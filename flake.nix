@@ -204,6 +204,8 @@
             install -Dm755 scripts/pap-167-pi-retry-smoke.mjs $share/scripts/pap-167-pi-retry-smoke.mjs
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist
+            test -s $share/packages/pa-core/dist/policies/security-defaults.v1.yaml
+            cmp packages/pa-core/src/policies/security-defaults.v1.yaml $share/packages/pa-core/dist/policies/security-defaults.v1.yaml
             test -s $share/packages/pa-core/dist/public-web/runtime.json
             test -s $share/packages/pa-core/dist/public-web/extract.py
             ${pkgs.python3}/bin/python3 -I -B $share/packages/pa-core/dist/public-web/extract.py text/html <<'EOF' | grep -F 'Packaged reader smoke'

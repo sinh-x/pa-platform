@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import yaml from "js-yaml";
 import { getConfigDir } from "./paths.js";
+import { getSecurityDefaults } from "./security-policy.js";
 
 export type SensitiveInputClass = "filename" | "path" | "content";
 export type SensitivePatternSource = "built-in" | "local-config";
@@ -85,26 +86,11 @@ export function readGuardedLocalTextFile(filePath: string, patternSet = loadSens
 }
 
 function createBuiltInSensitivePatterns(): SensitivePattern[] {
-  return [
-    filename(/^\.env(?:\..*)?$/i),
-    filename(/^\.npmrc$/i),
-    filename(/^\.pypirc$/i),
-    filename(/^\.netrc$/i),
-    filename(/^credentials.*\.json$/i),
-    filename(/^secret.*\.json$/i),
-    filename(/^secrets.*\.ya?ml$/i),
-    filename(/^.*token.*\.json$/i),
-    filename(/^.*api-key.*\.json$/i),
-    filename(/^.*api_key.*\.json$/i),
-    pathPattern(/(?:^|[/\\])\.ssh[/\\]id[^/\\]*$/i),
-    content(/(?:^|\n)\s*(?:(?:seed|mnemonic|recovery)\s+(?:phrase|words?)|backup\s+(?:phrase|words?))\s*[:=-]\s*[a-z]+(?:\s+[a-z]+){11}(?:(?:\s+[a-z]+){3}){0,4}\s*(?:$|\n)/i),
-    content(/-----BEGIN [A-Z ]*PRIVATE KEY-----/),
-    content(/(?:^|\n)\s*ssh-(?:ed25519|rsa|ecdsa)\s+[A-Za-z0-9+/=]+(?:\s+[^\n]*)?(?:$|\n)/),
-    content(/\bbearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i),
-    content(/\bsk-[A-Za-z0-9][A-Za-z0-9_-]{15,}\b/),
-    content(/\b\d{5,}:[A-Za-z0-9_-]{35,}\b/),
-    content(/\b(?:api[_-]?key|access[_-]?token|secret[_-]?key)['\"]?\s*[:=]\s*['\"]?[^\s'\"]{16,}/i),
-  ];
+  const defaults = getSecurityDefaults().sensitive;
+  return ([ ["filename", defaults.filenames], ["path", defaults.paths], ["content", defaults.contents] ] as const)
+    .flatMap(([inputClass, entries]) => entries.map(entry => ({
+      inputClass, source: "built-in" as const, regex: new RegExp(entry.pattern, entry.flags),
+    })));
 }
 
 function loadRawSensitivePatternConfig(configPath: string): RawSensitivePatternConfig {
@@ -139,18 +125,6 @@ function compileLocalPatterns(inputClass: SensitiveInputClass, values: string[],
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
-}
-
-function filename(regex: RegExp): SensitivePattern {
-  return { inputClass: "filename", source: "built-in", regex };
-}
-
-function pathPattern(regex: RegExp): SensitivePattern {
-  return { inputClass: "path", source: "built-in", regex };
-}
-
-function content(regex: RegExp): SensitivePattern {
-  return { inputClass: "content", source: "built-in", regex };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
