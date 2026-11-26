@@ -155,6 +155,15 @@ virtual descriptor tests cover cause/phase/disclosure/cleanup; virtual selected
 metadata is not genuine installed selected-host qualification. The historical
 unspecified Nix documents remain undiagnosed.
 
+Follow-up source qualification: **94 core security/catalogue tests and 49 Pi
+read/publication/composition tests pass**, including direct and registered error
+replies with unchanged native keys/flags, safe paths, private/long-path withholding,
+control/label escaping, FIFO rejection without waiting for a writer, read counts, cleanup,
+image delivery, cancellation and publication revocation. Workspace typecheck and
+build pass. These are affected regressions, not a complete workspace-test result,
+installed selected-Pi journey, OpenCode-host qualification or human UAT. No runtime
+installation, selected binding activation or source permission change was made.
+
 ## Completion rule
 
 Generated discovery, semantic attribution, branch/route tests, installed candidate
