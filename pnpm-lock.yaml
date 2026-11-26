@@ -67,6 +67,9 @@ importers:
       marked:
         specifier: ^18.0.2
         version: 18.0.2
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -74,9 +77,6 @@ importers:
       tsx:
         specifier: ^4.20.6
         version: 4.21.0
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
 
   packages/pi-pa:
     dependencies:

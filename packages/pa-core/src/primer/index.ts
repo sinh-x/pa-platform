@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { parseTeamYamlContent } from "../yaml-parser.js";
+import { agentSkillResource } from "../teams/index.js";
 import { digest } from "../workflows/contracts.js";
 import { resolve } from "node:path";
 import type { WorkflowPrimerView } from "../workflows/public.js";
@@ -469,9 +470,10 @@ function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptio
       const content = resolveInstruction(options, agent.instruction);
       lines.push("", `<instruction-file name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(content, runtime)), `</instruction-file>`);
     }
-    if (options.rogueOneConfig && agent.skill && !emitted?.has(agent.skill)) {
-      emitted?.add(agent.skill);
-      lines.push("", `<agent-skill name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(options.rogueOneConfig.read(agent.skill), runtime)), "</agent-skill>");
+    const agentSkill = agent.skill ? agentSkillResource(agent.skill) : undefined;
+    if (options.rogueOneConfig && agentSkill && !emitted?.has(agentSkill)) {
+      emitted?.add(agentSkill);
+      lines.push("", `<agent-skill name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(options.rogueOneConfig.read(agentSkill), runtime)), "</agent-skill>");
     }
     return lines.join("\n");
   }).join("\n\n");

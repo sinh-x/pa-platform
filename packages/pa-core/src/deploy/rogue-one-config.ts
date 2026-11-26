@@ -12,9 +12,12 @@ import type { DeployRequest } from "./control.js";
 import type { EffectiveRuntimeConfig } from "./runtime-config.js";
 import { getDeployPaths } from "./paths.js";
 import { assertRepositoryIsolationResumeAvailable, readRecordedRuntimeSession } from "./repository-isolation.js";
+import { ConfigScriptDependencies, CONFIG_RESOURCE_PREFIX, CONFIG_RESOURCE_ROOTS } from "./config-script-dependencies.js";
+import { Lexer, walkTokens } from "marked";
+import { agentSkillResource } from "../teams/index.js";
 
 const VERSION = "pa-rogue-one-config/v1", FILE = "rogue-one-config.json", PREFIX = `${VERSION}:`;
-const MAX_FILE = 1_048_576, MAX_TOTAL = 16 * MAX_FILE, MAX_FILES = 256, MAX_ARCHIVE = MAX_FILE;
+const MAX_FILE = 1_048_576, MAX_TOTAL = 16 * MAX_FILE, MAX_FILES = 256, MAX_ARCHIVE = 24 * MAX_FILE;
 const hash = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex");
 type Cause = "selection" | "contract" | "resource" | "drift" | "snapshot" | "legacy" | "conflict" | "route";
 const reasons: Record<Cause, string> = {
@@ -37,11 +40,11 @@ const fail = (cause: Cause): never => { throw new RogueOneConfigError(cause); };
 function path(value: string): string {
   if (typeof value !== "string" || value.length > 4096 || !/^[A-Za-z0-9_./-]+$/.test(value)
     || value.split("/").length > 16 || value.split("/").some(p => !p || p === "." || p === ".." || p.toLowerCase() === ".git")
-    || !/^(?:teams|skills|docs|primers|policies|contracts|scripts)\//.test(value)) fail("resource");
+    || !CONFIG_RESOURCE_PREFIX.test(value)) fail("resource");
   return value;
 }
 function body(raw: Uint8Array): string {
-  try { const value = new TextDecoder("utf-8", { fatal: true }).decode(raw); if (findSensitiveMatch("content", value)) fail("resource"); return value; }
+  try { const value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw); if (findSensitiveMatch("content", value)) fail("resource"); return value; }
   catch { return fail("resource"); }
 }
 export function selectRogueOneMode(team: TeamConfig, requested?: string): DeployMode {
@@ -55,37 +58,34 @@ export function selectRogueOneMode(team: TeamConfig, requested?: string): Deploy
 }
 /** Literal config-owned references only. External/product/artifact links are not
  * selection authority. Bare prose references may be absent; links must resolve.
- * Executable/dynamic dependencies are deliberately unsupported in v1. */
-function references(from: string, value: string): { path: string; optional: boolean }[] {
+ * Static JavaScript dependencies have a separate parsing owner below. */
+function references(from: string, value: string, inline = false, instruction = true): { path: string; optional: boolean }[] {
   const result = new Map<string, { path: string; optional: boolean }>();
-  for (const match of value.matchAll(/\[[^\]\n]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`((?:skills|teams|docs|primers|policies|contracts|scripts)\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`/g)) {
-    const target = (match[1] ?? match[2]!).split("#")[0]!;
-    if (!target || /^[a-z]+:|^\/|^#/.test(target)) continue;
-    const relative = path(/^(?:skills|teams|docs|primers|policies|contracts|scripts)\//.test(target) ? target : posix.normalize(posix.join(posix.dirname(from), target)));
-    const optional = match[1] === undefined;
+  const add = (href: string, optional = false) => {
+    const target = href.split("#")[0]!;
+    if (!target || /^[a-z][a-z0-9+.-]*:|^\/|^#/i.test(target)) return;
+    const relative = path(CONFIG_RESOURCE_PREFIX.test(target) ? target : posix.normalize(posix.join(posix.dirname(from), target)));
     if (!result.has(relative) || !optional) result.set(relative, { path: relative, optional });
+  };
+  const prose = inline || /\.(?:md|txt|html)$/.test(from);
+  if (prose) {
+    walkTokens(Lexer.lex(value), token => { if (token.type === "link" || token.type === "image") add(token.href); });
   }
-  // Root-relative config references also occur inside commands (for example
-  // `node scripts/check.mjs report.html`), not just whole-code-span links.
-  // Never silently omit such a required supporting file from retention.
-  for (const match of value.matchAll(/(?:^|[\s`"'(])((?:skills|teams|docs|primers|policies|contracts|scripts)\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)/gm)) {
-    const relative = path(match[1]!);
-    if (!result.has(relative)) result.set(relative, { path: relative, optional: true });
-  }
-  for (const match of value.matchAll(/^\s*\[[^\]\n]+\]:\s*<?([^\s>]+)>?/gm)) {
-    const target = match[1]!.split("#")[0]!;
-    if (!target || /^[a-z]+:|^\/|^#/.test(target)) continue;
-    const relative = path(/^(?:skills|teams|docs|primers|policies|contracts|scripts)\//.test(target) ? target : posix.normalize(posix.join(posix.dirname(from), target)));
-    result.set(relative, { path: relative, optional: false });
-  }
+  // Literal config-owned locators inside commands/prose are finite supporting
+  // references too; absent illustrative bare paths never become live fallbacks.
+  const literal = new RegExp(`(?:^|[\\s\x60\"'(])(${CONFIG_RESOURCE_ROOTS}/[A-Za-z0-9_./-]+\\.[A-Za-z0-9]+)`, "gm");
+  if (prose && instruction) for (const match of value.matchAll(literal)) add(match[1]!, true);
   if (from.endsWith(".html")) {
     if (/<script\b|\bon[a-z]+\s*=/i.test(value)) fail("resource");
-    for (const match of value.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) {
-      const target = match[1]!.split("#")[0]!;
-      if (!target || /^[a-z]+:|^\/|^#/.test(target)) continue;
-      const relative = path(posix.normalize(posix.join(posix.dirname(from), target)));
-      result.set(relative, { path: relative, optional: false });
-    }
+    for (const match of value.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) add(match[1]!);
+  }
+  if (from.endsWith(".json")) {
+    const scan = (node: unknown, depth = 0): void => {
+      if (depth > 64) fail("resource");
+      if (!node || typeof node !== "object") return;
+      for (const [key, child] of Object.entries(node)) { if (key === "$ref" && typeof child === "string") add(child); else scan(child, depth + 1); }
+    };
+    scan(parseReviewEvidenceJson(Buffer.from(value), "config resource"));
   }
   return [...result.values()];
 }
@@ -99,19 +99,21 @@ interface Snapshot {
 export interface RogueOneConfigContext { deploymentId: string; runtime: RuntimeName; repoKey: string; repoRoot: string; worktreeRoot: string; ticket?: string }
 function closure(team: TeamConfig, mode: DeployMode, repoKey: string, read: (relative: string, optional: boolean) => string | null): void {
   const pending: { path: string; optional: boolean }[] = [], seen = new Set<string>();
-  const add = (relative: string) => pending.push({ path: path(relative), optional: false });
+  const scripts = new ConfigScriptDependencies(read), instructions = new Set<string>();
+  const add = (relative: string) => { instructions.add(path(relative)); pending.push({ path: relative, optional: false }); };
+  const addInline = (value: string) => { for (const reference of references("teams/rogue-one.yaml", value, true)) { instructions.add(reference.path); pending.push(reference); } };
   const objective = mode.objective ?? team.objective;
   if (typeof objective !== "string") fail("contract");
   const objectiveFile = !objective.includes("\n") && objective.endsWith(".md");
   if (objectiveFile) add(objective);
   for (const value of [objectiveFile ? "" : objective, team.description, team.context?.organization, team.context?.notes, ...Object.values(team.variables ?? {})]) {
-    if (value) pending.push(...references("teams/rogue-one.yaml", value));
+    if (value) addInline(value);
   }
   for (const file of [...team.global_docs ?? [], ...mode.global_docs ?? [], ...mode.project_guides?.[repoKey] ?? []]) add(file);
   for (const agent of team.agents.filter(agent => !mode.agents || mode.agents.includes(agent.name))) {
-    pending.push(...references("teams/rogue-one.yaml", agent.role));
+    addInline(agent.role);
     if (agent.instruction) add(agent.instruction);
-    if (agent.skill) add(agent.skill);
+    if (agent.skill) add(agentSkillResource(agent.skill));
   }
   for (const skill of mode.skills ?? []) {
     if (!["reference", "global-skill", "shared-skill"].includes(skill["inject-as"])) fail("contract");
@@ -124,10 +126,15 @@ function closure(team: TeamConfig, mode: DeployMode, repoKey: string, read: (rel
     seen.add(key);
     const content = read(next.path, next.optional);
     if (content === null) { if (!next.optional) fail("resource"); continue; }
-    // Executable dependencies need a qualified dependency owner; never claim
-    // Markdown closure proves dynamic/script closure. Static HTML is data only.
-    if (!/\.(?:md|txt|json|ya?ml|html)$/.test(next.path)) fail("resource");
-    pending.push(...references(next.path, content));
+    if (/\.(?:mjs|cjs|js)$/.test(next.path)) {
+      for (const dependency of scripts.references(next.path, content)) add(dependency);
+    } else {
+      if (!/\.(?:md|txt|json|ya?ml|html)$/.test(next.path)) fail("resource");
+      // Linked manuals/examples retain their literal links and full bytes, but
+      // do not select their bare command examples as this mode's instructions.
+      // Selected instructions and their actual helper imports still close fully.
+      pending.push(...references(next.path, content, false, instructions.has(next.path)));
+    }
   }
 }
 function physical(root: string, relative: string): string {
@@ -158,7 +165,7 @@ function put(file: string, raw: Uint8Array): void {
     const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400);
     try { writeFileSync(fd, raw); fsyncSync(fd); } finally { closeSync(fd); }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  if (hash(retainedRead(file, MAX_ARCHIVE)) !== hash(raw)) fail("snapshot");
+  if (hash(retainedRead(file, raw.byteLength)) !== hash(raw)) fail("snapshot");
 }
 /** Content retention only: no native permission, caller authentication or sandbox.
  * The launcher still owns current admission, session identity and revocation. */
@@ -168,6 +175,9 @@ export class RogueOneConfig {
   get mode(): DeployMode { return selectRogueOneMode(this.team, this.snapshot.mode); }
   get runtimeConfig(): EffectiveRuntimeConfig { return Object.freeze({ ...this.snapshot.runtimeConfig }); }
   get note(): string { return `${PREFIX}${hash(this.raw)}`; }
+  get resources(): readonly Readonly<{ path: string; sha256: string }>[] {
+    return Object.freeze(this.snapshot.files.map(({ path, sha256 }) => Object.freeze({ path, sha256 })));
+  }
   read(relative: string): string { return this.snapshot.files.find(file => file.path === path(relative))?.content ?? fail("resource"); }
   assertCurrent(): void { this.current(); }
   static capture(context: RogueOneConfigContext, request: DeployRequest, selected: TeamConfig, runtimeConfig: EffectiveRuntimeConfig, observeResource?: (relative: string) => void): RogueOneConfig {
@@ -233,7 +243,7 @@ export class RogueOneConfig {
       const dir = getDeployPaths(id).deployDir; directory(dir);
       const raw = retainedRead(join(dir, FILE), MAX_ARCHIVE);
       if (start.note !== `${PREFIX}${hash(raw)}`) fail("snapshot");
-      const value = parseReviewEvidenceJson(raw, "rogue-one retained configuration") as Snapshot;
+      const value = parseReviewEvidenceJson(raw, "rogue-one retained configuration", MAX_ARCHIVE) as Snapshot;
       if (value.schemaVersion !== VERSION || value.deploymentId !== id || JSON.stringify(value) !== Buffer.from(raw).toString()
         || value.configRoot !== getPlatformHomeDir() || getTeamsDir() !== join(value.configRoot, "teams") || getSkillsDir() !== join(value.configRoot, "skills/global")
         || start.mode !== value.mode || start.runtime !== value.runtime || start.provider !== value.runtimeConfig.provider || start.models?.team !== value.runtimeConfig.model

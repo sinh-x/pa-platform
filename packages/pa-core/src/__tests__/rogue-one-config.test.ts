@@ -7,6 +7,7 @@ import { RogueOneConfig, RogueOneConfigError, selectRogueOneMode, type RogueOneC
 import { appendRegistryEvent, closeDb } from "../registry/index.js";
 import { getDeployPaths } from "../deploy/paths.js";
 import { parseTeamYamlContent } from "../yaml-parser.js";
+import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 
 const yaml = `name: rogue-one\ndescription: Original team\nobjective: Original objective\nagents:\n  - name: selected\n    role: Original role\n    instruction: teams/selected.md\n  - name: unselected\n    role: Unselected\n    instruction: teams/missing.md\ndefault_mode: direct\nglobal_docs: [docs/global.md]\ndeploy_modes:\n  - id: direct\n    label: Direct\n    mode_type: interactive\n    objective: docs/objective.md\n    agents: [selected]\n    provider: openai\n    model: openai/gpt-6.2-sol\n    skills: [{name: example, inject-as: reference}]\n    project_guides:\n      fixture: [docs/repository.md]\n      foreign: [docs/foreign-missing.md]\n`;
 const pair = { provider: "openai-codex", model: "gpt-6.2-sol", source: "mode" as const };
@@ -91,10 +92,11 @@ test("P1 unanchored and legacy sessions are not upgraded using current PAPC", ()
   rejected(() => RogueOneConfig.resume("d-349ccc", { team: "rogue-one" }, f.context));
 }));
 
-test("P1 missing, unsupported, aliased and oversized dependencies fail closed", () => fixture(f => {
+test("P1 missing, unresolved, aliased and oversized dependencies fail closed", () => fixture(f => {
   const deep = join(f.config, "docs/deep.md"); rmSync(deep); rejected(f.capture);
   f.file("docs/deep.md", "[Script](../scripts/run.js)"); f.file("scripts/run.js", "import './dynamic.js'"); rejected(f.capture, "resource");
-  f.file("docs/deep.md", "Run `node scripts/run.js report.html`."); rejected(f.capture, "resource");
+  f.file("docs/global.md", "Run `node scripts/run.js report.html`."); rejected(f.capture, "resource");
+  f.file("docs/global.md", "[Support](support.md)");
   rmSync(deep); symlinkSync(join(f.config, "docs/repository.md"), deep); rejected(f.capture);
   rmSync(deep); f.file("docs/deep.md", "x".repeat(1_048_577)); rejected(f.capture);
 }));
@@ -127,6 +129,64 @@ test("P1 changed native session is rejected on a continuation recheck", () => fi
   writeFileSync(join(getDeployPaths(f.context.deploymentId).deployDir, "session-id-pi.txt"), "different-session");
   rejected(() => retained.assertCurrent(), "snapshot");
 }));
+
+test("retention captures active script imports and const-array file URL dependencies without activating reference-only examples", () => fixture(f => {
+  f.file("docs/global.md", "Run `node scripts/check.mjs report.html`. [Reference only](example.md)");
+  f.file("docs/example.md", "An illustrative source check is `node scripts/not-selected.mjs`.");
+  f.file("scripts/not-selected.mjs", "import(process.argv[2]);");
+  f.file("scripts/check.mjs", 'import { templates } from "./data.mjs"; import { readFileSync } from "node:fs"; readFileSync(new URL(`../${templates[0]}`,import.meta.url));');
+  f.file("scripts/data.mjs", 'export const templates=["docs/first.txt","docs/second.txt"];');
+  f.file("docs/first.txt", "Original first support"); f.file("docs/second.txt", "Original second support");
+  const captured = f.capture(); f.start(captured);
+  assert.equal(captured.read("docs/first.txt"), "Original first support");
+  assert.equal(captured.read("docs/second.txt"), "Original second support");
+  assert.match(captured.read("docs/example.md"), /illustrative source check/);
+  rejected(() => captured.read("scripts/not-selected.mjs"));
+  rmSync(f.config, { recursive: true });
+  const retained = RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context);
+  assert.deepEqual(retained.resources, captured.resources); assert.match(retained.read("scripts/check.mjs"), /templates/);
+}));
+
+test("native archives retain more than 1 MiB without relaxing per-resource limits or Review defaults", () => fixture(f => {
+  f.file("docs/support.md", "a".repeat(650_000)); f.file("docs/repository.md", "b".repeat(650_000));
+  const captured = f.capture(); f.start(captured); rmSync(f.config, { recursive: true });
+  const retained = RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context);
+  assert.equal(retained.read("docs/support.md").length, 650_000); assert.equal(retained.read("docs/repository.md").length, 650_000);
+}));
+
+test("capture interruption and source mutation during capture never produce a mixed native snapshot", () => fixture(f => {
+  const selected = parseTeamYamlContent(yaml);
+  rejected(() => RogueOneConfig.capture(f.context, { team: "rogue-one" }, selected, pair, relative => {
+    if (relative === "docs/support.md") f.file("docs/global.md", "Changed while capturing dependencies");
+  }), "drift");
+  f.file("docs/global.md", "[Support](support.md)");
+  rejected(() => RogueOneConfig.capture(f.context, { team: "rogue-one" }, selected, pair, () => { throw new Error("synthetic interruption"); }), "resource");
+}));
+
+test("absent-only materialization reconciles an acknowledged-lost save without replacing bytes", () => fixture(f => {
+  const captured = f.capture(); f.start(captured);
+  const archive = join(getDeployPaths(f.context.deploymentId).deployDir, "rogue-one-config.json"), before = readFileSync(archive);
+  captured.materialize(f.context.deploymentId); // same original operation after a lost acknowledgement
+  assert.deepEqual(readFileSync(archive), before);
+  assert.equal(RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context).note, captured.note);
+}));
+
+test("UTF-8 resource bytes, including a BOM, are retained without normalization", () => fixture(f => {
+  const content = "\ufeffOriginal byte-preserving resource"; f.file("docs/deep.md", content);
+  const captured = f.capture(); f.start(captured);
+  const projected = join(getDeployPaths(f.context.deploymentId).deployDir, "rogue-one-config/docs/deep.md");
+  assert.deepEqual(readFileSync(projected), Buffer.from(content));
+  rmSync(f.config, { recursive: true });
+  assert.equal(RogueOneConfig.resume(f.context.deploymentId, { team: "rogue-one" }, f.context).read("docs/deep.md"), content);
+}));
+
+test("larger native JSON envelopes do not widen existing Review defaults or allow duplicate keys", () => {
+  const raw = Buffer.from(JSON.stringify({ content: "z".repeat(1_048_576) }));
+  assert.throws(() => parseReviewEvidenceJson(raw, "fixture"));
+  assert.equal((parseReviewEvidenceJson(raw, "fixture", 24 * 1_048_576) as { content: string }).content.length, 1_048_576);
+  assert.throws(() => parseReviewEvidenceJson(raw, "fixture", 33 * 1_048_576));
+  assert.throws(() => parseReviewEvidenceJson(Buffer.from('{"x":1,"x":2}'), "fixture", 24 * 1_048_576));
+});
 
 test("P1 diagnostics are bounded, plain and schema-owned", () => {
   const error = new RogueOneConfigError("snapshot");

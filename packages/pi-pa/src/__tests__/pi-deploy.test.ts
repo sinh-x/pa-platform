@@ -992,6 +992,7 @@ function writeRogueOneTeamConfig(root: string): void {
     "  - name: selected-agent",
     "    role: selected role",
     "    instruction: docs/agent.md",
+    "    skill: rogue-fixture",
     "  - name: unselected-agent",
     "    role: unselected role",
     "    instruction: docs/missing-unselected.md",
@@ -1112,7 +1113,7 @@ test("ppa rogue-one reaches the hook/spawn seam with captured configured content
     assert.equal(gitState.readCommands().some((args) => args[0] === "status"), false);
     assert.match(readFileSync(spawned!.primerPath, "utf8"), /ROGUE-ONE ACTIVE/);
     const primer = readFileSync(spawned!.primerPath, "utf8");
-    assert.match(primer, /configured objective fixture/); assert.match(primer, /Rogue selected agent fixture/);
+    assert.match(primer, /configured objective fixture/); assert.match(primer, /Rogue selected agent fixture/); assert.match(primer, /Rogue selected skill fixture/);
     assert.doesNotMatch(primer, /unselected role|missing-unselected/);
     assert.equal(primer.split("Rogue shared guide fixture").length - 1, 1);
     assert.equal(spawned?.env.PA_PROVIDER, "openai-codex"); assert.equal(spawned?.env.PA_MODEL, "gpt-6.2-sol");

@@ -210,8 +210,11 @@ function json(input: string | Uint8Array, limit: number, path: string): unknown 
   return result;
 }
 /** Existing evidence only; strict duplicate/UTF-8/bounds checks without initialization. */
-export function parseReviewEvidenceJson(input: Uint8Array, source: string): unknown {
-  return json(input, MAX_REVIEW_ARTIFACT_BYTES, source);
+export function parseReviewEvidenceJson(input: Uint8Array, source: string, limit = MAX_REVIEW_ARTIFACT_BYTES): unknown {
+  // Native retained-resource owners may choose a finite larger envelope. Every
+  // existing Review caller retains the original 1 MiB default and contract.
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32 * 1_048_576) fail("REVIEW_SIZE", source, "requires a supported finite JSON byte limit");
+  return json(input, limit, source);
 }
 function object(input: unknown, path: string, keys?: readonly string[]): Row {
   if (input === null || typeof input !== "object" || Array.isArray(input)) fail("REVIEW_FIELD", path, "must be an object");
