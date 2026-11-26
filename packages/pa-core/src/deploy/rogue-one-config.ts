@@ -1,0 +1,277 @@
+import { createHash } from "node:crypto";
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, posix, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { getPlatformHomeDir, getSkillsDir, getTeamsDir } from "../paths.js";
+import { queryReadonlyDeploymentEvents } from "../registry/index.js";
+import { findSensitiveMatch } from "../sensitive-patterns.js";
+import { parseReviewEvidenceJson, readReviewEvidenceFile } from "../validation/review-contract.js";
+import { parseTeamYamlContent } from "../yaml-parser.js";
+import type { DeployMode, RuntimeName, TeamConfig } from "../types.js";
+import type { DeployRequest } from "./control.js";
+import type { EffectiveRuntimeConfig } from "./runtime-config.js";
+import { getDeployPaths } from "./paths.js";
+import { assertRepositoryIsolationResumeAvailable, readRecordedRuntimeSession } from "./repository-isolation.js";
+
+const VERSION = "pa-rogue-one-config/v1", FILE = "rogue-one-config.json", PREFIX = `${VERSION}:`;
+const MAX_FILE = 1_048_576, MAX_TOTAL = 16 * MAX_FILE, MAX_FILES = 256, MAX_ARCHIVE = MAX_FILE;
+const hash = (raw: Uint8Array) => createHash("sha256").update(raw).digest("hex");
+type Cause = "selection" | "contract" | "resource" | "drift" | "snapshot" | "legacy" | "conflict";
+const reasons: Record<Cause, string> = {
+  selection: "The selected mode is missing, unknown or ambiguous.",
+  contract: "Rogue-One supports only ticket-optional, profile-free interactive configuration; configured content cannot grant native authority.",
+  resource: "The selected configuration resource closure is missing, unsafe, unsupported or exceeds its bounds.",
+  drift: "Selected configuration changed during capture; no coherent retained configuration was established.",
+  snapshot: "The original native configuration snapshot or its deployment binding cannot be verified; current PAPC is not a substitute.",
+  legacy: "The retained session has no verifiable original full-configuration snapshot; it cannot be silently migrated.",
+  conflict: "The continuation request conflicts with the original configuration, runtime or repository identity.",
+};
+export class RogueOneConfigError extends Error {
+  constructor(readonly cause: Cause) {
+    super(`Rogue-One configuration is blocked.\nCondition: Configuration validation must succeed before runtime start.\nSource: Native retained-configuration owner.\nReason: ${reasons[cause]}\nCorrection: Ask the runtime/configuration owner to inspect the original selection and retained evidence. Impact: none. Actor: agent or operator. New approval: not required to ask; repairs need their owner. Prerequisite: preserve the original session and partial results.\nResume Action: Recheck the same request only after owner reconciliation. Admission is checked again before any runtime start.`);
+    this.name = "RogueOneConfigError";
+  }
+}
+const fail = (cause: Cause): never => { throw new RogueOneConfigError(cause); };
+function path(value: string): string {
+  if (typeof value !== "string" || value.length > 4096 || !/^[A-Za-z0-9_./-]+$/.test(value)
+    || value.split("/").length > 16 || value.split("/").some(p => !p || p === "." || p === ".." || p.toLowerCase() === ".git")
+    || !/^(?:teams|skills|docs|primers|policies|contracts|scripts)\//.test(value)) fail("resource");
+  return value;
+}
+function body(raw: Uint8Array): string {
+  try { const value = new TextDecoder("utf-8", { fatal: true }).decode(raw); if (findSensitiveMatch("content", value)) fail("resource"); return value; }
+  catch { return fail("resource"); }
+}
+export function selectRogueOneMode(team: TeamConfig, requested?: string): DeployMode {
+  const id = requested ?? team.default_mode, modes = team.deploy_modes?.filter(mode => mode.id === id);
+  if (team.name !== "rogue-one" || typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id) || modes?.length !== 1) return fail("selection");
+  const mode = modes[0]!;
+  if (mode.mode_type !== "interactive" || mode.require_ticket === true || mode.document_profile !== undefined || mode.capability_policy !== undefined) fail("contract");
+  if (!Array.isArray(team.agents) || new Set(team.agents.map(agent => agent.name)).size !== team.agents.length
+    || mode.agents && (new Set(mode.agents).size !== mode.agents.length || mode.agents.some(name => !team.agents.some(agent => agent.name === name)))) fail("contract");
+  return mode;
+}
+/** Literal config-owned references only. External/product/artifact links are not
+ * selection authority. Bare prose references may be absent; links must resolve.
+ * Executable/dynamic dependencies are deliberately unsupported in v1. */
+function references(from: string, value: string): { path: string; optional: boolean }[] {
+  const result = new Map<string, { path: string; optional: boolean }>();
+  for (const match of value.matchAll(/\[[^\]\n]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)|`((?:skills|teams|docs|primers|policies|contracts|scripts)\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`/g)) {
+    const target = (match[1] ?? match[2]!).split("#")[0]!;
+    if (!target || /^[a-z]+:|^\/|^#/.test(target)) continue;
+    const relative = path(/^(?:skills|teams|docs|primers|policies|contracts|scripts)\//.test(target) ? target : posix.normalize(posix.join(posix.dirname(from), target)));
+    const optional = match[1] === undefined;
+    if (!result.has(relative) || !optional) result.set(relative, { path: relative, optional });
+  }
+  if (from.endsWith(".html")) {
+    if (/<script\b|\bon[a-z]+\s*=/i.test(value)) fail("resource");
+    for (const match of value.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) {
+      const target = match[1]!.split("#")[0]!;
+      if (!target || /^[a-z]+:|^\/|^#/.test(target)) continue;
+      const relative = path(posix.normalize(posix.join(posix.dirname(from), target)));
+      result.set(relative, { path: relative, optional: false });
+    }
+  }
+  return [...result.values()];
+}
+interface Resource { path: string; sha256: string; content: string }
+interface Snapshot {
+  schemaVersion: typeof VERSION; deploymentId: string; runtime: RuntimeName; configRoot: string;
+  repoKey: string; repoRoot: string; worktreeRoot: string; ticket: string | null; mode: string;
+  request: Pick<DeployRequest, "objective" | "provider" | "model" | "teamModel" | "agentModel" | "timeout" | "autonomy">;
+  runtimeConfig: EffectiveRuntimeConfig; files: Resource[]; absent: string[];
+}
+export interface RogueOneConfigContext { deploymentId: string; runtime: RuntimeName; repoKey: string; repoRoot: string; worktreeRoot: string; ticket?: string }
+function closure(team: TeamConfig, mode: DeployMode, repoKey: string, read: (relative: string, optional: boolean) => string | null): void {
+  const pending: { path: string; optional: boolean }[] = [], seen = new Set<string>();
+  const add = (relative: string) => pending.push({ path: path(relative), optional: false });
+  const objective = mode.objective ?? team.objective;
+  if (typeof objective !== "string") fail("contract");
+  if (!objective.includes("\n") && objective.endsWith(".md")) add(objective);
+  for (const file of [...team.global_docs ?? [], ...mode.global_docs ?? [], ...mode.project_guides?.[repoKey] ?? []]) add(file);
+  for (const agent of team.agents.filter(agent => !mode.agents || mode.agents.includes(agent.name))) {
+    if (agent.instruction) add(agent.instruction);
+    if (agent.skill) add(agent.skill);
+  }
+  for (const skill of mode.skills ?? []) {
+    if (!["reference", "global-skill", "shared-skill"].includes(skill["inject-as"])) fail("contract");
+    add(`skills/global/${path(`skills/${skill.name}`).slice(7)}/SKILL.md`);
+  }
+  while (pending.length) {
+    const next = pending.pop()!, key = `${next.path}:${next.optional}`;
+    if (seen.has(key)) continue;
+    if (seen.size >= MAX_FILES * 2) fail("resource");
+    seen.add(key);
+    const content = read(next.path, next.optional);
+    if (content === null) { if (!next.optional) fail("resource"); continue; }
+    // Executable dependencies need a qualified dependency owner; never claim
+    // Markdown closure proves dynamic/script closure. Static HTML is data only.
+    if (!/\.(?:md|txt|json|ya?ml|html)$/.test(next.path)) fail("resource");
+    pending.push(...references(next.path, content));
+  }
+}
+function physical(root: string, relative: string): string {
+  const parts = path(relative).split("/"); let at = root;
+  if (realpathSync(root) !== root) fail("resource");
+  for (const part of parts.slice(0, -1)) {
+    at = join(at, part); const stat = lstatSync(at);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(at) !== at) fail("resource");
+  }
+  return join(at, parts.at(-1)!);
+}
+const fingerprint = (file: string) => {
+  const s = lstatSync(file, { bigint: true });
+  if (!s.isFile() || s.isSymbolicLink() || s.nlink !== 1n) fail("resource");
+  return [s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs].join(":");
+};
+function directory(file: string): void {
+  const s = lstatSync(file);
+  if (!s.isDirectory() || s.isSymbolicLink() || realpathSync(file) !== file || (s.mode & 0o022) || s.uid !== process.getuid?.()) fail("snapshot");
+}
+function retainedRead(file: string, limit: number): Uint8Array {
+  const s = lstatSync(file);
+  if (!s.isFile() || s.isSymbolicLink() || s.nlink !== 1 || (s.mode & 0o222) || s.uid !== process.getuid?.()) fail("snapshot");
+  return readReviewEvidenceFile(file, limit, "rogue-one retained configuration");
+}
+function put(file: string, raw: Uint8Array): void {
+  try {
+    const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400);
+    try { writeFileSync(fd, raw); fsyncSync(fd); } finally { closeSync(fd); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  if (hash(retainedRead(file, MAX_ARCHIVE)) !== hash(raw)) fail("snapshot");
+}
+/** Content retention only: no native permission, caller authentication or sandbox.
+ * The launcher still owns current admission, session identity and revocation. */
+export class RogueOneConfig {
+  private constructor(private readonly snapshot: Snapshot, private readonly raw: Uint8Array, private readonly current: () => void) {}
+  get team(): TeamConfig { return parseTeamYamlContent(this.read("teams/rogue-one.yaml")); }
+  get mode(): DeployMode { return selectRogueOneMode(this.team, this.snapshot.mode); }
+  get runtimeConfig(): EffectiveRuntimeConfig { return Object.freeze({ ...this.snapshot.runtimeConfig }); }
+  get note(): string { return `${PREFIX}${hash(this.raw)}`; }
+  read(relative: string): string { return this.snapshot.files.find(file => file.path === path(relative))?.content ?? fail("resource"); }
+  assertCurrent(): void { this.current(); }
+  static capture(context: RogueOneConfigContext, request: DeployRequest, selected: TeamConfig, runtimeConfig: EffectiveRuntimeConfig): RogueOneConfig {
+    try {
+      const root = getPlatformHomeDir();
+      if (!isAbsolute(root) || resolve(root) !== root || getTeamsDir() !== join(root, "teams") || getSkillsDir() !== join(root, "skills/global")) fail("contract");
+      const observed = new Map<string, { fingerprint: string; content: string }>(), absent = new Set<string>(); let total = 0;
+      const read = (relative: string, optional = false): string | null => {
+        try {
+          const file = physical(root, relative);
+          const before = fingerprint(file), raw = readReviewEvidenceFile(file, MAX_FILE, "rogue-one selected configuration"), content = body(raw);
+          if (before !== fingerprint(file)) fail("drift");
+          const previous = observed.get(relative);
+          if (previous && (previous.fingerprint !== before || previous.content !== content)) fail("drift");
+          if (!previous) {
+            if (observed.size + absent.size >= MAX_FILES || total + raw.byteLength > MAX_TOTAL) fail("resource");
+            observed.set(relative, { fingerprint: before, content }); total += raw.byteLength;
+          }
+          return content;
+        } catch (error) {
+          if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") { if (observed.size + absent.size >= MAX_FILES) fail("resource"); absent.add(relative); return null; }
+          throw error;
+        }
+      };
+      const team = parseTeamYamlContent(read("teams/rogue-one.yaml") ?? fail("resource"));
+      if (!isDeepStrictEqual(team, selected)) fail("drift");
+      const mode = selectRogueOneMode(team, request.mode);
+      closure(team, mode, context.repoKey, read);
+      const assertCurrent = () => {
+        if (getPlatformHomeDir() !== root || getTeamsDir() !== join(root, "teams") || getSkillsDir() !== join(root, "skills/global")) fail("drift");
+        for (const [relative, old] of observed) {
+          const file = physical(root, relative);
+          if (fingerprint(file) !== old.fingerprint || body(readReviewEvidenceFile(file, MAX_FILE, "rogue-one capture recheck")) !== old.content) fail("drift");
+        }
+        for (const relative of absent) {
+          try { lstatSync(physical(root, relative)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+          fail("drift");
+        }
+      };
+      const overrides: Snapshot["request"] = {};
+      for (const key of ["objective", "provider", "model", "teamModel", "agentModel", "timeout", "autonomy"] as const) if (request[key] !== undefined) Object.assign(overrides, { [key]: request[key] });
+      const snapshot: Snapshot = { schemaVersion: VERSION, ...context, ticket: context.ticket ?? null, configRoot: root, mode: mode.id, request: overrides, runtimeConfig,
+        files: [...observed].sort(([a], [b]) => a.localeCompare(b)).map(([path, value]) => ({ path, content: value.content, sha256: hash(Buffer.from(value.content)) })), absent: [...absent].sort() };
+      assertCurrent(); const raw = Buffer.from(JSON.stringify(snapshot));
+      if (raw.byteLength > MAX_ARCHIVE) fail("resource");
+      return new RogueOneConfig(snapshot, raw, assertCurrent);
+    } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("resource"); }
+  }
+  /** Native immutable start anchors the bytes. A disk manifest/hash alone does
+   * not establish native origin. Never accept a caller-supplied digest/note. */
+  static resume(id: string, request: DeployRequest, context: Omit<RogueOneConfigContext, "deploymentId">): RogueOneConfig {
+    try {
+      assertRepositoryIsolationResumeAvailable(id, context.runtime);
+      const session = readRecordedRuntimeSession(id, `session-id-${context.runtime}.txt`);
+      if (!session) fail("snapshot");
+      const starts = queryReadonlyDeploymentEvents(id, true).filter(event => event.event === "started");
+      if (starts.length !== 1) fail("snapshot");
+      const start = starts[0]!;
+      if (start.team !== "rogue-one" || !start.rogue_one || start.builder_authority || start.mode_capability_binding || start.parent_deployment_id) fail("snapshot");
+      if (!start.note?.startsWith(PREFIX)) fail("legacy");
+      const dir = getDeployPaths(id).deployDir; directory(dir);
+      const raw = retainedRead(join(dir, FILE), MAX_ARCHIVE);
+      if (start.note !== `${PREFIX}${hash(raw)}`) fail("snapshot");
+      const value = parseReviewEvidenceJson(raw, "rogue-one retained configuration") as Snapshot;
+      if (value.schemaVersion !== VERSION || value.deploymentId !== id || JSON.stringify(value) !== Buffer.from(raw).toString()
+        || value.configRoot !== getPlatformHomeDir() || getTeamsDir() !== join(value.configRoot, "teams") || getSkillsDir() !== join(value.configRoot, "skills/global")
+        || start.mode !== value.mode || start.runtime !== value.runtime || start.provider !== value.runtimeConfig.provider || start.models?.team !== value.runtimeConfig.model
+        || value.runtime !== context.runtime || value.repoKey !== context.repoKey || value.repoRoot !== context.repoRoot || value.worktreeRoot !== context.worktreeRoot || value.ticket !== (context.ticket ?? null)
+        || start.repo_root !== value.repoRoot || start.worktree_root !== value.worktreeRoot || (start.ticket_id ?? null) !== value.ticket) fail("snapshot");
+      if (request.team !== "rogue-one" || request.mode !== undefined && request.mode !== value.mode) fail("conflict");
+      for (const key of ["objective", "provider", "model", "teamModel", "agentModel", "timeout", "autonomy"] as const) if (request[key] !== undefined && request[key] !== value.request[key]) fail("conflict");
+      if (!Array.isArray(value.files) || !Array.isArray(value.absent) || value.files.length + value.absent.length > MAX_FILES) fail("snapshot");
+      const files = new Map<string, string>(); let total = 0;
+      for (const file of value.files) {
+        const raw = Buffer.from(file.content); total += raw.byteLength;
+        if (raw.byteLength > MAX_FILE || total > MAX_TOTAL || hash(raw) !== file.sha256 || files.has(path(file.path))) fail("snapshot");
+        body(raw); files.set(file.path, file.content);
+      }
+      if (new Set(value.absent).size !== value.absent.length || value.absent.some(relative => files.has(path(relative)))) fail("snapshot");
+      const read = (relative: string, optional: boolean) => files.get(relative) ?? (optional && value.absent.includes(relative) ? null : fail("snapshot"));
+      const team = parseTeamYamlContent(read("teams/rogue-one.yaml", false)!);
+      closure(team, selectRogueOneMode(team, value.mode), value.repoKey, read);
+      return new RogueOneConfig(value, Buffer.from(raw), () => {
+        assertRepositoryIsolationResumeAvailable(id, context.runtime);
+        if (readRecordedRuntimeSession(id, `session-id-${context.runtime}.txt`) !== session) fail("snapshot");
+        const current = queryReadonlyDeploymentEvents(id, true).filter(event => event.event === "started");
+        if (current.length !== 1 || !isDeepStrictEqual(current[0], start) || hash(retainedRead(join(dir, FILE), MAX_ARCHIVE)) !== hash(raw)) fail("snapshot");
+      });
+    } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("snapshot"); }
+  }
+  continuation(request: DeployRequest): DeployRequest {
+    return { ...request, ...this.snapshot.request, mode: this.snapshot.mode };
+  }
+  /** A continuation gets a new native start binding, not a rewritten original. */
+  forDeployment(deploymentId: string): RogueOneConfig {
+    if (!/^d-[a-f0-9]{6}$/.test(deploymentId)) return fail("snapshot");
+    const snapshot = { ...this.snapshot, deploymentId };
+    return new RogueOneConfig(snapshot, Buffer.from(JSON.stringify(snapshot)), this.current);
+  }
+  /** Absent-only persistence and verified projection. Interrupted/competing
+   * writes are retained, never replaced. The start note is emitted only later. */
+  materialize(deploymentId: string): string {
+    try {
+      this.assertCurrent();
+      if (deploymentId !== this.snapshot.deploymentId) fail("snapshot");
+      const dir = getDeployPaths(deploymentId).deployDir; directory(dir);
+      const root = join(dir, "rogue-one-config");
+      try { mkdirSync(root, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      directory(root);
+      for (const file of this.snapshot.files) {
+        let parent = root;
+        for (const part of path(file.path).split("/").slice(0, -1)) {
+          parent = join(parent, part);
+          try { mkdirSync(parent, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+          directory(parent);
+        }
+        put(join(root, file.path), Buffer.from(file.content));
+      }
+      put(join(dir, FILE), this.raw);
+      const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+      this.assertCurrent(); return root;
+    } catch (error) { if (error instanceof RogueOneConfigError) throw error; return fail("snapshot"); }
+  }
+}
