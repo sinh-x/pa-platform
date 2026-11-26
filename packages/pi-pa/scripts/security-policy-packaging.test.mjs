@@ -191,6 +191,7 @@ test("finite selected-document bundle includes actual security source closure an
   const entry = join(directory, "work/packages/pi-pa/runtime/local-source-core.ts");
   const actual = buildSync({ entryPoints: [join(directory, "work/packages/pi-pa/runtime/qualify.mjs")], outfile: join(directory, "doc-qualify.mjs"), bundle: true, platform: "node", format: "esm", target: "node24", alias: { "@pa-platform/pa-core": entry }, external: ["./selection.mjs"], metafile: true, write: false, logLevel: "silent" });
   assert.ok(Object.keys(actual.metafile.inputs).some(path => path.endsWith("security-policy.ts")));
+  assert.ok(Object.keys(actual.metafile.inputs).some(path => path.endsWith("local-source-diagnostic.ts")), "finite selected-document closure must include the actual diagnostic/disclosure dependency");
   buildSync({ entryPoints: [entry], outfile: join(directory, "finite.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "silent" });
   mkdirSync(join(directory, "policies")); writeFileSync(join(directory, "policies/security-defaults.v1.yaml"), asset);
   run(directory, `import assert from 'node:assert/strict'; import {loadSensitivePatterns} from './finite.mjs'; assert.ok(loadSensitivePatterns().patterns.length);`);

@@ -164,6 +164,15 @@ build pass. These are affected regressions, not a complete workspace-test result
 installed selected-Pi journey, OpenCode-host qualification or human UAT. No runtime
 installation, selected binding activation or source permission change was made.
 
+PR integration also exercises the finite selected-document packaging closure,
+not just the full-checkout build. Hosted CI exposed the omitted new diagnostic
+source in that Nix recipe; its copy list now includes `local-source-diagnostic.ts`.
+The packaging test materializes only that exact closure and asserts the helper
+is an actual bundled input, while retaining missing-policy fail-closed checks.
+Only the recipe's reconciled inventory pin is renewed. This fixes dependency
+packaging; selection, immutable-file checks, protected publication and production
+enablement remain unchanged. Successful bundling is not installed/human UAT.
+
 ## Completion rule
 
 Generated discovery, semantic attribution, branch/route tests, installed candidate

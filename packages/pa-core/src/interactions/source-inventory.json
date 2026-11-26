@@ -33,7 +33,7 @@
     "packages/pi-pa/runtime/selected-host-entry.c": "1632280ff59f9a12c34e07e227e7abc552153758494ae11accad73ce914d0364",
     "packages/pi-pa/runtime/selected-document-qualification.mjs": "456b795819735b8ff179c3da07981296e2575c088af2fc360642792988b4968c",
     "packages/pi-pa/runtime/local-source-core.ts": "ebc94de5c07aa1f2012f9e42b5563f43a60cc0c330099e1aba7af3ab534b8316",
-    "nix/selected-pi-document-qualification.nix": "968b00ecaf749f953bf3eb0889bba659305990881f424e68c7504c3d454fff63",
+    "nix/selected-pi-document-qualification.nix": "8f401b9bf437766e75ce8c439a8b2e1a2260e489d07510e94ff3e3c06ef3249a",
     "packages/pi-pa/runtime/selected-host-qualification.mjs": "f78fa6f988609749ff75329c728147eb13891a68ffca606f061f7f294a01d94a",
     "packages/pa-core/src/index.ts": "e97f6d53ed93816e460191edc04cd8d2eff301a0015e05a67e52429c774fee77",
     "packages/pa-core/src/documents/handoff-policy.ts": "ca2e390068a47a45bc371a12d12a751648047d19162d6ffa2134020053e260c4",
