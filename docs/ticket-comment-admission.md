@@ -52,3 +52,28 @@ Core helper tests, Pi native tool tests, built-candidate tests, exact installed
 PPA/Pi qualification, independent review and human acceptance are separate
 observations. A source test is not an installed qualification. Disposable fixtures
 must isolate tickets, registry, process identity and configuration from live data.
+
+### Reproducible built/installed native check
+
+After building the candidate, from its repository root:
+
+```sh
+node scripts/dev/verify_ticket_comment_native.mjs "$PWD"
+```
+
+The explicit argument is the exact runtime root containing `packages/*/dist`.
+For an installed check, pass the selected installation's `share/pa-platform`
+directory instead. The runner imports only those compiled modules, with no source
+fallback. It creates and removes its own disposable configuration, Git repo,
+registry, ticket store and authenticated Pi process anchor; it never installs or
+changes the selected runtime or live ticket state. It exercises the actual
+`createPaTicketTool().execute` boundary with real process/session authentication,
+both comment forms, live/unproven competing custody, status denials, original
+status-intent interruption/recovery, invalid attribution/content, caller drift
+and inspection after a discarded acknowledgement. A nonzero exit is not a pass.
+
+This module-level native check is **not** an interactive installed Pi session,
+independent review or human UAT. The separate native regression test additionally
+runs concurrent comment/status requests in separate processes and a real native
+document queue continuation. Do not substitute the currently installed old
+release for the changed candidate and call the latter installed-qualified.
