@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { commentFail, TicketCommentError } from "./comment-admission.js";
 import { assertTicketAdminCandidate, validateTicketAdminFields, ticketAdminFail, type TicketAdminFields } from "./admin-service.js";
 import { TicketHandoffError, handoffKey, handoffFail, parseTicketHandoffChange, handoffCandidate, readHandoffIntent, handoffIntents, publishHandoffIntent, handoffAudit, handoffAuditComplete, type TicketHandoffChange, type TicketHandoffHooks } from "./handoff-intent.js";
 import { statusFail, statusKey, statusVersion, statusCandidate, statusIntents, readStatusIntent, publishStatusIntent, statusAudit, statusAuditComplete, TICKET_STATUSES, type TicketStatusHooks } from "./status-intent.js";
@@ -558,17 +559,29 @@ export class TicketStore {
       this.assertHandoffSettledExcept(id, original?.key);
     });
   }
-  private assertHandoffSettledExcept(id: string, originalKey?: string, originalStatusKey?: string): void {
+  /** Same exact-snapshot owners, with an append-specific no-write result. Must
+   * run under the append's outer transaction; never reconciles another intent. */
+  assertCommentAppendCompatible(id: string): void {
+    try { this.assertHandoffSettledExcept(id, undefined, undefined, () => commentFail("TICKET_COMMENT_PENDING")); }
+    catch (error) {
+      if (error instanceof TicketCommentError) throw error;
+      commentFail("TICKET_COMMENT_UNPROVEN");
+    }
+  }
+
+  private assertHandoffSettledExcept(id: string, originalKey?: string, originalStatusKey?: string,
+    pending: () => never = () => handoffFail("TICKET_HANDOFF_UNCERTAIN")): void {
     this.withTransaction(() => {
       const audits = this.readCreationAudits().entries;
       for (const file of readdirSync(this.dir).filter(name => /^\.ticket-create-[a-f0-9]{64}\.json$/.test(name))) {
         const record = readCreationIntent(this.dir, file.slice(15, -5));
-        if (!record || record.ticket.id === id && !this.inspectCreationWithIntent({ scope: record.scope, requestId: record.requestId })?.complete) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        if (!record) return handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        if (record.ticket.id === id && !this.inspectCreationWithIntent({ scope: record.scope, requestId: record.requestId })?.complete) pending();
       }
       if (handoffIntents(this.dir).some(record => record.before.id === id && record.key !== originalKey && !handoffAuditComplete(record, audits))
         || planningIntents(this.dir).some(record => record.before.id === id && !planningAuditComplete(record, audits))
         || autoDraftAppendIntents(this.dir).some(record => record.before.id === id && !autoDraftAppendAuditComplete(record, audits))
-        || statusIntents(this.dir).some(record => record.before.id === id && record.key !== originalStatusKey && !statusAuditComplete(record, audits))) handoffFail("TICKET_HANDOFF_UNCERTAIN");
+        || statusIntents(this.dir).some(record => record.before.id === id && record.key !== originalStatusKey && !statusAuditComplete(record, audits))) pending();
     });
   }
 
@@ -709,6 +722,12 @@ export class TicketStore {
         const readback = this.get(id);
         if (!readback || !ticketsEqual(readback, candidate)) ticketAdminFail("TICKET_ADMIN_UNAVAILABLE");
         this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
+        const final = this.get(id), audit = this.readAuditSnapshot();
+        const suffix = auditSnapshot === undefined ? audit : audit?.startsWith(auditSnapshot) ? audit.slice(auditSnapshot.length) : undefined;
+        const entries = suffix?.split("\n").filter(Boolean).map(line => JSON.parse(line) as AuditEntry);
+        if (!final || !ticketsEqual(final, candidate) || !audit?.endsWith("\n") || entries?.length !== 1
+          || entries[0]!.ticket_id !== id || entries[0]!.action !== "commented" || entries[0]!.actor !== author
+          || !isDeepStrictEqual(entries[0]!.changes, { comments: [ticket.comments.length, ticket.comments.length + 1] })) commentFail("TICKET_COMMENT_UNCERTAIN");
       } catch (error) {
         // Persistence failures restore both owners under the same mutex. Only a
         // verified restoration permits propagating the original failure; unknown

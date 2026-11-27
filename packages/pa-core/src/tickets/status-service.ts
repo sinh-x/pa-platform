@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { commentFail } from "./comment-admission.js";
+import { workflowCommentCompatible } from "../workflows/ticket-owner.js";
 import type { TicketOwnershipCause } from "./ownership-diagnostic.js";
 import { WorkflowMarkerError, type WorkflowMarkerCause } from "../workflows/marker-diagnostic.js";
 import { lstatSync } from "node:fs";
@@ -81,6 +83,31 @@ export function assertTicketAdminOwner(store: TicketStore, ticket: string, calle
   } catch (error) { return ownerFailure(error, cause); }
   assertTicketCompetingDeployments(ticket, caller);
 }
+/** Append safety is not status custody. Read the existing journals to establish
+ * compatibility, but do not require a competing deployment to release ownership.
+ * The caller holds the shared ticket mutex and authenticates independently. */
+export function assertTicketCommentOwner(store: TicketStore, ticket: string, project: string): void {
+  try {
+    const record = store.get(ticket);
+    if (!record || record.id !== ticket || record.project !== project) return commentFail("TICKET_COMMENT_UNPROVEN");
+    const workflow = readTicketWorkflow(ticket);
+    if (workflow && !workflowCommentCompatible(workflow)) return commentFail("TICKET_COMMENT_UNPROVEN");
+    let present = false;
+    try { lstatSync(getRegistryDbPath()); present = true; }
+    catch (error) { if (!missingEntry(error)) throw error; }
+    if (present) {
+      const db = openReadonlyRegistryDatabase(true);
+      try {
+        const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_events'").get();
+        // Existing replay validates pending publish/queue coordinates. Those
+        // owners use member/ref/lifecycle predicates, not full ticket bytes.
+        if (table) documentPending(new RegistryDocumentJournal(db).events(project, ticket));
+      } finally { db.close(); }
+    }
+  } catch { return commentFail("TICKET_COMMENT_UNPROVEN"); }
+  store.assertCommentAppendCompatible(ticket);
+}
+
 function assertTicketCompetingDeployments(ticket: string, caller: TicketStatusCaller): void {
   let others: ReturnType<typeof getDeploymentsByTicketId>;
   try { others = getDeploymentsByTicketId(ticket).filter(s => s.deploy_id !== caller.deploymentId); }

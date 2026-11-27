@@ -405,6 +405,32 @@ not semantic completeness, live registration or installed provenance. Launch
 plan/control/deploy/adapter hashes are not renewed by this reconciliation; later
 changes must trigger their own semantic review.
 
+## PAP-345 — append-only compatibility, not status custody
+
+The `ticket.native.comment` forms and write effect category are unchanged.
+Both forms still authenticate the native process/session, target project and
+current caller under the shared ticket mutex, validate content/privacy and use
+the caller as comment/audit actor. Only this append route stops using competing
+deployment liveness as a refusal. It consults existing workflow/document replayers
+and the store's exact-snapshot intent/audit checks; incompatible incomplete
+creation, status, planning, handoff and auto-draft writes still defer. Known v1
+workflow owners and document publish/queue recovery use predicates unchanged by
+an append, so their pending records alone do not block comments or get settled.
+Unknown relevant evidence fails closed with a comment-specific diagnostic.
+
+Ticket and audit readback precede append success. Whole-ticket version/CAS still
+changes; status/update never silently rebase after an intervening comment. There
+is no retry identity, exactly-once claim or text deduplication for comments.
+Privileged effects retain their ownership guards. No new CLI forms, capability,
+native binding or execution/publication/custody grant is advertised.
+
+This reconciliation renews five changed tracked hashes (status-service, store,
+admin-service, ticket exports and Pi ticket tool) and explicitly inventories the
+comment diagnostic and workflow compatibility helper. See
+[the recovery-owner matrix](../../../../docs/ticket-comment-admission.md).
+Source and disposable native tests do not qualify an installed PPA/Pi pair,
+independent review or human acceptance.
+
 ## PAP-334 P2b — interim launch/resume rejection, not confinement
 
 This separate **source-only interim ingress** reconciliation supersedes historical

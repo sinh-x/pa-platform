@@ -1,5 +1,6 @@
 export * from "./store.js";
 export * from "./admin-service.js";
+export * from "./comment-admission.js";
 export { creationDigest } from "./create-intent.js";
 export * from "./status-intent.js";
 export * from "./status-service.js";
