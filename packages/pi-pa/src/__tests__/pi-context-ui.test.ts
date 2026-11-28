@@ -622,3 +622,39 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
   assert.equal(statuses.at(-1), undefined);
   assert.equal(hiddenPermanently, 0, "custom overlays are completed through done, not raw handle.hide");
 });
+
+test("local native readback publishes before notice and an older idle observation cannot rewind it", async () => {
+  const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+  let command: ((args: string, context: unknown) => unknown) | undefined;
+  let idle: (() => void) | undefined;
+  let reason: ((value: string) => void) | undefined;
+  let release: ((value: { ticket: string; project: string }) => void) | undefined;
+  let delay = false;
+  const trace: string[] = [];
+  registerContextUiModuleWithOptions({
+    on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+    registerCommand: (_name, options) => { command = options.handler; },
+  }, {
+    limiter: new ContextRefreshLimiter(0),
+    setInterval: ((callback: () => void) => { idle = callback; return { unref() {} }; }) as never,
+    clearInterval: (() => {}) as never,
+    collector: { env: { PA_DEPLOYMENT_ID: "d-race" }, gitLookup: async () => ({ available: false }),
+      deploymentLookup: async () => delay ? await new Promise(resolve => { release = resolve; }) : { ticket: "EX-001", project: "example" } },
+    associateTicket: input => ({ deploymentId: input.deploymentId, previousTicketId: "EX-001", requestedTicketId: input.ticketId, currentTicketId: input.ticketId, actor: input.actor, reason: input.reason, writeOccurred: true }),
+  });
+  const context = { mode: "tui", hasUI: true, cwd: "/repo", sessionManager: { getBranch: () => [] }, ui: {
+    setStatus: (_: string, value?: string) => trace.push(`status:${value}`), notify: (value: string) => trace.push(`notice:${value}`),
+    input: async () => await new Promise<string>(resolve => { reason = resolve; }), confirm: async () => true,
+  } };
+  events.get("session_start")?.({}, context); await new Promise(resolve => setImmediate(resolve));
+  const association = command?.("ticket EX-002", context); await new Promise(resolve => setImmediate(resolve));
+  delay = true; idle?.(); await new Promise(resolve => setImmediate(resolve));
+  reason?.("synthetic race"); await association;
+  const statusIndex = trace.findIndex(line => line.startsWith("status:") && line.includes("EX-002"));
+  const noticeIndex = trace.findIndex(line => line.startsWith("notice:") && line.includes("EX-002"));
+  assert.ok(statusIndex >= 0 && noticeIndex > statusIndex);
+  release?.({ ticket: "EX-001", project: "example" }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(trace.filter(line => line.startsWith("status:")).at(-1)?.includes("EX-002"), true);
+  await events.get("session_shutdown")?.({}, context);
+  assert.equal(trace.at(-1), "status:undefined");
+});

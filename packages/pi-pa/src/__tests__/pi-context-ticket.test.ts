@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, readdirSync, symlinkSync, linkSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, symlinkSync, linkSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TicketStore } from "@pa-platform/pa-core";
+import { TicketStore, appendRegistryEvent, closeDb, associateDeploymentTicket, queryReadonlyDeploymentEvents } from "@pa-platform/pa-core";
 import { ContextTicketReader } from "../pi-extension/context-ticket.js";
 import { initialContextSnapshot, collectContext } from "../pi-extension/context-state.js";
 import { contextText } from "../pi-extension/context-text.js";
-import type { ContextTicketSummary } from "../pi-extension/context-reader.js";
+import { ContextNativeReader, type ContextTicketSummary } from "../pi-extension/context-reader.js";
+import type { DeploymentProjection } from "../pi-extension/context-state.js";
 
 const summary = (id: string): ContextTicketSummary => ({ id, project: "example", title: id, status: "idea", priority: "medium", assignee: "", summary: "", description: "" });
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -93,4 +94,42 @@ test("verification loss withholds bodies; same-ticket retry recovers after timeo
 test("literal text disables terminal/bidi controls and explicitly truncates over-budget content", () => {
   assert.equal(contextText("a\r\nb\t\x1b]8;\x07\u202ec"), "a\nb    ?]8;??c");
   assert.equal(contextText("abcdTAIL", 4), "abcd\n[truncated]");
+});
+
+test("actual isolated native reader: immutable launch, exact live association and zero viewing writes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "context-native-"));
+  const keys = ["PA_REGISTRY_DB", "PA_PLATFORM_CONFIG", "PA_AI_USAGE_HOME"] as const;
+  const prior = keys.map(key => process.env[key]);
+  closeDb();
+  try {
+    process.env.PA_REGISTRY_DB = join(root, "registry.db");
+    process.env.PA_PLATFORM_CONFIG = join(root, "config");
+    process.env.PA_AI_USAGE_HOME = join(root, "usage");
+    mkdirSync(join(root, "config")); mkdirSync(join(root, "usage", "tickets"), { recursive: true });
+    writeFileSync(join(root, "config", "config.yaml"), `repos:\n  example:\n    path: ${root}\n    prefix: EX\n`);
+    for (const id of ["EX-001", "EX-002"]) writeFileSync(join(root, "usage", "tickets", `${id}.json`), JSON.stringify(summary(id)));
+    appendRegistryEvent({ deployment_id: "d-context-native", team: "requirements", mode: "analyze", event: "started", timestamp: "2026-11-28T00:00:00Z", repo_root: root, repo: root, worktree_root: root, ticket_id: "EX-001", objective: "launch\nOBJECTIVE-TAIL" });
+    const start = queryReadonlyDeploymentEvents("d-context-native", true)[0];
+    const reader = new ContextNativeReader();
+    const request = { deploymentId: "d-context-native", cwd: root };
+    let projection = await reader.read<DeploymentProjection>({ ...request, kind: "deployment" });
+    assert.equal(projection?.ticket, "EX-001"); assert.equal(projection?.objective, "launch\nOBJECTIVE-TAIL");
+    associateDeploymentTicket({ deploymentId: request.deploymentId, ticketId: "EX-002", expectedTicketId: "EX-001", actor: "operator", reason: "synthetic test association" });
+    const before = queryReadonlyDeploymentEvents(request.deploymentId, true);
+    const ticketBefore = readFileSync(join(root, "usage", "tickets", "EX-002.json"), "utf8");
+    projection = await reader.read<DeploymentProjection>({ ...request, kind: "deployment" });
+    assert.equal(projection?.ticket, "EX-002");
+    assert.equal(await reader.read({ ...request, kind: "ticket", project: "example", ticket: "EX-001" }), undefined);
+    assert.equal(await reader.read({ ...request, kind: "ticket", project: "foreign", ticket: "EX-002" }), undefined);
+    const ticket = await reader.read<ContextTicketSummary>({ ...request, kind: "ticket", project: "example", ticket: "EX-002" });
+    assert.equal(ticket?.id, "EX-002");
+    assert.deepEqual(queryReadonlyDeploymentEvents(request.deploymentId, true), before);
+    assert.deepEqual(before[0], start);
+    assert.equal(readFileSync(join(root, "usage", "tickets", "EX-002.json"), "utf8"), ticketBefore);
+    reader.abort();
+  } finally {
+    closeDb();
+    keys.forEach((key, i) => { if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i]; });
+    rmSync(root, { recursive: true, force: true });
+  }
 });

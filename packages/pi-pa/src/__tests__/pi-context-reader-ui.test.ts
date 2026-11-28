@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, TuiMainScreen } from "@earendil-works/pi-tui";
 import { ContextSidebarComponent, formatTicketLines } from "../pi-extension/context-ui.js";
 import { initialContextSnapshot } from "../pi-extension/context-state.js";
 import { readerContextOverlayOptions, contextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
@@ -81,4 +81,33 @@ test("rendered over-budget text has explicit truncation and literal controls onl
   let joined = "";
   for (let i = 0; i < 100; i++) { joined += component.render(68).join("\n"); component.handleInput("\x1b[6~"); }
   assert.match(joined, /\[truncated\]/); assert.doesNotMatch(joined, /OVER-BUDGET/);
+});
+
+test("real Pi TUI compositor routes resize-hidden keys to editor and restores editing after Esc", () => {
+  const snapshot = fixture(), writes: string[] = [], editing: string[] = [];
+  let input: (data: string) => void = () => {}, resize = () => {};
+  const terminal = { columns: 100, rows: 12, kittyProtocolActive: false,
+    start(onInput: typeof input, onResize: typeof resize) { input = onInput; resize = onResize; }, stop() {},
+    write(data: string) { writes.push(data); }, drainInput: async () => {},
+    moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
+  };
+  const tui = new TuiMainScreen(terminal);
+  const editor = { render: () => ["EDITOR"], invalidate() {}, handleInput(data: string) { editing.push(data); } };
+  tui.addChild(editor); tui.setFocus(editor); tui.start();
+  const component = new ContextSidebarComponent(tui, theme as never, () => snapshot, () => { handle.setHidden(true); handle.unfocus(); }, { isFocused: () => handle.isFocused() });
+  const handle = tui.showOverlay(component, readerContextOverlayOptions());
+  try {
+    for (const width of [100, 119, 120]) {
+      terminal.columns = width; resize(); tui.renderNow(true);
+      input("\x1b[F"); tui.renderNow(true);
+      assert.equal(editing.length, 0);
+      assert.ok(writes.join("").includes("TASK-2-TAIL"));
+    }
+    terminal.columns = 99; resize(); tui.renderNow(true); input("r"); input("\t");
+    assert.deepEqual(editing, ["r", "\t"], "hidden overlay never captures retry/tab");
+    terminal.columns = 100; resize(); tui.renderNow(true); handle.focus();
+    input("\x1b"); input("typed-after-escape");
+    assert.equal(editing.at(-1), "typed-after-escape");
+    assert.equal(tui.getFocusedComponent(), editor);
+  } finally { handle.hide(); tui.stop(); }
 });

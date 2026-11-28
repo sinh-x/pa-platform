@@ -121,8 +121,13 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   const ensureOverlay = (context: ExtensionContext) => {
     if (overlayHandle || context.mode !== "tui") return;
     overlayHidden = false;
+    const overlayGeneration = observationGeneration;
     void context.ui.custom<void>(
       (tui, theme, _keybindings, done) => {
+        if (disposed || overlayGeneration !== observationGeneration) {
+          done();
+          return { render: () => [], invalidate() {} };
+        }
         overlayDone = () => done();
         sidebar = new ContextSidebarComponent(tui, theme, () => snapshot, () => setOverlayVisible(false), {
           getTicketState: () => ticketReader.state,
@@ -147,6 +152,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
           },
         },
         onHandle: (handle) => {
+          if (disposed || overlayGeneration !== observationGeneration) { handle.setHidden(true); return; }
           overlayHandle = handle;
           handle.focus();
         },
@@ -195,6 +201,8 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       return;
     }
 
+    const associationGeneration = observationGeneration;
+    const deploymentId = snapshot.deployment.id;
     const currentTicket = snapshot.deployment.ticket;
     const currentLabel = currentTicket ?? "none";
     const reason = await context.ui.input(
@@ -220,9 +228,10 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       }
     }
 
+    if (disposed || associationGeneration !== observationGeneration) return;
     try {
       const operation = () => associateTicket({
-        deploymentId: snapshot.deployment.id!,
+        deploymentId: deploymentId!,
         ticketId: targetTicket,
         expectedTicketId: currentTicket ?? null,
         actor: deploymentActor(snapshot),
@@ -231,7 +240,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       const result = options.lifecycle
         ? await options.lifecycle.trackRegistryAccess(operation)
         : operation();
-      if (disposed) return;
+      if (disposed || associationGeneration !== observationGeneration) return;
       observationGeneration++;
       snapshot = {
         ...snapshot,

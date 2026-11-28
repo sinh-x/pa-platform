@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { CONTEXT_READ_SCRIPT } from "./context-read-worker.js";
 import type { TicketStore } from "@pa-platform/pa-core";
 import type { DeploymentProjection } from "./context-state.js";
 
@@ -15,10 +15,8 @@ export class ContextNativeReader {
     if (this.busy) return undefined;
     this.busy = true;
     try {
-      const source = import.meta.url.endsWith(".ts");
-      const script = fileURLToPath(new URL(source ? "./context-read-worker.ts" : "./context-read-worker.js", import.meta.url));
       return await new Promise<T | undefined>(resolve => {
-        const child = execFile(process.execPath, [...(source ? ["--import", import.meta.resolve("tsx")] : []), script, JSON.stringify(request)],
+        const child = execFile(process.execPath, ["--input-type=module", "-e", CONTEXT_READ_SCRIPT, import.meta.resolve("@pa-platform/pa-core/context-reader"), JSON.stringify(request)],
           { timeout: 500, killSignal: "SIGKILL", maxBuffer: 256 * 1024, encoding: "utf8" }, (error, stdout) => {
             if (error) { resolve(undefined); return; }
             try { resolve(JSON.parse(stdout) ?? undefined); } catch { resolve(undefined); }
