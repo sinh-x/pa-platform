@@ -74,6 +74,13 @@ test('all required checks have finite budgets, stable identity and no success-fo
   assert.equal(steps.node.with.cache, 'pnpm'); assert.equal(steps.node.with['node-version'], '22');
 });
 
+test('pairing and completion checks run after build and before the long code suite', () => {
+  const ids = job.steps.filter(step => step.id).map(step => step.id);
+  assert.deepEqual(ids.slice(ids.indexOf('build'), ids.indexOf('code-tests') + 1), [
+    'build', 'pairing-fixtures', 'generated-completions', 'fish-syntax', 'fish-timing', 'code-tests',
+  ]);
+});
+
 test('report preserves failure, skipped and cancelled outcomes and cannot certify missing checks', () => {
   const summary = renderSummary({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', CI_HEAD_SHA: 'head', CI_BASE_SHA: 'base', GITHUB_SHA: 'merge', CI_JOB_STATUS: 'failure' }, {
     checkout: { outcome: 'success' }, 'fish-provision': { outcome: 'failure', conclusion: 'success' },
@@ -89,6 +96,19 @@ test('report preserves failure, skipped and cancelled outcomes and cannot certif
   assert.match(summary, /not full local.*human-UAT qualification/);
   const hostile = renderSummary({ CI_HEAD_SHA: 'head\n| injected | `code`' }, {}, 'sha');
   assert.doesNotMatch(hostile, /\n\| injected|`code`/);
+});
+
+test('an early completion failure does not verify the unrun code suite', () => {
+  for (const outcome of ['unverified', 'skipped']) {
+    const summary = renderSummary({ CI_JOB_STATUS: 'failure' }, {
+      'pairing-fixtures': { outcome: 'success' }, 'fish-timing': { outcome: 'failure' },
+      ...(outcome === 'skipped' ? { 'code-tests': { outcome } } : {}),
+    }, 'checkout');
+    assert.match(summary, /Job state before summary: failure/);
+    assert.match(summary, /\| Actual fish timing \| Source\/completions \| failure \|/);
+    assert.ok(summary.includes(`| Code-only tests | Source | ${outcome} |`));
+    assert.doesNotMatch(summary, /\| Code-only tests \| Source \| success \|/);
+  }
 });
 
 test('metadata-only version bump does not cache an unpopulated pnpm store', () => {
