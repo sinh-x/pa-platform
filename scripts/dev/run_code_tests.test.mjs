@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { load } from 'js-yaml';
-import { codeOnlyEntries, manualIntegration, partitionTests } from './run_code_tests.mjs';
+import { codeOnlyEntries, discoverTests, manualIntegration, partitionTests } from './run_code_tests.mjs';
+import { fastEntries, runDevelopFast, selectDevelopFast } from './run_develop_fast.mjs';
 
 test('code-only inventory explicitly accounts for manual integration and includes new code tests', () => {
   const profile = manualIntegration['pi-pa'];
@@ -53,9 +54,10 @@ test('workspace test gates build core once per invocation without omitting sourc
   const scripts = pkg('package.json').scripts;
   const build = 'corepack pnpm --filter @pa-platform/pa-core build';
   for (const name of ['test:run', 'test:code:run']) {
-    assert.ok(scripts[name].startsWith(`${build} && node --test `));
+    assert.ok(scripts[name].startsWith(`${build} && corepack pnpm run test:drivers:run && `));
     assert.equal(scripts[name].split(build).length, 2);
   }
+  assert.match(scripts['test:drivers:run'], /^node --test (?:scripts\/dev\/[\w-]+\.test\.mjs ?)+$/);
   assert.match(scripts['test:run'], /-r --workspace-concurrency=1 test:source$/);
   for (const [name, lane] of [['pa-core', 'test:code'], ['opencode-pa', 'test:source'], ['pi-pa', 'test:code:source'], ['runtime-host', 'test:source']]) {
     assert.ok(scripts['test:code:run'].includes(`--filter @pa-platform/${name} ${lane}`));
@@ -71,6 +73,77 @@ test('workspace test gates build core once per invocation without omitting sourc
       }
       assert.match(child['test:code:source:run'], /run_code_tests\.mjs pi-pa/);
     }
+  }
+});
+
+test('develop-fast is an exact subset and leaves other code files in the full inventory', () => {
+  for (const [name, entries] of Object.entries(fastEntries)) {
+    const workspace = fileURLToPath(new URL(`../../packages/${name}`, import.meta.url));
+    const files = [...discoverTests(workspace), 'src/new-test.test.ts'];
+    const full = partitionTests(files, manualIntegration[name], codeOnlyEntries[name]);
+    const fast = selectDevelopFast(name, files);
+    assert.deepEqual(fast.selected, [...entries].sort());
+    assert.deepEqual([...fast.selected, ...fast.deferred].sort(), full.code);
+    assert.deepEqual(fast.manual, full.manual);
+    assert.ok(fast.deferred.includes('src/new-test.test.ts'));
+    assert.throws(() => selectDevelopFast(name, files, []), /Empty or duplicate/);
+    assert.throws(() => selectDevelopFast(name, files, [entries[0], entries[0]]), /Empty or duplicate/);
+    assert.throws(() => selectDevelopFast(name, files, [fast.manual[0]]), /not in the full code inventory/);
+    assert.throws(() => selectDevelopFast(name, files.filter(path => path !== entries[0])), /not in the full code inventory/);
+  }
+  assert.throws(() => selectDevelopFast('unknown', []), /Unknown develop-fast workspace/);
+  assert.ok(fastEntries['pi-pa'].includes(codeOnlyEntries['pi-pa']['src/__tests__/pi-workflow-runtime.test.ts']));
+});
+
+test('develop-fast inventory inspection runs nothing and rejects extra arguments', async () => {
+  const lines = [];
+  const run = () => assert.fail('inventory inspection must not invoke a command');
+  const log = line => lines.push(line);
+  assert.equal(await runDevelopFast(['--list'], { run, log }), 0);
+  assert.match(lines.join('\n'), /pa-core: 7 selected; \d+ deferred to full code tests; 3 manual integration \(not run\)/);
+  assert.match(lines.join('\n'), /pi-pa: 4 selected; \d+ deferred to full code tests; 7 manual integration \(not run\)/);
+  assert.match(lines.at(-1), /no build or tests ran/);
+  assert.equal(await runDevelopFast(['--list', 'unexpected'], { run, error: log }), 1);
+  assert.match(lines.at(-1), /with no arguments to run/);
+});
+
+test('develop-fast builds first, uses shared drivers and runs the exact selected source tests serially', async () => {
+  const calls = [];
+  const log = () => {};
+  assert.equal(await runDevelopFast([], { log, run: async (command, argv, { cwd }) => {
+    assert.equal(command, 'corepack');
+    calls.push({ argv, cwd });
+    return { code: 0 };
+  } }), 0);
+  assert.deepEqual(calls.map(({ argv }) => argv.slice(0, 3)), [
+    ['pnpm', 'run', 'build'], ['pnpm', 'run', 'test:drivers:run'], ['pnpm', 'exec', 'tsx'],
+    ['pnpm', 'run', 'test:source:run'], ['pnpm', 'exec', 'tsx'], ['pnpm', 'exec', 'tsx'], ['pnpm', 'run', 'test:source:run'],
+  ]);
+  assert.deepEqual(calls[4].argv, ['pnpm', 'exec', 'tsx', '--test', 'scripts/**/*.test.mjs']);
+  for (const [i, name] of [[2, 'pa-core'], [5, 'pi-pa']]) {
+    assert.deepEqual(calls[i].argv.slice(3), ['--test', '--test-concurrency=1', ...[...fastEntries[name]].sort()]);
+    assert.equal(calls[i].cwd, fileURLToPath(new URL(`../../packages/${name}`, import.meta.url)));
+  }
+  assert.equal(calls[3].cwd, fileURLToPath(new URL('../../packages/opencode-pa', import.meta.url)));
+  assert.equal(calls[6].cwd, fileURLToPath(new URL('../../packages/runtime-host', import.meta.url)));
+});
+
+test('develop-fast stops on unavailable, failed or interrupted stages without claiming success', async () => {
+  for (const [failAt, result, exit] of [
+    [1, { code: 2 }, 2], [3, { interrupted: 'SIGINT', code: 0 }, 130],
+    [4, { signal: 'SIGTERM', timedOut: true }, 1], [5, new Error('spawn failed'), 1],
+  ]) {
+    let calls = 0;
+    const lines = [];
+    const log = line => lines.push(line);
+    assert.equal(await runDevelopFast([], { log, error: log, run: async () => {
+      if (++calls !== failAt) return { code: 0 };
+      if (result instanceof Error) throw result;
+      return result;
+    } }), exit);
+    assert.equal(calls, failAt);
+    assert.match(lines.at(-1), /later stages did not run/);
+    assert.ok(!lines.some(line => line.startsWith('Selected stages completed')));
   }
 });
 

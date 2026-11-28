@@ -14,12 +14,12 @@ export const stages = Object.freeze([
   ['dependencies', 'Frozen dependency installation', 'Dependency setup'],
   ['typecheck', 'Typecheck', 'Source'],
   ['build', 'Build', 'Source'],
-  ['code-tests', 'Code-only tests', 'Source'],
   ['pairing-fixtures', 'Repository pairing/config-first fixtures', 'Source/config'],
-  ['manual-boundary', 'Manual boundary notice (not qualification)', 'Information'],
   ['generated-completions', 'Generated completion diff', 'Source/completions'],
   ['fish-syntax', 'Actual fish syntax', 'Source/completions'],
   ['fish-timing', 'Actual fish timing', 'Source/completions'],
+  ['code-tests', 'Code-only tests', 'Source'],
+  ['manual-boundary', 'Manual boundary notice (not qualification)', 'Information'],
 ]);
 const safe = value => String(value || 'unavailable').replace(/[^a-zA-Z0-9_./:@+ -]/g, '?').slice(0, 300);
 const outcome = value => ['success', 'failure', 'skipped', 'cancelled'].includes(value) ? value : 'unverified';

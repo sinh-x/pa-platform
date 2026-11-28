@@ -77,28 +77,11 @@ jobs:
         timeout-minutes: 5
         run: pnpm run build
 
-      - name: Code tests (manual integration is separate)
-        id: code-tests
-        timeout-minutes: 60
-        run: pnpm run test:code
-
+      # Report failures from the short source checks before starting the long suite.
       - name: Repository-owned pairing contract fixtures
         id: pairing-fixtures
         timeout-minutes: 3
         run: pnpm run test:paired-gate
-
-      - name: Record manual integration boundary
-        id: manual-boundary
-        if: always()
-        timeout-minutes: 1
-        shell: bash
-        run: |
-          printf '%s\n' 'Hosted CI checks PAP code and repository-owned fixtures only.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'Operator-local configuration pairing remains a separate check; no external configuration checkout or access is used by this job.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'Code-only checks do not certify sandbox/installed runtime integration.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'Manual gate: corepack pnpm test in the supported immutable sandbox toolchain; see docs/ordinary-local-development.md.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'Selected-host gate: corepack pnpm verify:selected-pi-reader on the actual trusted host. Builder user namespaces may correctly deny root authority; their publication/namespace checks do not certify positive production reads, installation or human acceptance.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'All 16 native workflow integration cases remain mandatory locally via pi-workflow-runtime.test.ts; this lane uses its explicit portable entry, not skipped native tests.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check generated completions
         id: generated-completions
@@ -119,6 +102,24 @@ jobs:
         id: fish-timing
         timeout-minutes: 2
         run: pnpm run completions:timing
+
+      - name: Code tests (manual integration is separate)
+        id: code-tests
+        timeout-minutes: 60
+        run: pnpm run test:code
+
+      - name: Record manual integration boundary
+        id: manual-boundary
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          printf '%s\n' 'Hosted CI checks PAP code and repository-owned fixtures only.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Operator-local configuration pairing remains a separate check; no external configuration checkout or access is used by this job.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Code-only checks do not certify sandbox/installed runtime integration.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Manual gate: corepack pnpm test in the supported immutable sandbox toolchain; see docs/ordinary-local-development.md.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Selected-host gate: corepack pnpm verify:selected-pi-reader on the actual trusted host. Builder user namespaces may correctly deny root authority; their publication/namespace checks do not certify positive production reads, installation or human acceptance.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'All 16 native workflow integration cases remain mandatory locally via pi-workflow-runtime.test.ts; this lane uses its explicit portable entry, not skipped native tests.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize exact check delivery
         if: always()

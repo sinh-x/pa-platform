@@ -80,6 +80,21 @@ failures and source-check failures are separate rows; a source failure is not
 necessarily a proven defect until diagnosed. No environment dump, credentials,
 private endpoints or test-output artifacts are added.
 
+## Early PR feedback (PAP-357)
+
+After typecheck and build, `CI` / `test` runs the repository-owned pairing
+fixtures, generated completion diff, actual fish syntax and fish timing before
+starting the serial code suite. This reports short-check failures earlier and
+avoids spending the long suite's time on a candidate that already failed one of
+those checks. The goal is short-check feedback within three minutes from job
+start under comparable runner conditions, not a shorter time to a full pass.
+
+Passing those steps is partial progress, not a successful required check. If an
+early step fails, later unrun checks are not verified; the always-run summary
+reports skipped steps as skipped and missing results as unverified. The
+exact-candidate rule, commands, budgets, timing thresholds and manual
+qualification boundaries remain unchanged.
+
 ## Preserved qualification boundaries
 
 Ordinary CI remains Nix-free. Nix packaging stays manual or release-`main` only;
