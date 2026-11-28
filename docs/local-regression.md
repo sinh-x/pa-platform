@@ -63,6 +63,30 @@ Core files remain serial, including the unchanged 500 ms dashboard p95 assertion
 Do not run timing qualification alongside builds or other test lanes. No parallel
 portable lane is enabled by this change.
 
+## Opt-in develop-fast prototype (PAP-357)
+
+From the repository root, with the normal Node/pnpm toolchain and dependencies:
+
+```sh
+corepack pnpm test:develop-fast --list
+corepack pnpm test:develop-fast
+```
+
+`--list` validates the inventory and reports scope without building or testing.
+The test command builds the workspaces first, then runs the shared root drivers,
+seven selected Core source files, all OpenCode source and Pi script tests, four
+selected Pi source entries (including the portable workflow entry), and the
+runtime-host source suite. Core and Pi source tests stay serial. Each stage uses
+a disposable test environment. A failed stage stops the run; later stages are
+not verified. Existing skips are reported by their test suites.
+
+The prototype prints selected, deferred and manual-integration counts separately.
+Ordinary `test:code` still discovers and runs the full code inventory in hosted
+CI. No branch events or checks changed. `test:develop-fast` does not run the
+complete common CI checks or certify release, manual, installed or human
+qualification. Use `test:code` for the deferred code tests and the applicable
+manual gates separately. Do not call internal `:run` scripts directly.
+
 ## Isolation boundary
 
 Each launcher allocates a fresh temporary fixture root. It removes inherited
