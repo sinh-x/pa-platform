@@ -1,0 +1,119 @@
+name: Develop fast trial
+
+on:
+  pull_request:
+    branches: [develop]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  develop-fast-trial:
+    # Temporary measurement only. Do not require this check or merge this workflow.
+    if: github.event.pull_request.number == 204 && github.event.pull_request.draft == true && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
+        timeout-minutes: 5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact trial candidate
+        id: candidate
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          checkout_sha=$(git rev-parse HEAD)
+          printf 'Trial run %s attempt %s\nHead: %s\nBase: %s\nEvent SHA: %s\nCheckout: %s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CI_HEAD_SHA" "$CI_BASE_SHA" "$GITHUB_SHA" "$checkout_sha"
+          test "$GITHUB_REF" = refs/pull/204/merge
+          test "$checkout_sha" = "$GITHUB_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$CI_BASE_SHA $CI_HEAD_SHA"
+
+      - name: Provision pinned fish (bounded infrastructure recovery)
+        id: fish-provision
+        timeout-minutes: 8
+        run: bash scripts/dev/provision-ci-fish.sh
+
+      - uses: pnpm/action-setup@v4
+        id: pnpm
+        timeout-minutes: 3
+
+      - uses: actions/setup-node@v4
+        id: node
+        timeout-minutes: 3
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Record tool versions
+        id: versions
+        timeout-minutes: 1
+        run: |
+          node --version
+          pnpm --version
+          fish --version
+
+      - name: Validate pinned Pi extension sources
+        id: extension-sources
+        timeout-minutes: 1
+        run: node packages/pi-pa/scripts/validate-extension-sources.mjs
+
+      - name: Install dependencies
+        id: dependencies
+        timeout-minutes: 5
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        id: typecheck
+        timeout-minutes: 5
+        run: pnpm run typecheck
+
+      - name: Build
+        id: build
+        timeout-minutes: 5
+        run: pnpm run build
+
+      - name: Repository-owned pairing contract fixtures
+        id: pairing-fixtures
+        timeout-minutes: 3
+        run: pnpm run test:paired-gate
+
+      - name: Check generated completions
+        id: generated-completions
+        timeout-minutes: 1
+        run: |
+          pnpm run completions
+          git diff --exit-code -- completions/pa-core.fish completions/opa.fish completions/ppa.fish
+
+      - name: Check fish completions
+        id: fish-syntax
+        timeout-minutes: 1
+        run: |
+          for completion in completions/{pa-core,opa,ppa}.fish; do
+            fish --no-execute "$completion"
+          done
+
+      - name: Check fish completion timing
+        id: fish-timing
+        timeout-minutes: 2
+        run: pnpm run completions:timing
+
+      # The standalone prototype builds again. Count this work in the trial;
+      # don't add a prebuilt-output shortcut to the prototype for this measurement.
+      - name: Run the opt-in fast prototype
+        id: fast-tests
+        timeout-minutes: 10
+        run: pnpm run test:develop-fast

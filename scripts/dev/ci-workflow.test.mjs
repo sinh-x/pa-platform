@@ -81,6 +81,41 @@ test('pairing and completion checks run after build and before the long code sui
   ]);
 });
 
+test('the hosted fast trial targets only draft PR 204 and leaves full CI independent', () => {
+  const trial = load(read('.github/workflows/develop-fast-trial.yml'));
+  const trialJob = trial.jobs['develop-fast-trial'];
+  assert.notEqual(trial.name, workflow.name);
+  assert.deepEqual(trial.on, { pull_request: { branches: ['develop'], types: ['opened', 'synchronize', 'reopened'] } });
+  assert.deepEqual(trial.permissions, { contents: 'read' });
+  assert.deepEqual(Object.keys(trial.jobs), ['develop-fast-trial']);
+  assert.equal(trialJob['runs-on'], job['runs-on']);
+  assert.equal(trialJob.if, 'github.event.pull_request.number == 204 && github.event.pull_request.draft == true && github.event.pull_request.head.repo.full_name == github.repository');
+  assert.equal(trialJob.needs, undefined);
+  assert.equal(job.needs, undefined);
+  const ctx = context('pull_request', 204, 100);
+  const key = ctx => evaluate(trial.concurrency.group, ctx);
+  assert.equal(trial.concurrency['cancel-in-progress'], true);
+  assert.notEqual(key({ ...ctx, workflow: trial.name }), evaluate(workflow.concurrency.group, ctx));
+  assert.notEqual(key({ ...ctx, sha: 'new-candidate' }), key(ctx));
+  assert.notEqual(key(context('pull_request', 204, 101, 'different-head')), key(ctx));
+
+  const commonIds = Object.keys(steps).filter(id => !['code-tests', 'manual-boundary'].includes(id));
+  const ids = trialJob.steps.map(step => step.id);
+  assert.deepEqual(ids, ['checkout', 'candidate', ...commonIds.slice(1), 'fast-tests']);
+  for (const id of commonIds) assert.deepEqual(trialJob.steps.find(step => step.id === id), steps[id]);
+  const candidate = trialJob.steps[1];
+  assert.match(candidate.run, /test "\$checkout_sha" = "\$GITHUB_SHA"/);
+  assert.match(candidate.run, /test "\$\(git show -s --format=%P HEAD\)" = "\$CI_BASE_SHA \$CI_HEAD_SHA"/);
+  assert.equal(trialJob.steps.at(-1).run, 'pnpm run test:develop-fast');
+  assert.equal(steps['code-tests'].run, 'pnpm run test:code');
+  assert.equal(trialJob['continue-on-error'], undefined);
+  for (const step of trialJob.steps) {
+    assert.ok(step['timeout-minutes'] > 0);
+    assert.equal(step.if, undefined);
+    assert.equal(step['continue-on-error'], undefined);
+  }
+});
+
 test('report preserves failure, skipped and cancelled outcomes and cannot certify missing checks', () => {
   const summary = renderSummary({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', CI_HEAD_SHA: 'head', CI_BASE_SHA: 'base', GITHUB_SHA: 'merge', CI_JOB_STATUS: 'failure' }, {
     checkout: { outcome: 'success' }, 'fish-provision': { outcome: 'failure', conclusion: 'success' },
