@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDb, emitStartedEvent, emitPidEvent, ensureDeployDir, parseModeCapabilityBinding, READONLY_DOCUMENT_SESSION,
-  TicketStore, getTicketsDir, RegistryDocumentJournal, documentPackageSha, workflowDigest, associateDeploymentTicket, getDb, queryDeploymentStatus, type DocumentPackage } from "@pa-platform/pa-core";
+  TicketStore, resolveTrustedTicketMutationContext, getTicketsDir, RegistryDocumentJournal, documentPackageSha, workflowDigest, associateDeploymentTicket, getDb, queryDeploymentStatus, type DocumentPackage } from "@pa-platform/pa-core";
 import { recordPiProcessIdentity, recordPiReadonlyRoleProcessIdentity, PI_PROCESS_IDENTITY_FILE } from "../process-identity.js";
 import { authenticatePiTicketCaller } from "../ticket-session.js";
 import { mutatePiDocument } from "../document-native.js";
@@ -142,19 +142,111 @@ test("real native document publication and its own queue intent remain distinct 
     TicketStore.prototype.update = () => { throw Error("Synthetic interruption before native queue"); };
     assert.equal((await document({ action: "queue", ...coordinates, expectedRevision: revision() })).ok, false);
   } finally { TicketStore.prototype.update = update; }
-  const pendingReply = await generic("Cannot overwrite the pending queue owner");
-  assert.equal(pendingReply.details.code, "TICKET_STATUS_OWNER"); assert.equal(pendingReply.isError, true);
-  const pendingText = pendingReply.content[0]!.text;
-  assert.match(pendingText, /Document replay found pending publication or queue effects/);
-  assert.match(pendingText, /competing-deployment checks were not evaluated/);
-  assert.match(pendingText, /original document operation owner/);
-  assert.ok(pendingText.length <= 2000);
-  assert.deepEqual(Object.keys(pendingReply.details), ["code"]);
-  for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(pendingText.split(`${label}:`).length, 2);
+  const pendingBefore = journal.events("selected", id);
+  const pendingReply = await generic("Comment preserves the pending queue owner");
+  assert.notEqual(pendingReply.isError, true, pendingReply.content[0]!.text);
+  assert.deepEqual(journal.events("selected", id), pendingBefore, "append does not settle the original document intent");
   const queued = await document({ action: "queue", ...coordinates, expectedRevision: revision() }); assert.equal(queued.ok, true, JSON.stringify(queued));
   assert.equal(new TicketStore().get(id)!.status, "pending-implementation");
   assert.notEqual((await generic("Settled native queue is not a blanket stage fence")).isError, true);
 }));
+test("PAP-345 native comment forms ignore live/unproven custody, not authentication or status guards", async () => fixture(async (_root, repo, config) => {
+  const f = launch(repo, config, 210, "coordinator", "coordinate", false), tool = createPaTicketTool(), store = new TicketStore();
+  const invoke = (input: Record<string, unknown>) => tool.execute("comment-custody", input, undefined, undefined, f.context);
+  const created = await invoke({ action: "create", project: "selected", requestId: "comment-custody", fields: { title: "Live-owned comment target" } });
+  const id = JSON.parse(created.content[0]!.text).id as string;
+  const other = "d-345001";
+  emitStartedEvent({ deploymentId: other, team: "builder", mode: "implement", ticketId: id, runtime: "pi" });
+  emitPidEvent({ deploymentId: other, team: "builder", pid: process.pid });
+  for (const state of ["running", "partial"] as const) {
+    if (state === "partial") getDb().prepare("UPDATE deployments SET status=?, pid=NULL WHERE deployment_id=?").run(state, other);
+    for (const legacy of [false, true]) {
+      const before = store.get(id)!, audit = store.readAudit(), custody = queryDeploymentStatus(other);
+      const reply = await invoke({ action: "comment", id, ...(legacy ? { author: "coordinator/native-agent" } : { project: "selected" }), content: "Coordination only" });
+      assert.notEqual(reply.isError, true, reply.content[0]!.text);
+      const after = store.get(id)!;
+      assert.deepEqual({ ...after, comments: before.comments, updatedAt: before.updatedAt }, before);
+      assert.equal(after.comments.length, before.comments.length + 1);
+      assert.equal(after.comments.at(-1)!.author, "coordinator/coordinate");
+      assert.equal(store.readAudit().length, audit.length + 1);
+      assert.deepEqual(queryDeploymentStatus(other), custody);
+      const denied = await invoke({ action: "set-status", project: "selected", id, requestId: `guard-${state}-${legacy}`, expectedVersion: JSON.parse(reply.content[0]!.text).version, status: "implementing" });
+      assert.equal(denied.details.code, "TICKET_STATUS_OWNER");
+    }
+  }
+  const before = store.get(id), audit = store.readAudit();
+  for (const input of [
+    { action: "comment", project: "other", id, content: "Wrong scope" },
+    { action: "comment", id, author: "builder/implement", content: "Spoof" },
+    { action: "comment", project: "selected", id, content: " " },
+    { action: "comment", project: "selected", id, content: "-----BEGIN PRIVATE; KEY-----" },
+  ]) assert.equal((await invoke(input)).details.code, "TICKET_ADMIN_INPUT");
+  process.env.PA_MODE = "invented";
+  assert.equal((await invoke({ action: "comment", project: "selected", id, content: "Drifted caller" })).details.code, "TICKET_ADMIN_SESSION");
+  assert.deepEqual(store.get(id), before); assert.deepEqual(store.readAudit(), audit);
+}));
+
+test("PAP-345 native incomplete status intents defer without writes and recover only the original coordinates", async () => {
+  for (const stop of ["intent", "ticket"] as const) await fixture(async (_root, repo, config) => {
+    const f = launch(repo, config, 211, "coordinator", "coordinate", false), tool = createPaTicketTool();
+    const store = new TicketStore(undefined, resolveTrustedTicketMutationContext({ deploymentId: f.id }, false));
+    const invoke = (input: Record<string, unknown>) => tool.execute("comment-recovery", input, undefined, undefined, f.context);
+    const created = await invoke({ action: "create", project: "selected", requestId: "status-target", fields: { title: "Status recovery" } });
+    const { id, version } = JSON.parse(created.content[0]!.text) as { id: string; version: string };
+    const identity = { scope: "a".repeat(64), requestId: "original-status" };
+    assert.throws(() => store.setStatusWithIntent(id, version, "requirement-review", "coordinator/coordinate", identity,
+      { assertCurrent() {}, afterPersist(stage) { if (stage === stop) throw Error("Synthetic status interruption"); } }), /Synthetic status interruption/);
+    const before = store.get(id), audit = store.readAudit();
+    for (const legacy of [false, true]) {
+      const reply = await invoke({ action: "comment", id, ...(legacy ? { author: "coordinator/coordinate" } : { project: "selected" }), content: "Deferred comment" });
+      assert.equal(reply.details.code, "TICKET_COMMENT_PENDING"); assert.equal(reply.isError, true);
+      assert.match(reply.content[0]!.text, /Comment not added/);
+      assert.doesNotMatch(reply.content[0]!.text, /administrative status request/);
+      assert.ok(reply.content[0]!.text.length <= 2000);
+      for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.equal(reply.content[0]!.text.split(`${label}:`).length, 2);
+      assert.deepEqual(store.get(id), before); assert.deepEqual(store.readAudit(), audit);
+    }
+    const recovered = store.setStatusWithIntent(id, version, "requirement-review", "coordinator/coordinate", identity, { assertCurrent() {} });
+    assert.equal(recovered.reused, true);
+    const appended = await invoke({ action: "comment", project: "selected", id, content: "Recovered independently" });
+    assert.notEqual(appended.isError, true, appended.content[0]!.text);
+    assert.equal(store.get(id)!.status, "requirement-review"); assert.equal(store.get(id)!.comments.length, 1);
+  });
+});
+
+test("PAP-345 concurrent native comments/status serialize and lost acknowledgement never triggers replay", async () => fixture(async (_root, repo, config) => {
+  const f = launch(repo, config, 212, "coordinator", "coordinate", false), tool = createPaTicketTool(), store = new TicketStore();
+  const created = await tool.execute("create-race", { action: "create", project: "selected", requestId: "comment-race", fields: { title: "Concurrent native append" } }, undefined, undefined, f.context);
+  const { id, version } = JSON.parse(created.content[0]!.text) as { id: string; version: string };
+  const source = fileURLToPath(new URL("../pi-extension/ticket-tool.ts", import.meta.url));
+  const child = async (request: Record<string, unknown>) => {
+    const script = `import { createPaTicketTool } from ${JSON.stringify(source)}; const r = await createPaTicketTool().execute('concurrent',${JSON.stringify(request)},undefined,undefined,{cwd:process.cwd(),mode:'tui',sessionManager:{getSessionId:()=> 'native-admin-session',getCwd:()=>process.cwd()}}); console.log(JSON.stringify(r));`;
+    const result = await promisify(execFile)(process.execPath, [`--import=${import.meta.resolve("tsx")}`, "--input-type=module", "-e", script], { cwd: repo, env: process.env });
+    return JSON.parse(result.stdout) as { isError?: boolean; details: { code?: string }; content: { text: string }[] };
+  };
+  const modern = { action: "comment", project: "selected", id, content: "Same legitimate text" };
+  const legacy = { action: "comment", id, author: "coordinator/native-agent", content: "Same legitimate text" };
+  const status = { action: "set-status", project: "selected", id, requestId: "concurrent-status", expectedVersion: version, status: "requirement-review" };
+  const [first, second, transition] = await Promise.all([child(modern), child(legacy), child(status)]);
+  for (const reply of [first, second]) assert.notEqual(reply.isError, true, reply.content[0]!.text);
+  if (transition.isError) assert.equal(transition.details.code, "TICKET_STATUS_STALE");
+  assert.equal(store.get(id)!.comments.length, 2);
+  assert.equal(store.readAudit().filter(row => row.action === "commented").length, 2);
+  const stale = await child({ ...status, requestId: "definitely-stale" });
+  assert.equal(stale.details.code, "TICKET_STATUS_STALE");
+  // Lose the reply after one genuine effect. No automatic retry, text-based
+  // deduplication or claim of exactly-once delivery is implemented by the tool.
+  await child({ ...modern, content: "Reply deliberately discarded" });
+  const inspected = await tool.execute("readback-after-lost-reply", { action: "inspect", project: "selected", id }, undefined, undefined, f.context);
+  assert.notEqual(inspected.isError, true);
+  assert.equal(store.get(id)!.comments.length, 3);
+  assert.equal(store.readAudit().filter(row => row.action === "commented").length, 3);
+  const controller = new AbortController(); controller.abort();
+  const before = store.readAudit();
+  assert.equal((await tool.execute("aborted-before-write", modern, controller.signal, undefined, f.context)).details.code, "TICKET_ADMIN_SESSION");
+  assert.deepEqual(store.readAudit(), before); assert.equal(store.get(id)!.comments.length, 3);
+}));
+
 test("malformed native requests do not initialize an absent ticket directory", async () => fixture(async (_root, repo, config) => {
   const f = launch(repo, config, 200, "coordinator", "coordinate", false), tool = createPaTicketTool();
   assert.equal(existsSync(getTicketsDir()), false);

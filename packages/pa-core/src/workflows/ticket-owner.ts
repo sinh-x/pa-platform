@@ -5,6 +5,20 @@ import type { RegistryWorkflowJournal } from "../registry/workflows.js";
 import { digest, parseReviewBundle, reject, type EvidenceRef, type PackagePermission } from "./contracts.js";
 import { replayWorkflow, requireDecision, workflowCoordinator, coordinatorOperationAllowed, type EffectIntent, type WorkflowCaller, type WorkflowEffectOwner, type WorkflowHost } from "./service.js";
 
+/** Closed compatibility inventory for the current native owners. These v1
+ * operations recover from refs/lifecycle or protected execution evidence, never
+ * complete ticket bytes. Unknown future operations must be classified first. */
+export function workflowCommentCompatible(state: ReturnType<typeof replayWorkflow>): boolean {
+  return state.pending.every(intent => {
+    const step = state.definition.steps.find(step => step.id === intent.stepId);
+    return step?.operation.version === "v1" && step.owner === intent.owner && (
+      step.owner === "tickets" && ["publication.pair", "ticket.queue"].includes(step.operation.id)
+      || step.owner === "execution" && step.operation.id === "source.local"
+      || step.owner === "validation" && step.operation.id === "check.matrix"
+      || step.owner === "operator" && step.operation.id === "decision.package");
+  });
+}
+
 /** Concrete adapters to the existing ticket mutex/audit/lifecycle owner. No default registration or enablement. */
 export function createTicketWorkflowOwners(journal: RegistryWorkflowJournal, store: TicketStore, artifactRoot: string, authenticate: () => WorkflowCaller, continues?: WorkflowHost["continues"]): ReadonlyMap<string, WorkflowEffectOwner> {
   const publication = new TicketPairPublication(store, artifactRoot);

@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { TicketStore, parseTicketAdminRequest, normalizeTicketAdminRequest, assertTicketAdminPreflight, resolveTrustedTicketMutationContext, ticketAdminService, TicketAdminError, TicketCreateIntentError, TicketStatusError, TicketHandoffError, TicketPlanningIntentError, ticketAdminFail, workflowObject, workflowError, workflowDigest, workflowSha } from "@pa-platform/pa-core";
+import { TicketStore, parseTicketAdminRequest, normalizeTicketAdminRequest, assertTicketAdminPreflight, resolveTrustedTicketMutationContext, ticketAdminService, TicketAdminError, TicketCommentError, TicketCreateIntentError, TicketStatusError, TicketHandoffError, TicketPlanningIntentError, ticketAdminFail, workflowObject, workflowError, workflowDigest, workflowSha } from "@pa-platform/pa-core";
 import { authenticatePiTicketCaller, type PiTicketContext } from "../ticket-session.js";
 import type { PiToolDefinition, PiTicketAction } from "./index.js";
 import { boundJson, MAX_TOOL_BYTES, MAX_TOOL_LINES } from "./tool-result.js";
@@ -66,7 +66,9 @@ export function createPaTicketTool(options: { store?: TicketStore; plannedActual
           notice: "The body exceeds 50 KiB or 2000 lines; result metadata is complete. Read ticket content separately. Do not repeat a mutation solely for a larger reply." };
         return { content: [{ type: "text", text: boundJson(output) }], details: {} };
       } catch (error) {
-        const failure = error instanceof TicketAdminError || error instanceof TicketCreateIntentError || error instanceof TicketStatusError || error instanceof TicketHandoffError || error instanceof TicketPlanningIntentError ? error : new TicketAdminError("TICKET_ADMIN_UNAVAILABLE");
+        const failure = error instanceof TicketCommentError ? error
+          : input.action === "comment" && (!(error instanceof TicketAdminError) || error.code === "TICKET_ADMIN_UNAVAILABLE") ? new TicketCommentError("TICKET_COMMENT_UNCERTAIN")
+            : error instanceof TicketAdminError || error instanceof TicketCreateIntentError || error instanceof TicketStatusError || error instanceof TicketHandoffError || error instanceof TicketPlanningIntentError ? error : new TicketAdminError("TICKET_ADMIN_UNAVAILABLE");
         return { content: [{ type: "text", text: failure.message }], details: { code: failure.code }, isError: true };
       }
     },

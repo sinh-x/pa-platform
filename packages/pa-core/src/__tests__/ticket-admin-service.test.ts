@@ -107,7 +107,7 @@ test("incomplete auto-draft appends fence every generic mutation after terminal 
       { action: "update", project: "pa-platform", id, expectedVersion: statusVersion(current), fields: { summary: "Must not write" } },
       { action: "set-status", project: "pa-platform", id, expectedVersion: statusVersion(current), requestId: "blocked-status", status: "implementing" },
     ]) {
-      assert.throws(() => call(request), /TICKET_HANDOFF_UNCERTAIN/);
+      assert.throws(() => call(request), request.action === "comment" ? /TICKET_COMMENT_PENDING/ : /TICKET_HANDOFF_UNCERTAIN/);
       assert.deepEqual(store.get(id), current); assert.deepEqual(store.readAudit(), audit);
       assert.deepEqual(readdirSync(getTicketsDir()).sort(), files);
     }
@@ -240,7 +240,7 @@ test("sensitive checks cover post-sanitization, validated defaults and exact can
   assert.deepEqual(store.readAudit(), audit);
   assert.throws(() => call({ action: "create", project: "other", requestId: "policy-change", fields: { title: "New candidate" } }), /TICKET_ADMIN_INPUT/);
 }));
-test("retained workflow preparation and decision history do not block generic writes; its unresolved intent does", async () => {
+test("retained workflow history and compatible pending publication allow comment append", async () => {
   const previous = process.env, f = workflowRuntimeFixture();
   try {
     process.env = { ...previous, PA_AI_USAGE_HOME: f.root, PA_PLATFORM_CONFIG: join(f.root, "config"), PA_REGISTRY_DB: join(f.root, "registry.db") };
@@ -260,7 +260,7 @@ test("retained workflow preparation and decision history do not block generic wr
     owners.set("publication.pair", { admit() {}, observe: async () => ({ state: "absent" }), execute: async () => { throw Error("Synthetic unresolved publication"); }, verify: () => false });
     f.host.owners = owners;
     await assert.rejects(f.service.requestStep(run.runId, f.service.status(run.runId).revision, "publish", decision.decisionId), /unresolved publication/);
-    assert.throws(() => call("Cannot cross the unresolved owner"), /TICKET_STATUS_OWNER/);
+    assert.equal(call("Comment preserves the unresolved publication owner").id, "EX-1");
   } finally { process.env = previous; f.close(); }
 });
 test("authentication drift and competing native custody leave ticket and audit unchanged", () => fixture((_root, store, caller) => {

@@ -5,7 +5,7 @@ import { sanitizeTextInput } from "../deploy/control.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { creationDigest } from "./create-intent.js";
 import { validatePlanningPatch } from "./planning-intent.js";
-import { assertTicketAdminOwner } from "./status-service.js";
+import { assertTicketAdminOwner, assertTicketCommentOwner } from "./status-service.js";
 import { loadTeamConfig } from "../teams/index.js";
 import { TICKET_STATUSES, statusVersion } from "./status-intent.js";
 import { isCanonicalTicketId, validateAssignee, validateAuthor } from "./validate.js";
@@ -152,7 +152,8 @@ export function ticketAdminService(raw: string, owner: { store: TicketStore; aut
       || !token(current.identitySha256, /^[a-f0-9]{64}$/) || !token(current.team, /^[a-z][a-z0-9_-]{0,63}$/)
       || !token(current.mode, /^[a-z][a-z0-9_-]{0,63}$/)) ticketAdminFail("TICKET_ADMIN_SESSION");
     assertTicketAdminPreflight(request, owner.store);
-    if (request.action !== "create" && request.action !== "inspect") assertTicketAdminOwner(owner.store, request.id, { ...caller, repoKey: request.project });
+    if (request.action === "comment") assertTicketCommentOwner(owner.store, request.id, request.project);
+    else if (request.action !== "create" && request.action !== "inspect") assertTicketAdminOwner(owner.store, request.id, { ...caller, repoKey: request.project });
   };
   return owner.store.withWorkflowTransaction(() => {
     check();
@@ -173,12 +174,12 @@ export function ticketAdminService(raw: string, owner: { store: TicketStore; aut
         { scope, requestId: request.requestId }, { assertCurrent: check, assertCandidate: candidateCheck });
       return result(changed.ticket, { requestId: request.requestId, reusedIntent: changed.reused, appliedVersion: changed.appliedVersion });
     }
-    owner.store.assertHandoffSettled(request.id);
     if (request.action === "comment") {
       const content = text(request.content, 32768, true); check();
       const comment = owner.store.comment(request.id, actor, content, candidateCheck);
       return result(owner.store.get(request.id)!, { comment });
     }
+    owner.store.assertHandoffSettled(request.id);
     if (statusVersion(ticket) !== request.expectedVersion) ticketAdminFail("TICKET_ADMIN_STALE");
     const patch = validateTicketAdminFields(request.fields); check();
     return result(owner.store.updateAdministrativeFields(request.id, request.expectedVersion, patch, actor, check), { effect: "administrative-fields-only" });
