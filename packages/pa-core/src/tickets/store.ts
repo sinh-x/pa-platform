@@ -59,6 +59,19 @@ export class TicketStore {
     if (initialize) mkdirSync(this.dir, { recursive: true });
   }
 
+  /** Bounded, exact, existing-file projection for an operator reader. No alias
+   * following, initialization, attachments, mutation admission or audit writes. */
+  static readSummary(project: string, id: string, dir = getTicketsDir()): Pick<Ticket, "id" | "project" | "title" | "status" | "priority" | "assignee" | "summary" | "description"> | undefined {
+    if (!isCanonicalTicketId(id)) return undefined;
+    const bytes = new AdvisoryFiles(dir, 1024 * 1024).file(`${id}.json`) as Buffer;
+    const raw = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+    if (!raw || raw["_alias"] || raw["id"] !== id || raw["project"] !== project) return undefined;
+    const fields = ["id", "project", "title", "status", "priority", "assignee", "summary", "description"] as const;
+    if (fields.some(field => raw[field] !== undefined && typeof raw[field] !== "string")) return undefined;
+    if (!VALID_STATUSES.has(raw["status"] as TicketStatus)) return undefined;
+    return Object.fromEntries(fields.map(field => [field, raw[field] ?? ""])) as ReturnType<typeof TicketStore.readSummary>;
+  }
+
   /** Pure existing-file observation, without constructor initialization or mutex
    * creation. Double-read rejects visible concurrent changes; this snapshot is
    * never an effect admission and cannot reconcile an unfinished operation. */

@@ -9,6 +9,15 @@ const SHARED_CONTEXT_OVERLAY_OPTIONS: OverlayOptions = {
   visible: (terminalWidth) => terminalWidth >= 120,
 };
 
+const READER_CONTEXT_OVERLAY_OPTIONS: OverlayOptions = {
+  ...SHARED_CONTEXT_OVERLAY_OPTIONS,
+  visible: (terminalWidth, terminalHeight) => terminalWidth >= 100 && terminalHeight >= 6,
+};
+
+export function readerContextOverlayOptions(): OverlayOptions {
+  return READER_CONTEXT_OVERLAY_OPTIONS;
+}
+
 export function contextOverlayOptions(): OverlayOptions {
   return SHARED_CONTEXT_OVERLAY_OPTIONS;
 }

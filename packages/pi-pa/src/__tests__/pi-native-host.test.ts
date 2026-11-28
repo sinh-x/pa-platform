@@ -520,6 +520,8 @@ test("Pi ticket command uses the native registry projection and preserves launch
         event: "started",
         timestamp: "2026-09-26T00:00:00.000Z",
         repo_root: canonicalRoot,
+        repo: canonicalRoot,
+        worktree_root: canonicalRoot,
         primer: "immutable-primer",
         runtime: "pi",
         binary: "ppa",

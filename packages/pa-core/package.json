@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./context-reader": {
+      "types": "./dist/context-reader.d.ts",
+      "import": "./dist/context-reader.js"
+    },
     "./tickets/planned-actual": {
       "types": "./dist/tickets/planned-actual.d.ts",
       "import": "./dist/tickets/planned-actual.js"

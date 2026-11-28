@@ -9,7 +9,8 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { promisify } from "node:util";
-import { queryDeploymentStatus } from "@pa-platform/pa-core";
+import { ContextNativeReader } from "./context-reader.js";
+const defaultNativeReader = new ContextNativeReader();
 import type { TodoDetails, TodoTask } from "./todo.js";
 
 const execFileAsync = promisify(execFile);
@@ -30,10 +31,13 @@ export interface DeploymentContext {
   id?: string;
   team?: string;
   mode?: string;
-  /** Current ticket, preferring the mutable registry projection when available. */
+  /** Verified current ticket only; never a launch fallback. */
   ticket?: string;
   /** Immutable process-start ticket evidence. */
   launchTicket?: string;
+  objective?: string;
+  project?: string;
+  lastVerifiedTicket?: string;
   status?: string;
   projectionAvailable: boolean;
   stale: boolean;
@@ -42,6 +46,8 @@ export interface DeploymentContext {
 export interface DeploymentProjection {
   status?: string;
   ticket?: string;
+  project?: string;
+  objective?: string;
 }
 
 export interface ModelContext {
@@ -88,6 +94,7 @@ export interface ContextCollectorDependencies {
   now?: () => number;
   gitLookup?: (cwd: string) => Promise<Omit<GitContext, "stale">>;
   deploymentLookup?: (id: string) => Promise<DeploymentProjection | undefined>;
+  nativeReader?: ContextNativeReader;
   deadlineMs?: number;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
@@ -126,7 +133,9 @@ export async function collectContext(
     ),
     deployment.id
       ? withDeadline(
-          () => (dependencies.deploymentLookup ?? lookupDeployment)(deployment.id!),
+          () => dependencies.deploymentLookup
+            ? dependencies.deploymentLookup(deployment.id!)
+            : (dependencies.nativeReader ?? defaultNativeReader).read<DeploymentProjection>({ kind: "deployment", deploymentId: deployment.id!, cwd: input.cwd }),
           deadlineMs,
           timers,
         )
@@ -141,13 +150,15 @@ export async function collectContext(
   if (deploymentResult?.ok && deploymentResult.value) {
     deployment.status = deploymentResult.value.status;
     deployment.ticket = deploymentResult.value.ticket;
+    deployment.project = deploymentResult.value.project;
+    deployment.objective = deploymentResult.value.objective;
     deployment.projectionAvailable = true;
-  } else if (deploymentResult?.timedOut) {
+  } else if (deployment.id) {
     if (previous.deployment.id === deployment.id) {
       deployment.status = previous.deployment.status;
-      deployment.ticket = previous.deployment.ticket;
+      deployment.lastVerifiedTicket = previous.deployment.ticket ?? previous.deployment.lastVerifiedTicket;
       deployment.launchTicket = previous.deployment.launchTicket;
-      deployment.projectionAvailable = previous.deployment.projectionAvailable;
+      deployment.objective = previous.deployment.objective;
     }
     deployment.stale = true;
   }
@@ -288,15 +299,6 @@ async function lookupGit(cwd: string): Promise<Omit<GitContext, "stale">> {
   }
 }
 
-async function lookupDeployment(id: string): Promise<DeploymentProjection | undefined> {
-  const value = queryDeploymentStatus(id);
-  if (!value) return undefined;
-  return {
-    status: value.status,
-    ticket: nonEmpty(value.ticket_id),
-  };
-}
-
 function deploymentFromEnvironment(env: NodeJS.ProcessEnv): DeploymentContext {
   const id = nonEmpty(env["PA_DEPLOYMENT_ID"]);
   if (!id) return { available: false, projectionAvailable: false, stale: false };
@@ -306,7 +308,6 @@ function deploymentFromEnvironment(env: NodeJS.ProcessEnv): DeploymentContext {
     id,
     team: nonEmpty(env["PA_TEAM"]),
     mode: nonEmpty(env["PA_MODE"]),
-    ticket: launchTicket,
     launchTicket,
     projectionAvailable: false,
     stale: false,

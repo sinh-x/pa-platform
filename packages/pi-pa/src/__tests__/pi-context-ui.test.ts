@@ -13,7 +13,7 @@ import {
   withDeadline,
   type PaContextSnapshot,
 } from "../pi-extension/context-state.js";
-import { contextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
+import { readerContextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
 import {
   ContextSidebarComponent,
   formatCompactContext,
@@ -93,6 +93,8 @@ test("primary-root managed context renders exact adjacent repository key and exe
     ticket: "PAP-145",
     launchTicket: "PAP-145",
     status: "running",
+    objective: undefined,
+    project: undefined,
     projectionAvailable: true,
     stale: false,
   });
@@ -145,7 +147,7 @@ test("managed Alt+I separates canonical repository identity from worktree Path a
       gitLookupCwd = cwd;
       return { available: true, branch: "feature/PAP-221-worktree", dirty: true };
     },
-    deploymentLookup: async () => "running",
+    deploymentLookup: async () => ({ status: "running" }),
   });
 
   assert.equal(snapshot.repository.key, "pa-platform");
@@ -189,7 +191,7 @@ test("managed compact key and CWD collapse each maximal C0/C1 run to one questio
     },
   );
   const compact = formatCompactContext(snapshot);
-  assert.equal(compact, "PA:d-control • repo:pa?-platform? • cwd:/tree?house/path?end • git:unavailable • todo:0/0");
+  assert.equal(compact, "PA:d-control/ticket:unavailable • repo:pa?-platform? • cwd:/tree?house/path?end • git:unavailable • todo:0/0");
   assert.doesNotMatch(compact, /[\u0000-\u001f\u007f-\u009f]/u);
   assert.equal(compact.split("\n").length, 1);
 });
@@ -206,9 +208,10 @@ test("500 ms lookup deadline abandons late values and retains stale prior data",
   assert.equal(snapshot.git.branch, prior.git.branch);
   assert.equal(snapshot.git.stale, true);
   assert.equal(snapshot.deployment.status, "running");
-  assert.equal(snapshot.deployment.ticket, "PAP-145");
+  assert.equal(snapshot.deployment.ticket, undefined);
+  assert.equal(snapshot.deployment.lastVerifiedTicket, "PAP-145");
   assert.equal(snapshot.deployment.launchTicket, "PAP-145");
-  assert.equal(snapshot.deployment.projectionAvailable, true);
+  assert.equal(snapshot.deployment.projectionAvailable, false);
   assert.equal(snapshot.deployment.stale, true);
   assert.equal(snapshot.stale, true);
   assert.match(formatContextLines(snapshot).join("\n"), /stale/);
@@ -597,14 +600,14 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
 
   command?.("", context);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(overlayOptions, contextOverlayOptions());
+  assert.equal(overlayOptions?.width, readerContextOverlayOptions().width);
   assert.equal(overlayOptions?.anchor, "top-right");
   assert.equal(overlayOptions?.width, "68%");
   assert.equal(overlayOptions?.minWidth, 42);
   assert.equal(overlayOptions?.maxHeight, "90%");
   assert.deepEqual(overlayOptions?.margin, { right: 1 });
-  for (const width of [40, 80, 119]) assert.equal(overlayOptions?.visible?.(width, 40), false);
-  for (const width of [120, 160]) assert.equal(overlayOptions?.visible?.(width, 40), true);
+  for (const width of [40, 80, 99]) assert.equal(overlayOptions?.visible?.(width, 40), false);
+  for (const width of [100, 119, 120, 160]) assert.equal(overlayOptions?.visible?.(width, 40), true);
   assert.ok(statuses.at(-1)?.includes("PA:unavailable"), "narrow terminals retain the compact status fallback");
   assert.equal(focused, 1);
 
@@ -617,5 +620,41 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
 
   events.get("session_shutdown")?.({}, context);
   assert.equal(statuses.at(-1), undefined);
-  assert.equal(hiddenPermanently, 1);
+  assert.equal(hiddenPermanently, 0, "custom overlays are completed through done, not raw handle.hide");
+});
+
+test("local native readback publishes before notice and an older idle observation cannot rewind it", async () => {
+  const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+  let command: ((args: string, context: unknown) => unknown) | undefined;
+  let idle: (() => void) | undefined;
+  let reason: ((value: string) => void) | undefined;
+  let release: ((value: { ticket: string; project: string }) => void) | undefined;
+  let delay = false;
+  const trace: string[] = [];
+  registerContextUiModuleWithOptions({
+    on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+    registerCommand: (_name, options) => { command = options.handler; },
+  }, {
+    limiter: new ContextRefreshLimiter(0),
+    setInterval: ((callback: () => void) => { idle = callback; return { unref() {} }; }) as never,
+    clearInterval: (() => {}) as never,
+    collector: { env: { PA_DEPLOYMENT_ID: "d-race" }, gitLookup: async () => ({ available: false }),
+      deploymentLookup: async () => delay ? await new Promise(resolve => { release = resolve; }) : { ticket: "EX-001", project: "example" } },
+    associateTicket: input => ({ deploymentId: input.deploymentId, previousTicketId: "EX-001", requestedTicketId: input.ticketId, currentTicketId: input.ticketId, actor: input.actor, reason: input.reason, writeOccurred: true }),
+  });
+  const context = { mode: "tui", hasUI: true, cwd: "/repo", sessionManager: { getBranch: () => [] }, ui: {
+    setStatus: (_: string, value?: string) => trace.push(`status:${value}`), notify: (value: string) => trace.push(`notice:${value}`),
+    input: async () => await new Promise<string>(resolve => { reason = resolve; }), confirm: async () => true,
+  } };
+  events.get("session_start")?.({}, context); await new Promise(resolve => setImmediate(resolve));
+  const association = command?.("ticket EX-002", context); await new Promise(resolve => setImmediate(resolve));
+  delay = true; idle?.(); await new Promise(resolve => setImmediate(resolve));
+  reason?.("synthetic race"); await association;
+  const statusIndex = trace.findIndex(line => line.startsWith("status:") && line.includes("EX-002"));
+  const noticeIndex = trace.findIndex(line => line.startsWith("notice:") && line.includes("EX-002"));
+  assert.ok(statusIndex >= 0 && noticeIndex > statusIndex);
+  release?.({ ticket: "EX-001", project: "example" }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(trace.filter(line => line.startsWith("status:")).at(-1)?.includes("EX-002"), true);
+  await events.get("session_shutdown")?.({}, context);
+  assert.equal(trace.at(-1), "status:undefined");
 });

@@ -8,7 +8,9 @@ const MAX_FILE_BYTES = 64 * 1024 * 1024;
  * matching/queues remain with the SDK; paths require no plan or catalogue. */
 export class AdvisoryFiles {
   uncertain = false;
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, private readonly maxFileBytes = MAX_FILE_BYTES) {
+    if (!Number.isSafeInteger(maxFileBytes) || maxFileBytes < 0 || maxFileBytes > MAX_FILE_BYTES) throw new Error("OPERATION_FILE_LIMIT");
+  }
   assertPath(path: string, directoryOnly = false): string {
     if (typeof path !== "string" || !path || /[\\\u0000-\u001f\u007f]/.test(path) || path.split("/").some(part => part === ".." || part.toLowerCase() === ".git")) throw new Error("OPERATION_PATH_DENIED");
     const absolute = isAbsolute(path) ? path : resolve(this.root, path);
@@ -19,7 +21,7 @@ export class AdvisoryFiles {
   file(path: string, content?: string | Uint8Array, directoryOnly = false): Buffer | void {
     const rel = this.assertPath(path, directoryOnly);
     if (!rel && directoryOnly) return;
-    if (content !== undefined && Buffer.byteLength(content) > MAX_FILE_BYTES) throw new Error("OPERATION_FILE_LIMIT");
+    if (content !== undefined && Buffer.byteLength(content) > this.maxFileBytes) throw new Error("OPERATION_FILE_LIMIT");
     let directory = openSync(this.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const parts = rel.split("/"), ancestors = directoryOnly ? parts : parts.slice(0, -1);
     try {
@@ -38,14 +40,14 @@ export class AdvisoryFiles {
       try {
         fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         const stat = fstatSync(fd);
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_FILE_BYTES) throw new Error("OPERATION_FILE_DENIED");
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > this.maxFileBytes) throw new Error("OPERATION_FILE_DENIED");
         mode = stat.mode & 0o777;
         if (content === undefined) {
           const chunks: Buffer[] = []; let size = 0;
           for (;;) {
             const buffer = Buffer.alloc(64 * 1024), count = readSync(fd, buffer);
             if (!count) return Buffer.concat(chunks);
-            size += count; if (size > MAX_FILE_BYTES) throw new Error("OPERATION_FILE_LIMIT"); chunks.push(buffer.subarray(0, count));
+            size += count; if (size > this.maxFileBytes) throw new Error("OPERATION_FILE_LIMIT"); chunks.push(buffer.subarray(0, count));
           }
         }
       } catch (error) { if (content === undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
