@@ -12,6 +12,8 @@ import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, typ
 import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
 import { contextOverlayOptions } from "./context-overlay-layout.js";
 import type { TodoDetails } from "./todo.js";
+import { ContextNativeReader, type ContextTicketSummary } from "./context-reader.js";
+import { ContextTicketReader, type ContextTicketBinding } from "./context-ticket.js";
 import {
   CONTEXT_REFRESH_INTERVAL_MS,
   ContextRefreshLimiter,
@@ -32,6 +34,7 @@ export interface ContextUiModuleOptions {
   associateTicket?: typeof associateDeploymentTicket;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
+  ticketLookup?: (binding: ContextTicketBinding) => Promise<ContextTicketSummary | undefined>;
 }
 
 export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionModule>[0], options: ContextUiModuleOptions = {}): void {
@@ -45,11 +48,39 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   let disposed = false;
   const limiter = options.limiter ?? new ContextRefreshLimiter();
   const associateTicket = options.associateTicket ?? associateDeploymentTicket;
+  const nativeReader = new ContextNativeReader();
+  const detailNativeReader = new ContextNativeReader();
+  const collector = { ...options.collector, nativeReader };
+  let observationGeneration = 0;
+  let refreshFlight: Promise<void> | undefined;
+  let refreshPending = false;
+  const ticketReader = new ContextTicketReader(options.ticketLookup ?? (binding => detailNativeReader.read<ContextTicketSummary>({ kind: "ticket", ...binding })), () => sidebar?.requestRender());
 
   const publish = () => {
+    if (disposed) return;
+    ticketReader.observe(snapshot);
     if (!currentContext?.hasUI) return;
     currentContext.ui.setStatus(CONTEXT_STATUS_ID, formatCompactContext(snapshot));
     sidebar?.requestRender();
+  };
+
+  // All observations, including command preflight, share one coalescing lane.
+  const refreshNow = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    refreshPending = true;
+    if (refreshFlight) return refreshFlight;
+    refreshFlight = (async () => {
+      while (refreshPending && !disposed) {
+        refreshPending = false;
+        const generation = observationGeneration;
+        const next = await collectContext(snapshot, refreshInput, collector);
+        if (!disposed && generation === observationGeneration) {
+          snapshot = next;
+          publish();
+        }
+      }
+    })().finally(() => { refreshFlight = undefined; });
+    return refreshFlight;
   };
 
   const requestRefresh = (patch: Partial<ContextRefreshInput> = {}) => {
@@ -60,10 +91,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       model: patch.model ?? refreshInput.model,
       todo: patch.todo ?? refreshInput.todo,
     };
-    limiter.request(async () => {
-      snapshot = await collectContext(snapshot, refreshInput, options.collector);
-      publish();
-    });
+    limiter.request(refreshNow);
   };
 
   const stopPeriodicRefresh = () => {
@@ -135,8 +163,8 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       return;
     }
 
-    snapshot = await collectContext(snapshot, refreshInput, options.collector);
-    publish();
+    await refreshNow();
+    if (disposed) return;
     if (!snapshot.deployment.projectionAvailable) {
       context.ui.notify("PA ticket interaction is unavailable because the registry projection could not be read.", "warning");
       return;
@@ -182,6 +210,8 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       const result = options.lifecycle
         ? await options.lifecycle.trackRegistryAccess(operation)
         : operation();
+      if (disposed) return;
+      observationGeneration++;
       snapshot = {
         ...snapshot,
         deployment: {
@@ -226,6 +256,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
 
   pi.on?.("session_start", (_event, rawContext) => {
     disposed = false;
+    observationGeneration++;
     currentContext = rawContext as ExtensionContext;
     const context = currentContext;
     refreshInput = {
@@ -264,6 +295,11 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   const cleanup = async () => {
     if (disposed) return;
     disposed = true;
+    observationGeneration++;
+    refreshPending = false;
+    ticketReader.setOpen(false);
+    nativeReader.abort();
+    detailNativeReader.abort();
     stopPeriodicRefresh();
     const settlement = limiter.dispose();
     try {
@@ -274,6 +310,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       sidebar = undefined;
       currentContext = undefined;
       await settlement;
+      await refreshFlight;
     }
   };
 
@@ -289,7 +326,7 @@ export function formatCompactContext(snapshot: PaContextSnapshot): string {
     const identity = [snapshot.deployment.id, snapshot.deployment.team, snapshot.deployment.mode, snapshot.deployment.ticket]
       .filter(Boolean)
       .join("/");
-    parts.push(`PA:${identity || "available"}${snapshot.deployment.stale ? "~" : ""}`);
+    parts.push(`PA:${identity || "available"}${!snapshot.deployment.projectionAvailable || snapshot.deployment.stale ? "/ticket:unavailable" : !snapshot.deployment.ticket ? "/ticket:none" : ""}`);
   } else {
     parts.push("PA:unavailable");
   }
@@ -313,7 +350,7 @@ export function formatContextLines(snapshot: PaContextSnapshot): string[] {
     ? [
         `Deployment: ${snapshot.deployment.id ?? "unavailable"}${snapshot.deployment.stale ? " (stale)" : ""}`,
         `Team / mode: ${snapshot.deployment.team ?? "unavailable"} / ${snapshot.deployment.mode ?? "unavailable"}`,
-        `Current ticket: ${snapshot.deployment.ticket ?? "none"}${snapshot.deployment.projectionAvailable ? " (registry)" : " (launch fallback)"}`,
+        `Current ticket: ${snapshot.deployment.projectionAvailable && !snapshot.deployment.stale ? `${snapshot.deployment.ticket ?? "none"} (registry)` : `unavailable${snapshot.deployment.lastVerifiedTicket ? ` (last verified: ${snapshot.deployment.lastVerifiedTicket}; stale)` : ""}`}`,
         `Launch ticket (environment): ${snapshot.deployment.launchTicket ?? "none"}`,
         `Deployment status: ${snapshot.deployment.status ?? "unavailable"}`,
       ]

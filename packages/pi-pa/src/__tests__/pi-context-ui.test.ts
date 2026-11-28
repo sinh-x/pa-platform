@@ -93,6 +93,8 @@ test("primary-root managed context renders exact adjacent repository key and exe
     ticket: "PAP-145",
     launchTicket: "PAP-145",
     status: "running",
+    objective: undefined,
+    project: undefined,
     projectionAvailable: true,
     stale: false,
   });
@@ -145,7 +147,7 @@ test("managed Alt+I separates canonical repository identity from worktree Path a
       gitLookupCwd = cwd;
       return { available: true, branch: "feature/PAP-221-worktree", dirty: true };
     },
-    deploymentLookup: async () => "running",
+    deploymentLookup: async () => ({ status: "running" }),
   });
 
   assert.equal(snapshot.repository.key, "pa-platform");
@@ -189,7 +191,7 @@ test("managed compact key and CWD collapse each maximal C0/C1 run to one questio
     },
   );
   const compact = formatCompactContext(snapshot);
-  assert.equal(compact, "PA:d-control • repo:pa?-platform? • cwd:/tree?house/path?end • git:unavailable • todo:0/0");
+  assert.equal(compact, "PA:d-control/ticket:unavailable • repo:pa?-platform? • cwd:/tree?house/path?end • git:unavailable • todo:0/0");
   assert.doesNotMatch(compact, /[\u0000-\u001f\u007f-\u009f]/u);
   assert.equal(compact.split("\n").length, 1);
 });
@@ -206,9 +208,10 @@ test("500 ms lookup deadline abandons late values and retains stale prior data",
   assert.equal(snapshot.git.branch, prior.git.branch);
   assert.equal(snapshot.git.stale, true);
   assert.equal(snapshot.deployment.status, "running");
-  assert.equal(snapshot.deployment.ticket, "PAP-145");
+  assert.equal(snapshot.deployment.ticket, undefined);
+  assert.equal(snapshot.deployment.lastVerifiedTicket, "PAP-145");
   assert.equal(snapshot.deployment.launchTicket, "PAP-145");
-  assert.equal(snapshot.deployment.projectionAvailable, true);
+  assert.equal(snapshot.deployment.projectionAvailable, false);
   assert.equal(snapshot.deployment.stale, true);
   assert.equal(snapshot.stale, true);
   assert.match(formatContextLines(snapshot).join("\n"), /stale/);
