@@ -13,7 +13,7 @@ import {
   withDeadline,
   type PaContextSnapshot,
 } from "../pi-extension/context-state.js";
-import { contextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
+import { readerContextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
 import {
   ContextSidebarComponent,
   formatCompactContext,
@@ -600,14 +600,14 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
 
   command?.("", context);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(overlayOptions, contextOverlayOptions());
+  assert.equal(overlayOptions?.width, readerContextOverlayOptions().width);
   assert.equal(overlayOptions?.anchor, "top-right");
   assert.equal(overlayOptions?.width, "68%");
   assert.equal(overlayOptions?.minWidth, 42);
   assert.equal(overlayOptions?.maxHeight, "90%");
   assert.deepEqual(overlayOptions?.margin, { right: 1 });
-  for (const width of [40, 80, 119]) assert.equal(overlayOptions?.visible?.(width, 40), false);
-  for (const width of [120, 160]) assert.equal(overlayOptions?.visible?.(width, 40), true);
+  for (const width of [40, 80, 99]) assert.equal(overlayOptions?.visible?.(width, 40), false);
+  for (const width of [100, 119, 120, 160]) assert.equal(overlayOptions?.visible?.(width, 40), true);
   assert.ok(statuses.at(-1)?.includes("PA:unavailable"), "narrow terminals retain the compact status fallback");
   assert.equal(focused, 1);
 
@@ -620,5 +620,5 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
 
   events.get("session_shutdown")?.({}, context);
   assert.equal(statuses.at(-1), undefined);
-  assert.equal(hiddenPermanently, 1);
+  assert.equal(hiddenPermanently, 0, "custom overlays are completed through done, not raw handle.hide");
 });

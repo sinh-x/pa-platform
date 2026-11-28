@@ -8,12 +8,13 @@
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { associateDeploymentTicket, deploymentTaskStatusMarker } from "@pa-platform/pa-core";
-import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
-import { contextOverlayOptions } from "./context-overlay-layout.js";
+import { readerContextOverlayOptions } from "./context-overlay-layout.js";
+import { contextText, CONTEXT_VIEW_LIMIT } from "./context-text.js";
 import type { TodoDetails } from "./todo.js";
 import { ContextNativeReader, type ContextTicketSummary } from "./context-reader.js";
-import { ContextTicketReader, type ContextTicketBinding } from "./context-ticket.js";
+import { ContextTicketReader, type ContextTicketBinding, type ContextTicketState } from "./context-ticket.js";
 import {
   CONTEXT_REFRESH_INTERVAL_MS,
   ContextRefreshLimiter,
@@ -44,6 +45,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   let sidebar: ContextSidebarComponent | undefined;
   let overlayHandle: OverlayHandle | undefined;
   let overlayHidden = true;
+  let overlayDone: (() => void) | undefined;
   let periodicRefreshTimer: ReturnType<typeof setInterval> | undefined;
   let disposed = false;
   const limiter = options.limiter ?? new ContextRefreshLimiter();
@@ -111,20 +113,39 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
     overlayHidden = !visible;
     overlayHandle?.setHidden(!visible);
     if (visible) overlayHandle?.focus();
-    else overlayHandle?.unfocus({ target: null });
+    else overlayHandle?.unfocus();
+    ticketReader.setOpen(visible && sidebar?.activeTab === "ticket");
+    if (!visible) detailNativeReader.abort();
   };
 
   const ensureOverlay = (context: ExtensionContext) => {
     if (overlayHandle || context.mode !== "tui") return;
     overlayHidden = false;
     void context.ui.custom<void>(
-      (tui, theme, _keybindings, _done) => {
-        sidebar = new ContextSidebarComponent(tui, theme, () => snapshot, () => setOverlayVisible(false));
+      (tui, theme, _keybindings, done) => {
+        overlayDone = () => done();
+        sidebar = new ContextSidebarComponent(tui, theme, () => snapshot, () => setOverlayVisible(false), {
+          getTicketState: () => ticketReader.state,
+          onTab: tab => {
+            ticketReader.setOpen(!overlayHidden && tab === "ticket");
+            if (tab !== "ticket") detailNativeReader.abort();
+          },
+          retry: () => ticketReader.retry(),
+          isFocused: () => overlayHandle?.isFocused?.() ?? true,
+        });
         return sidebar;
       },
       {
         overlay: true,
-        overlayOptions: contextOverlayOptions(),
+        overlayOptions: {
+          ...readerContextOverlayOptions(),
+          visible: (width, height) => {
+            const visible = readerContextOverlayOptions().visible!(width, height);
+            ticketReader.setOpen(visible && !overlayHidden && sidebar?.activeTab === "ticket");
+            if (!visible) detailNativeReader.abort();
+            return visible;
+          },
+        },
         onHandle: (handle) => {
           overlayHandle = handle;
           handle.focus();
@@ -304,9 +325,10 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
     const settlement = limiter.dispose();
     try {
       currentContext?.ui.setStatus(CONTEXT_STATUS_ID, undefined);
-      overlayHandle?.hide();
+      overlayDone?.();
     } finally {
       overlayHandle = undefined;
+      overlayDone = undefined;
       sidebar = undefined;
       currentContext = undefined;
       await settlement;
@@ -323,7 +345,8 @@ export const registerContextUiModule: PiExtensionModule = (pi, lifecycle) => reg
 export function formatCompactContext(snapshot: PaContextSnapshot): string {
   const parts: string[] = [];
   if (snapshot.deployment.available) {
-    const identity = [snapshot.deployment.id, snapshot.deployment.team, snapshot.deployment.mode, snapshot.deployment.ticket]
+    const identity = [snapshot.deployment.id, snapshot.deployment.team, snapshot.deployment.mode,
+      snapshot.deployment.projectionAvailable && !snapshot.deployment.stale ? snapshot.deployment.ticket : undefined]
       .filter(Boolean)
       .join("/");
     parts.push(`PA:${identity || "available"}${!snapshot.deployment.projectionAvailable || snapshot.deployment.stale ? "/ticket:unavailable" : !snapshot.deployment.ticket ? "/ticket:none" : ""}`);
@@ -342,7 +365,7 @@ export function formatCompactContext(snapshot: PaContextSnapshot): string {
   else parts.push(`git:unavailable${snapshot.git.stale ? "~" : ""}`);
   const active = snapshot.todo.active ? ` #${snapshot.todo.active.id}:${snapshot.todo.active.text}` : "";
   parts.push(`todo:${snapshot.todo.completed}/${snapshot.todo.total}${active}`);
-  return parts.join(" • ");
+  return normalizeCompactRepositoryValue(parts.join(" • "));
 }
 
 export function formatContextLines(snapshot: PaContextSnapshot): string[] {
@@ -353,10 +376,12 @@ export function formatContextLines(snapshot: PaContextSnapshot): string[] {
         `Current ticket: ${snapshot.deployment.projectionAvailable && !snapshot.deployment.stale ? `${snapshot.deployment.ticket ?? "none"} (registry)` : `unavailable${snapshot.deployment.lastVerifiedTicket ? ` (last verified: ${snapshot.deployment.lastVerifiedTicket}; stale)` : ""}`}`,
         `Launch ticket (environment): ${snapshot.deployment.launchTicket ?? "none"}`,
         `Deployment status: ${snapshot.deployment.status ?? "unavailable"}`,
+        `Launch objective: ${contextText(snapshot.deployment.objective ?? "unavailable (not recorded or not yet verified)")}`,
       ]
     : ["Deployment: unavailable"];
   const taskLines = snapshot.todo.tasks.length > 0
-    ? snapshot.todo.tasks.map((task) => `${deploymentTaskStatusMarker(task.status)} #${task.id} ${task.text}`)
+    ? [...snapshot.todo.tasks.slice(0, 256).map((task) => `${deploymentTaskStatusMarker(task.status)} #${task.id} ${contextText(task.text)}`),
+        ...(snapshot.todo.tasks.length > 256 ? ["[task list truncated after 256 tasks]"] : [])]
     : ["No session tasks"];
   return [
     ...deployment,
@@ -370,8 +395,39 @@ export function formatContextLines(snapshot: PaContextSnapshot): string[] {
   ];
 }
 
+export interface ContextSidebarOptions {
+  getTicketState?: () => ContextTicketState;
+  onTab?: (tab: "context" | "ticket") => void;
+  retry?: () => void;
+  isFocused?: () => boolean;
+}
+
+export function formatTicketLines(snapshot: PaContextSnapshot, state: ContextTicketState): string[] {
+  const d = snapshot.deployment;
+  const identity = d.projectionAvailable && !d.stale ? d.ticket ?? "none" : "unavailable (verification lost)";
+  const lines = [`Current ticket: ${identity}`, `Project: ${d.project ?? "unavailable"}`];
+  if (!d.available) return [...lines, "Ticket details require a managed deployment."];
+  if (!d.projectionAvailable || d.stale || state.status === "withheld") return [...lines, "Details withheld until current-ticket verification returns."];
+  if (!d.ticket || state.status === "none") return [...lines, "No associated ticket. No action is required."];
+  if (state.status === "loading") return [...lines, "Reading current ticket; you can keep editing after Esc."];
+  if (state.status !== "ready" || state.ticket.id !== d.ticket || state.ticket.project !== d.project)
+    return [...lines, "Ticket details unavailable. Press r to retry this read; association is unchanged."];
+  const t = state.ticket;
+  return [...lines, `Read at: ${new Date(state.readAt).toISOString()}`, `Title: ${t.title}`, `Status: ${t.status}`,
+    `Priority: ${t.priority}`, `Assignee: ${t.assignee || "unassigned"}`, `Summary:\n${t.summary || "(empty)"}`,
+    `Description:\n${t.description || "(empty)"}`];
+}
+
 export class ContextSidebarComponent {
+  activeTab: "context" | "ticket" = "context";
+  private offsets = { context: 0, ticket: 0 };
+  private pageSize = 1;
+  private rowCount = 0;
+  private layoutText?: string;
+  private layoutWidth?: number;
+  private layoutRows: string[] = [];
   private cachedWidth?: number;
+  private cachedHeight?: number;
   private cachedLines?: string[];
 
   constructor(
@@ -379,14 +435,30 @@ export class ContextSidebarComponent {
     private readonly theme: Theme,
     private readonly getSnapshot: () => PaContextSnapshot,
     private readonly hide: () => void,
+    private readonly options: ContextSidebarOptions = {},
   ) {}
 
   handleInput(data: string): void {
-    if (matchesKey(data, Key.escape) || matchesKey(data, "alt+i")) this.hide();
+    if ((this.tui.terminal?.columns ?? 120) < 100 || (this.tui.terminal?.rows ?? 40) < 6 || this.options.isFocused?.() === false) return;
+    if (matchesKey(data, Key.escape) || matchesKey(data, "alt+i")) { this.hide(); return; }
+    if (matchesKey(data, Key.tab) || matchesKey(data, "shift+tab")) {
+      this.activeTab = this.activeTab === "context" ? "ticket" : "context";
+      this.options.onTab?.(this.activeTab);
+    } else if (data === "r" && this.activeTab === "ticket") this.options.retry?.();
+    else if (matchesKey(data, Key.up)) this.offsets[this.activeTab]--;
+    else if (matchesKey(data, Key.down)) this.offsets[this.activeTab]++;
+    else if (matchesKey(data, Key.pageUp)) this.offsets[this.activeTab] -= this.pageSize;
+    else if (matchesKey(data, Key.pageDown)) this.offsets[this.activeTab] += this.pageSize;
+    else if (matchesKey(data, Key.home)) this.offsets[this.activeTab] = 0;
+    else if (matchesKey(data, Key.end)) this.offsets[this.activeTab] = this.rowCount;
+    else return;
+    this.offsets[this.activeTab] = Math.max(0, this.offsets[this.activeTab]);
+    this.requestRender();
   }
 
   render(width: number): string[] {
-    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+    const height = Math.max(1, Math.floor((this.tui.terminal?.rows ?? 40) * 0.9));
+    if (this.cachedLines && this.cachedWidth === width && this.cachedHeight === height) return this.cachedLines;
     const renderWidth = Math.max(1, width);
     const innerWidth = Math.max(1, renderWidth - 2);
     const border = (text: string) => this.theme.fg("border", text);
@@ -394,15 +466,28 @@ export class ContextSidebarComponent {
       const truncated = truncateToWidth(text, innerWidth, "…");
       return truncated + " ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)));
     };
-    const rows = formatContextLines(this.getSnapshot());
+    const snapshot = this.getSnapshot();
+    const logical = this.activeTab === "context" ? formatContextLines(snapshot)
+      : formatTicketLines(snapshot, this.options.getTicketState?.() ?? { status: "withheld" });
+    const text = contextText(logical.join("\n"), CONTEXT_VIEW_LIMIT);
+    if (this.layoutText !== text || this.layoutWidth !== innerWidth) {
+      this.layoutRows = text.split("\n").flatMap(line => wrapTextWithAnsi(line, Math.max(1, innerWidth - 1)));
+      this.layoutText = text;
+      this.layoutWidth = innerWidth;
+    }
+    const rows = this.layoutRows;
+    this.rowCount = rows.length;
+    this.pageSize = Math.max(1, height - 4);
+    this.offsets[this.activeTab] = Math.max(0, Math.min(this.offsets[this.activeTab], Math.max(0, rows.length - this.pageSize)));
+    const offset = this.offsets[this.activeTab];
     const lines = [border(`╭${"─".repeat(innerWidth)}╮`)];
-    lines.push(border("│") + pad(this.theme.fg("accent", this.theme.bold(" PA Context"))) + border("│"));
-    lines.push(border("├") + border("─".repeat(innerWidth)) + border("┤"));
-    for (const row of rows) lines.push(border("│") + pad(` ${row}`) + border("│"));
-    lines.push(border("├") + border("─".repeat(innerWidth)) + border("┤"));
-    lines.push(border("│") + pad(this.theme.fg("dim", " Esc or Alt+I to hide")) + border("│"));
+    const tabTitle = this.activeTab === "context" ? " PA [Context] / Ticket" : ` PA Context / [Ticket] ${snapshot.deployment.ticket ?? "unavailable"}`;
+    lines.push(border("│") + pad(this.theme.fg("accent", this.theme.bold(contextText(tabTitle)))) + border("│"));
+    for (const row of rows.slice(offset, offset + this.pageSize)) lines.push(border("│") + pad(` ${row}`) + border("│"));
+    lines.push(border("│") + pad(this.theme.fg("dim", ` ${offset + 1}-${Math.min(rows.length, offset + this.pageSize)}/${rows.length} Tab view | ↑↓ PgUp/PgDn | r retry | Esc hide`)) + border("│"));
     lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
     this.cachedWidth = width;
+    this.cachedHeight = height;
     this.cachedLines = lines.map((line) => truncateToWidth(line, renderWidth));
     return this.cachedLines;
   }
