@@ -82,15 +82,10 @@ not verified. Existing skips are reported by their test suites.
 
 The prototype prints selected, deferred and manual-integration counts separately.
 Ordinary `test:code` still discovers and runs the full code inventory in hosted
-CI. The separate `Develop fast trial` workflow is for draft PR #204 only; it uses
-the common CI setup and checks, then runs the prototype. The timing includes its
-extra build. This is not a required check or a branch-policy change. Remove the
-trial workflow and its workflow-specific regression together before merging.
-
-The standalone `test:develop-fast` command does not run all common CI checks or
-certify release, manual, installed or human qualification. Use `test:code` for
-the deferred code tests and the applicable manual gates separately. Do not call
-internal `:run` scripts directly.
+CI. No branch events or checks changed. `test:develop-fast` does not run the
+complete common CI checks or certify release, manual, installed or human
+qualification. Use `test:code` for the deferred code tests and the applicable
+manual gates separately. Do not call internal `:run` scripts directly.
 
 ## Isolation boundary
 
